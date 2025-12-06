@@ -1,0 +1,13 @@
+[package]
+name = "datafusion-cudf"
+description = "DataFusion physical-plan adapter for cudf-rs GPU islands."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91.1"
+resolver = "3"
+
+[dependencies]
+arrow = { version = "58", default-features = false, features = ["ipc"] }
+cudf = { path = "../dtggraph/submodules/cudf-rs/cudf-rs" }
+datafusion = { path = "../datafusion/datafusion/core" }
+futures = "0.3"
