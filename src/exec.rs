@@ -2,7 +2,7 @@ use std::{any::Any, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
 use cudf::{
-    AggSpec, Expr, GroupByAgg, Runtime, SortOptions as CudfSortOptions,
+    AggSpec, ExecutionPlacement, Expr, GroupByAgg, Runtime, SortOptions as CudfSortOptions,
     ops::{col, lit},
 };
 use datafusion::{
@@ -273,7 +273,12 @@ impl DisplayAs for CudfGpuIslandExec {
         let operators = self.operator_list();
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
-                write!(f, "CudfGpuIslandExec: operators=[{}], projection_exprs={}", operators, self.projection.len(),)?;
+                write!(
+                    f,
+                    "CudfGpuIslandExec: operators=[{}], internal_batch=CudfBatch, internal_execution=operator_chain, projection_exprs={}",
+                    operators,
+                    self.projection.len(),
+                )?;
                 if let Some(aggregate) = &self.aggregate {
                     write!(f, ", group_keys={}, aggregate_exprs={}", aggregate.keys.len(), aggregate.aggs.len(),)?;
                 }
@@ -287,6 +292,8 @@ impl DisplayAs for CudfGpuIslandExec {
             },
             DisplayFormatType::TreeRender => {
                 writeln!(f, "operators={operators}")?;
+                writeln!(f, "internal_batch=CudfBatch")?;
+                writeln!(f, "internal_execution=operator_chain")?;
                 writeln!(f, "projection_exprs={}", self.projection.len())?;
                 if let Some(aggregate) = &self.aggregate {
                     writeln!(f, "group_keys={}", aggregate.keys.len())?;
@@ -361,18 +368,19 @@ impl ExecutionPlan for CudfGpuIslandExec {
         let local_limit = self.local_limit;
         let runtime = self.execution_config.runtime_for_partition(partition)?;
         let metrics = CudfGpuIslandMetrics::new(&self.metrics, partition);
+        let chain = CudfOperatorChain::new(filter, projection, aggregate, sort, local_limit);
 
-        if aggregate.is_some() || !sort.is_empty() {
+        if chain.requires_single_output_batch() {
             let input = Arc::clone(&self.input);
             let child_partitions = if self.cache.output_partitioning().partition_count() == 1 {
                 (0..self.input.output_partitioning().partition_count()).collect::<Vec<_>>()
             } else {
                 vec![partition]
             };
-            let ops = GpuIslandOps { filter, projection, aggregate, sort, local_limit };
             let output = futures::stream::once(async move {
                 let output =
-                    execute_blocking_sort(input, child_partitions, context, runtime.as_ref(), &ops, &metrics).await?;
+                    execute_blocking_island(input, child_partitions, context, runtime.as_ref(), &chain, &metrics)
+                        .await?;
                 match output {
                     Some(batch) => Ok(Some(batch.record_output(&metrics.baseline))),
                     None => {
@@ -387,11 +395,9 @@ impl ExecutionPlan for CudfGpuIslandExec {
 
         let input = self.input.execute(partition, context)?;
         let output = futures::stream::try_unfold(
-            (input, local_limit, metrics),
-            move |(mut input, mut remaining_rows, metrics)| {
+            (input, local_limit, metrics, chain),
+            move |(mut input, mut remaining_rows, metrics, chain)| {
                 let runtime = Arc::clone(&runtime);
-                let filter = filter.clone();
-                let projection = projection.clone();
                 let metrics = metrics.clone();
 
                 async move {
@@ -405,10 +411,9 @@ impl ExecutionPlan for CudfGpuIslandExec {
                         return Ok(None);
                     };
                     let batch = batch?;
-                    let output =
-                        execute_batch(&runtime, &filter, &projection, remaining_rows.as_mut(), batch, &metrics)?
-                            .record_output(&metrics.baseline);
-                    Ok(Some((output, (input, remaining_rows, metrics))))
+                    let output = execute_record_batch(&runtime, &chain, remaining_rows.as_mut(), batch, &metrics)?
+                        .record_output(&metrics.baseline);
+                    Ok(Some((output, (input, remaining_rows, metrics, chain))))
                 }
             },
         );
@@ -421,7 +426,66 @@ impl ExecutionPlan for CudfGpuIslandExec {
     }
 }
 
-struct GpuIslandOps {
+#[derive(Debug)]
+struct CudfBatch {
+    frame: cudf::DataFrame,
+    placement: ExecutionPlacement,
+}
+
+impl CudfBatch {
+    fn new(frame: cudf::DataFrame) -> Self {
+        let placement = frame.placement();
+        Self { frame, placement }
+    }
+
+    fn into_frame(self) -> cudf::DataFrame {
+        debug_assert_eq!(self.placement, self.frame.placement());
+        self.frame
+    }
+
+    fn concat_many(
+        self,
+        ctx: &cudf::ExecutionOverrides<'_>,
+        other_batches: &[Self],
+        metrics: &CudfGpuIslandMetrics,
+    ) -> DataFusionResult<Self> {
+        if other_batches.is_empty() {
+            return Ok(self);
+        }
+
+        let other_frames = other_batches.iter().map(|batch| &batch.frame).collect::<Vec<_>>();
+        let operator_timer = metrics.cudf_operator_time.timer();
+        let frame = self.frame.with_execution(ctx).concat_many(&other_frames).map_err(|error| {
+            Error::from_cudf(
+                "datafusion_cudf.input.concat",
+                "failed to concatenate uploaded CudfBatches inside GPU island",
+                error,
+            )
+        })?;
+        operator_timer.done();
+        Ok(Self::new(frame))
+    }
+
+    fn materialize(self, metrics: &CudfGpuIslandMetrics) -> DataFusionResult<RecordBatch> {
+        debug_assert_eq!(self.placement, self.frame.placement());
+        let materialization_timer = metrics.record_batch_materialization_time.timer();
+        let output = self.frame.to_record_batch().map_err(|error| {
+            Error::from_cudf(
+                "datafusion_cudf.record_batch.materialize",
+                "failed to materialize CudfBatch to RecordBatch",
+                error,
+            )
+        })?;
+        materialization_timer.done();
+        metrics.device_to_host_materializations.add(1);
+        metrics.device_to_host_materialized_rows.add(output.num_rows());
+        metrics.device_to_host_materialized_bytes.add(get_record_batch_memory_size(&output));
+        Ok(output)
+    }
+}
+
+#[derive(Clone)]
+struct CudfOperatorChain {
     filter: Option<Arc<dyn PhysicalExpr>>,
     projection: Vec<ProjectionExpr>,
     aggregate: Option<GpuAggregate>,
@@ -429,25 +493,138 @@ struct GpuIslandOps {
     local_limit: Option<usize>,
 }
 
-struct FrameOps<'a> {
-    filter: &'a Option<Arc<dyn PhysicalExpr>>,
-    projection: &'a [ProjectionExpr],
-    aggregate: &'a Option<GpuAggregate>,
-    sort: &'a [PhysicalSortExpr],
-}
+impl CudfOperatorChain {
+    fn new(
+        filter: Option<Arc<dyn PhysicalExpr>>,
+        projection: Vec<ProjectionExpr>,
+        aggregate: Option<GpuAggregate>,
+        sort: Vec<PhysicalSortExpr>,
+        local_limit: Option<usize>,
+    ) -> Self {
+        Self { filter, projection, aggregate, sort, local_limit }
+    }
 
-impl<'a> FrameOps<'a> {
-    fn from_gpu_island_ops(ops: &'a GpuIslandOps) -> Self {
-        Self { filter: &ops.filter, projection: &ops.projection, aggregate: &ops.aggregate, sort: &ops.sort }
+    fn requires_single_output_batch(&self) -> bool {
+        self.aggregate.is_some() || !self.sort.is_empty()
+    }
+
+    fn execute(
+        &self,
+        ctx: &cudf::ExecutionOverrides<'_>,
+        remaining_rows: Option<&mut usize>,
+        batch: CudfBatch,
+        metrics: &CudfGpuIslandMetrics,
+    ) -> DataFusionResult<CudfBatch> {
+        let mut frame = batch.into_frame();
+
+        if let Some(filter) = &self.filter {
+            let predicate = lower_expr(filter)?;
+            let operator_timer = metrics.cudf_operator_time.timer();
+            frame = frame.with_execution(ctx).filter_expr(predicate).map_err(|error| {
+                Error::from_cudf("datafusion_cudf.filter.execute", "failed to execute cudf filter expression", error)
+            })?;
+            operator_timer.done();
+        }
+
+        if !self.projection.is_empty() {
+            let mut exprs = Vec::with_capacity(self.projection.len());
+            let mut output_names = Vec::with_capacity(self.projection.len());
+            for projection_expr in &self.projection {
+                let expr = lower_expr(&projection_expr.expr)?;
+                exprs.push((projection_expr.alias.as_str(), expr));
+                output_names.push(projection_expr.alias.as_str());
+            }
+            let operator_timer = metrics.cudf_operator_time.timer();
+            frame = frame.with_execution(ctx).with_columns(exprs).map_err(|error| {
+                Error::from_cudf(
+                    "datafusion_cudf.projection.execute",
+                    "failed to execute cudf projection expressions",
+                    error,
+                )
+            })?;
+            frame = frame.select(output_names).map_err(|error| {
+                Error::from_cudf(
+                    "datafusion_cudf.projection.select",
+                    "failed to select cudf projection output columns",
+                    error,
+                )
+            })?;
+            operator_timer.done();
+        }
+
+        if let Some(aggregate) = &self.aggregate {
+            let keys = aggregate.keys.iter().map(|key| key.input_column.as_str()).collect::<Vec<_>>();
+            let specs = aggregate
+                .aggs
+                .iter()
+                .map(|agg| {
+                    AggSpec::new(agg.input_column.as_str(), agg.agg.clone()).with_alias(agg.output_name.as_str())
+                })
+                .collect::<Vec<_>>();
+            let operator_timer = metrics.cudf_operator_time.timer();
+            frame = frame.groupby(keys).with_execution(ctx).agg(&specs).map_err(|error| {
+                Error::from_cudf(
+                    "datafusion_cudf.aggregate.execute",
+                    "failed to execute cudf groupby aggregate inside GPU island",
+                    error,
+                )
+            })?;
+            let key_renames = aggregate
+                .keys
+                .iter()
+                .filter(|key| key.input_column != key.output_name)
+                .map(|key| (key.input_column.as_str(), key.output_name.as_str()))
+                .collect::<Vec<_>>();
+            if !key_renames.is_empty() {
+                frame = frame.rename_columns(key_renames).map_err(|error| {
+                    Error::from_cudf(
+                        "datafusion_cudf.aggregate.rename_keys",
+                        "failed to rename cudf groupby key columns to DataFusion aggregate aliases",
+                        error,
+                    )
+                })?;
+            }
+            operator_timer.done();
+        }
+
+        if !self.sort.is_empty() {
+            let sort_plan = lower_sort_exprs(&self.sort)?;
+            let sort_options =
+                CudfSortOptions::new().with_descending(sort_plan.descending).with_nulls_first(sort_plan.nulls_first);
+            let operator_timer = metrics.cudf_operator_time.timer();
+            frame = frame.with_execution(ctx).sort_values(sort_plan.columns, sort_options).map_err(|error| {
+                Error::from_cudf("datafusion_cudf.sort.execute", "failed to execute cudf sort inside GPU island", error)
+            })?;
+            operator_timer.done();
+        }
+
+        if let Some(remaining_rows) = remaining_rows {
+            let output_rows = frame.num_rows();
+            let rows_to_take = output_rows.min(*remaining_rows);
+            if rows_to_take < output_rows {
+                let operator_timer = metrics.cudf_operator_time.timer();
+                frame = frame.with_execution(ctx).slice(0, rows_to_take).map_err(|error| {
+                    Error::from_cudf(
+                        "datafusion_cudf.limit.execute",
+                        "failed to execute cudf local limit inside GPU island",
+                        error,
+                    )
+                })?;
+                operator_timer.done();
+            }
+            *remaining_rows -= rows_to_take;
+        }
+
+        Ok(CudfBatch::new(frame))
     }
 }
 
-async fn execute_blocking_sort(
+async fn execute_blocking_island(
     input: Arc<dyn ExecutionPlan>,
     child_partitions: Vec<usize>,
     context: Arc<TaskContext>,
     runtime: &Runtime,
-    ops: &GpuIslandOps,
+    chain: &CudfOperatorChain,
     metrics: &CudfGpuIslandMetrics,
 ) -> DataFusionResult<Option<RecordBatch>> {
     let ctx =
@@ -463,32 +640,20 @@ async fn execute_blocking_sort(
     }
 
     let mut frames = frames.into_iter();
-    let Some(mut frame) = frames.next() else {
+    let Some(batch) = frames.next() else {
         return Ok(None);
     };
-    let other_frames = frames.collect::<Vec<_>>();
-    if !other_frames.is_empty() {
-        let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-        let operator_timer = metrics.cudf_operator_time.timer();
-        frame = frame.with_execution(&ctx).concat_many(&other_frame_refs).map_err(|error| {
-            Error::from_cudf(
-                "datafusion_cudf.input.concat",
-                "failed to concatenate uploaded RecordBatches inside GPU island",
-                error,
-            )
-        })?;
-        operator_timer.done();
-    }
+    let other_batches = frames.collect::<Vec<_>>();
+    let batch = batch.concat_many(&ctx, &other_batches, metrics)?;
 
-    let mut remaining_rows = ops.local_limit;
-    frame = execute_frame_ops(&ctx, FrameOps::from_gpu_island_ops(ops), remaining_rows.as_mut(), frame, metrics)?;
-    materialize_frame(frame, metrics).map(Some)
+    let mut remaining_rows = chain.local_limit;
+    let batch = chain.execute(&ctx, remaining_rows.as_mut(), batch, metrics)?;
+    batch.materialize(metrics).map(Some)
 }
 
-fn execute_batch(
+fn execute_record_batch(
     runtime: &Runtime,
-    filter: &Option<Arc<dyn PhysicalExpr>>,
-    projection: &[ProjectionExpr],
+    chain: &CudfOperatorChain,
     remaining_rows: Option<&mut usize>,
     batch: RecordBatch,
     metrics: &CudfGpuIslandMetrics,
@@ -501,17 +666,11 @@ fn execute_batch(
     let ctx =
         cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     let frame = upload_batch_with_size(runtime, batch, input_rows, input_bytes, metrics)?;
-    let no_aggregate = None;
-    let frame_ops = FrameOps { filter, projection, aggregate: &no_aggregate, sort: &[] };
-    let frame = execute_frame_ops(&ctx, frame_ops, remaining_rows, frame, metrics)?;
-    materialize_frame(frame, metrics)
+    let batch = chain.execute(&ctx, remaining_rows, frame, metrics)?;
+    batch.materialize(metrics)
 }
 
-fn upload_batch(
-    runtime: &Runtime,
-    batch: RecordBatch,
-    metrics: &CudfGpuIslandMetrics,
-) -> DataFusionResult<cudf::DataFrame> {
+fn upload_batch(runtime: &Runtime, batch: RecordBatch, metrics: &CudfGpuIslandMetrics) -> DataFusionResult<CudfBatch> {
     let input_rows = batch.num_rows();
     let input_bytes = get_record_batch_memory_size(&batch);
     metrics.input_batches.add(1);
@@ -525,7 +684,7 @@ fn upload_batch_with_size(
     input_rows: usize,
     input_bytes: usize,
     metrics: &CudfGpuIslandMetrics,
-) -> DataFusionResult<cudf::DataFrame> {
+) -> DataFusionResult<CudfBatch> {
     let upload_timer = metrics.record_batch_upload_time.timer();
     let frame = cudf::DataFrame::from_record_batch(runtime, &batch).map_err(|error| {
         Error::from_cudf("datafusion_cudf.record_batch.upload", "failed to upload RecordBatch to cudf", error)
@@ -534,129 +693,7 @@ fn upload_batch_with_size(
     metrics.host_to_device_uploads.add(1);
     metrics.host_to_device_uploaded_rows.add(input_rows);
     metrics.host_to_device_uploaded_bytes.add(input_bytes);
-    Ok(frame)
-}
-
-fn execute_frame_ops(
-    ctx: &cudf::ExecutionOverrides<'_>,
-    ops: FrameOps<'_>,
-    remaining_rows: Option<&mut usize>,
-    mut frame: cudf::DataFrame,
-    metrics: &CudfGpuIslandMetrics,
-) -> DataFusionResult<cudf::DataFrame> {
-    if let Some(filter) = ops.filter {
-        let predicate = lower_expr(filter)?;
-        let operator_timer = metrics.cudf_operator_time.timer();
-        frame = frame.with_execution(ctx).filter_expr(predicate).map_err(|error| {
-            Error::from_cudf("datafusion_cudf.filter.execute", "failed to execute cudf filter expression", error)
-        })?;
-        operator_timer.done();
-    }
-
-    if !ops.projection.is_empty() {
-        let mut exprs = Vec::with_capacity(ops.projection.len());
-        let mut output_names = Vec::with_capacity(ops.projection.len());
-        for projection_expr in ops.projection {
-            let expr = lower_expr(&projection_expr.expr)?;
-            exprs.push((projection_expr.alias.as_str(), expr));
-            output_names.push(projection_expr.alias.as_str());
-        }
-        let operator_timer = metrics.cudf_operator_time.timer();
-        frame = frame.with_execution(ctx).with_columns(exprs).map_err(|error| {
-            Error::from_cudf(
-                "datafusion_cudf.projection.execute",
-                "failed to execute cudf projection expressions",
-                error,
-            )
-        })?;
-        frame = frame.select(output_names).map_err(|error| {
-            Error::from_cudf(
-                "datafusion_cudf.projection.select",
-                "failed to select cudf projection output columns",
-                error,
-            )
-        })?;
-        operator_timer.done();
-    }
-
-    if let Some(aggregate) = ops.aggregate {
-        let keys = aggregate.keys.iter().map(|key| key.input_column.as_str()).collect::<Vec<_>>();
-        let specs = aggregate
-            .aggs
-            .iter()
-            .map(|agg| AggSpec::new(agg.input_column.as_str(), agg.agg.clone()).with_alias(agg.output_name.as_str()))
-            .collect::<Vec<_>>();
-        let operator_timer = metrics.cudf_operator_time.timer();
-        frame = frame.groupby(keys).with_execution(ctx).agg(&specs).map_err(|error| {
-            Error::from_cudf(
-                "datafusion_cudf.aggregate.execute",
-                "failed to execute cudf groupby aggregate inside GPU island",
-                error,
-            )
-        })?;
-        let key_renames = aggregate
-            .keys
-            .iter()
-            .filter(|key| key.input_column != key.output_name)
-            .map(|key| (key.input_column.as_str(), key.output_name.as_str()))
-            .collect::<Vec<_>>();
-        if !key_renames.is_empty() {
-            frame = frame.rename_columns(key_renames).map_err(|error| {
-                Error::from_cudf(
-                    "datafusion_cudf.aggregate.rename_keys",
-                    "failed to rename cudf groupby key columns to DataFusion aggregate aliases",
-                    error,
-                )
-            })?;
-        }
-        operator_timer.done();
-    }
-
-    if !ops.sort.is_empty() {
-        let sort_plan = lower_sort_exprs(ops.sort)?;
-        let sort_options =
-            CudfSortOptions::new().with_descending(sort_plan.descending).with_nulls_first(sort_plan.nulls_first);
-        let operator_timer = metrics.cudf_operator_time.timer();
-        frame = frame.with_execution(ctx).sort_values(sort_plan.columns, sort_options).map_err(|error| {
-            Error::from_cudf("datafusion_cudf.sort.execute", "failed to execute cudf sort inside GPU island", error)
-        })?;
-        operator_timer.done();
-    }
-
-    if let Some(remaining_rows) = remaining_rows {
-        let output_rows = frame.num_rows();
-        let rows_to_take = output_rows.min(*remaining_rows);
-        if rows_to_take < output_rows {
-            let operator_timer = metrics.cudf_operator_time.timer();
-            frame = frame.with_execution(ctx).slice(0, rows_to_take).map_err(|error| {
-                Error::from_cudf(
-                    "datafusion_cudf.limit.execute",
-                    "failed to execute cudf local limit inside GPU island",
-                    error,
-                )
-            })?;
-            operator_timer.done();
-        }
-        *remaining_rows -= rows_to_take;
-    }
-
-    Ok(frame)
-}
-
-fn materialize_frame(frame: cudf::DataFrame, metrics: &CudfGpuIslandMetrics) -> DataFusionResult<RecordBatch> {
-    let materialization_timer = metrics.record_batch_materialization_time.timer();
-    let output = frame.to_record_batch().map_err(|error| {
-        Error::from_cudf(
-            "datafusion_cudf.record_batch.materialize",
-            "failed to materialize cudf DataFrame to RecordBatch",
-            error,
-        )
-    })?;
-    materialization_timer.done();
-    metrics.device_to_host_materializations.add(1);
-    metrics.device_to_host_materialized_rows.add(output.num_rows());
-    metrics.device_to_host_materialized_bytes.add(get_record_batch_memory_size(&output));
-    Ok(output)
+    Ok(CudfBatch::new(frame))
 }
 
 #[derive(Debug)]
