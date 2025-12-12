@@ -9,7 +9,8 @@ pub mod report;
 pub mod session;
 
 pub use benchmark::{
-    LargerIslandBenchmarkConfig, LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning,
+    BenchmarkGateReason, BenchmarkGateStatus, LargerIslandBenchmarkAssessment, LargerIslandBenchmarkConfig,
+    LargerIslandBenchmarkDecisionCriteria, LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning,
     LargerIslandBenchmarkReport, TimedBenchmarkRun, build_larger_island_benchmark_plan, run_larger_island_benchmark,
     run_larger_island_benchmark_with_optimizer,
 };

@@ -1,4 +1,8 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    fs::{self, File},
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use arrow::{
     array::{Array, Int32Array, Int64Array},
@@ -9,7 +13,7 @@ use arrow::{
 use cudf::{BoundaryKind, Runtime};
 use datafusion::{
     common::ScalarValue,
-    execution::context::TaskContext,
+    execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
     physical_expr::{
@@ -27,8 +31,9 @@ use datafusion::{
         sorts::sort::SortExec,
         test::TestMemoryExec,
     },
+    prelude::{ParquetReadOptions, SessionContext},
 };
-use datafusion_cudf::{CudfOptimizerConfig, GpuFallbackPolicy, optimize_plan};
+use datafusion_cudf::{CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy, optimize_plan};
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -65,6 +70,55 @@ fn int32_values(batch: &RecordBatch, index: usize) -> Vec<i32> {
 
 fn int64_values(batch: &RecordBatch, index: usize) -> Vec<i64> {
     batch.column(index).as_any().downcast_ref::<Int64Array>().expect("expected Int64Array").values().to_vec()
+}
+
+fn write_parquet_file(path: &std::path::Path, batch: &RecordBatch) {
+    let file = File::create(path).unwrap();
+    let mut writer = datafusion::parquet::arrow::ArrowWriter::try_new(file, Arc::clone(&batch.schema()), None).unwrap();
+    writer.write(batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&path).unwrap();
+    path
+}
+
+#[test]
+fn gpu_island_reads_local_parquet_without_record_batch_upload() {
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let dir = unique_temp_dir("datafusion-cudf-local-parquet");
+    let path = dir.join("sample.parquet");
+    write_parquet_file(&path, &input_batch());
+
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(1);
+    let state = SessionStateBuilder::new().with_cudf_gpu_islands(config).build();
+    let ctx = SessionContext::new_with_state(state);
+    let df = futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()))
+        .unwrap()
+        .select_columns(&["id", "value"])
+        .unwrap();
+    let plan = futures::executor::block_on(df.create_physical_plan()).unwrap();
+
+    assert_eq!(plan.name(), "CudfGpuIslandExec");
+    let batches = futures::executor::block_on(collect(Arc::clone(&plan), Arc::new(TaskContext::default()))).unwrap();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int32_values(&batches[0], 0), vec![1, 2, 3, 4]);
+    assert_eq!(int32_values(&batches[0], 1), vec![10, 20, 30, 40]);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = plan.metrics().expect("GPU island should expose execution metrics");
+    assert_eq!(metrics.sum_by_name("parquet_files").unwrap().as_usize(), 1);
+    assert!(metrics.sum_by_name("parquet_bytes_known").unwrap().as_usize() > 0);
+    assert_eq!(metrics.sum_by_name("read_columns").unwrap().as_usize(), 2);
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
