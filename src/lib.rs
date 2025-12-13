@@ -1,6 +1,7 @@
 //! DataFusion adapter for cudf-rs GPU islands.
 
 pub mod benchmark;
+mod capability;
 pub mod error;
 pub mod exec;
 pub mod planner;
