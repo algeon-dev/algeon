@@ -28,6 +28,10 @@ impl CudfParquetScan {
     pub(super) fn partition_count(&self) -> usize {
         self.partitions.len()
     }
+
+    pub(super) fn read_columns(&self) -> &[String] {
+        &self.read_columns
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -122,22 +126,23 @@ fn required_parquet_read_columns(
             }
             required.insert(file_schema.field(index).name().clone());
         }
-    } else if plan.projection.is_empty() {
-        required.extend(file_schema.fields().iter().map(|field| field.name().clone()));
     }
 
     if let Some(filter) = &plan.filter {
         collect_required_columns(filter, &mut required)?;
     }
-    for projection in &plan.projection {
-        collect_required_columns(&projection.expr, &mut required)?;
-    }
-    if let Some(aggregate) = &plan.aggregate {
+
+    if !plan.projection.is_empty() {
+        for projection in &plan.projection {
+            collect_required_columns(&projection.expr, &mut required)?;
+        }
+    } else if let Some(aggregate) = &plan.aggregate {
         required.extend(aggregate.keys.iter().map(|key| key.input_column.clone()));
         required.extend(aggregate.aggs.iter().map(|agg| agg.input_column.clone()));
-    }
-    for sort_expr in &plan.sort {
-        collect_required_columns(&sort_expr.expr, &mut required)?;
+    } else if !plan.sort.is_empty() {
+        for sort_expr in &plan.sort {
+            collect_required_columns(&sort_expr.expr, &mut required)?;
+        }
     }
 
     if required.is_empty() {

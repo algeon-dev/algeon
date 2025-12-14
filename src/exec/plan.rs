@@ -90,6 +90,18 @@ impl CudfGpuIslandExec {
         }
         operators.join(",")
     }
+
+    pub fn input_display_name(&self) -> &'static str {
+        self.input.display_name()
+    }
+
+    pub fn input_boundary_name(&self) -> &'static str {
+        self.input.input_boundary()
+    }
+
+    pub fn local_parquet_read_columns(&self) -> Option<Vec<String>> {
+        self.input.local_parquet_read_columns().map(<[String]>::to_vec)
+    }
 }
 
 impl DisplayAs for CudfGpuIslandExec {
@@ -113,6 +125,9 @@ impl DisplayAs for CudfGpuIslandExec {
                 if let Some(fetch) = self.local_limit {
                     write!(f, ", local_limit={fetch}")?;
                 }
+                if let Some(read_columns) = self.input.local_parquet_read_columns() {
+                    write!(f, ", read_columns=[{}]", read_columns.join(","))?;
+                }
                 write!(f, ", input_boundary={}, output_boundary=device_to_host", self.input.input_boundary())
             },
             DisplayFormatType::TreeRender => {
@@ -130,6 +145,9 @@ impl DisplayAs for CudfGpuIslandExec {
                 }
                 if let Some(fetch) = self.local_limit {
                     writeln!(f, "local_limit={fetch}")?;
+                }
+                if let Some(read_columns) = self.input.local_parquet_read_columns() {
+                    writeln!(f, "read_columns=[{}]", read_columns.join(","))?;
                 }
                 writeln!(f, "input_boundary={}", self.input.input_boundary())?;
                 writeln!(f, "output_boundary=device_to_host")
