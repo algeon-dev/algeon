@@ -4,11 +4,19 @@ description = "DataFusion physical-plan adapter for cudf-rs GPU islands."
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91.1"
+
+[workspace]
+members = [".", "crates/cudf-query-engine"]
 resolver = "3"
 
-[dependencies]
+[workspace.dependencies]
 arrow = { version = "58", default-features = false, features = ["ipc"] }
 cudf = { path = "../dtggraph/submodules/cudf-rs/cudf-rs" }
+
+[dependencies]
+arrow = { workspace = true }
+cudf = { workspace = true }
+cudf-query-engine = { path = "crates/cudf-query-engine" }
 datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
 
