@@ -5,6 +5,7 @@ use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, DataPlacement, Expr, LimitSpec,
     LiteralValue, LocalParquetSource, PlanNode, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus,
     QueryMetrics, QueryPlanBuilder, ResultSink, SchemaBehavior, SortExpr, SortSpec, SourceNode,
+    validate_local_parquet_source,
 };
 
 #[test]
@@ -106,4 +107,40 @@ fn query_metrics_make_host_device_boundaries_explicit() {
     boundary.record_host_to_device_upload(10, 1024);
     assert_eq!(boundary.host_to_device_uploads, 1);
     assert_eq!(boundary.host_to_device_uploaded_bytes, 1024);
+}
+
+#[test]
+fn local_parquet_source_tracks_direct_source_diagnostics() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::new("/tmp/phase4.parquet", schema, vec!["key".to_string(), "payload".to_string()])
+        .with_file_size_bytes(3_235_196_281)
+        .with_row_groups(vec![0, 2, 4]);
+
+    validate_local_parquet_source(&source).unwrap();
+    assert!(source.is_direct_device_read());
+    assert_eq!(source.read_column_count(), 2);
+    assert_eq!(source.selected_row_group_count(), 3);
+    assert_eq!(source.diagnostics.known_bytes, Some(3_235_196_281));
+    assert_eq!(source.diagnostics.selected_row_groups, Some(3));
+}
+
+#[test]
+fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
+    let empty_columns = LocalParquetSource::new("/tmp/phase4.parquet", Arc::clone(&schema), Vec::new());
+
+    let error = validate_local_parquet_source(&empty_columns).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("reason"), Some("empty_read_columns"));
+
+    let overflow_row_group = LocalParquetSource::new("/tmp/phase4.parquet", schema, vec!["key".to_string()])
+        .with_row_groups(vec![usize::MAX]);
+
+    let error = validate_local_parquet_source(&overflow_row_group).unwrap_err();
+    let expected_row_group = usize::MAX.to_string();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.fact_value("row_group"), Some(expected_row_group.as_str()));
 }

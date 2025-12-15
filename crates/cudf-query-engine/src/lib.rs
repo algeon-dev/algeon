@@ -13,7 +13,10 @@ pub mod runtime;
 pub mod source;
 
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
-pub use exec::ExecutionMode;
+pub use exec::{
+    ExecutionMode, GpuDataFrame, QueryExecutionResult, QueryOutput, execute_query_plan, read_local_parquet_source,
+    validate_local_parquet_source,
+};
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortExpr, SortSpec,
 };

@@ -48,6 +48,18 @@ impl LocalParquetSource {
         self.row_groups = Some(row_groups);
         self
     }
+
+    pub fn read_column_count(&self) -> usize {
+        self.read_columns.len()
+    }
+
+    pub fn selected_row_group_count(&self) -> usize {
+        self.row_groups.as_ref().map_or(0, Vec::len)
+    }
+
+    pub fn is_direct_device_read(&self) -> bool {
+        self.diagnostics.direct_device_read
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

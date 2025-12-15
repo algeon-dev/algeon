@@ -4,6 +4,7 @@ pub mod benchmark;
 mod capability;
 pub mod error;
 pub mod exec;
+pub mod native;
 pub mod planner;
 pub mod policy;
 pub mod report;
@@ -17,6 +18,7 @@ pub use benchmark::{
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
+pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
 pub use planner::{CudfOptimizerConfig, CudfPhysicalOptimizerRule, OptimizationResult, optimize_plan};
 pub use policy::{FallbackReason, GpuFallbackPolicy};
 pub use report::{CandidateOutcome, GpuCandidate, PlanningReport};
