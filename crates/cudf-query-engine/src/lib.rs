@@ -26,4 +26,4 @@ pub use plan::{
     QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{DevicePlacement, ExecutionContext, ExecutionContextBuilder, MemoryResourcePolicy};
-pub use source::{LocalParquetSource, SourceDiagnostics, SourceFormat, SourceNode};
+pub use source::{LocalParquetFile, LocalParquetSource, SourceDiagnostics, SourceFormat, SourceNode};

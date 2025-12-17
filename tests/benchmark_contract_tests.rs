@@ -151,6 +151,19 @@ fn benchmark_gate_can_require_peak_device_memory_before_phase_4() {
     assert_eq!(assessment.reasons, vec![BenchmarkGateReason::PeakDeviceMemoryUnavailable]);
 }
 
+#[test]
+fn benchmark_gate_accepts_recorded_peak_device_memory_when_required() {
+    let report = benchmark_report(Duration::from_millis(100), Duration::from_millis(70), 1, 1, 0, Some(256));
+    let criteria = LargerIslandBenchmarkDecisionCriteria::default().with_peak_device_memory_required(true);
+
+    let assessment = report.assess_phase4_readiness(&criteria);
+
+    assert_eq!(assessment.status, BenchmarkGateStatus::ProceedToPhase4);
+    assert_eq!(assessment.reasons, Vec::<BenchmarkGateReason>::new());
+    assert_eq!(report.peak_device_memory_bytes, Some(256));
+    assert_eq!(report.gpu_metrics.peak_device_memory_bytes, Some(256));
+}
+
 fn benchmark_report(
     cpu_wall_time: Duration,
     gpu_wall_time: Duration,
@@ -183,6 +196,7 @@ fn benchmark_report(
         gpu_metrics: LargerIslandBenchmarkMetrics {
             input_batches: 1,
             input_rows: 10,
+            peak_device_memory_bytes,
             host_to_device_uploads: 1,
             host_to_device_uploaded_rows: 10,
             host_to_device_uploaded_bytes: 120,

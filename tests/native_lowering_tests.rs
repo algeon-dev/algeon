@@ -10,7 +10,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{PlanNode, ResultSink, SourceNode};
+use cudf_query_engine::{Expr, LiteralValue, PlanNode, ResultSink, SourceNode};
 use datafusion::{
     common::ScalarValue,
     functions_aggregate::sum::sum_udaf,
@@ -75,16 +75,53 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     let PlanNode::Filter(filter) = &filter_node.kind else {
         panic!("projection input should be a filter node");
     };
+    assert!(matches!(
+        &filter.predicate,
+        Expr::Binary { right, .. } if matches!(right.as_ref(), Expr::Literal(LiteralValue::Int32(10)))
+    ));
     let source_node = plan.node(filter.input).expect("filter input should exist");
     let PlanNode::Source(SourceNode::LocalParquet(source)) = &source_node.kind else {
         panic!("filter input should be a local parquet source");
     };
-    assert_eq!(source.file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
     );
     assert!(result.plans[0].to_string().contains("LocalParquetSource"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-multi-file");
+    let first = dir.join("part-000.parquet");
+    let second = dir.join("part-001.parquet");
+    write_numeric_parquet_file(&first);
+    write_numeric_parquet_file(&second);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&dir), Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let plan = &result.plans[0];
+    let source = plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Source(SourceNode::LocalParquet(source)) => Some(source),
+            _ => None,
+        })
+        .expect("native plan should contain a local parquet source");
+    assert_eq!(source.file_count(), 2);
+    assert_eq!(
+        source.diagnostics.known_bytes,
+        Some(fs::metadata(&first).unwrap().len() + fs::metadata(&second).unwrap().len())
+    );
+    assert!(plan.to_string().contains("LocalParquetSource files=2"));
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -12,7 +12,8 @@ use arrow::{
 use cudf::DataFrame;
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionContext, Expr, LimitSpec, LiteralValue,
-    LocalParquetSource, QueryOutput, QueryPlanBuilder, SortExpr, SortSpec, SourceNode, execute_query_plan,
+    LocalParquetFile, LocalParquetSource, QueryOutput, QueryPlanBuilder, SortExpr, SortSpec, SourceNode,
+    execute_query_plan,
 };
 
 #[test]
@@ -31,12 +32,11 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
         Field::new("sum_x00", DataType::Int64, true),
     ]));
 
-    let source = LocalParquetSource::new(
-        &path,
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
-    )
-    .with_file_size_bytes(fs::metadata(&path).unwrap().len());
+    );
     let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
     let projection =
         vec![Expr::column("key"), Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::column("m01")).alias("x00")];
@@ -76,6 +76,73 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[404, 303]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_multi_file_direct_parquet_source() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-multi-file");
+    let first_path = dir.join("part-000.parquet");
+    let second_path = dir.join("part-001.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &first_path);
+    write_input_parquet(&runtime, &second_path);
+
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("x00", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_x00", DataType::Int64, true),
+    ]));
+    let files = vec![
+        LocalParquetFile::new(&first_path).with_file_size_bytes(fs::metadata(&first_path).unwrap().len()),
+        LocalParquetFile::new(&second_path).with_file_size_bytes(fs::metadata(&second_path).unwrap().len()),
+    ];
+    let source = LocalParquetSource::from_files(
+        files,
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
+    let projection =
+        vec![Expr::column("key"), Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::column("m01")).alias("x00")];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("x00"), "sum_x00")],
+    );
+    let sort = SortSpec::new(vec![
+        SortExpr::new(Expr::column("sum_x00"), true, false),
+        SortExpr::new(Expr::column("key"), false, false),
+    ]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let projection = builder.add_projection(filter, projection, projected_schema);
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.parquet_files, 2);
+    assert_eq!(metrics.read_columns, 8);
+    assert_eq!(metrics.input_batches, 2);
+    assert_eq!(metrics.input_rows, 8);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.boundary.device_to_host_materialized_rows, 2);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[808, 606]);
 
     fs::remove_dir_all(dir).unwrap();
 }

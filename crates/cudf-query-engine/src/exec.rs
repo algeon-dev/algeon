@@ -4,7 +4,7 @@ use arrow::{array::Array, record_batch::RecordBatch};
 use cudf::{
     AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, ExecutionPlacement, GroupByAgg,
     SortOptions as CudfSortOptions,
-    frame::dataframe::ParquetReadOptions,
+    frame::dataframe::{InfoDetail, ParquetReadOptions},
     ops::{col, lit},
 };
 
@@ -14,7 +14,7 @@ use crate::{
     metrics::QueryMetrics,
     plan::{AggregateNode, FilterNode, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode},
     runtime::ExecutionContext,
-    source::LocalParquetSource,
+    source::{LocalParquetFile, LocalParquetSource},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -127,12 +127,24 @@ pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Resul
 }
 
 pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> {
-    if source.path.as_os_str().is_empty() {
+    if source.files.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.local_parquet_source.validate",
-            "local parquet source path must not be empty",
-        ));
+            "local parquet source must contain at least one file",
+        )
+        .with_fact("reason", "empty_files"));
+    }
+
+    for (file_index, file) in source.files.iter().enumerate() {
+        if file.path.as_os_str().is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "local parquet source path must not be empty",
+            )
+            .with_fact("file_index", file_index));
+        }
     }
 
     if source.read_columns.is_empty() {
@@ -141,21 +153,23 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
             "cudf_query_engine.local_parquet_source.validate",
             "local parquet source must name at least one required read column",
         )
-        .with_fact("path", source.path.display())
         .with_fact("reason", "empty_read_columns"));
     }
 
-    for (index, row_group) in source.row_groups.iter().flatten().enumerate() {
-        if i32::try_from(*row_group).is_err() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "cudf_query_engine.local_parquet_source.validate",
-                "local parquet row group index exceeds the cudf reader range",
-            )
-            .with_fact("path", source.path.display())
-            .with_fact("row_group_position", index)
-            .with_fact("row_group", row_group)
-            .with_fact("max_row_group", i32::MAX));
+    for (file_index, file) in source.files.iter().enumerate() {
+        for (index, row_group) in file.row_groups.iter().flatten().enumerate() {
+            if i32::try_from(*row_group).is_err() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.local_parquet_source.validate",
+                    "local parquet row group index exceeds the cudf reader range",
+                )
+                .with_fact("path", file.path.display())
+                .with_fact("file_index", file_index)
+                .with_fact("row_group_position", index)
+                .with_fact("row_group", row_group)
+                .with_fact("max_row_group", i32::MAX));
+            }
         }
     }
 
@@ -170,17 +184,52 @@ pub fn read_local_parquet_source(
     validate_local_parquet_source(source)?;
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let row_groups = cudf_row_groups(source)?;
+    let mut frames = Vec::with_capacity(source.files.len());
+    for file in &source.files {
+        frames.push(read_local_parquet_file(context, file, &columns, metrics)?);
+    }
+
+    let mut frames = frames.into_iter();
+    let frame = frames.next().expect("validated local parquet source contains at least one file");
+    let other_frames = frames.collect::<Vec<_>>();
+    if other_frames.is_empty() {
+        return Ok(GpuDataFrame::new(frame));
+    }
+
+    let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.concat",
+            "failed to concatenate native local parquet files",
+            error,
+        )
+        .with_fact("file_count", source.file_count())
+        .with_fact("read_columns", source.read_column_count())
+    })?;
+    metrics.operator_time += timer.elapsed();
+
+    Ok(GpuDataFrame::new(output))
+}
+
+fn read_local_parquet_file(
+    context: &ExecutionContext,
+    file: &LocalParquetFile,
+    columns: &[&str],
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let row_groups = cudf_row_groups(file)?;
     let read_timer = Instant::now();
     let options = if let Some(row_groups) = &row_groups {
         ParquetReadOptions::builder()
-            .filepath(&source.path)
-            .columns(&columns)
+            .filepath(&file.path)
+            .columns(columns)
             .row_groups(row_groups)
             .with_runtime(context.runtime())
             .build()
     } else {
-        ParquetReadOptions::builder().filepath(&source.path).columns(&columns).with_runtime(context.runtime()).build()
+        ParquetReadOptions::builder().filepath(&file.path).columns(columns).with_runtime(context.runtime()).build()
     };
 
     let frame = DataFrame::read_parquet_with_options(options).map_err(|error| {
@@ -189,23 +238,21 @@ pub fn read_local_parquet_source(
             "failed to read native local parquet source with cudf",
             error,
         )
-        .with_fact("path", source.path.display())
-        .with_fact("read_columns", source.read_column_count())
-        .with_fact("row_groups_selected", source.selected_row_group_count())
+        .with_fact("path", file.path.display())
+        .with_fact("read_columns", columns.len())
+        .with_fact("row_groups_selected", file.selected_row_group_count())
     })?;
     metrics.parquet_read_time += read_timer.elapsed();
-    metrics.record_parquet_source(
-        source.file_size_bytes,
-        source.selected_row_group_count() as u64,
-        source.read_column_count() as u64,
-    );
+    metrics.parquet_files += 1;
+    metrics.parquet_bytes_known += file.file_size_bytes.unwrap_or(0);
+    metrics.row_groups_selected += file.selected_row_group_count() as u64;
+    metrics.read_columns += columns.len() as u64;
     metrics.record_input_batch(frame.num_rows() as u64);
-
-    Ok(GpuDataFrame::new(frame))
+    Ok(frame)
 }
 
-fn cudf_row_groups(source: &LocalParquetSource) -> Result<Option<Vec<i32>>> {
-    let Some(row_groups) = &source.row_groups else {
+fn cudf_row_groups(file: &LocalParquetFile) -> Result<Option<Vec<i32>>> {
+    let Some(row_groups) = &file.row_groups else {
         return Ok(None);
     };
 
@@ -222,7 +269,7 @@ fn cudf_row_groups(source: &LocalParquetSource) -> Result<Option<Vec<i32>>> {
                     "cudf_query_engine.local_parquet_source.row_groups",
                     "local parquet row group index exceeds the cudf reader range",
                 )
-                .with_fact("path", source.path.display())
+                .with_fact("path", file.path.display())
                 .with_fact("row_group", row_group)
                 .with_fact("max_row_group", i32::MAX)
             })
@@ -239,7 +286,7 @@ fn execute_node(
 ) -> Result<GpuDataFrame> {
     let node = plan.node(id).ok_or_else(|| invalid_node_reference(id, "query plan references a missing node"))?;
 
-    match &node.kind {
+    let frame = match &node.kind {
         PlanNode::Source(source) => match source {
             crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, source, metrics),
         },
@@ -263,7 +310,10 @@ fn execute_node(
             let input = execute_node(context, plan, limit.input, metrics)?;
             execute_limit(context, limit, input, metrics)
         },
-    }
+    }?;
+
+    record_device_memory_observation(&frame, metrics)?;
+    Ok(frame)
 }
 
 fn execute_filter(
@@ -444,6 +494,27 @@ fn execution_overrides(context: &ExecutionContext) -> ExecutionOverrides<'_> {
     ExecutionOverrides::new().with_stream(context.stream()).with_memory_resource(context.memory_resource())
 }
 
+fn record_device_memory_observation(frame: &GpuDataFrame, metrics: &mut QueryMetrics) -> Result<()> {
+    let info = frame.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.metrics.device_memory",
+            "failed to record native device memory diagnostics",
+            error,
+        )
+    })?;
+    let bytes = info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "cudf_query_engine.metrics.device_memory",
+            "cudf dataframe memory accounting did not include device-allocated bytes",
+        )
+        .with_fact("rows", frame.num_rows())
+        .with_fact("columns", frame.num_columns())
+    })?;
+    metrics.record_device_memory_observation(bytes as u64);
+    Ok(())
+}
+
 fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
         Expr::Column(name) => Ok(col(name)),
@@ -456,8 +527,15 @@ fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
 fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
     match value {
         LiteralValue::Boolean(value) => Ok(lit(*value)),
+        LiteralValue::Int8(value) => Ok(lit(*value)),
+        LiteralValue::Int16(value) => Ok(lit(*value)),
+        LiteralValue::Int32(value) => Ok(lit(*value)),
         LiteralValue::Int64(value) => Ok(lit(*value)),
+        LiteralValue::UInt8(value) => Ok(lit(*value)),
+        LiteralValue::UInt16(value) => Ok(lit(*value)),
+        LiteralValue::UInt32(value) => Ok(lit(*value)),
         LiteralValue::UInt64(value) => Ok(lit(*value)),
+        LiteralValue::Float32(value) => Ok(lit(*value)),
         LiteralValue::Float64(value) => Ok(lit(*value)),
         LiteralValue::String(_) | LiteralValue::Null => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,

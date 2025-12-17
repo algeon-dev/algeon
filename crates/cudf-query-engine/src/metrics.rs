@@ -5,6 +5,7 @@ pub struct QueryMetrics {
     pub boundary: BoundaryMetrics,
     pub input_batches: u64,
     pub input_rows: u64,
+    pub peak_device_memory_bytes: Option<u64>,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -25,6 +26,10 @@ impl QueryMetrics {
         self.parquet_bytes_known += known_bytes.unwrap_or(0);
         self.row_groups_selected += selected_row_groups;
         self.read_columns += read_columns;
+    }
+
+    pub fn record_device_memory_observation(&mut self, bytes: u64) {
+        self.peak_device_memory_bytes = Some(self.peak_device_memory_bytes.map_or(bytes, |peak| peak.max(bytes)));
     }
 }
 

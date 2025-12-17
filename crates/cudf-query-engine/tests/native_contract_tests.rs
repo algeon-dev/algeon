@@ -3,8 +3,8 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, DataPlacement, Expr, LimitSpec,
-    LiteralValue, LocalParquetSource, PlanNode, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus,
-    QueryMetrics, QueryPlanBuilder, ResultSink, SchemaBehavior, SortExpr, SortSpec, SourceNode,
+    LiteralValue, LocalParquetFile, LocalParquetSource, PlanNode, QueryError, QueryErrorCode, QueryErrorKind,
+    QueryErrorStatus, QueryMetrics, QueryPlanBuilder, ResultSink, SchemaBehavior, SortExpr, SortSpec, SourceNode,
     validate_local_parquet_source,
 };
 
@@ -25,12 +25,11 @@ fn native_plan_can_represent_proven_benchmark_shape() {
         Field::new("sum_x00", DataType::Float64, true),
     ]));
 
-    let source = LocalParquetSource::new(
-        "/tmp/phase4.parquet",
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_file_size_bytes(3_235_196_281)],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
-    )
-    .with_file_size_bytes(3_235_196_281);
+    );
     let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
     let projection =
         vec![Expr::column("key"), Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::column("m01")).alias("x00")];
@@ -115,9 +114,15 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
         Field::new("key", DataType::UInt32, false),
         Field::new("payload", DataType::Int64, false),
     ]));
-    let source = LocalParquetSource::new("/tmp/phase4.parquet", schema, vec!["key".to_string(), "payload".to_string()])
-        .with_file_size_bytes(3_235_196_281)
-        .with_row_groups(vec![0, 2, 4]);
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/phase4.parquet")
+                .with_file_size_bytes(3_235_196_281)
+                .with_row_groups(vec![0, 2, 4]),
+        ],
+        schema,
+        vec!["key".to_string(), "payload".to_string()],
+    );
 
     validate_local_parquet_source(&source).unwrap();
     assert!(source.is_direct_device_read());
@@ -136,8 +141,11 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.fact_value("reason"), Some("empty_read_columns"));
 
-    let overflow_row_group = LocalParquetSource::new("/tmp/phase4.parquet", schema, vec!["key".to_string()])
-        .with_row_groups(vec![usize::MAX]);
+    let overflow_row_group = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_groups(vec![usize::MAX])],
+        schema,
+        vec!["key".to_string()],
+    );
 
     let error = validate_local_parquet_source(&overflow_row_group).unwrap_err();
     let expected_row_group = usize::MAX.to_string();
