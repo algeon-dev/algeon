@@ -45,6 +45,10 @@ impl LocalParquetSource {
         self.files.iter().map(LocalParquetFile::selected_row_group_count).sum()
     }
 
+    pub fn ranged_file_count(&self) -> usize {
+        self.diagnostics.ranged_file_count
+    }
+
     pub fn is_direct_device_read(&self) -> bool {
         self.diagnostics.direct_device_read
     }
@@ -81,8 +85,12 @@ impl LocalParquetFile {
 pub struct SourceDiagnostics {
     pub format: SourceFormat,
     pub direct_device_read: bool,
+    pub file_count: usize,
+    pub ranged_file_count: usize,
     pub known_bytes: Option<u64>,
     pub selected_row_groups: Option<usize>,
+    pub predicate_disposition: PredicateDisposition,
+    pub rejected_features: Vec<RejectedSourceFeature>,
 }
 
 impl SourceDiagnostics {
@@ -95,11 +103,70 @@ impl SourceDiagnostics {
             .iter()
             .any(|file| file.row_groups.is_some())
             .then(|| files.iter().map(LocalParquetFile::selected_row_group_count).sum());
-        Self { format: SourceFormat::Parquet, direct_device_read: true, known_bytes, selected_row_groups }
+        Self {
+            format: SourceFormat::Parquet,
+            direct_device_read: true,
+            file_count: files.len(),
+            ranged_file_count: 0,
+            known_bytes,
+            selected_row_groups,
+            predicate_disposition: PredicateDisposition::Absent,
+            rejected_features: Vec::new(),
+        }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceFormat {
     Parquet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PredicateDisposition {
+    Absent,
+    Rejected,
+}
+
+impl PredicateDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RejectedSourceFeature {
+    NonLocalObjectStore,
+    PartitionColumns,
+    ExprAdapter,
+    ScanLimit,
+    PreserveOrder,
+    OutputOrdering,
+    PushedDownParquetPredicate,
+    EmptySource,
+    PartitionValues,
+    ByteRange,
+    FileOrdering,
+    RowSelection,
+}
+
+impl RejectedSourceFeature {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NonLocalObjectStore => "non_local_object_store",
+            Self::PartitionColumns => "partition_columns",
+            Self::ExprAdapter => "expr_adapter",
+            Self::ScanLimit => "scan_limit",
+            Self::PreserveOrder => "preserve_order",
+            Self::OutputOrdering => "output_ordering",
+            Self::PushedDownParquetPredicate => "pushed_down_parquet_predicate",
+            Self::EmptySource => "empty_source",
+            Self::PartitionValues => "partition_values",
+            Self::ByteRange => "byte_range",
+            Self::FileOrdering => "file_ordering",
+            Self::RowSelection => "row_selection",
+        }
+    }
 }

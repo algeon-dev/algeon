@@ -4,8 +4,8 @@ use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};
 use datafusion_cudf::{
     BenchmarkGateReason, BenchmarkGateStatus, CandidateOutcome, CudfOptimizerConfig, FallbackReason, GpuCandidate,
     GpuFallbackPolicy, LargerIslandBenchmarkConfig, LargerIslandBenchmarkDecisionCriteria,
-    LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning, TimedBenchmarkRun, build_larger_island_benchmark_plan,
-    optimize_plan,
+    LargerIslandBenchmarkMetrics, LargerIslandBenchmarkPlanning, PhaseCRuntimeGateStatus, TimedBenchmarkRun,
+    build_larger_island_benchmark_plan, optimize_plan,
 };
 
 #[test]
@@ -90,6 +90,10 @@ fn larger_island_benchmark_report_keeps_required_measurements() {
     assert!(text.contains("cpu_baseline_wall_ms"));
     assert!(text.contains("gpu_island_wall_ms"));
     assert!(text.contains("cudf_operator_ms"));
+    assert!(text.contains("phase_c_memory_control_policy=unbounded"));
+    assert!(text.contains("phase_c_runtime_gate=not_evaluated"));
+    assert!(text.contains("source_chunks_planned=0"));
+    assert!(text.contains("reservation_denied_count=0"));
     assert!(text.contains("host_to_device_uploads"));
     assert!(text.contains("device_to_host_materializations"));
     assert!(text.contains("fallback_rejected_count"));
@@ -164,6 +168,28 @@ fn benchmark_gate_accepts_recorded_peak_device_memory_when_required() {
     assert_eq!(report.gpu_metrics.peak_device_memory_bytes, Some(256));
 }
 
+#[test]
+fn phase_c_runtime_gate_passes_only_for_bounded_zero_upload_chunked_native_metrics() {
+    let mut metrics = benchmark_metrics("bounded", 1);
+    metrics.host_to_device_uploads = 0;
+    metrics.host_to_device_uploaded_rows = 0;
+    metrics.host_to_device_uploaded_bytes = 0;
+    metrics.device_to_host_materializations = 1;
+    metrics.source_chunks_planned = 2;
+    metrics.source_chunks_committed = 2;
+    metrics.row_groups_planned = 2;
+    metrics.row_groups_committed = 2;
+    metrics.resident_dataframe_peak_bytes = Some(1024);
+
+    assert_eq!(metrics.assess_phase_c_runtime_gate(true), PhaseCRuntimeGateStatus::Pass);
+
+    metrics.host_to_device_uploads = 1;
+    assert_eq!(metrics.assess_phase_c_runtime_gate(true), PhaseCRuntimeGateStatus::Fail);
+
+    metrics.phase_c_memory_control_policy = "unbounded";
+    assert_eq!(metrics.assess_phase_c_runtime_gate(true), PhaseCRuntimeGateStatus::NotEvaluated);
+}
+
 fn benchmark_report(
     cpu_wall_time: Duration,
     gpu_wall_time: Duration,
@@ -194,29 +220,62 @@ fn benchmark_report(
         cpu_baseline: TimedBenchmarkRun::from_samples([cpu_wall_time]),
         gpu_island: TimedBenchmarkRun::from_samples([gpu_wall_time]),
         gpu_metrics: LargerIslandBenchmarkMetrics {
-            input_batches: 1,
-            input_rows: 10,
             peak_device_memory_bytes,
-            host_to_device_uploads: 1,
-            host_to_device_uploaded_rows: 10,
-            host_to_device_uploaded_bytes: 120,
+            resident_dataframe_peak_bytes: peak_device_memory_bytes,
             device_to_host_materializations: materializations,
-            device_to_host_materialized_rows: 2,
-            device_to_host_materialized_bytes: 24,
-            parquet_files: 0,
-            parquet_bytes_known: 0,
-            row_groups_selected: 0,
-            read_columns: 0,
-            parquet_read_time: Duration::ZERO,
-            record_batch_upload_time: Duration::from_millis(10),
-            cudf_operator_time: Duration::from_millis(30),
-            record_batch_materialization_time: Duration::from_millis(5),
             elapsed_compute: Some(gpu_wall_time),
-            output_rows: Some(2),
+            ..benchmark_metrics("unbounded", 1)
         },
         planning: LargerIslandBenchmarkPlanning::from_report(&datafusion_cudf::PlanningReport::from_outcomes(outcomes)),
         output_batches: 1,
         output_rows: 2,
         peak_device_memory_bytes,
+    }
+}
+
+fn benchmark_metrics(
+    phase_c_memory_control_policy: &'static str,
+    host_to_device_uploads: usize,
+) -> LargerIslandBenchmarkMetrics {
+    LargerIslandBenchmarkMetrics {
+        phase_c_memory_control_policy,
+        phase_c_runtime_gate: "not_evaluated",
+        input_batches: 1,
+        input_rows: 10,
+        resident_dataframe_peak_bytes: None,
+        allocator_high_water_bytes: None,
+        reservation_requested_bytes: 0,
+        reservation_granted_bytes: 0,
+        reservation_denied_count: 0,
+        source_chunks_planned: 0,
+        source_chunks_attempted: 0,
+        source_chunks_committed: 0,
+        source_chunks_retried: 0,
+        row_groups_planned: 0,
+        row_groups_committed: 0,
+        partial_aggregate_count: 0,
+        partial_aggregate_rows: 0,
+        final_merge_attempts: 0,
+        final_merge_levels: 0,
+        retry_count: 0,
+        retry_resource_exhausted_count: 0,
+        retry_reservation_failure_count: 0,
+        peak_device_memory_bytes: None,
+        host_to_device_uploads,
+        host_to_device_uploaded_rows: host_to_device_uploads.saturating_mul(10),
+        host_to_device_uploaded_bytes: host_to_device_uploads.saturating_mul(120),
+        device_to_host_materializations: 1,
+        device_to_host_materialized_rows: 2,
+        device_to_host_materialized_bytes: 24,
+        parquet_files: 0,
+        parquet_bytes_known: 0,
+        row_groups_selected: 0,
+        read_columns: 0,
+        parquet_read_time: Duration::ZERO,
+        record_batch_upload_time: Duration::from_millis(10),
+        cudf_operator_time: Duration::from_millis(30),
+        record_batch_materialization_time: Duration::from_millis(5),
+        elapsed_compute: None,
+        output_rows: Some(2),
     }
 }

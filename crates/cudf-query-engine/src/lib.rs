@@ -4,6 +4,7 @@
 //! matching, fallback reporting, and adapter wrappers belong in
 //! `datafusion-cudf`.
 
+pub mod chunk;
 pub mod error;
 pub mod exec;
 pub mod expr;
@@ -12,6 +13,7 @@ pub mod plan;
 pub mod runtime;
 pub mod source;
 
+pub use chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks};
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
 pub use exec::{
     ExecutionMode, GpuDataFrame, QueryExecutionResult, QueryOutput, execute_query_plan, read_local_parquet_source,
@@ -25,5 +27,11 @@ pub use plan::{
     AggregateNode, DataPlacement, FilterNode, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode,
     QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
 };
-pub use runtime::{DevicePlacement, ExecutionContext, ExecutionContextBuilder, MemoryResourcePolicy};
-pub use source::{LocalParquetFile, LocalParquetSource, SourceDiagnostics, SourceFormat, SourceNode};
+pub use runtime::{
+    DevicePlacement, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
+    MemoryResourcePolicy, ReservationKind, RetryFacts,
+};
+pub use source::{
+    LocalParquetFile, LocalParquetSource, PredicateDisposition, RejectedSourceFeature, SourceDiagnostics, SourceFormat,
+    SourceNode,
+};

@@ -105,9 +105,9 @@ impl QueryNode {
             PlanNode::Source(SourceNode::LocalParquet(source)) => {
                 writeln!(
                     f,
-                    "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} placement={} schema_behavior={}",
+                    "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} predicate={} rejected_features={} placement={} schema_behavior={}",
                     self.id,
-                    source.file_count(),
+                    source.diagnostics.file_count,
                     source.files.first().map_or_else(|| "none".to_string(), |file| file.path.display().to_string()),
                     source.diagnostics.format,
                     source.diagnostics.direct_device_read,
@@ -117,6 +117,14 @@ impl QueryNode {
                         .selected_row_groups
                         .map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string()),
                     source.read_columns.len(),
+                    source.diagnostics.predicate_disposition.as_str(),
+                    source
+                        .diagnostics
+                        .rejected_features
+                        .iter()
+                        .map(|feature| feature.as_str())
+                        .collect::<Vec<_>>()
+                        .join(","),
                     self.facts.placement,
                     self.facts.schema_behavior
                 )

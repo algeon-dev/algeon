@@ -1,6 +1,6 @@
 use crate::policy::FallbackReason;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuCandidate {
     pub shape: &'static str,
     pub output_schema_fields: usize,

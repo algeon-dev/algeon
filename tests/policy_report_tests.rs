@@ -14,6 +14,20 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::InsufficientIslandSize, "insufficient_island_size"),
         (FallbackReason::PlanPropertyMismatch, "plan_property_mismatch"),
         (FallbackReason::ExplicitCpuPolicy, "explicit_cpu_policy"),
+        (FallbackReason::NativeSortPreservingMergeUnsupported, "native_sort_preserving_merge_unsupported"),
+        (FallbackReason::NativePartitionPreservingSortUnsupported, "native_partition_preserving_sort_unsupported"),
+        (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
+        (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
+        (FallbackReason::NativeSourceExprAdapter, "native_source_expr_adapter"),
+        (FallbackReason::NativeSourceScanLimit, "native_source_scan_limit"),
+        (FallbackReason::NativeSourcePreserveOrder, "native_source_preserve_order"),
+        (FallbackReason::NativeSourceOutputOrdering, "native_source_output_ordering"),
+        (FallbackReason::NativeSourcePushedDownParquetPredicate, "native_source_pushed_down_parquet_predicate"),
+        (FallbackReason::NativeSourceEmpty, "native_source_empty"),
+        (FallbackReason::NativeSourcePartitionValues, "native_source_partition_values"),
+        (FallbackReason::NativeSourceByteRange, "native_source_byte_range"),
+        (FallbackReason::NativeSourceFileOrdering, "native_source_file_ordering"),
+        (FallbackReason::NativeSourceRowSelection, "native_source_row_selection"),
     ];
 
     for (reason, expected) in codes {
@@ -27,8 +41,8 @@ fn planning_report_keeps_rewritten_and_rejected_candidates_in_order() {
     let filter = GpuCandidate::new("FilterExec", 2);
     let projection_filter = GpuCandidate::new("ProjectionExec(FilterExec(child))", 3);
 
-    report.push_rejected(filter.clone(), FallbackReason::InsufficientIslandSize);
-    report.push_rewritten(projection_filter.clone());
+    report.push_rejected(filter, FallbackReason::InsufficientIslandSize);
+    report.push_rewritten(projection_filter);
 
     assert_eq!(report.rejected_count(), 1);
     assert_eq!(report.rewritten_count(), 1);
