@@ -81,6 +81,13 @@ fn native_plan_can_represent_proven_benchmark_shape() {
 }
 
 #[test]
+fn native_expr_can_represent_boolean_not() {
+    let expr = Expr::not(Expr::binary(Expr::column("payload"), BinaryOp::Lt, Expr::literal(LiteralValue::Int64(10))));
+
+    assert_eq!(expr.to_string(), "NOT (payload < 10)");
+}
+
+#[test]
 fn query_error_codes_and_facts_are_stable_without_datafusion() {
     let error = QueryError::new(
         QueryErrorCode::UnsupportedExpression,

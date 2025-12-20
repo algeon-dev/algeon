@@ -27,7 +27,7 @@ use datafusion::{
     },
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
-        expressions::{BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal},
+        expressions::{BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal, NotExpr},
     },
     physical_plan::{
         ExecutionPlan,
@@ -1347,6 +1347,9 @@ fn lower_physical_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -
         let op = lower_binary_operator(binary.op())?;
         return Ok(NativeExpr::binary(left, op, right));
     }
+    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+        return Ok(NativeExpr::not(lower_physical_expr(not.arg(), input_schema)?));
+    }
     Err(FallbackReason::UnsupportedExpression)
 }
 
@@ -1457,6 +1460,10 @@ fn collect_required_columns(
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
         collect_required_columns(binary.left(), required)?;
         collect_required_columns(binary.right(), required)?;
+        return Ok(());
+    }
+    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+        collect_required_columns(not.arg(), required)?;
         return Ok(());
     }
     Err(FallbackReason::UnsupportedExpression)

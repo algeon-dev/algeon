@@ -6,12 +6,15 @@ use std::{
 
 use arrow::{
     array::{ArrayRef, Int32Array, Int64Array},
+    compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
 use cudf_query_engine::{ExecutionContext, QueryOutput, execute_query_plan};
 use datafusion::{
+    functions_aggregate::sum::sum_udaf,
+    logical_expr::Operator,
     parquet::{
         arrow::ArrowWriter,
         file::{
@@ -19,7 +22,20 @@ use datafusion::{
             reader::{FileReader, SerializedFileReader},
         },
     },
-    physical_plan::{ExecutionPlan, collect},
+    physical_expr::{
+        LexOrdering, PhysicalExpr, PhysicalSortExpr,
+        aggregate::AggregateExprBuilder,
+        expressions::{NotExpr, binary, col, lit},
+    },
+    physical_plan::{
+        ExecutionPlan,
+        aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
+        collect,
+        filter::FilterExec,
+        limit::LocalLimitExec,
+        projection::{ProjectionExec, ProjectionExpr},
+        sorts::sort::SortExec,
+    },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::lower_physical_plan_to_native;
@@ -55,6 +71,28 @@ async fn native_runtime_default_sql_count_star_matches_cpu() {
     write_row_group_pruning_parquet_file(&path);
 
     assert_default_sql_native_parity(&path, SQL_COUNT_STAR_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_default_sql_not_filter_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-not-filter");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let scan = parquet_scan(&path).await;
+    let scan_schema = scan.schema();
+    let payload_lt_10 = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::Lt,
+        lit(datafusion::common::ScalarValue::Int32(Some(10))),
+        &scan_schema,
+    )
+    .unwrap();
+    let predicate = Arc::new(NotExpr::new(payload_lt_10));
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+    assert_native_physical_plan_parity(plan, None).await;
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -111,9 +149,51 @@ async fn assert_default_sql_native_parity(
     assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
 }
 
+async fn assert_native_physical_plan_parity(
+    plan: Arc<dyn ExecutionPlan>,
+    expected_selected_row_groups: Option<(usize, usize)>,
+) {
+    let cpu_batches =
+        collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
+    let lowering = lower_physical_plan_to_native(plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.plans.len(), 1);
+    if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
+        assert_eq!(lowering.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));
+        assert!(selected_row_groups < total_row_groups);
+    }
+
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(runtime);
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.host_to_device_uploaded_rows, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+}
+
 async fn cpu_sql_output(path: &std::path::Path, sql: &str) -> Vec<RecordBatch> {
     let plan = sql_plan(path, SessionConfig::new(), sql).await;
     collect(plan, Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap()
+}
+
+async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new().with_repartition_file_scans(false).with_target_partitions(1),
+    );
+    let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    df.create_physical_plan().await.unwrap()
 }
 
 async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {
@@ -207,6 +287,61 @@ fn array_value(array: &ArrayRef, row: usize) -> String {
 
 fn parquet_row_group_count(path: &std::path::Path) -> usize {
     SerializedFileReader::try_from(path).unwrap().metadata().num_row_groups()
+}
+
+fn aggregate_sort_limit_plan_with_filter(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn PhysicalExpr>,
+    projection_operator: Operator,
+) -> Arc<dyn ExecutionPlan> {
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+
+    let filter_schema = filter.schema();
+    let x00 = binary(
+        col("m00", &filter_schema).unwrap(),
+        projection_operator,
+        col("m01", &filter_schema).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &filter_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: x00, alias: "x00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("x00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_x00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_x00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate));
+    Arc::new(LocalLimitExec::new(sort, 2))
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
