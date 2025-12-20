@@ -10,7 +10,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{Expr, LiteralValue, PlanNode, ResultSink, SourceNode};
+use cudf_query_engine::{AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceNode};
 use datafusion::{
     common::ScalarValue,
     datasource::{
@@ -24,9 +24,15 @@ use datafusion::{
     execution::object_store::ObjectStoreUrl,
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
-    parquet::arrow::{
-        ArrowWriter,
-        arrow_reader::{RowSelection, RowSelector},
+    parquet::{
+        arrow::{
+            ArrowWriter,
+            arrow_reader::{RowSelection, RowSelector},
+        },
+        file::{
+            properties::WriterProperties,
+            reader::{FileReader, SerializedFileReader},
+        },
     },
     physical_expr::{
         LexOrdering, PhysicalSortExpr,
@@ -490,6 +496,118 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
 }
 
 #[tokio::test]
+async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-aggregate-parity");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NATIVE_AGGREGATE_PARITY_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let functions = native_aggregate_functions(&result.plans[0]);
+    assert_eq!(functions, vec![AggregateFunction::Min, AggregateFunction::Max, AggregateFunction::Count]);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-count-star");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_COUNT_STAR_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 2);
+    assert_eq!(native_aggregate_functions(&result.plans[0]), vec![AggregateFunction::Sum, AggregateFunction::Count]);
+    let count_expr = aggregate_exprs
+        .iter()
+        .find(|expr| expr.function == AggregateFunction::Count)
+        .expect("native aggregate should include COUNT(*)");
+    assert!(matches!(
+        &count_expr.expr,
+        Expr::Column(name) if name.starts_with("__cudf_aggregate_arg_")
+    ));
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+    assert!(source.diagnostics.direct_device_read);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-row-group-pruning");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+    let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(total_row_groups, 4);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
+    assert!(result.source_diagnostics[0].selected_row_groups.unwrap() < total_row_groups);
+
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[2, 3][..]));
+    assert_eq!(source.diagnostics.selected_row_groups, Some(2));
+    assert_eq!(source.selected_row_group_count(), 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_groups_from_metadata() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-filter-row-group-pruning");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+    let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
+    let plan = sql_plan_without_scan_predicate(plan);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(total_row_groups, 4);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "absent");
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
+    assert!(result.source_diagnostics[0].selected_row_groups.unwrap() < total_row_groups);
+
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[2, 3][..]));
+    assert_eq!(source.diagnostics.selected_row_groups, Some(2));
+    assert_eq!(source.selected_row_group_count(), 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn default_sql_physical_plan_rejects_before_native_execution_with_stable_reason() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-default");
     let path = dir.join("input.parquet");
@@ -694,6 +812,24 @@ ORDER BY sum_x00 DESC, key ASC
 LIMIT 2
 ";
 
+const SQL_NATIVE_AGGREGATE_PARITY_QUERY: &str = "
+SELECT key, MIN(m00) AS min_m00, MAX(m01) AS max_m01, COUNT(payload) AS count_payload
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY key ASC
+LIMIT 2
+";
+
+const SQL_COUNT_STAR_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00, COUNT(*) AS count_rows
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY key ASC
+LIMIT 2
+";
+
 fn parquet_scan_with_pushed_down_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     parquet_scan_with_pushed_down_predicate_value(path, 10)
 }
@@ -801,6 +937,20 @@ fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_que
             _ => None,
         })
         .expect("native plan should contain a local parquet source")
+}
+
+fn native_aggregate_functions(plan: &cudf_query_engine::QueryPlan) -> Vec<AggregateFunction> {
+    native_aggregate_exprs(plan).iter().map(|expr| expr.function).collect()
+}
+
+fn native_aggregate_exprs(plan: &cudf_query_engine::QueryPlan) -> &[cudf_query_engine::AggregateExpr] {
+    plan.nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate.spec.aggr_exprs.as_slice()),
+            _ => None,
+        })
+        .expect("native plan should contain an aggregate node")
 }
 
 fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: Operator) -> Arc<dyn ExecutionPlan> {
@@ -947,6 +1097,30 @@ fn write_numeric_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1, 2, 1, 2, 1, 2])),
+            Arc::new(Int32Array::from(vec![0, 1, 2, 3, 10, 11, 20, 21])),
+            Arc::new(Int64Array::from(vec![10, 20, 30, 40, 50, 60, 70, 80])),
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 fn write_parquet_file_with_string_column(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -981,4 +1155,8 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
     fs::create_dir_all(&path).unwrap();
     path
+}
+
+fn parquet_row_group_count(path: &std::path::Path) -> usize {
+    SerializedFileReader::try_from(path).unwrap().metadata().num_row_groups()
 }
