@@ -52,7 +52,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfGpuIslandExec, CudfOptimizerConfig, GpuFallbackPolicy, LargerIslandBenchmarkMetrics,
+    CandidateOutcome, CudfGpuIslandExec, CudfOptimizerConfig, GpuFallbackPolicy, LargerIslandBenchmarkMetrics,
     LargerIslandBenchmarkPlanning, TimedBenchmarkRun, lower_physical_plan_to_native, optimize_plan,
 };
 
@@ -579,6 +579,17 @@ impl DirectParquetBenchmarkReport {
         push_line(&mut text, format_args!("native_fallback_candidate_count={}", native_planning.candidate_count));
         push_line(&mut text, format_args!("native_fallback_rewritten_count={}", native_planning.rewritten_count));
         push_line(&mut text, format_args!("native_fallback_rejected_count={}", native_planning.rejected_count));
+        push_line(
+            &mut text,
+            format_args!(
+                "native_default_sql_physical_plan={}",
+                self.final_native_gpu.source_physical_plan_one_line.as_deref().unwrap_or("not_available")
+            ),
+        );
+        push_line(
+            &mut text,
+            format_args!("native_lowered_candidate_shapes={}", self.final_native_gpu.native_candidate_shapes.join(";")),
+        );
         push_line(&mut text, format_args!("native_gpu_plan={}", self.final_native_gpu.plan_one_line));
         push_line(&mut text, format_args!("source_diagnostic={}", self.source_diagnostic));
         text
@@ -603,6 +614,8 @@ struct GpuCollectMeasurement {
     metrics: LargerIslandBenchmarkMetrics,
     planning: LargerIslandBenchmarkPlanning,
     plan_one_line: String,
+    source_physical_plan_one_line: Option<String>,
+    native_candidate_shapes: Vec<String>,
     read_columns: Vec<String>,
     batches: Vec<RecordBatch>,
 }
@@ -826,6 +839,8 @@ async fn collect_gpu_direct_once(
         metrics,
         planning,
         plan_one_line,
+        source_physical_plan_one_line: None,
+        native_candidate_shapes: Vec::new(),
         read_columns,
         batches,
     })
@@ -835,15 +850,17 @@ async fn collect_native_gpu_direct_once(
     path: &Path,
     config: &LocalParquetBenchmarkConfig,
 ) -> DataFusionResult<GpuCollectMeasurement> {
-    let source = parquet_scan_plan(path).await?;
-    let plan = build_gpu_friendly_plan(source, config)?;
-    let lowering = lower_physical_plan_to_native(plan);
+    let plan = build_cpu_default_plan(path, config).await?;
+    let source_physical_plan_one_line = displayable(plan.as_ref()).one_line().to_string();
+    let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     let planning = LargerIslandBenchmarkPlanning::from_report(&lowering.report);
+    let native_candidate_shapes = native_candidate_shapes(&lowering.report);
     if planning.rewritten_count != 1 || lowering.plans.len() != 1 {
         return Err(plan_error(format!(
-            "native direct Parquet benchmark expected exactly one lowered GPU query plan, got rewritten_count={}, native_plan_count={}",
+            "native default SQL Parquet benchmark expected exactly one lowered GPU query plan, got rewritten_count={}, native_plan_count={}, candidates={}",
             planning.rewritten_count,
-            lowering.plans.len()
+            lowering.plans.len(),
+            native_candidate_shapes.join(";")
         )));
     }
 
@@ -861,7 +878,7 @@ async fn collect_native_gpu_direct_once(
     let wall_time = started.elapsed();
     let (output, native_metrics) = result.into_parts();
     let NativeQueryOutput::HostArrow(batch) = output else {
-        return Err(plan_error("native direct Parquet benchmark expected a HostArrow result sink"));
+        return Err(plan_error("native default SQL Parquet benchmark expected a HostArrow result sink"));
     };
     let batches = vec![batch];
     let output = measure_output(&batches);
@@ -874,9 +891,24 @@ async fn collect_native_gpu_direct_once(
         metrics: benchmark_metrics_from_native(&native_metrics),
         planning,
         plan_one_line,
+        source_physical_plan_one_line: Some(source_physical_plan_one_line),
+        native_candidate_shapes,
         read_columns,
         batches,
     })
+}
+
+fn native_candidate_shapes(report: &datafusion_cudf::PlanningReport) -> Vec<String> {
+    report
+        .outcomes()
+        .iter()
+        .map(|outcome| match outcome {
+            CandidateOutcome::Rewritten { candidate } => format!("rewritten:{}", candidate.shape),
+            CandidateOutcome::Rejected { candidate, reason } => {
+                format!("rejected:{}:{}", candidate.shape, reason.code())
+            },
+        })
+        .collect()
 }
 
 fn measure_cpu_output(wall_time: Duration, batches: Vec<RecordBatch>) -> CollectMeasurement {
@@ -1415,19 +1447,19 @@ fn validate_native_gpu_direct_measurement(
         || !measurement.plan_one_line.contains("sink=host_arrow")
     {
         return Err(plan_error(format!(
-            "native GPU plan did not use the direct local Parquet host-arrow path: {}",
+            "native default SQL plan did not lower to the direct local Parquet host-arrow path: {}",
             measurement.plan_one_line
         )));
     }
     if metrics.host_to_device_uploads != 0 || metrics.host_to_device_uploaded_rows != 0 {
         return Err(plan_error(format!(
-            "native direct GPU Parquet path crossed host-to-device upload boundary: uploads={}, uploaded_rows={}",
+            "native default SQL direct Parquet path crossed host-to-device upload boundary: uploads={}, uploaded_rows={}",
             metrics.host_to_device_uploads, metrics.host_to_device_uploaded_rows
         )));
     }
     if metrics.device_to_host_materializations != 1 {
         return Err(plan_error(format!(
-            "native direct GPU Parquet path expected one final host materialization, got {}",
+            "native default SQL direct Parquet path expected one final host materialization, got {}",
             metrics.device_to_host_materializations
         )));
     }
@@ -1438,20 +1470,20 @@ fn validate_native_gpu_direct_measurement(
         )));
     }
     let Some(peak_device_memory_bytes) = metrics.peak_device_memory_bytes else {
-        return Err(plan_error("native direct GPU Parquet path did not record peak device memory"));
+        return Err(plan_error("native default SQL direct Parquet path did not record peak device memory"));
     };
     if peak_device_memory_bytes == 0 {
-        return Err(plan_error("native direct GPU Parquet path recorded zero peak device memory"));
+        return Err(plan_error("native default SQL direct Parquet path recorded zero peak device memory"));
     }
     if measurement.output_rows > config.limit {
         return Err(plan_error(format!(
-            "native direct GPU Parquet path returned too many rows: output_rows={}, limit={}",
+            "native default SQL direct Parquet path returned too many rows: output_rows={}, limit={}",
             measurement.output_rows, config.limit
         )));
     }
     if metrics.parquet_files != config.file_count {
         return Err(plan_error(format!(
-            "native direct GPU Parquet path expected {} files, got {}",
+            "native default SQL direct Parquet path expected {} files, got {}",
             config.file_count, metrics.parquet_files
         )));
     }
@@ -1459,13 +1491,13 @@ fn validate_native_gpu_direct_measurement(
         || metrics.parquet_bytes_known < config.minimum_file_bytes as usize
     {
         return Err(plan_error(format!(
-            "native direct GPU Parquet metrics did not account for the benchmark file size: parquet_bytes_known={}, parquet_file_bytes={}, minimum_file_bytes={}",
+            "native default SQL direct Parquet metrics did not account for the benchmark file size: parquet_bytes_known={}, parquet_file_bytes={}, minimum_file_bytes={}",
             metrics.parquet_bytes_known, parquet_file_bytes, config.minimum_file_bytes
         )));
     }
     if measurement.planning.rejected_count != 0 {
         return Err(plan_error(format!(
-            "native direct GPU Parquet lowering rejected fallback candidates: rejected_count={}",
+            "native default SQL Parquet lowering rejected fallback candidates: rejected_count={}",
             measurement.planning.rejected_count
         )));
     }
@@ -1475,7 +1507,7 @@ fn validate_native_gpu_direct_measurement(
     let expected = config.expected_read_columns();
     if actual != expected {
         return Err(plan_error(format!(
-            "native direct GPU Parquet read columns did not match workload requirements: actual={}, expected={}",
+            "native default SQL direct Parquet read columns did not match workload requirements: actual={}, expected={}",
             actual.join(","),
             expected.join(",")
         )));

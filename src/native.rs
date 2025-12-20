@@ -26,8 +26,8 @@ use datafusion::{
         statistics::Statistics,
     },
     physical_expr::{
-        PhysicalExpr, PhysicalSortExpr,
-        expressions::{BinaryExpr, Column, Literal},
+        LexOrdering, PhysicalExpr, PhysicalSortExpr,
+        expressions::{BinaryExpr, Column, DynamicFilterPhysicalExpr, Literal},
     },
     physical_plan::{
         ExecutionPlan,
@@ -35,6 +35,7 @@ use datafusion::{
         filter::FilterExec,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
+        repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
 };
@@ -67,7 +68,23 @@ const SQL_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE: &str =
     "SortExec(fetch)(ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan))))";
 const SQL_SORT_FETCH_SHAPE: &str = "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))";
 const SQL_SORT_FETCH_NO_FILTER_SHAPE: &str = "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))";
+const SPM_SORT_FETCH_POST_PRE_FILTER_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))))";
+const SPM_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE: &str =
+    "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))))";
+const SPM_SORT_FETCH_POST_FILTER_SHAPE: &str =
+    "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))))";
+const SPM_SORT_FETCH_DISTRIBUTED_POST_FILTER_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan)))))))";
+const SPM_SORT_FETCH_POST_NO_FILTER_SHAPE: &str =
+    "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(LocalParquetScan))))";
+const SPM_SORT_FETCH_PRE_FILTER_SHAPE: &str =
+    "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
+const SPM_SORT_FETCH_PRE_NO_FILTER_SHAPE: &str =
+    "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(ProjectionExec(LocalParquetScan))))";
+const SPM_SORT_FETCH_NO_PRE_FILTER_SHAPE: &str =
+    "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(FilterExec(LocalParquetScan))))";
+const SPM_SORT_FETCH_MINIMAL_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(LocalParquetScan)))";
 const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
+const SORT_PRESERVING_MERGE_FETCH_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec)";
 const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
 
 #[derive(Debug, Clone)]
@@ -121,13 +138,15 @@ pub fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLowe
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct NormalizedNativePlan<'a> {
     candidate: GpuCandidate,
     source_exec: &'a DataSourceExec,
     filter: Option<&'a FilterExec>,
     pre_aggregate_projection: Option<&'a ProjectionExec>,
     aggregate: &'a AggregateExec,
+    aggregate_allows_partial: bool,
+    aggregate_output_schema: SchemaRef,
     post_aggregate_projection: Option<&'a ProjectionExec>,
     sort: &'a SortExec,
     limit_fetch: usize,
@@ -143,14 +162,46 @@ struct NativePlanRejection {
 enum NativeStackRoot {
     LocalLimit,
     SortFetch,
+    SortPreservingMergeFetch,
 }
 
 fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
-    if plan.as_any().downcast_ref::<SortPreservingMergeExec>().is_some() {
-        return Err(NativePlanRejection {
-            candidate: GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_SHAPE, plan.schema().fields().len(), 1),
-            reason: FallbackReason::NativeSortPreservingMergeUnsupported,
-        });
+    if let Some(merge) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
+        let Some(fetch) = merge.fetch() else {
+            return Err(NativePlanRejection {
+                candidate: GpuCandidate::with_operator_count(
+                    SORT_PRESERVING_MERGE_SHAPE,
+                    plan.schema().fields().len(),
+                    1,
+                ),
+                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+            });
+        };
+        let candidate =
+            GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_SHAPE, plan.schema().fields().len(), 2);
+        let sort = merge
+            .input()
+            .as_any()
+            .downcast_ref::<SortExec>()
+            .ok_or(NativePlanRejection { candidate, reason: FallbackReason::NativeSortPreservingMergeUnsupported })?;
+        if !sort_orderings_match(merge.expr(), sort.expr()) {
+            return Err(NativePlanRejection {
+                candidate,
+                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+            });
+        }
+        if sort.fetch().is_some_and(|sort_fetch| sort_fetch < fetch) {
+            return Err(NativePlanRejection {
+                candidate,
+                reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+            });
+        }
+        return normalize_sort_stack(
+            NativeStackRoot::SortPreservingMergeFetch,
+            plan.schema().fields().len(),
+            sort,
+            Some(fetch),
+        );
     }
 
     if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>() {
@@ -180,8 +231,8 @@ fn normalize_sort_stack<'a>(
     sort: &'a SortExec,
     limit_fetch: Option<usize>,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
-    let initial_candidate = native_stack_candidate(root, output_schema_fields, false, true, true);
-    if sort.preserve_partitioning() {
+    let initial_candidate = native_stack_candidate(root, output_schema_fields, false, true, true, false);
+    if sort.preserve_partitioning() && !matches!(root, NativeStackRoot::SortPreservingMergeFetch) {
         return Err(NativePlanRejection {
             candidate: initial_candidate,
             reason: FallbackReason::NativePartitionPreservingSortUnsupported,
@@ -191,16 +242,19 @@ fn normalize_sort_stack<'a>(
         return Err(NativePlanRejection { candidate: initial_candidate, reason: FallbackReason::UnsupportedOperator });
     };
     let (post_aggregate_projection, aggregate) = peel_post_aggregate_projection(sort, initial_candidate)?;
+    let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
+        peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate)?;
     let (pre_aggregate_projection, filter_or_source) = peel_pre_aggregate_projection(aggregate);
-    let (filter, source_input) = peel_filter(filter_or_source);
+    let (filter, source_input) = peel_filter(peel_repartition(filter_or_source));
     let candidate = native_stack_candidate(
         root,
         output_schema_fields,
         post_aggregate_projection.is_some(),
         pre_aggregate_projection.is_some(),
         filter.is_some(),
+        has_distributed_aggregate,
     );
-    let source_exec = required_child::<DataSourceExec>(source_input, candidate)?;
+    let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate)?;
 
     Ok(NormalizedNativePlan {
         candidate,
@@ -208,6 +262,8 @@ fn normalize_sort_stack<'a>(
         filter,
         pre_aggregate_projection,
         aggregate,
+        aggregate_allows_partial,
+        aggregate_output_schema,
         post_aggregate_projection,
         sort,
         limit_fetch,
@@ -232,6 +288,48 @@ fn peel_pre_aggregate_projection(aggregate: &AggregateExec) -> (Option<&Projecti
     }
 }
 
+fn peel_distributed_aggregate_pair_if_present<'a>(
+    aggregate: &'a AggregateExec,
+    candidate: GpuCandidate,
+) -> Result<(&'a AggregateExec, bool, bool, SchemaRef), NativePlanRejection> {
+    if !matches!(aggregate.mode(), AggregateMode::FinalPartitioned) {
+        return Ok((aggregate, false, false, aggregate.schema()));
+    }
+
+    let partial = peel_repartition(aggregate.input().as_ref())
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .ok_or(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported })?;
+    if !distributed_aggregate_pair_is_safe(aggregate, partial) {
+        return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported });
+    }
+
+    Ok((partial, true, true, aggregate.schema()))
+}
+
+fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
+    matches!(partial_aggregate.mode(), AggregateMode::Partial)
+        && final_aggregate.group_expr().expr().len() == partial_aggregate.group_expr().expr().len()
+        && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
+        && final_aggregate.filter_expr().iter().all(Option::is_none)
+        && partial_aggregate.filter_expr().iter().all(Option::is_none)
+        && final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()).all(|(final_expr, partial_expr)| {
+            final_expr.fun().name().eq_ignore_ascii_case(partial_expr.fun().name())
+                && !final_expr.is_distinct()
+                && !partial_expr.is_distinct()
+                && final_expr.order_bys().is_empty()
+                && partial_expr.order_bys().is_empty()
+        })
+}
+
+fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
+    if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>() {
+        repartition.input().as_ref()
+    } else {
+        plan
+    }
+}
+
 fn peel_filter(plan: &dyn ExecutionPlan) -> (Option<&FilterExec>, &dyn ExecutionPlan) {
     if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>() {
         (Some(filter), filter.input().as_ref())
@@ -246,7 +344,18 @@ fn native_stack_candidate(
     has_post_aggregate_projection: bool,
     has_pre_aggregate_projection: bool,
     has_filter: bool,
+    has_distributed_aggregate: bool,
 ) -> GpuCandidate {
+    if has_distributed_aggregate {
+        let shape = match (root, has_post_aggregate_projection, has_pre_aggregate_projection, has_filter) {
+            (NativeStackRoot::SortPreservingMergeFetch, true, false, true) => {
+                SPM_SORT_FETCH_DISTRIBUTED_POST_FILTER_SHAPE
+            },
+            _ => SORT_PRESERVING_MERGE_FETCH_SHAPE,
+        };
+        return GpuCandidate::with_operator_count(shape, output_schema_fields, 9);
+    }
+
     let shape = match (root, has_post_aggregate_projection, has_pre_aggregate_projection, has_filter) {
         (NativeStackRoot::LocalLimit, false, true, true) => LOCAL_LIMIT_SHAPE,
         (NativeStackRoot::LocalLimit, false, true, false) => LOCAL_LIMIT_NO_FILTER_SHAPE,
@@ -264,18 +373,37 @@ fn native_stack_candidate(
         (NativeStackRoot::SortFetch, true, true, false) => SQL_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE,
         (NativeStackRoot::SortFetch, true, false, true) => SQL_SORT_FETCH_SHAPE,
         (NativeStackRoot::SortFetch, true, false, false) => SQL_SORT_FETCH_NO_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, false, true, true) => SPM_SORT_FETCH_PRE_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, false, true, false) => SPM_SORT_FETCH_PRE_NO_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, false, false, true) => SPM_SORT_FETCH_NO_PRE_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, false, false, false) => SPM_SORT_FETCH_MINIMAL_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, true, true, true) => SPM_SORT_FETCH_POST_PRE_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, true, true, false) => SPM_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, true, false, true) => SPM_SORT_FETCH_POST_FILTER_SHAPE,
+        (NativeStackRoot::SortPreservingMergeFetch, true, false, false) => SPM_SORT_FETCH_POST_NO_FILTER_SHAPE,
     };
     let operator_count = 3
         + usize::from(has_post_aggregate_projection)
         + usize::from(has_pre_aggregate_projection)
         + usize::from(has_filter);
-    GpuCandidate::with_operator_count(shape, output_schema_fields, operator_count)
+    GpuCandidate::with_operator_count(
+        shape,
+        output_schema_fields,
+        operator_count + usize::from(matches!(root, NativeStackRoot::SortPreservingMergeFetch)),
+    )
 }
 
 fn required_child<T: 'static>(plan: &dyn ExecutionPlan, candidate: GpuCandidate) -> Result<&T, NativePlanRejection> {
     plan.as_any()
         .downcast_ref::<T>()
         .ok_or(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator })
+}
+
+fn sort_orderings_match(left: &LexOrdering, right: &LexOrdering) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter().zip(right.iter()).all(|(left, right)| lower_sort_expr(left).ok() == lower_sort_expr(right).ok())
 }
 
 fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
@@ -312,20 +440,20 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
         validate_schema(projection.schema())?;
     }
     validate_schema(aggregate.schema())?;
+    validate_schema(Arc::clone(&normalized.aggregate_output_schema))?;
     if let Some(projection) = post_aggregate_projection {
         validate_schema(projection.schema())?;
     }
     validate_schema(sort.schema())?;
 
     validate_slice1_parquet_scan(file_scan, parquet_source, filter, source_exec.schema())?;
-    validate_aggregate(aggregate, pre_aggregate_projection.is_some())?;
+    validate_aggregate(aggregate, pre_aggregate_projection.is_some(), normalized.aggregate_allows_partial)?;
     validate_sort(sort)?;
 
     let read_columns = required_parquet_read_columns(file_scan, filter, pre_aggregate_projection, aggregate)?;
     let native_files = local_parquet_files(file_scan, parquet_source, filter, source_exec.schema())?;
     let mut source = NativeLocalParquetSource::from_files(native_files, source_exec.schema(), read_columns);
-    source.diagnostics.predicate_disposition =
-        parquet_predicate_disposition(parquet_source, filter, &source_exec.schema());
+    source.diagnostics = local_parquet_source_diagnostics(file_scan, parquet_source, filter, source_exec.schema());
 
     let mut builder = NativeQueryPlanBuilder::new();
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
@@ -370,7 +498,7 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     let aggregate_node = builder.add_aggregate(
         aggregate_input_node,
         lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?,
-        aggregate.schema(),
+        Arc::clone(&normalized.aggregate_output_schema),
     );
     let sort_input_node = if let Some(projection) = post_aggregate_projection {
         builder.add_projection(aggregate_node, lower_projection_exprs(projection)?, projection.schema())
@@ -421,8 +549,14 @@ fn local_parquet_source_diagnostics(
     source_schema: SchemaRef,
 ) -> NativeSourceDiagnostics {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
-    let known_bytes =
-        files.iter().map(|file| file.object_meta.size).try_fold(0u64, |total, bytes| Some(total.saturating_add(bytes)));
+    let coalesced_files = coalesced_local_parquet_scan_files(&files);
+    let diagnostic_files = coalesced_files
+        .as_ref()
+        .map_or_else(|_| files.clone(), |coalesced| coalesced.iter().map(|file| file.file).collect::<Vec<_>>());
+    let known_bytes = diagnostic_files
+        .iter()
+        .map(|file| file.object_meta.size)
+        .try_fold(0u64, |total, bytes| Some(total.saturating_add(bytes)));
     let ranged_file_count = files.iter().filter(|file| file.range.is_some()).count();
     let selected_row_groups = selected_row_groups_from_access_plans(&files).or_else(|| {
         metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema)
@@ -455,11 +589,19 @@ fn local_parquet_source_diagnostics(
     if files.is_empty() {
         rejected_features.push(NativeRejectedSourceFeature::EmptySource);
     }
+    let ranges_are_safely_coalesced = ranged_file_count > 0
+        && file_scan.object_store_url.as_str().starts_with("file://")
+        && file_scan.table_partition_cols().is_empty()
+        && file_scan.expr_adapter_factory.is_none()
+        && file_scan.limit.is_none()
+        && !file_scan.preserve_order
+        && file_scan.output_ordering.is_empty()
+        && coalesced_files.is_ok();
     for file in &files {
         if !file.partition_values.is_empty() {
             rejected_features.push(NativeRejectedSourceFeature::PartitionValues);
         }
-        if file.range.is_some() {
+        if file.range.is_some() && !ranges_are_safely_coalesced {
             rejected_features.push(NativeRejectedSourceFeature::ByteRange);
         }
         if file.ordering.is_some() {
@@ -475,7 +617,7 @@ fn local_parquet_source_diagnostics(
     NativeSourceDiagnostics {
         format: cudf_query_engine::SourceFormat::Parquet,
         direct_device_read: rejected_features.is_empty(),
-        file_count: files.len(),
+        file_count: diagnostic_files.len(),
         ranged_file_count,
         known_bytes,
         selected_row_groups,
@@ -508,7 +650,13 @@ fn validate_pruning_only_parquet_predicate(
         return Ok(());
     };
     let Some(filter) = filter else {
-        return Err(FallbackReason::NativeSourcePushedDownParquetPredicate);
+        // Default SQL can leave dynamic pruning predicates on the scan. They are optimizer hints,
+        // not row-level semantics, so native execution can read the source fully.
+        return if scan_predicate_is_dynamic_filter_hint(scan_predicate.as_ref()) {
+            Ok(())
+        } else {
+            Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
+        };
     };
     lower_physical_expr(filter.predicate(), source_schema)?;
     if physical_expr_eq(scan_predicate.as_ref(), filter.predicate().as_ref()) {
@@ -516,6 +664,18 @@ fn validate_pruning_only_parquet_predicate(
     } else {
         Err(FallbackReason::NativeSourcePushedDownParquetPredicate)
     }
+}
+
+fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
+    if expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>().is_some() {
+        return true;
+    }
+    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        return matches!(binary.op(), Operator::And | Operator::Or)
+            && scan_predicate_is_dynamic_filter_hint(binary.left().as_ref())
+            && scan_predicate_is_dynamic_filter_hint(binary.right().as_ref());
+    }
+    false
 }
 
 fn physical_expr_eq(left: &dyn PhysicalExpr, right: &dyn PhysicalExpr) -> bool {
@@ -548,15 +708,14 @@ fn local_parquet_files(
     if files.is_empty() {
         return Err(FallbackReason::NativeSourceEmpty);
     }
+    let scan_files = coalesced_local_parquet_scan_files(&files)?;
     let metadata_row_group_selections =
         metadata_row_group_selections(&files, file_scan, parquet_source, filter, &source_schema);
-    let mut native_files = Vec::with_capacity(files.len());
-    for (file_index, file) in files.iter().enumerate() {
+    let mut native_files = Vec::with_capacity(scan_files.len());
+    for (file_index, scan_file) in scan_files.iter().enumerate() {
+        let file = scan_file.file;
         if !file.partition_values.is_empty() {
             return Err(FallbackReason::NativeSourcePartitionValues);
-        }
-        if file.range.is_some() {
-            return Err(FallbackReason::NativeSourceByteRange);
         }
         if file.ordering.is_some() {
             return Err(FallbackReason::NativeSourceFileOrdering);
@@ -576,6 +735,94 @@ fn local_parquet_files(
     Ok(native_files)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CoalescedLocalParquetFile<'a> {
+    file: &'a PartitionedFile,
+}
+
+#[derive(Debug)]
+struct FileCoverage<'a> {
+    location: String,
+    size: u64,
+    representative: &'a PartitionedFile,
+    entry_count: usize,
+    saw_unranged: bool,
+    ranges: Vec<(i64, i64)>,
+}
+
+fn coalesced_local_parquet_scan_files<'a>(
+    files: &[&'a PartitionedFile],
+) -> Result<Vec<CoalescedLocalParquetFile<'a>>, FallbackReason> {
+    let mut coverages = Vec::<FileCoverage<'a>>::new();
+    for file in files {
+        if !file.partition_values.is_empty() {
+            return Err(FallbackReason::NativeSourcePartitionValues);
+        }
+        if file.ordering.is_some() {
+            return Err(FallbackReason::NativeSourceFileOrdering);
+        }
+        if let Some(range) = &file.range {
+            if file.extensions.is_some()
+                || range.start < 0
+                || range.end < range.start
+                || u64::try_from(range.end).map_err(|_error| FallbackReason::NativeSourceByteRange)?
+                    > file.object_meta.size
+            {
+                return Err(FallbackReason::NativeSourceByteRange);
+            }
+        }
+
+        let location = file.object_meta.location.as_ref().to_string();
+        let coverage_index = if let Some(index) = coverages.iter().position(|coverage| coverage.location == location) {
+            index
+        } else {
+            coverages.push(FileCoverage {
+                location: location.clone(),
+                size: file.object_meta.size,
+                representative: file,
+                entry_count: 0,
+                saw_unranged: false,
+                ranges: Vec::new(),
+            });
+            coverages.len() - 1
+        };
+        let coverage = &mut coverages[coverage_index];
+        if coverage.size != file.object_meta.size {
+            return Err(FallbackReason::NativeSourceByteRange);
+        }
+        coverage.entry_count += 1;
+        if let Some(range) = &file.range {
+            coverage.ranges.push((range.start, range.end));
+        } else {
+            coverage.saw_unranged = true;
+        }
+    }
+
+    for coverage in &mut coverages {
+        if coverage.saw_unranged {
+            if coverage.entry_count != 1 || !coverage.ranges.is_empty() {
+                return Err(FallbackReason::NativeSourceByteRange);
+            }
+            continue;
+        }
+
+        let size = i64::try_from(coverage.size).map_err(|_error| FallbackReason::NativeSourceByteRange)?;
+        coverage.ranges.sort_unstable();
+        let mut next_start = 0i64;
+        for (start, end) in &coverage.ranges {
+            if *start != next_start || *end <= *start {
+                return Err(FallbackReason::NativeSourceByteRange);
+            }
+            next_start = *end;
+        }
+        if next_start != size {
+            return Err(FallbackReason::NativeSourceByteRange);
+        }
+    }
+
+    Ok(coverages.into_iter().map(|coverage| CoalescedLocalParquetFile { file: coverage.representative }).collect())
+}
+
 fn metadata_row_group_selections(
     files: &[&PartitionedFile],
     file_scan: &FileScanConfig,
@@ -583,6 +830,8 @@ fn metadata_row_group_selections(
     filter: Option<&FilterExec>,
     source_schema: &SchemaRef,
 ) -> Option<Vec<Vec<usize>>> {
+    let coalesced_files = coalesced_local_parquet_scan_files(files).ok()?;
+    let files = coalesced_files.iter().map(|file| file.file).collect::<Vec<_>>();
     if files.is_empty()
         || !file_scan.object_store_url.as_str().starts_with("file://")
         || !file_scan.table_partition_cols().is_empty()
@@ -590,12 +839,9 @@ fn metadata_row_group_selections(
         || file_scan.limit.is_some()
         || file_scan.preserve_order
         || !file_scan.output_ordering.is_empty()
-        || files.iter().any(|file| {
-            file.extensions.is_some()
-                || !file.partition_values.is_empty()
-                || file.range.is_some()
-                || file.ordering.is_some()
-        })
+        || files
+            .iter()
+            .any(|file| file.extensions.is_some() || !file.partition_values.is_empty() || file.ordering.is_some())
     {
         return None;
     }
@@ -850,8 +1096,14 @@ fn is_supported_native_type(data_type: &DataType) -> bool {
     )
 }
 
-fn validate_aggregate(aggregate: &AggregateExec, aggregate_args_must_be_columns: bool) -> Result<(), FallbackReason> {
-    if !matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned) {
+fn validate_aggregate(
+    aggregate: &AggregateExec,
+    aggregate_args_must_be_columns: bool,
+    allow_partial: bool,
+) -> Result<(), FallbackReason> {
+    if !matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
+        && !(allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
+    {
         return Err(FallbackReason::UnsupportedOperator);
     }
     let group_by = aggregate.group_expr();

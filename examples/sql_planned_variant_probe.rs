@@ -48,6 +48,7 @@ async fn main() -> DataFusionResult<()> {
 async fn run_variant(name: &str, config: SessionConfig, path: &Path) -> DataFusionResult<()> {
     let plan = sql_benchmark_plan(path, config).await?;
     let physical_plan = displayable(plan.as_ref()).one_line().to_string();
+    let physical_plan_tree = displayable(plan.as_ref()).indent(true).to_string();
     let lowering = lower_physical_plan_to_native(plan);
     let rejected_reasons = lowering
         .report
@@ -62,6 +63,7 @@ async fn run_variant(name: &str, config: SessionConfig, path: &Path) -> DataFusi
     println!();
     println!("variant={name}");
     println!("physical_plan={physical_plan}");
+    println!("physical_plan_tree=\n{physical_plan_tree}");
     println!("candidate_count={}", lowering.candidate_count());
     println!("rewrite_count={}", lowering.rewritten_count());
     println!("reject_count={}", lowering.rejected_count());
