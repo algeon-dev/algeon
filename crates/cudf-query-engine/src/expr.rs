@@ -1,14 +1,21 @@
 use std::fmt;
 
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Column(String),
     Literal(LiteralValue),
     Not(Box<Expr>),
+    IsNull(Box<Expr>),
+    IsNotNull(Box<Expr>),
     Cast { expr: Box<Expr>, target_type: DataType },
     Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr> },
+    Like { expr: Box<Expr>, pattern: String, escape: Option<String>, negated: bool },
+    Substring { expr: Box<Expr>, start: i32, length: Option<i32> },
+    InList { expr: Box<Expr>, list: Vec<Expr>, negated: bool },
+    Case { branches: Vec<CaseWhen>, else_expr: Box<Expr> },
+    Extract { field: DatePart, expr: Box<Expr> },
     Alias { expr: Box<Expr>, alias: String },
 }
 
@@ -29,8 +36,52 @@ impl Expr {
         Self::Not(Box::new(expr))
     }
 
+    pub fn is_null(expr: Self) -> Self {
+        Self::IsNull(Box::new(expr))
+    }
+
+    pub fn is_not_null(expr: Self) -> Self {
+        Self::IsNotNull(Box::new(expr))
+    }
+
     pub fn cast(expr: Self, target_type: DataType) -> Self {
         Self::Cast { expr: Box::new(expr), target_type }
+    }
+
+    pub fn like(expr: Self, pattern: impl Into<String>) -> Self {
+        Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: None, negated: false }
+    }
+
+    pub fn not_like(expr: Self, pattern: impl Into<String>) -> Self {
+        Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: None, negated: true }
+    }
+
+    pub fn like_escape(expr: Self, pattern: impl Into<String>, escape: impl Into<String>) -> Self {
+        Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: Some(escape.into()), negated: false }
+    }
+
+    pub fn not_like_escape(expr: Self, pattern: impl Into<String>, escape: impl Into<String>) -> Self {
+        Self::Like { expr: Box::new(expr), pattern: pattern.into(), escape: Some(escape.into()), negated: true }
+    }
+
+    pub fn substring(expr: Self, start: i32, length: Option<i32>) -> Self {
+        Self::Substring { expr: Box::new(expr), start, length }
+    }
+
+    pub fn in_list(expr: Self, list: Vec<Self>) -> Self {
+        Self::InList { expr: Box::new(expr), list, negated: false }
+    }
+
+    pub fn not_in_list(expr: Self, list: Vec<Self>) -> Self {
+        Self::InList { expr: Box::new(expr), list, negated: true }
+    }
+
+    pub fn case(branches: Vec<CaseWhen>, else_expr: Self) -> Self {
+        Self::Case { branches, else_expr: Box::new(else_expr) }
+    }
+
+    pub fn extract(field: DatePart, expr: Self) -> Self {
+        Self::Extract { field, expr: Box::new(expr) }
     }
 
     pub fn alias(self, alias: impl Into<String>) -> Self {
@@ -44,10 +95,72 @@ impl fmt::Display for Expr {
             Self::Column(name) => f.write_str(name),
             Self::Literal(value) => write!(f, "{value}"),
             Self::Not(expr) => write!(f, "NOT {expr}"),
+            Self::IsNull(expr) => write!(f, "{expr} IS NULL"),
+            Self::IsNotNull(expr) => write!(f, "{expr} IS NOT NULL"),
             Self::Cast { expr, target_type } => write!(f, "CAST({expr} AS {target_type})"),
             Self::Binary { left, op, right } => write!(f, "({left} {op} {right})"),
+            Self::Like { expr, pattern, escape, negated } => {
+                let operator = if *negated { "NOT LIKE" } else { "LIKE" };
+                write!(f, "{expr} {operator} {pattern:?}")?;
+                if let Some(escape) = escape {
+                    write!(f, " ESCAPE {escape:?}")?;
+                }
+                Ok(())
+            },
+            Self::Substring { expr, start, length } => match length {
+                Some(length) => write!(f, "SUBSTRING({expr} FROM {start} FOR {length})"),
+                None => write!(f, "SUBSTRING({expr} FROM {start})"),
+            },
+            Self::InList { expr, list, negated } => {
+                let operator = if *negated { "NOT IN" } else { "IN" };
+                write!(f, "{expr} {operator} (")?;
+                for (index, item) in list.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                f.write_str(")")
+            },
+            Self::Case { branches, else_expr } => {
+                f.write_str("CASE")?;
+                for branch in branches {
+                    write!(f, " WHEN {} THEN {}", branch.when, branch.then)?;
+                }
+                write!(f, " ELSE {else_expr} END")
+            },
+            Self::Extract { field, expr } => write!(f, "EXTRACT({field} FROM {expr})"),
             Self::Alias { expr, alias } => write!(f, "{expr} AS {alias}"),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CaseWhen {
+    pub when: Expr,
+    pub then: Expr,
+}
+
+impl CaseWhen {
+    pub fn new(when: Expr, then: Expr) -> Self {
+        Self { when, then }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DatePart {
+    Year,
+    Month,
+    Day,
+}
+
+impl fmt::Display for DatePart {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Year => "YEAR",
+            Self::Month => "MONTH",
+            Self::Day => "DAY",
+        })
     }
 }
 
@@ -70,6 +183,7 @@ pub enum LiteralValue {
     Date32(i32),
     Timestamp { raw: i64, unit: TimeUnit },
     Duration { raw: i64, unit: TimeUnit },
+    IntervalMonthDayNano { months: i32, days: i32, nanoseconds: i64 },
     Null(DataType),
 }
 
@@ -93,6 +207,7 @@ impl LiteralValue {
             Self::Date32(_) => DataType::Date32,
             Self::Timestamp { unit, .. } => DataType::Timestamp(*unit, None),
             Self::Duration { unit, .. } => DataType::Duration(*unit),
+            Self::IntervalMonthDayNano { .. } => DataType::Interval(IntervalUnit::MonthDayNano),
             Self::Null(data_type) => data_type.clone(),
         }
     }
@@ -119,6 +234,9 @@ impl fmt::Display for LiteralValue {
             Self::Date32(value) => write!(f, "DATE32({value})"),
             Self::Timestamp { raw, unit } => write!(f, "TIMESTAMP({raw}, {unit:?})"),
             Self::Duration { raw, unit } => write!(f, "DURATION({raw}, {unit:?})"),
+            Self::IntervalMonthDayNano { months, days, nanoseconds } => {
+                write!(f, "INTERVAL(months={months}, days={days}, nanoseconds={nanoseconds})")
+            },
             Self::Null(data_type) => write!(f, "NULL::{data_type}"),
         }
     }
@@ -130,6 +248,7 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    Modulo,
     Eq,
     NotEq,
     Lt,
@@ -147,6 +266,7 @@ impl fmt::Display for BinaryOp {
             Self::Subtract => "-",
             Self::Multiply => "*",
             Self::Divide => "/",
+            Self::Modulo => "%",
             Self::Eq => "=",
             Self::NotEq => "!=",
             Self::Lt => "<",

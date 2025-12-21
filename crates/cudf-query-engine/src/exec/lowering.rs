@@ -1,15 +1,20 @@
 use cudf::ops::{
     expr::{lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
     lit_null,
+    strings::StringSliceOptions,
+    when,
 };
 
 use super::*;
+use crate::expr::{CaseWhen, DatePart};
 
 pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
         Expr::Column(name) => Ok(col(name)),
         Expr::Literal(value) => lower_literal(value),
         Expr::Not(expr) => Ok(lower_expr(expr)?.not()),
+        Expr::IsNull(expr) => Ok(lower_expr(expr)?.is_null()),
+        Expr::IsNotNull(expr) => Ok(lower_expr(expr)?.is_not_null()),
         Expr::Cast { expr, target_type } => {
             let target_type = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
                 QueryError::new(
@@ -21,7 +26,21 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
             })?;
             Ok(lower_expr(expr)?.cast(target_type))
         },
-        Expr::Binary { left, op, right } => lower_binary(lower_expr(left)?, *op, lower_expr(right)?),
+        Expr::Binary { left, op, right } => lower_binary_expr(left, *op, right),
+        Expr::Like { expr, pattern, escape, negated } => {
+            let expr = match escape {
+                Some(escape) => {
+                    validate_like_escape(escape)?;
+                    lower_expr(expr)?.str().like_escape(pattern.clone(), escape.clone())
+                },
+                None => lower_expr(expr)?.str().like(pattern.clone()),
+            };
+            Ok(if *negated { expr.not() } else { expr })
+        },
+        Expr::Substring { expr, start, length } => lower_substring(expr, *start, *length),
+        Expr::InList { expr, list, negated } => lower_in_list(expr, list, *negated),
+        Expr::Case { branches, else_expr } => lower_case(branches, else_expr),
+        Expr::Extract { field, expr } => lower_extract(*field, expr),
         Expr::Alias { expr, alias } => Ok(lower_expr(expr)?.alias(alias)),
     }
 }
@@ -46,6 +65,12 @@ pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
         LiteralValue::Date32(value) => Ok(lit_timestamp_raw(i64::from(*value), cudf::TimestampResolution::Days)),
         LiteralValue::Timestamp { raw, unit } => Ok(lit_timestamp_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
         LiteralValue::Duration { raw, unit } => Ok(lit_duration_raw(*raw, timestamp_unit_to_cudf_resolution(unit))),
+        LiteralValue::IntervalMonthDayNano { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_literal",
+            "interval literals must be lowered as part of timestamp/date interval arithmetic",
+        )
+        .with_fact("literal", value)),
         LiteralValue::Null(data_type) => {
             let dtype = cudf_dtype_from_arrow_type(data_type).ok_or_else(|| {
                 QueryError::new(
@@ -61,12 +86,71 @@ pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
     }
 }
 
+fn lower_binary_expr(left: &Expr, op: BinaryOp, right: &Expr) -> Result<cudf::Expr> {
+    if let Some((months, days, nanoseconds)) = interval_month_day_nano(right) {
+        return match op {
+            BinaryOp::Add => lower_datetime_interval_offset(left, months, days, nanoseconds),
+            BinaryOp::Subtract => {
+                let (months, days, nanoseconds) = negate_interval(months, days, nanoseconds)?;
+                lower_datetime_interval_offset(left, months, days, nanoseconds)
+            },
+            _ => lower_binary(lower_expr(left)?, op, lower_expr(right)?),
+        };
+    }
+    if let Some((months, days, nanoseconds)) = interval_month_day_nano(left)
+        && matches!(op, BinaryOp::Add)
+    {
+        return lower_datetime_interval_offset(right, months, days, nanoseconds);
+    }
+    lower_binary(lower_expr(left)?, op, lower_expr(right)?)
+}
+
+fn lower_datetime_interval_offset(expr: &Expr, months: i32, days: i32, nanoseconds: i64) -> Result<cudf::Expr> {
+    Ok(lower_expr(expr)?.dt().offset(months, days, nanoseconds))
+}
+
+fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
+    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
+        return None;
+    };
+    Some((*months, *days, *nanoseconds))
+}
+
+fn negate_interval(months: i32, days: i32, nanoseconds: i64) -> Result<(i32, i32, i64)> {
+    let months = months.checked_neg().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_interval",
+            "interval month component cannot be negated without overflow",
+        )
+        .with_fact("months", months)
+    })?;
+    let days = days.checked_neg().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_interval",
+            "interval day component cannot be negated without overflow",
+        )
+        .with_fact("days", days)
+    })?;
+    let nanoseconds = nanoseconds.checked_neg().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_interval",
+            "interval nanosecond component cannot be negated without overflow",
+        )
+        .with_fact("nanoseconds", nanoseconds)
+    })?;
+    Ok((months, days, nanoseconds))
+}
+
 pub(super) fn lower_binary(left: cudf::Expr, op: BinaryOp, right: cudf::Expr) -> Result<cudf::Expr> {
     match op {
         BinaryOp::Add => Ok(left + right),
         BinaryOp::Subtract => Ok(left - right),
         BinaryOp::Multiply => Ok(left * right),
         BinaryOp::Divide => Ok(left / right),
+        BinaryOp::Modulo => Ok(left % right),
         BinaryOp::Eq => Ok(left.eq(right)),
         BinaryOp::NotEq => Ok(left.ne(right)),
         BinaryOp::Lt => Ok(left.lt(right)),
@@ -76,6 +160,105 @@ pub(super) fn lower_binary(left: cudf::Expr, op: BinaryOp, right: cudf::Expr) ->
         BinaryOp::And => Ok(left & right),
         BinaryOp::Or => Ok(left | right),
     }
+}
+
+fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<cudf::Expr> {
+    if start < 1 {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_substring",
+            "native substring requires a one-based positive start position",
+        )
+        .with_fact("start", start));
+    }
+    if let Some(length) = length
+        && length < 0
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_substring",
+            "native substring requires a non-negative length",
+        )
+        .with_fact("length", length));
+    }
+
+    let zero_based_start = start - 1;
+    let stop = length
+        .map(|length| {
+            zero_based_start.checked_add(length).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.expr.lower_substring",
+                    "native substring stop position exceeds i32 range",
+                )
+                .with_fact("start", start)
+                .with_fact("length", length)
+            })
+        })
+        .transpose()?;
+    let options = StringSliceOptions::new(Some(zero_based_start), stop);
+    Ok(lower_expr(expr)?.str().slice(options))
+}
+
+fn lower_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr> {
+    for item in list {
+        let Expr::Literal(value) = item else {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.expr.lower_in_list",
+                "native IN list values must be literals",
+            ));
+        };
+        if matches!(value, LiteralValue::Null(_)) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.expr.lower_in_list",
+                "native IN list does not yet model SQL null-containing list semantics",
+            ));
+        }
+    }
+    let values = list.iter().map(lower_expr).collect::<Result<Vec<_>>>()?;
+    Ok(if negated { lower_expr(expr)?.is_not_in_list(values) } else { lower_expr(expr)?.is_in_list(values) })
+}
+
+fn validate_like_escape(escape: &str) -> Result<()> {
+    if escape.len() <= 1 && escape.is_ascii() {
+        Ok(())
+    } else {
+        Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_like",
+            "native LIKE escape must be empty or one ASCII byte",
+        )
+        .with_fact("escape", escape))
+    }
+}
+
+fn lower_case(branches: &[CaseWhen], else_expr: &Expr) -> Result<cudf::Expr> {
+    let mut branches = branches.iter().rev();
+    let Some(last) = branches.next() else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.lower_case",
+            "native CASE requires at least one WHEN branch",
+        ));
+    };
+
+    let mut lowered = when(lower_expr(&last.when)?).then(lower_expr(&last.then)?).otherwise(lower_expr(else_expr)?);
+    for branch in branches {
+        lowered = when(lower_expr(&branch.when)?).then(lower_expr(&branch.then)?).otherwise(lowered);
+    }
+    Ok(lowered)
+}
+
+fn lower_extract(field: DatePart, expr: &Expr) -> Result<cudf::Expr> {
+    let expr = lower_expr(expr)?.dt();
+    let component = match field {
+        DatePart::Year => expr.year(),
+        DatePart::Month => expr.month(),
+        DatePart::Day => expr.day(),
+    };
+    Ok(component.cast(cudf::DataType::new(cudf::TypeId::Int32)))
 }
 
 pub(super) struct LoweredAggregate {

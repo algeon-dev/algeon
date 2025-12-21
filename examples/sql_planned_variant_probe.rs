@@ -68,6 +68,9 @@ async fn run_variant(name: &str, config: SessionConfig, path: &Path) -> DataFusi
     println!("rewrite_count={}", lowering.rewritten_count());
     println!("reject_count={}", lowering.rejected_count());
     println!("rejected_reasons={}", empty_as_none(&rejected_reasons));
+    for (index, plan) in lowering.plans.iter().enumerate() {
+        println!("native_plan[{index}]=\n{plan}");
+    }
     println!("source_diagnostic_count={}", lowering.source_diagnostics.len());
     if lowering.source_diagnostics.is_empty() {
         println!("source_diagnostic=none");

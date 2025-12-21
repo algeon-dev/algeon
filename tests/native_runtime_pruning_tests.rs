@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, Int32Array, Int64Array},
+    array::{ArrayRef, Date32Array, Int32Array, Int64Array, StringArray},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -32,7 +32,7 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
-        collect,
+        collect, displayable,
         filter::FilterExec,
         limit::LocalLimitExec,
         projection::{ProjectionExec, ProjectionExpr},
@@ -260,6 +260,102 @@ async fn native_runtime_widening_numeric_cast_matches_cpu() {
     assert_native_physical_plan_parity(plan, None).await;
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_phase2_scalar_expressions_match_cpu_and_collect_required_columns() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-phase2-scalars");
+    let path = dir.join("input.parquet");
+    write_phase2_scalar_input_parquet(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY).await;
+    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
+    assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
+    assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_phase2_nullable_scalar_expressions_match_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-phase2-nullable-scalars");
+    let path = dir.join("input.parquet");
+    write_nullable_phase2_scalar_input_parquet(&path);
+
+    let cpu_batches = cpu_sql_output(&path, SQL_PHASE2_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
+    let native_physical_plan =
+        sql_plan(&path, SessionConfig::new(), SQL_PHASE2_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
+    let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+    assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
+    assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
+    assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
+
+    let context = bounded_execution_context();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let QueryOutput::HostArrow(native_batch) = result.output() else {
+        panic!("native host sink should return a RecordBatch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_execution() {
+    for (name, sql) in [("substring-zero-start", SQL_INVALID_SUBSTRING_QUERY)] {
+        let dir = unique_temp_dir(format!("datafusion-cudf-native-runtime-invalid-{name}").as_str());
+        let path = dir.join("input.parquet");
+        write_phase2_scalar_input_parquet(&path);
+
+        let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let lowering = lower_physical_plan_to_native(native_physical_plan);
+
+        assert_eq!(lowering.rewritten_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
+        assert_eq!(lowering.rejected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
+        assert!(
+            matches!(
+                lowering.report.outcomes()[0],
+                datafusion_cudf::CandidateOutcome::Rejected {
+                    reason: datafusion_cudf::FallbackReason::UnsupportedExpression,
+                    ..
+                }
+            ),
+            "{name} outcomes={:?}",
+            lowering.report.outcomes()
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 #[tokio::test]
@@ -619,6 +715,88 @@ SELECT AVG(m00) AS avg_m00
 FROM bench
 ";
 
+const SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY: &str = "
+SELECT status_prefix, ship_year, ship_month, status_label, SUM(order_mod) AS sum_mod
+FROM (
+    SELECT
+        SUBSTRING(status FROM 1 FOR 1) AS status_prefix,
+        EXTRACT(YEAR FROM shipdate) AS ship_year,
+        shipdate + INTERVAL '1' MONTH AS ship_month,
+        CASE WHEN status IN ('O', 'P') THEN 'open' ELSE 'other' END AS status_label,
+        orderkey % 2 AS order_mod
+    FROM bench
+    WHERE status LIKE 'O%'
+      AND status IS NOT NULL
+      AND orderkey IN (1, 3)
+      AND orderkey % 2 = 1
+) phase2
+GROUP BY status_prefix, ship_year, ship_month, status_label
+ORDER BY status_prefix ASC, ship_year ASC, ship_month ASC, status_label ASC
+LIMIT 10
+";
+
+const SQL_PHASE2_NULLABLE_SCALAR_EXPRESSIONS_QUERY: &str = "
+SELECT
+    status_prefix,
+    ship_year,
+    ship_month,
+    status_label,
+    not_in_label,
+    like_match,
+    not_like_match,
+    status_is_null,
+    status_is_not_null,
+    SUM(order_mod) AS sum_mod
+FROM (
+    SELECT
+        SUBSTRING(status FROM 1 FOR 1) AS status_prefix,
+        EXTRACT(YEAR FROM shipdate) AS ship_year,
+        shipdate + INTERVAL '1' MONTH AS ship_month,
+        CASE
+            WHEN status IS NULL THEN 'missing'
+            WHEN status IN ('O', 'P') THEN 'listed'
+            WHEN status NOT LIKE 'O%' THEN 'not_open'
+            ELSE 'other'
+        END AS status_label,
+        CASE WHEN status NOT IN ('F') THEN 'not_f' ELSE 'f_or_null' END AS not_in_label,
+        status LIKE 'O%' AS like_match,
+        status NOT LIKE 'O%' AS not_like_match,
+        status IS NULL AS status_is_null,
+        status IS NOT NULL AS status_is_not_null,
+        orderkey % 2 AS order_mod
+    FROM bench
+) phase2
+GROUP BY
+    status_prefix,
+    ship_year,
+    ship_month,
+    status_label,
+    not_in_label,
+    like_match,
+    not_like_match,
+    status_is_null,
+    status_is_not_null
+ORDER BY
+    status_is_null ASC,
+    status_prefix ASC NULLS FIRST,
+    ship_year ASC NULLS FIRST,
+    ship_month ASC NULLS FIRST,
+    status_label ASC,
+    not_in_label ASC
+LIMIT 20
+";
+
+const SQL_INVALID_SUBSTRING_QUERY: &str = "
+SELECT status_prefix, COUNT(*) AS count_rows
+FROM (
+    SELECT SUBSTRING(status FROM 0 FOR 1) AS status_prefix
+    FROM bench
+) invalid_substring
+GROUP BY status_prefix
+ORDER BY status_prefix ASC
+LIMIT 10
+";
+
 const SQL_SORT_NULLS_ASC_FIRST_QUERY: &str = "
 SELECT group_key, tie_key, AVG(m00) AS avg_m00
 FROM bench
@@ -673,6 +851,50 @@ fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![0, 1, 2, 3, 10, 11, 20, 21])),
             Arc::new(Int64Array::from(vec![10, 20, 30, 40, 50, 60, 70, 80])),
             Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_phase2_scalar_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("shipdate", DataType::Date32, false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Date32Array::from(vec![18_262, 18_293, 18_322, 18_353])),
+            Arc::new(StringArray::from(vec!["O", "F", "O", "P"])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_nullable_phase2_scalar_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, true),
+        Field::new("shipdate", DataType::Date32, true),
+        Field::new("status", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(1), Some(2), None, Some(4), Some(5), None])),
+            Arc::new(Date32Array::from(vec![Some(18_262), None, Some(18_322), Some(18_353), None, Some(18_414)])),
+            Arc::new(StringArray::from(vec![Some("O"), Some("F"), None, Some("P"), Some("OX"), Some("R")])),
         ],
     )
     .unwrap();

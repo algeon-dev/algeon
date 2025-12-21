@@ -1,6 +1,6 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{Schema, SchemaRef};
 use cudf_query_engine::{
     ByteRangeDisposition as NativeByteRangeDisposition, LiteralValue as NativeLiteralValue,
     LocalParquetFile as NativeLocalParquetFile, PartitionColumn as NativePartitionColumn,
@@ -11,7 +11,8 @@ use cudf_query_engine::{
 };
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
-    physical_plan::{ExecutionPlan, aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
+    physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
+    physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
 
 use super::{
@@ -32,6 +33,7 @@ pub(super) fn source_diagnostics_for_normalized_plan(
     let Some((file_scan, parquet_source)) = normalized.source_exec.downcast_to_file_source::<ParquetSource>() else {
         return Vec::new();
     };
+    let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let column_requirements = required_parquet_column_requirements(
         file_scan,
         normalized.filter,
@@ -43,7 +45,7 @@ pub(super) fn source_diagnostics_for_normalized_plan(
         file_scan,
         parquet_source,
         normalized.filter,
-        normalized.source_exec.schema(),
+        table_schema,
         column_requirements.as_ref(),
         native_zero_column_count_source_is_safe(
             normalized.filter,
@@ -58,11 +60,12 @@ pub(super) fn validate_slice1_parquet_scan(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
+    column_requirements: &NativeParquetColumnRequirements,
 ) -> Result<(), FallbackReason> {
     if !file_scan.object_store_url.as_str().starts_with("file://") {
         return Err(FallbackReason::NativeSourceNonLocalObjectStore);
     }
-    validate_partition_columns(file_scan)?;
+    validate_partition_columns(file_scan, &column_requirements.partition_column_indices)?;
     if file_scan.expr_adapter_factory.is_some() {
         return Err(FallbackReason::NativeSourceExprAdapter);
     }
@@ -78,7 +81,7 @@ pub(super) fn validate_slice1_parquet_scan(
     if parquet_source.filter().is_some() {
         validate_pruning_only_parquet_predicate(parquet_source, filter, &source_schema)?;
     }
-    local_parquet_files(file_scan, parquet_source, filter, source_schema)?;
+    local_parquet_files(file_scan, parquet_source, filter, source_schema, column_requirements)?;
     Ok(())
 }
 
@@ -132,7 +135,9 @@ pub(super) fn local_parquet_source_diagnostics(
     if !file_scan.object_store_url.as_str().starts_with("file://") {
         rejected_features.push(NativeRejectedSourceFeature::NonLocalObjectStore);
     }
-    let partition_column_disposition = partition_column_disposition(file_scan, &files);
+    let partition_column_indices =
+        column_requirements.map_or(&[][..], |requirements| requirements.partition_column_indices.as_slice());
+    let partition_column_disposition = partition_column_disposition(file_scan, &files, partition_column_indices);
     if partition_column_disposition == NativePartitionColumnDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::PartitionColumns);
     }
@@ -209,6 +214,7 @@ pub(super) fn local_parquet_files(
     parquet_source: &ParquetSource,
     filter: Option<&FilterExec>,
     source_schema: SchemaRef,
+    column_requirements: &NativeParquetColumnRequirements,
 ) -> Result<Vec<NativeLocalParquetFile>, FallbackReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
     if files.is_empty() {
@@ -227,8 +233,9 @@ pub(super) fn local_parquet_files(
         let stable_id = format!("local:{}:{}", path.display(), file.object_meta.size);
         let mut native_file =
             NativeLocalParquetFile::new(path).with_stable_id(stable_id).with_file_size_bytes(file.object_meta.size);
-        if !file.partition_values.is_empty() {
-            native_file = native_file.with_partition_values(native_partition_values(file)?);
+        if !column_requirements.partition_column_indices.is_empty() {
+            native_file = native_file
+                .with_partition_values(native_partition_values(file, &column_requirements.partition_column_indices)?);
         }
         if let Some(row_groups) = explicit_row_group_selection(file)? {
             native_file = native_file.with_row_groups(row_groups);
@@ -251,6 +258,8 @@ pub(super) struct NativeParquetColumnRequirements {
     pub(super) pure_filter_columns: Vec<String>,
     pub(super) pure_filter_column_source_refs: Vec<NativeSourceColumnRef>,
     pub(super) partition_columns: Vec<NativePartitionColumn>,
+    pub(super) partition_column_indices: Vec<usize>,
+    pub(super) scan_output_columns: Vec<String>,
 }
 
 pub(super) fn required_parquet_column_requirements(
@@ -260,7 +269,7 @@ pub(super) fn required_parquet_column_requirements(
     aggregate: &AggregateExec,
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
     let file_schema = file_scan.file_schema();
-    let table_partition_cols = file_scan.table_partition_cols();
+    let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate) {
         return Ok(NativeParquetColumnRequirements {
             read_columns: Vec::new(),
@@ -269,43 +278,56 @@ pub(super) fn required_parquet_column_requirements(
             projected_output_column_source_refs: Vec::new(),
             pure_filter_columns: Vec::new(),
             pure_filter_column_source_refs: Vec::new(),
-            partition_columns: native_partition_columns(file_scan)?,
+            partition_columns: Vec::new(),
+            partition_column_indices: Vec::new(),
+            scan_output_columns: Vec::new(),
         });
     }
 
-    let mut scan_projected_columns = BTreeSet::new();
-    let mut filter_columns = BTreeSet::new();
-    let mut output_columns = BTreeSet::new();
+    let mut filter_columns: BTreeSet<String> = BTreeSet::new();
+    let mut output_columns: BTreeSet<String> = BTreeSet::new();
+    let mut scan_output_columns: BTreeSet<String> = BTreeSet::new();
 
-    if let Some(projection) = file_scan.file_source().projection() {
-        for index in projection.column_indices() {
-            if index < file_schema.fields().len() {
-                scan_projected_columns.insert(file_schema.field(index).name().clone());
-            } else if index >= file_schema.fields().len() + table_partition_cols.len() {
-                return Err(FallbackReason::UnsupportedExpression);
-            }
-        }
-    }
+    let scan_projection = file_scan.file_source().projection();
+    let scan_output_schema = file_scan.projected_schema().map_err(|_error| FallbackReason::UnsupportedExpression)?;
 
     if let Some(filter) = filter {
-        collect_required_columns(filter.predicate(), &mut filter_columns)?;
+        collect_source_required_columns(filter.predicate(), scan_projection, &table_schema, &mut filter_columns)?;
+        collect_required_columns(filter.predicate(), &scan_output_schema, &mut scan_output_columns)?;
     }
-    if let Some(projection) = pre_aggregate_projection {
+    if let Some(filter_projection) = filter.and_then(|filter| filter.projection().as_ref()) {
+        collect_source_projection_indices(
+            filter_projection,
+            scan_projection,
+            &scan_output_schema,
+            &table_schema,
+            &mut output_columns,
+        )?;
+        collect_scan_projection_indices(filter_projection, &scan_output_schema, &mut scan_output_columns)?;
+    } else if let Some(projection) = pre_aggregate_projection {
         for projection_expr in projection.expr() {
-            collect_required_columns(&projection_expr.expr, &mut output_columns)?;
+            collect_source_required_columns(
+                &projection_expr.expr,
+                scan_projection,
+                &table_schema,
+                &mut output_columns,
+            )?;
+            collect_required_columns(&projection_expr.expr, &projection.input().schema(), &mut scan_output_columns)?;
         }
     } else {
         for aggregate_expr in aggregate.aggr_expr() {
             for expr in aggregate_expr.expressions() {
-                collect_required_columns(&expr, &mut output_columns)?;
+                collect_source_required_columns(&expr, scan_projection, &table_schema, &mut output_columns)?;
+                collect_required_columns(&expr, &aggregate.input().schema(), &mut scan_output_columns)?;
             }
         }
-    }
-    for (group_expr, _alias) in aggregate.group_expr().expr() {
-        collect_required_columns(group_expr, &mut output_columns)?;
+        for (group_expr, _alias) in aggregate.group_expr().expr() {
+            collect_source_required_columns(group_expr, scan_projection, &table_schema, &mut output_columns)?;
+            collect_required_columns(group_expr, &aggregate.input().schema(), &mut scan_output_columns)?;
+        }
     }
 
-    let mut read_columns = scan_projected_columns;
+    let mut read_columns: BTreeSet<String> = BTreeSet::new();
     read_columns.extend(filter_columns.iter().cloned());
     read_columns.extend(output_columns.iter().cloned());
 
@@ -314,11 +336,14 @@ pub(super) fn required_parquet_column_requirements(
 
     let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
     let read_columns = read_columns.into_iter().collect::<Vec<_>>();
+    let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
     let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
+    let (partition_columns, partition_column_indices) =
+        native_required_partition_columns(file_scan, &required_source_columns)?;
     let read_column_file_indices = column_file_indices(&file_schema, &read_columns)?;
     let projected_output_column_source_refs =
-        column_source_refs(&file_schema, table_partition_cols, &projected_output_columns)?;
-    let pure_filter_column_source_refs = column_source_refs(&file_schema, table_partition_cols, &pure_filter_columns)?;
+        column_source_refs(&file_schema, &partition_columns, &projected_output_columns)?;
+    let pure_filter_column_source_refs = column_source_refs(&file_schema, &partition_columns, &pure_filter_columns)?;
 
     Ok(NativeParquetColumnRequirements {
         read_columns,
@@ -327,8 +352,50 @@ pub(super) fn required_parquet_column_requirements(
         projected_output_column_source_refs,
         pure_filter_columns,
         pure_filter_column_source_refs,
-        partition_columns: native_partition_columns(file_scan)?,
+        partition_columns,
+        partition_column_indices,
+        scan_output_columns: scan_output_columns.into_iter().collect(),
     })
+}
+
+fn collect_scan_projection_indices(
+    projection: &[usize],
+    scan_output_schema: &SchemaRef,
+    required: &mut BTreeSet<String>,
+) -> Result<(), FallbackReason> {
+    for index in projection {
+        let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        required.insert(field.name().clone());
+    }
+    Ok(())
+}
+
+fn collect_source_projection_indices(
+    projection: &[usize],
+    scan_projection: Option<&ProjectionExprs>,
+    scan_output_schema: &SchemaRef,
+    table_schema: &SchemaRef,
+    required: &mut BTreeSet<String>,
+) -> Result<(), FallbackReason> {
+    for index in projection {
+        let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *index));
+        collect_source_required_columns(&expr, scan_projection, table_schema, required)?;
+    }
+    Ok(())
+}
+
+fn collect_source_required_columns(
+    expr: &Arc<dyn PhysicalExpr>,
+    scan_projection: Option<&ProjectionExprs>,
+    table_schema: &SchemaRef,
+    required: &mut BTreeSet<String>,
+) -> Result<(), FallbackReason> {
+    let source_expr = match scan_projection {
+        Some(projection) => projection.unproject_expr(expr).map_err(|_error| FallbackReason::UnsupportedExpression)?,
+        None => Arc::clone(expr),
+    };
+    collect_required_columns(&source_expr, table_schema, required)
 }
 
 fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Vec<usize>, FallbackReason> {
@@ -338,24 +405,47 @@ fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Ve
         .collect()
 }
 
-pub(super) fn native_partition_columns(
+pub(super) fn native_source_output_schema(
     file_scan: &FileScanConfig,
-) -> Result<Vec<NativePartitionColumn>, FallbackReason> {
-    file_scan
-        .table_partition_cols()
-        .iter()
-        .map(|field| {
+    requirements: &NativeParquetColumnRequirements,
+) -> Result<SchemaRef, FallbackReason> {
+    let file_schema = file_scan.file_schema();
+    let mut fields = Vec::with_capacity(requirements.read_columns.len() + requirements.partition_columns.len());
+    for column in &requirements.read_columns {
+        fields
+            .push(file_schema.field_with_name(column).map_err(|_error| FallbackReason::UnsupportedExpression)?.clone());
+    }
+    for partition_column in &requirements.partition_columns {
+        fields.push(arrow::datatypes::Field::new(
+            partition_column.name.as_str(),
+            partition_column.data_type.clone(),
+            partition_column.nullable,
+        ));
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn native_required_partition_columns(
+    file_scan: &FileScanConfig,
+    required_columns: &BTreeSet<String>,
+) -> Result<(Vec<NativePartitionColumn>, Vec<usize>), FallbackReason> {
+    let mut columns = Vec::new();
+    let mut indices = Vec::new();
+    for (index, field) in file_scan.table_partition_cols().iter().enumerate() {
+        if required_columns.contains(field.name()) {
             if !is_supported_native_type(field.data_type()) {
                 return Err(FallbackReason::UnsupportedType);
             }
-            Ok(NativePartitionColumn::new(field.name(), field.data_type().clone(), field.is_nullable()))
-        })
-        .collect()
+            columns.push(NativePartitionColumn::new(field.name(), field.data_type().clone(), field.is_nullable()));
+            indices.push(index);
+        }
+    }
+    Ok((columns, indices))
 }
 
 fn column_source_refs(
     file_schema: &SchemaRef,
-    table_partition_cols: &[arrow::datatypes::FieldRef],
+    partition_columns: &[NativePartitionColumn],
     columns: &[String],
 ) -> Result<Vec<NativeSourceColumnRef>, FallbackReason> {
     columns
@@ -364,31 +454,33 @@ fn column_source_refs(
             if let Ok(index) = file_schema.index_of(column) {
                 return Ok(NativeSourceColumnRef::File(index));
             }
-            table_partition_cols
+            partition_columns
                 .iter()
-                .position(|field| field.name() == column)
+                .position(|field| &field.name == column)
                 .map(NativeSourceColumnRef::Partition)
                 .ok_or(FallbackReason::UnsupportedExpression)
         })
         .collect()
 }
 
-fn validate_partition_columns(file_scan: &FileScanConfig) -> Result<(), FallbackReason> {
+fn validate_partition_columns(
+    file_scan: &FileScanConfig,
+    required_partition_indices: &[usize],
+) -> Result<(), FallbackReason> {
     let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
-    let partition_column_count = file_scan.table_partition_cols().len();
-    if partition_column_count == 0 {
-        if files.iter().any(|file| !file.partition_values.is_empty()) {
-            return Err(FallbackReason::NativeSourcePartitionValues);
-        }
+    if required_partition_indices.is_empty() {
         return Ok(());
     }
 
-    native_partition_columns(file_scan)?;
+    let partition_column_count = file_scan.table_partition_cols().len();
+    if required_partition_indices.iter().any(|index| *index >= partition_column_count) {
+        return Err(FallbackReason::NativeSourcePartitionValues);
+    }
     for file in &files {
-        if file.partition_values.len() != partition_column_count {
+        if required_partition_indices.iter().any(|index| file.partition_values.get(*index).is_none()) {
             return Err(FallbackReason::NativeSourcePartitionValues);
         }
-        native_partition_values(file)?;
+        native_partition_values(file, required_partition_indices)?;
     }
     Ok(())
 }
@@ -396,16 +488,14 @@ fn validate_partition_columns(file_scan: &FileScanConfig) -> Result<(), Fallback
 fn partition_column_disposition(
     file_scan: &FileScanConfig,
     files: &[&datafusion::datasource::listing::PartitionedFile],
+    required_partition_indices: &[usize],
 ) -> NativePartitionColumnDisposition {
-    let partition_column_count = file_scan.table_partition_cols().len();
-    if partition_column_count == 0 && files.iter().all(|file| file.partition_values.is_empty()) {
+    if required_partition_indices.is_empty() {
         return NativePartitionColumnDisposition::Absent;
     }
-    if partition_column_count > 0
-        && native_partition_columns(file_scan).is_ok()
-        && files
-            .iter()
-            .all(|file| file.partition_values.len() == partition_column_count && native_partition_values(file).is_ok())
+    let partition_column_count = file_scan.table_partition_cols().len();
+    if required_partition_indices.iter().all(|index| *index < partition_column_count)
+        && files.iter().all(|file| native_partition_values(file, required_partition_indices).is_ok())
     {
         NativePartitionColumnDisposition::Represented
     } else {
@@ -415,6 +505,15 @@ fn partition_column_disposition(
 
 fn native_partition_values(
     file: &datafusion::datasource::listing::PartitionedFile,
+    required_partition_indices: &[usize],
 ) -> Result<Vec<NativeLiteralValue>, FallbackReason> {
-    file.partition_values.iter().map(|value| native_literal_value(value, NativeLiteralContext::SourceValue)).collect()
+    required_partition_indices
+        .iter()
+        .map(|index| {
+            file.partition_values
+                .get(*index)
+                .ok_or(FallbackReason::NativeSourcePartitionValues)
+                .and_then(|value| native_literal_value(value, NativeLiteralContext::SourceValue))
+        })
+        .collect()
 }

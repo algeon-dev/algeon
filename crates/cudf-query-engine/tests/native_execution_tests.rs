@@ -7,7 +7,7 @@ use std::{
 
 use arrow::{
     array::{
-        Array, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
+        Array, BooleanArray, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
         TimestampNanosecondArray,
     },
     datatypes::{DataType, Field, Schema, TimeUnit},
@@ -154,6 +154,45 @@ fn native_query_executes_multi_file_direct_parquet_source() {
 }
 
 #[test]
+fn native_host_materialization_rejects_sink_schema_name_order_mismatch() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-schema-mismatch");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &path);
+    let mismatched_schema = Arc::new(Schema::new(vec![
+        Field::new("payload", DataType::Int64, false),
+        Field::new("key", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let limit = builder.add_limit(source, LimitSpec::fetch(2), mismatched_schema);
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("host materialization should reject sink schema name/order mismatches"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.host_arrow.schema");
+    assert_eq!(error.fact_value("mismatch_index"), Some("0"));
+    assert_eq!(error.fact_value("actual_column"), Some("key"));
+    assert_eq!(error.fact_value("expected_column"), Some("payload"));
+    assert_eq!(error.fact_value("actual_column_names"), Some("key,payload,m00,m01"));
+    assert_eq!(error.fact_value("expected_column_names"), Some("payload,key,m00,m01"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_filter_projection_over_tpch_like_types() {
     let dir = unique_temp_dir("cudf-query-engine-native-execution-tpch-like-types");
     let path = dir.join("tpch-like.parquet");
@@ -163,8 +202,10 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
         Field::new("orderkey", DataType::Int64, false),
         Field::new("amount", DataType::Decimal128(15, 2), false),
         Field::new("shipdate", DataType::Date32, false),
+        Field::new("shipdate_plus_month", DataType::Date32, false),
         Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
         Field::new("event_ts_plus", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("event_ts_plus_interval", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
         Field::new("status", DataType::Utf8, false),
         Field::new("large_literal", DataType::Utf8, false),
         Field::new("null_amount", DataType::Decimal128(15, 2), true),
@@ -208,6 +249,12 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
         Expr::column("orderkey"),
         Expr::column("amount"),
         Expr::column("shipdate"),
+        Expr::binary(
+            Expr::column("shipdate"),
+            BinaryOp::Add,
+            Expr::literal(LiteralValue::IntervalMonthDayNano { months: 1, days: 0, nanoseconds: 0 }),
+        )
+        .alias("shipdate_plus_month"),
         Expr::column("event_ts"),
         Expr::binary(
             Expr::column("event_ts"),
@@ -215,6 +262,12 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
             Expr::literal(LiteralValue::Duration { raw: 10, unit: TimeUnit::Nanosecond }),
         )
         .alias("event_ts_plus"),
+        Expr::binary(
+            Expr::column("event_ts"),
+            BinaryOp::Add,
+            Expr::literal(LiteralValue::IntervalMonthDayNano { months: 0, days: 1, nanoseconds: 5 }),
+        )
+        .alias("event_ts_plus_interval"),
         Expr::column("status"),
         Expr::literal(LiteralValue::LargeUtf8("wide".to_string())).alias("large_literal"),
         Expr::literal(LiteralValue::Null(DataType::Decimal128(15, 2))).alias("null_amount"),
@@ -246,13 +299,195 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
     assert_eq!(amount.value(0), 22_222);
     assert!(matches!(amount.data_type(), DataType::Decimal128(_, 2)));
     assert_eq!(date32_array(batch, 2).value(0), 18_322);
-    assert_eq!(timestamp_ns_array(batch, 3).value(0), 300);
-    assert_eq!(timestamp_ns_array(batch, 4).value(0), 310);
-    assert_eq!(string_array(batch, 5).value(0), "O");
-    assert_eq!(string_array(batch, 6).value(0), "wide");
-    for index in 7..11 {
+    assert_eq!(date32_array(batch, 3).value(0), 18_353);
+    assert_eq!(timestamp_ns_array(batch, 4).value(0), 300);
+    assert_eq!(timestamp_ns_array(batch, 5).value(0), 310);
+    assert_eq!(timestamp_ns_array(batch, 6).value(0), 86_400_000_000_305);
+    assert_eq!(string_array(batch, 7).value(0), "O");
+    assert_eq!(string_array(batch, 8).value(0), "wide");
+    for index in 9..13 {
         assert!(batch.column(index).is_null(0), "projection column {index} should be a typed null");
     }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_phase2_scalar_expression_families() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-scalars");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("order_mod", DataType::Int64, false),
+        Field::new("ship_year", DataType::Int32, false),
+        Field::new("ship_month", DataType::Int32, false),
+        Field::new("ship_day", DataType::Int32, false),
+        Field::new("event_ts_minus_interval", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("status_prefix", DataType::Utf8, true),
+        Field::new("status_label", DataType::Utf8, false),
+        Field::new("status_known", DataType::Boolean, false),
+        Field::new("status_is_null", DataType::Boolean, false),
+        Field::new("status_not_f", DataType::Boolean, true),
+        Field::new("status_like_o", DataType::Boolean, true),
+        Field::new("status_not_like_f", DataType::Boolean, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string(), "shipdate".to_string(), "event_ts".to_string(), "status".to_string()],
+    );
+    let filter = Expr::binary(
+        Expr::in_list(
+            Expr::column("orderkey"),
+            vec![
+                Expr::literal(LiteralValue::Int64(1)),
+                Expr::literal(LiteralValue::Int64(3)),
+                Expr::literal(LiteralValue::Int64(4)),
+            ],
+        ),
+        BinaryOp::And,
+        Expr::is_not_null(Expr::column("shipdate")),
+    );
+    let projection = vec![
+        Expr::column("orderkey"),
+        Expr::binary(Expr::column("orderkey"), BinaryOp::Modulo, Expr::literal(LiteralValue::Int64(2)))
+            .alias("order_mod"),
+        Expr::extract(cudf_query_engine::DatePart::Year, Expr::column("shipdate")).alias("ship_year"),
+        Expr::extract(cudf_query_engine::DatePart::Month, Expr::column("shipdate")).alias("ship_month"),
+        Expr::extract(cudf_query_engine::DatePart::Day, Expr::column("shipdate")).alias("ship_day"),
+        Expr::binary(
+            Expr::column("event_ts"),
+            BinaryOp::Subtract,
+            Expr::literal(LiteralValue::IntervalMonthDayNano { months: 0, days: 0, nanoseconds: 50 }),
+        )
+        .alias("event_ts_minus_interval"),
+        Expr::substring(Expr::column("status"), 1, Some(1)).alias("status_prefix"),
+        Expr::case(
+            vec![cudf_query_engine::CaseWhen::new(
+                Expr::binary(Expr::column("status"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("O".to_string()))),
+                Expr::literal(LiteralValue::Utf8("open".to_string())),
+            )],
+            Expr::literal(LiteralValue::Utf8("other".to_string())),
+        )
+        .alias("status_label"),
+        Expr::is_not_null(Expr::column("status")).alias("status_known"),
+        Expr::is_null(Expr::column("status")).alias("status_is_null"),
+        Expr::not_in_list(Expr::column("status"), vec![Expr::literal(LiteralValue::Utf8("F".to_string()))])
+            .alias("status_not_f"),
+        Expr::like(Expr::column("status"), "O%").alias("status_like_o"),
+        Expr::not_like(Expr::column("status"), "F%").alias("status_not_like_f"),
+    ];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let projection = builder.add_projection(filter, projection, projected_schema);
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1, 3, 4]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1, 1, 0]);
+    assert_eq!(int32_array(batch, 2).values().as_ref(), &[2020, 2020, 2020]);
+    assert_eq!(int32_array(batch, 3).values().as_ref(), &[1, 3, 3]);
+    assert_eq!(int32_array(batch, 4).values().as_ref(), &[1, 1, 15]);
+    assert_eq!(timestamp_ns_array(batch, 5).values().as_ref(), &[50, 250, 350]);
+    assert_eq!(string_array(batch, 6).value(0), "O");
+    assert_eq!(string_array(batch, 6).value(1), "O");
+    assert!(string_array(batch, 6).is_null(2));
+    assert_eq!(string_array(batch, 7).value(0), "open");
+    assert_eq!(string_array(batch, 7).value(1), "open");
+    assert_eq!(string_array(batch, 7).value(2), "other");
+    assert_eq!(boolean_array(batch, 8).values().iter().collect::<Vec<_>>(), vec![true, true, false]);
+    assert_eq!(boolean_array(batch, 9).values().iter().collect::<Vec<_>>(), vec![false, false, true]);
+    assert_eq!(boolean_array(batch, 10).value(0), true);
+    assert_eq!(boolean_array(batch, 10).value(1), true);
+    assert!(boolean_array(batch, 10).is_null(2));
+    assert_eq!(boolean_array(batch, 11).value(0), true);
+    assert_eq!(boolean_array(batch, 11).value(1), true);
+    assert!(boolean_array(batch, 11).is_null(2));
+    assert_eq!(boolean_array(batch, 12).value(0), true);
+    assert_eq!(boolean_array(batch, 12).value(1), true);
+    assert!(boolean_array(batch, 12).is_null(2));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-type-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("bad_like", DataType::Boolean, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(
+        source,
+        vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")],
+        output_schema,
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject LIKE over an integral input before cuDF execution"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("context"), Some("LIKE input"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_rejects_unread_source_column_in_nested_phase2_scalar_before_cudf_execution() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-source-column-reject");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let output_schema = Arc::new(Schema::new(vec![Field::new("status_label", DataType::Utf8, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["orderkey".to_string()],
+    );
+    let label = Expr::case(
+        vec![cudf_query_engine::CaseWhen::new(
+            Expr::like(Expr::column("status"), "O%"),
+            Expr::literal(LiteralValue::Utf8("open".to_string())),
+        )],
+        Expr::literal(LiteralValue::Utf8("other".to_string())),
+    )
+    .alias("status_label");
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, vec![label], output_schema);
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("native plan validation should reject unread nested scalar columns before cuDF execution"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
+    assert_eq!(error.fact_value("column"), Some("status"));
+    assert!(error.fact_value("path").is_none());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1448,7 +1683,7 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
     };
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
-    assert_eq!(error.operation(), "cudf_query_engine.expr.lower_literal");
+    assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
     assert!(error.fact_value("path").is_none());
 }
 
@@ -1491,6 +1726,27 @@ fn write_tpch_like_types_parquet(runtime: &cudf::Runtime, path: &std::path::Path
             Arc::new(Date32Array::from(vec![18_262, 18_293, 18_322])),
             Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
             Arc::new(StringArray::from(vec!["O", "F", "O"])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_phase2_scalar_expression_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("shipdate", DataType::Date32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("status", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(Date32Array::from(vec![18_262, 18_293, 18_322, 18_336])),
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+            Arc::new(StringArray::from(vec![Some("O"), Some("F"), Some("O"), None])),
         ],
     )
     .unwrap();
@@ -1665,6 +1921,10 @@ fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
 
 fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
     batch.column(index).as_any().downcast_ref::<Int64Array>().expect("expected Int64Array")
+}
+
+fn boolean_array(batch: &RecordBatch, index: usize) -> &BooleanArray {
+    batch.column(index).as_any().downcast_ref::<BooleanArray>().expect("expected BooleanArray")
 }
 
 fn float64_array(batch: &RecordBatch, index: usize) -> &Float64Array {

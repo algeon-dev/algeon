@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use cudf::{AggSpec, ExecutionOverrides, SortOptions as CudfSortOptions};
+use cudf::{AggSpec, ExecutionOverrides, GroupByOptions, SortOptions as CudfSortOptions};
 use datafusion::{
     common::Result as DataFusionResult,
     physical_expr::{PhysicalExpr, PhysicalSortExpr},
@@ -92,13 +92,18 @@ impl CudfOperatorChain {
                 })
                 .collect::<Vec<_>>();
             let operator_timer = metrics.cudf_operator_time.timer();
-            frame = frame.groupby(keys).with_execution(ctx).agg(&specs).map_err(|error| {
-                Error::from_cudf(
-                    "datafusion_cudf.aggregate.execute",
-                    "failed to execute cudf groupby aggregate inside GPU island",
-                    error,
-                )
-            })?;
+            frame = frame
+                .groupby(keys)
+                .options(GroupByOptions::builder().include_null_keys(true).build())
+                .with_execution(ctx)
+                .agg(&specs)
+                .map_err(|error| {
+                    Error::from_cudf(
+                        "datafusion_cudf.aggregate.execute",
+                        "failed to execute cudf groupby aggregate inside GPU island",
+                        error,
+                    )
+                })?;
             let key_renames = aggregate
                 .keys
                 .iter()

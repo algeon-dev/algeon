@@ -231,6 +231,7 @@ fn direct_parquet_benchmark_output_names_primary_datafusion_native_path() {
             post_native_execution_path: datafusion_cudf::NativeDataFusionPostNativeExecutionPath::Native,
             rejected_before_execution: false,
         }],
+        tpch_dataset: None,
     };
     let report = DirectParquetBenchmarkReport {
         parquet_file_bytes: 4096,
@@ -467,6 +468,7 @@ fn test_native_datafusion_planning_report() -> NativeDataFusionPlanningReport {
             post_native_execution_path: datafusion_cudf::NativeDataFusionPostNativeExecutionPath::Native,
             rejected_before_execution: false,
         }],
+        tpch_dataset: None,
     }
 }
 

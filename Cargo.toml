@@ -20,6 +20,7 @@ cudf = { workspace = true }
 cudf-query-engine = { path = "crates/cudf-query-engine" }
 datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
+parquet = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"

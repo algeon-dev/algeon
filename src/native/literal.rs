@@ -1,4 +1,4 @@
-use arrow::datatypes::{DataType, TimeUnit};
+use arrow::datatypes::{DataType, IntervalMonthDayNanoType, TimeUnit};
 use cudf_query_engine::{LiteralValue as NativeLiteralValue, is_supported_arrow_type};
 use datafusion::common::ScalarValue;
 
@@ -64,6 +64,10 @@ pub(super) fn native_literal_value(
         ScalarValue::DurationNanosecond(Some(raw)) => {
             NativeLiteralValue::Duration { raw: *raw, unit: TimeUnit::Nanosecond }
         },
+        ScalarValue::IntervalMonthDayNano(Some(value)) => {
+            let (months, days, nanoseconds) = IntervalMonthDayNanoType::to_parts(*value);
+            NativeLiteralValue::IntervalMonthDayNano { months, days, nanoseconds }
+        },
         ScalarValue::Boolean(None) => NativeLiteralValue::Null(DataType::Boolean),
         ScalarValue::Int8(None) => NativeLiteralValue::Null(DataType::Int8),
         ScalarValue::Int16(None) => NativeLiteralValue::Null(DataType::Int16),
@@ -102,7 +106,7 @@ pub(super) fn native_literal_value(
         _ => return Err(context.fallback_reason()),
     };
 
-    if native_literal_type_is_supported(&literal.data_type()) { Ok(literal) } else { Err(context.fallback_reason()) }
+    if native_literal_type_is_supported(&literal, context) { Ok(literal) } else { Err(context.fallback_reason()) }
 }
 
 pub(super) fn validate_native_literal(
@@ -112,6 +116,9 @@ pub(super) fn validate_native_literal(
     native_literal_value(value, context).map(|_literal| ())
 }
 
-fn native_literal_type_is_supported(data_type: &DataType) -> bool {
-    is_supported_arrow_type(data_type)
+fn native_literal_type_is_supported(literal: &NativeLiteralValue, context: NativeLiteralContext) -> bool {
+    if matches!(literal, NativeLiteralValue::IntervalMonthDayNano { .. }) {
+        return matches!(context, NativeLiteralContext::Expression);
+    }
+    is_supported_arrow_type(&literal.data_type())
 }

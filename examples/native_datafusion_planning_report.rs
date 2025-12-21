@@ -16,12 +16,33 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningReport,
+    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningReport, TpchDatasetMetadata,
+    prepare_tpch_report_dataset, tpch_datafusion_planning_workload_items, tpch_report_session_config,
 };
+
+const CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV: &str = "CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD";
 
 #[tokio::main]
 async fn main() {
     let dir = unique_temp_dir("datafusion-cudf-native-datafusion-planning");
+    let workload =
+        std::env::var(CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV).unwrap_or_else(|_| "synthetic".to_string());
+    let report = match workload.as_str() {
+        "synthetic" => synthetic_report(&dir).await,
+        "tpch" => {
+            let TpchPlanningReport { report, metadata } = tpch_report(&dir).await.unwrap();
+            report.with_tpch_dataset_metadata(metadata)
+        },
+        value => {
+            panic!("unsupported {CUDF_NATIVE_DATAFUSION_PLANNING_WORKLOAD_ENV}={value}; expected synthetic or tpch")
+        },
+    };
+    print!("{}", report.to_tsv());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+async fn synthetic_report(dir: &std::path::Path) -> NativeDataFusionPlanningReport {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
 
@@ -46,10 +67,19 @@ async fn main() {
     }
 
     let rows = reports.into_iter().flat_map(|report| report.rows).collect();
-    let report = NativeDataFusionPlanningReport { rows };
-    print!("{}", report.to_tsv());
+    NativeDataFusionPlanningReport { rows, tpch_dataset: None }
+}
 
-    fs::remove_dir_all(dir).unwrap();
+async fn tpch_report(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchPlanningReport> {
+    let (root, metadata) = prepare_tpch_report_dataset(dir)?;
+    let items = tpch_datafusion_planning_workload_items(&root, tpch_report_session_config()).await?;
+    let report = NativeDataFusionPlanningReport::collect(items);
+    Ok(TpchPlanningReport { report, metadata })
+}
+
+struct TpchPlanningReport {
+    report: NativeDataFusionPlanningReport,
+    metadata: TpchDatasetMetadata,
 }
 
 async fn native_datafusion_planning_report(

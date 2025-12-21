@@ -8,7 +8,7 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::{
-    AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, GroupByAgg, SortOptions as CudfSortOptions,
+    AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, GroupByAgg, GroupByOptions, SortOptions as CudfSortOptions,
     frame::dataframe::{InfoDetail, ParquetReadOptions},
     ops::{col, lit},
 };
@@ -20,6 +20,7 @@ mod operators;
 mod source;
 mod types;
 mod util;
+mod validate;
 
 pub use source::{read_local_parquet_source, validate_local_parquet_source};
 pub use types::{ExecutionMode, GpuDataFrame, QueryExecutionResult, QueryOutput};
@@ -31,6 +32,7 @@ use self::{
     operators::*,
     types::{QueryExecutionResult as ExecutionResult, QueryOutput as Output},
     util::*,
+    validate::*,
 };
 use crate::{
     chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
@@ -47,6 +49,7 @@ use crate::{
 };
 
 pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<ExecutionResult> {
+    validate_query_plan(plan)?;
     let mut metrics =
         QueryMetrics { phase_c_memory_control_policy: context.memory_control_policy(), ..Default::default() };
     let output = if context.memory_control_policy().is_bounded() {
@@ -55,7 +58,9 @@ pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Resul
         let frame = execute_node(context, plan, plan.sink().input(), &mut metrics)?;
         match plan.sink() {
             ResultSink::GpuResident { .. } => Output::GpuResident(frame),
-            ResultSink::HostArrow { .. } => Output::HostArrow(materialize_to_host(frame, &mut metrics)?),
+            ResultSink::HostArrow { schema, .. } => {
+                Output::HostArrow(materialize_to_host(frame, schema, &mut metrics)?)
+            },
         }
     };
     Ok(ExecutionResult::new(output, metrics))

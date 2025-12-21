@@ -242,6 +242,7 @@ pub(super) fn execute_groupby_aggregate(
 ) -> Result<DataFrame> {
     let mut output = frame
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        .options(GroupByOptions::builder().include_null_keys(true).build())
         .with_execution(overrides)
         .agg(&aggregate.aggregations)
         .map_err(|error| QueryError::from_cudf(operation, "failed to execute native cudf aggregate", error))?;
