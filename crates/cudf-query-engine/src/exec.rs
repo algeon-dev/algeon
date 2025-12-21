@@ -1,6 +1,10 @@
-use std::{cell::Cell, rc::Rc, time::Instant};
+use std::{cell::Cell, rc::Rc, sync::Arc, time::Instant};
 
-use arrow::{array::Array, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
+use arrow::{
+    array::Array,
+    datatypes::{DataType as ArrowDataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use cudf::{
     AggSpec as CudfAggSpec, DataFrame, ExecutionOverrides, ExecutionPlacement, GroupByAgg,
     SortOptions as CudfSortOptions, TypeId,
@@ -11,11 +15,14 @@ use cudf::{
 use crate::{
     chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
     metrics::QueryMetrics,
     plan::{AggregateNode, FilterNode, LimitNode, NodeId, PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode},
     runtime::{ExecutionContext, MemoryControlPolicy, MemoryReservationRequest, ReservationKind, RetryFacts},
-    source::{LocalParquetFile, LocalParquetSource},
+    source::{
+        ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumnDisposition,
+        SchemaMappingDisposition, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -143,6 +150,15 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
     }
 
     for (file_index, file) in source.files.iter().enumerate() {
+        if file.stable_id.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "local parquet source file must have a stable identity",
+            )
+            .with_fact("reason", "empty_stable_id")
+            .with_fact("file_index", file_index));
+        }
         if file.path.as_os_str().is_empty() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -153,13 +169,39 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         }
     }
 
-    if source.read_columns.is_empty() {
+    if source.read_columns.is_empty() && !source.is_zero_column_count_source() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.local_parquet_source.validate",
             "local parquet source must name at least one required read column",
         )
         .with_fact("reason", "empty_read_columns"));
+    }
+
+    validate_local_parquet_source_contract(source)?;
+
+    for projected_column in &source.projected_output_columns {
+        if !source.read_columns.contains(projected_column) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "local parquet projected output column must be included in read columns",
+            )
+            .with_fact("reason", "projected_column_not_read")
+            .with_fact("column", projected_column));
+        }
+    }
+
+    for filter_column in &source.pure_filter_columns {
+        if !source.read_columns.contains(filter_column) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "local parquet pure-filter column must be included in read columns",
+            )
+            .with_fact("reason", "filter_column_not_read")
+            .with_fact("column", filter_column));
+        }
     }
 
     for (file_index, file) in source.files.iter().enumerate() {
@@ -176,10 +218,140 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("row_group", row_group)
                 .with_fact("max_row_group", i32::MAX));
             }
+            if let Some(row_group_bytes) = &file.row_group_bytes
+                && *row_group >= row_group_bytes.len()
+            {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.local_parquet_source.validate",
+                    "selected parquet row group is outside source contract row-group bytes",
+                )
+                .with_fact("path", file.path.display())
+                .with_fact("file_index", file_index)
+                .with_fact("row_group_position", index)
+                .with_fact("row_group", row_group)
+                .with_fact("max_row_group", row_group_bytes.len().saturating_sub(1)));
+            }
         }
     }
 
     Ok(())
+}
+
+fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result<()> {
+    let diagnostics = &source.diagnostics;
+    if !diagnostics.rejected_features.is_empty() {
+        let features =
+            diagnostics.rejected_features.iter().map(|feature| feature.as_str()).collect::<Vec<_>>().join(",");
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "local parquet source contains rejected source features",
+        )
+        .with_fact("reason", "rejected_source_features")
+        .with_fact("rejected_features", features));
+    }
+    if !diagnostics.direct_device_read {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "local parquet source is not eligible for direct device read",
+        )
+        .with_fact("reason", "direct_device_read_disabled"));
+    }
+    if diagnostics.byte_range_disposition == ByteRangeDisposition::Rejected {
+        return Err(unsupported_source_contract_fact("byte_range", diagnostics.byte_range_disposition.as_str()));
+    }
+    if diagnostics.partition_column_disposition != PartitionColumnDisposition::Absent {
+        return Err(unsupported_source_contract_fact(
+            "partition_columns",
+            diagnostics.partition_column_disposition.as_str(),
+        ));
+    }
+    match diagnostics.zero_column_count_disposition {
+        ZeroColumnCountDisposition::NotRequired => {},
+        ZeroColumnCountDisposition::Represented => validate_represented_zero_column_count_source(source)?,
+        ZeroColumnCountDisposition::Rejected => {
+            return Err(unsupported_source_contract_fact(
+                "zero_column_count",
+                diagnostics.zero_column_count_disposition.as_str(),
+            ));
+        },
+    }
+    if diagnostics.schema_mapping_disposition != SchemaMappingDisposition::DirectByName {
+        return Err(unsupported_source_contract_fact(
+            "schema_mapping",
+            diagnostics.schema_mapping_disposition.as_str(),
+        ));
+    }
+    if diagnostics.read_column_count != source.read_columns.len()
+        || source.read_column_file_indices.len() != source.read_columns.len()
+        || diagnostics.projected_output_column_count != source.projected_output_columns.len()
+        || source.projected_output_column_file_indices.len() != source.projected_output_columns.len()
+        || diagnostics.pure_filter_column_count != source.pure_filter_columns.len()
+        || source.pure_filter_column_file_indices.len() != source.pure_filter_columns.len()
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "local parquet source diagnostics and schema mapping must match source column contract",
+        )
+        .with_fact("reason", "diagnostic_column_count_mismatch")
+        .with_fact("diagnostic_read_columns", diagnostics.read_column_count)
+        .with_fact("read_columns", source.read_columns.len())
+        .with_fact("read_column_file_indices", source.read_column_file_indices.len())
+        .with_fact("diagnostic_projected_output_columns", diagnostics.projected_output_column_count)
+        .with_fact("projected_output_columns", source.projected_output_columns.len())
+        .with_fact("projected_output_column_file_indices", source.projected_output_column_file_indices.len())
+        .with_fact("diagnostic_pure_filter_columns", diagnostics.pure_filter_column_count)
+        .with_fact("pure_filter_columns", source.pure_filter_columns.len())
+        .with_fact("pure_filter_column_file_indices", source.pure_filter_column_file_indices.len()));
+    }
+
+    Ok(())
+}
+
+fn validate_represented_zero_column_count_source(source: &LocalParquetSource) -> Result<()> {
+    if !source.read_columns.is_empty()
+        || !source.read_column_file_indices.is_empty()
+        || !source.projected_output_columns.is_empty()
+        || !source.projected_output_column_file_indices.is_empty()
+        || !source.pure_filter_columns.is_empty()
+        || !source.pure_filter_column_file_indices.is_empty()
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "represented zero-column count source must not read or project parquet data columns",
+        )
+        .with_fact("reason", "invalid_zero_column_count_columns")
+        .with_fact("read_columns", source.read_columns.len())
+        .with_fact("projected_output_columns", source.projected_output_columns.len())
+        .with_fact("pure_filter_columns", source.pure_filter_columns.len()));
+    }
+
+    if source.schema.field_with_name(ZERO_COLUMN_COUNT_COLUMN).is_err() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "represented zero-column count source must expose its synthetic row-count column",
+        )
+        .with_fact("reason", "missing_zero_column_count_column")
+        .with_fact("column", ZERO_COLUMN_COUNT_COLUMN));
+    }
+
+    Ok(())
+}
+
+fn unsupported_source_contract_fact(field: &'static str, disposition: &'static str) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "cudf_query_engine.local_parquet_source.validate",
+        "local parquet source contract contains a source fact this executor cannot honor",
+    )
+    .with_fact("reason", "unsupported_source_contract_fact")
+    .with_fact("field", field)
+    .with_fact("disposition", disposition)
 }
 
 pub fn read_local_parquet_source(
@@ -188,6 +360,10 @@ pub fn read_local_parquet_source(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     validate_local_parquet_source(source)?;
+
+    if source.is_zero_column_count_source() {
+        return read_zero_column_count_source(context, source, metrics);
+    }
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut frames = Vec::with_capacity(source.files.len());
@@ -217,6 +393,37 @@ pub fn read_local_parquet_source(
     metrics.operator_time += timer.elapsed();
 
     Ok(GpuDataFrame::new(output))
+}
+
+fn read_zero_column_count_source(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let chunk_plan = plan_local_parquet_source_chunks(
+        NodeId::from_index_for_internal_use(0),
+        source,
+        SourceChunkPlanningPolicy::default(),
+    )?;
+    let counts = chunk_plan
+        .chunks
+        .iter()
+        .map(|chunk| {
+            chunk.known_row_count.ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.zero_column_count.read",
+                    "zero-column count source requires parquet row-count metadata",
+                )
+                .with_fact("path", chunk.path.display())
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("row_groups", format_row_groups(chunk))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
+    zero_column_count_frame(context, &counts, metrics)
 }
 
 fn read_local_parquet_file(
@@ -551,6 +758,21 @@ fn read_local_parquet_chunk(
     chunk: &SourceChunk,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if chunk.zero_column_count {
+        let row_count = chunk.known_row_count.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_chunk.zero_column_count",
+                "zero-column count chunk requires parquet row-count metadata",
+            )
+            .with_fact("path", chunk.path.display())
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("row_groups", format_row_groups(chunk))
+        })?;
+        return zero_column_count_frame(context, &[row_count], metrics);
+    }
+
     let row_groups = if chunk.reads_all_row_groups {
         None
     } else {
@@ -602,6 +824,46 @@ fn read_local_parquet_chunk(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     metrics.record_input_batch(frame.num_rows() as u64);
+    Ok(GpuDataFrame::new(frame))
+}
+
+fn zero_column_count_frame(
+    context: &ExecutionContext,
+    row_counts: &[u64],
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let counts = row_counts
+        .iter()
+        .map(|row_count| {
+            i64::try_from(*row_count).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.zero_column_count.frame",
+                    "parquet row count exceeds native Int64 count representation",
+                )
+                .with_fact("row_count", row_count)
+                .with_fact("max_row_count", i64::MAX)
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let timer = Instant::now();
+    let series = context.runtime().series(counts.as_slice()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.zero_column_count.frame",
+            "failed to construct native zero-column count input",
+            error,
+        )
+    })?;
+    let frame = DataFrame::from_columns([(ZERO_COLUMN_COUNT_COLUMN, series)]).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.zero_column_count.frame",
+            "failed to construct native zero-column count frame",
+            error,
+        )
+    })?;
+    let read_elapsed = timer.elapsed();
+    metrics.source_read_time += read_elapsed;
+    metrics.record_input_batch(row_counts.iter().copied().sum());
     Ok(GpuDataFrame::new(frame))
 }
 
@@ -778,6 +1040,9 @@ fn validate_projection_capability(node: &ProjectionNode, output_schema: &arrow::
 }
 
 fn validate_aggregate_capability(node: &AggregateNode, output_schema: &arrow::datatypes::SchemaRef) -> Result<()> {
+    if node.spec.group_exprs.is_empty() {
+        return validate_global_aggregate_capability(&node.spec, output_schema);
+    }
     let aggregate = lower_aggregate_spec(&node.spec)?;
     validate_aggregate_output_names(
         &aggregate,
@@ -791,6 +1056,9 @@ fn validate_final_aggregate_capability(
     node: &AggregateNode,
     output_schema: &arrow::datatypes::SchemaRef,
 ) -> Result<()> {
+    if node.spec.group_exprs.is_empty() {
+        return validate_global_aggregate_capability(&node.spec, output_schema);
+    }
     let aggregate = lower_final_aggregate_spec(&node.spec)?;
     if aggregate_spec_has_avg(&node.spec) {
         validate_avg_output_fields(&node.spec, output_schema)?;
@@ -802,6 +1070,35 @@ fn validate_final_aggregate_capability(
         "cudf_query_engine.final_merge.validate",
         "final aggregate output names must match output schema fields",
     )
+}
+
+fn validate_global_aggregate_capability(
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<()> {
+    let expected_output_names = spec.aggr_exprs.iter().map(|expr| expr.alias.clone()).collect::<Vec<_>>();
+    let schema_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    if expected_output_names != schema_output_names {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.global_aggregate.validate",
+            "global aggregate output names must match output schema fields",
+        )
+        .with_fact("aggregate_output_names", expected_output_names.join(","))
+        .with_fact("schema_output_names", schema_output_names.join(",")));
+    }
+    for expr in &spec.aggr_exprs {
+        if expr.function != AggregateFunction::Sum {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedOperator,
+                "cudf_query_engine.global_aggregate.validate",
+                "native global aggregate currently supports metadata-backed sum only",
+            )
+            .with_fact("function", format!("{:?}", expr.function)));
+        }
+        lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.validate_expr")?;
+    }
+    Ok(())
 }
 
 fn validate_aggregate_output_names(
@@ -970,6 +1267,7 @@ fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usize>) -> Sou
         row_group_indexes.len(),
         parent_row_group_count,
     );
+    let known_row_count = proportional_bytes(parent.known_row_count, row_group_indexes.len(), parent_row_group_count);
 
     SourceChunk {
         source_node_id: parent.source_node_id,
@@ -982,6 +1280,8 @@ fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usize>) -> Sou
         known_row_group_bytes,
         estimated_chunk_bytes,
         read_columns: parent.read_columns.clone(),
+        zero_column_count: parent.zero_column_count,
+        known_row_count,
         size_estimate_based: true,
     }
 }
@@ -1311,7 +1611,7 @@ fn execute_final_merge_group_attempt(
     let merge_reservation = reservations.try_reserve(merge_request, metrics)?;
 
     let timer = Instant::now();
-    let result = merge_final_aggregate_partials(context, bounded, partials);
+    let result = merge_final_aggregate_partials(context, bounded, partials, metrics);
     let merge_elapsed = timer.elapsed();
     reservations.release(merge_reservation);
     let frame = match result {
@@ -1358,6 +1658,7 @@ fn merge_final_aggregate_partials(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     partials: &[CommittedPartial],
+    metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let partial_count = partials.len();
     let first_frame = partials[0].frame.frame().clone();
@@ -1373,7 +1674,7 @@ fn merge_final_aggregate_partials(
         .with_fact("partial_aggregate_count", partial_count)
     })?;
 
-    execute_final_aggregate(context, bounded, GpuDataFrame::new(concatenated))
+    execute_final_aggregate(context, bounded, GpuDataFrame::new(concatenated), metrics)
 }
 
 enum MergeLevelItem {
@@ -2016,7 +2317,13 @@ fn execute_final_aggregate(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     input: GpuDataFrame,
+    metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if bounded.aggregate.0.spec.group_exprs.is_empty() {
+        let final_spec = final_global_aggregate_spec(&bounded.aggregate.0.spec);
+        return execute_global_aggregate(context, &final_spec, input, bounded.aggregate.1, metrics);
+    }
+
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
     if !aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
         validate_aggregate_output_names(
@@ -2054,6 +2361,16 @@ fn execute_final_aggregate(
         )
     })?;
     Ok(GpuDataFrame::new(output))
+}
+
+fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
+    AggregateSpec::new(
+        Vec::new(),
+        spec.aggr_exprs
+            .iter()
+            .map(|expr| AggregateExpr::new(expr.function, Expr::column(expr.alias.clone()), expr.alias.clone()))
+            .collect(),
+    )
 }
 
 fn execute_filter(
@@ -2122,6 +2439,10 @@ fn execute_aggregate(
     output_schema: &arrow::datatypes::SchemaRef,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if node.spec.group_exprs.is_empty() {
+        return execute_global_aggregate(context, &node.spec, input, output_schema, metrics);
+    }
+
     let aggregate = lower_aggregate_spec(&node.spec)?;
     validate_aggregate_output_names(
         &aggregate,
@@ -2153,6 +2474,17 @@ fn execute_partial_aggregate(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if node.spec.group_exprs.is_empty() {
+        let output_schema = Arc::new(Schema::new(
+            node.spec
+                .aggr_exprs
+                .iter()
+                .map(|expr| Field::new(expr.alias.as_str(), ArrowDataType::Int64, false))
+                .collect::<Vec<_>>(),
+        ));
+        return execute_global_aggregate(context, &node.spec, input, &output_schema, metrics);
+    }
+
     let aggregate = lower_partial_aggregate_spec(&node.spec)?;
     let expected_output_names = aggregate.output_names.clone();
     let frame = input.into_frame();
@@ -2200,6 +2532,57 @@ fn execute_groupby_aggregate(
         })?;
     }
     Ok(output)
+}
+
+fn execute_global_aggregate(
+    context: &ExecutionContext,
+    spec: &AggregateSpec,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    validate_global_aggregate_capability(spec, output_schema)?;
+    let frame = input.into_frame();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let mut columns = Vec::with_capacity(spec.aggr_exprs.len());
+    for expr in &spec.aggr_exprs {
+        let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.lower_expr")?;
+        let series = frame.series(input_column.as_str()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.input",
+                "failed to access native global aggregate input column",
+                error,
+            )
+            .with_fact("column", input_column.as_str())
+        })?;
+        let scalar = series.sum_in(&overrides).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.sum",
+                "failed to execute native global sum aggregate",
+                error,
+            )
+            .with_fact("column", input_column.as_str())
+        })?;
+        let output = context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.output",
+                "failed to construct native global aggregate output column",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        columns.push((expr.alias.as_str(), output));
+    }
+    let output = DataFrame::from_columns(columns).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.output",
+            "failed to construct native global aggregate output frame",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
 }
 
 fn cast_count_output_columns(

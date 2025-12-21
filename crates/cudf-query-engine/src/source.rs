@@ -1,6 +1,8 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+
+pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceNode {
@@ -15,22 +17,130 @@ impl SourceNode {
     }
 }
 
+fn schema_column_indices(schema: &SchemaRef, columns: &[String]) -> Vec<usize> {
+    columns.iter().filter_map(|column| schema.index_of(column).ok()).collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetSource {
     pub files: Vec<LocalParquetFile>,
     pub schema: SchemaRef,
     pub read_columns: Vec<String>,
+    pub read_column_file_indices: Vec<usize>,
+    pub projected_output_columns: Vec<String>,
+    pub projected_output_column_file_indices: Vec<usize>,
+    pub pure_filter_columns: Vec<String>,
+    pub pure_filter_column_file_indices: Vec<usize>,
     pub diagnostics: SourceDiagnostics,
 }
 
 impl LocalParquetSource {
     pub fn from_files(files: Vec<LocalParquetFile>, schema: SchemaRef, read_columns: Vec<String>) -> Self {
-        let diagnostics = SourceDiagnostics::for_local_parquet_files(&files);
-        Self { files, schema, read_columns, diagnostics }
+        let read_column_file_indices = schema_column_indices(&schema, &read_columns);
+        let projected_output_columns = read_columns.clone();
+        let projected_output_column_file_indices = read_column_file_indices.clone();
+        let pure_filter_columns = Vec::new();
+        let pure_filter_column_file_indices = Vec::new();
+        let diagnostics = SourceDiagnostics::for_local_parquet_files(
+            &files,
+            &read_columns,
+            &read_column_file_indices,
+            &projected_output_columns,
+            &projected_output_column_file_indices,
+            &pure_filter_columns,
+            &pure_filter_column_file_indices,
+        );
+        Self {
+            files,
+            schema,
+            read_columns,
+            read_column_file_indices,
+            projected_output_columns,
+            projected_output_column_file_indices,
+            pure_filter_columns,
+            pure_filter_column_file_indices,
+            diagnostics,
+        }
     }
 
     pub fn new(path: impl Into<PathBuf>, schema: SchemaRef, read_columns: Vec<String>) -> Self {
         Self::from_files(vec![LocalParquetFile::new(path)], schema, read_columns)
+    }
+
+    pub fn zero_column_count(files: Vec<LocalParquetFile>) -> Self {
+        let schema = Arc::new(Schema::new(vec![Field::new(ZERO_COLUMN_COUNT_COLUMN, DataType::Int64, false)]));
+        let mut source = Self::from_files(files, schema, Vec::new());
+        source.mark_zero_column_count_represented();
+        source
+    }
+
+    pub fn with_column_roles(
+        mut self,
+        projected_output_columns: Vec<String>,
+        pure_filter_columns: Vec<String>,
+    ) -> Self {
+        let projected_output_column_file_indices = schema_column_indices(&self.schema, &projected_output_columns);
+        let pure_filter_column_file_indices = schema_column_indices(&self.schema, &pure_filter_columns);
+        self.projected_output_columns = projected_output_columns;
+        self.projected_output_column_file_indices = projected_output_column_file_indices;
+        self.pure_filter_columns = pure_filter_columns;
+        self.pure_filter_column_file_indices = pure_filter_column_file_indices;
+        self.refresh_diagnostics();
+        self
+    }
+
+    pub fn with_column_file_indices(
+        mut self,
+        read_column_file_indices: Vec<usize>,
+        projected_output_column_file_indices: Vec<usize>,
+        pure_filter_column_file_indices: Vec<usize>,
+    ) -> Self {
+        self.read_column_file_indices = read_column_file_indices;
+        self.projected_output_column_file_indices = projected_output_column_file_indices;
+        self.pure_filter_column_file_indices = pure_filter_column_file_indices;
+        self.refresh_diagnostics();
+        self
+    }
+
+    pub fn refresh_diagnostics(&mut self) {
+        let zero_column_count_represented = self.is_zero_column_count_source();
+        self.diagnostics = SourceDiagnostics::for_local_parquet_files(
+            &self.files,
+            &self.read_columns,
+            &self.read_column_file_indices,
+            &self.projected_output_columns,
+            &self.projected_output_column_file_indices,
+            &self.pure_filter_columns,
+            &self.pure_filter_column_file_indices,
+        );
+        if zero_column_count_represented {
+            self.mark_zero_column_count_represented();
+        }
+    }
+
+    pub fn is_zero_column_count_source(&self) -> bool {
+        self.diagnostics.zero_column_count_disposition == ZeroColumnCountDisposition::Represented
+    }
+
+    fn mark_zero_column_count_represented(&mut self) {
+        self.read_columns.clear();
+        self.read_column_file_indices.clear();
+        self.projected_output_columns.clear();
+        self.projected_output_column_file_indices.clear();
+        self.pure_filter_columns.clear();
+        self.pure_filter_column_file_indices.clear();
+        self.diagnostics = SourceDiagnostics::for_local_parquet_files(
+            &self.files,
+            &self.read_columns,
+            &self.read_column_file_indices,
+            &self.projected_output_columns,
+            &self.projected_output_column_file_indices,
+            &self.pure_filter_columns,
+            &self.pure_filter_column_file_indices,
+        );
+        self.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
+        self.diagnostics.rejected_features.retain(|feature| *feature != RejectedSourceFeature::ZeroColumnCount);
+        self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty();
     }
 
     pub fn file_count(&self) -> usize {
@@ -39,6 +149,14 @@ impl LocalParquetSource {
 
     pub fn read_column_count(&self) -> usize {
         self.read_columns.len()
+    }
+
+    pub fn projected_output_column_count(&self) -> usize {
+        self.projected_output_columns.len()
+    }
+
+    pub fn pure_filter_column_count(&self) -> usize {
+        self.pure_filter_columns.len()
     }
 
     pub fn selected_row_group_count(&self) -> usize {
@@ -57,13 +175,23 @@ impl LocalParquetSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalParquetFile {
     pub path: PathBuf,
+    pub stable_id: String,
     pub file_size_bytes: Option<u64>,
     pub row_groups: Option<Vec<usize>>,
+    pub row_group_bytes: Option<Vec<u64>>,
+    pub row_group_rows: Option<Vec<u64>>,
 }
 
 impl LocalParquetFile {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into(), file_size_bytes: None, row_groups: None }
+        let path = path.into();
+        let stable_id = path.display().to_string();
+        Self { path, stable_id, file_size_bytes: None, row_groups: None, row_group_bytes: None, row_group_rows: None }
+    }
+
+    pub fn with_stable_id(mut self, stable_id: impl Into<String>) -> Self {
+        self.stable_id = stable_id.into();
+        self
     }
 
     pub fn with_file_size_bytes(mut self, file_size_bytes: u64) -> Self {
@@ -73,6 +201,16 @@ impl LocalParquetFile {
 
     pub fn with_row_groups(mut self, row_groups: Vec<usize>) -> Self {
         self.row_groups = Some(row_groups);
+        self
+    }
+
+    pub fn with_row_group_bytes(mut self, row_group_bytes: Vec<u64>) -> Self {
+        self.row_group_bytes = Some(row_group_bytes);
+        self
+    }
+
+    pub fn with_row_group_rows(mut self, row_group_rows: Vec<u64>) -> Self {
+        self.row_group_rows = Some(row_group_rows);
         self
     }
 
@@ -90,11 +228,26 @@ pub struct SourceDiagnostics {
     pub known_bytes: Option<u64>,
     pub selected_row_groups: Option<usize>,
     pub predicate_disposition: PredicateDisposition,
+    pub byte_range_disposition: ByteRangeDisposition,
+    pub partition_column_disposition: PartitionColumnDisposition,
+    pub zero_column_count_disposition: ZeroColumnCountDisposition,
+    pub schema_mapping_disposition: SchemaMappingDisposition,
+    pub read_column_count: usize,
+    pub projected_output_column_count: usize,
+    pub pure_filter_column_count: usize,
     pub rejected_features: Vec<RejectedSourceFeature>,
 }
 
 impl SourceDiagnostics {
-    fn for_local_parquet_files(files: &[LocalParquetFile]) -> Self {
+    fn for_local_parquet_files(
+        files: &[LocalParquetFile],
+        read_columns: &[String],
+        read_column_file_indices: &[usize],
+        projected_output_columns: &[String],
+        projected_output_column_file_indices: &[usize],
+        pure_filter_columns: &[String],
+        pure_filter_column_file_indices: &[usize],
+    ) -> Self {
         let known_bytes = files
             .iter()
             .map(|file| file.file_size_bytes)
@@ -103,15 +256,40 @@ impl SourceDiagnostics {
             .iter()
             .any(|file| file.row_groups.is_some())
             .then(|| files.iter().map(LocalParquetFile::selected_row_group_count).sum());
+        let zero_column_count_disposition = if read_columns.is_empty() {
+            ZeroColumnCountDisposition::Rejected
+        } else {
+            ZeroColumnCountDisposition::NotRequired
+        };
+        let mut rejected_features = Vec::new();
+        if zero_column_count_disposition == ZeroColumnCountDisposition::Rejected {
+            rejected_features.push(RejectedSourceFeature::ZeroColumnCount);
+        }
+        let schema_mapping_disposition = if read_columns.len() == read_column_file_indices.len()
+            && projected_output_columns.len() == projected_output_column_file_indices.len()
+            && pure_filter_columns.len() == pure_filter_column_file_indices.len()
+        {
+            SchemaMappingDisposition::DirectByName
+        } else {
+            rejected_features.push(RejectedSourceFeature::SchemaMapping);
+            SchemaMappingDisposition::Rejected
+        };
         Self {
             format: SourceFormat::Parquet,
-            direct_device_read: true,
+            direct_device_read: rejected_features.is_empty(),
             file_count: files.len(),
             ranged_file_count: 0,
             known_bytes,
             selected_row_groups,
             predicate_disposition: PredicateDisposition::Absent,
-            rejected_features: Vec::new(),
+            byte_range_disposition: ByteRangeDisposition::FullFiles,
+            partition_column_disposition: PartitionColumnDisposition::Absent,
+            zero_column_count_disposition,
+            schema_mapping_disposition,
+            read_column_count: read_columns.len(),
+            projected_output_column_count: projected_output_columns.len(),
+            pure_filter_column_count: pure_filter_columns.len(),
+            rejected_features,
         }
     }
 }
@@ -139,6 +317,72 @@ impl PredicateDisposition {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ByteRangeDisposition {
+    FullFiles,
+    CoalescedFullFiles,
+    Rejected,
+}
+
+impl ByteRangeDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullFiles => "full_files",
+            Self::CoalescedFullFiles => "coalesced_full_files",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PartitionColumnDisposition {
+    Absent,
+    Rejected,
+    Represented,
+}
+
+impl PartitionColumnDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::Rejected => "rejected",
+            Self::Represented => "represented",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ZeroColumnCountDisposition {
+    NotRequired,
+    Rejected,
+    Represented,
+}
+
+impl ZeroColumnCountDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::Rejected => "rejected",
+            Self::Represented => "represented",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SchemaMappingDisposition {
+    DirectByName,
+    Rejected,
+}
+
+impl SchemaMappingDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectByName => "direct_by_name",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RejectedSourceFeature {
     NonLocalObjectStore,
     PartitionColumns,
@@ -152,6 +396,8 @@ pub enum RejectedSourceFeature {
     ByteRange,
     FileOrdering,
     RowSelection,
+    ZeroColumnCount,
+    SchemaMapping,
 }
 
 impl RejectedSourceFeature {
@@ -169,6 +415,8 @@ impl RejectedSourceFeature {
             Self::ByteRange => "byte_range",
             Self::FileOrdering => "file_ordering",
             Self::RowSelection => "row_selection",
+            Self::ZeroColumnCount => "zero_column_count",
+            Self::SchemaMapping => "schema_mapping",
         }
     }
 }

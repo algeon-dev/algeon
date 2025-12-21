@@ -73,6 +73,8 @@ pub struct SourceChunk {
     pub known_row_group_bytes: Option<u64>,
     pub estimated_chunk_bytes: Option<u64>,
     pub read_columns: Vec<String>,
+    pub zero_column_count: bool,
+    pub known_row_count: Option<u64>,
     pub size_estimate_based: bool,
 }
 
@@ -121,6 +123,20 @@ pub fn plan_local_parquet_source_chunks(
         );
     }
 
+    if source.is_zero_column_count_source()
+        && let Some(chunk) = chunks.iter().find(|chunk| chunk.known_row_count.is_none())
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.source_chunk.plan",
+            "zero-column count source requires parquet row-count metadata for each planned chunk",
+        )
+        .with_fact("reason", "row_count_metadata_unavailable")
+        .with_fact("path", chunk.path.display())
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("chunk_index", chunk.chunk_index));
+    }
+
     Ok(SourceChunkPlan {
         chunks,
         source_node_id,
@@ -154,7 +170,7 @@ fn validate_chunk_planning_source(source: &LocalParquetSource) -> Result<()> {
         .with_fact("reason", "empty_files"));
     }
 
-    if source.read_columns.is_empty() {
+    if source.read_columns.is_empty() && !source.is_zero_column_count_source() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "cudf_query_engine.source_chunk.plan",
@@ -178,14 +194,29 @@ fn validate_chunk_planning_source(source: &LocalParquetSource) -> Result<()> {
 }
 
 fn read_parquet_metadata(file: &LocalParquetFile) -> Option<RowGroupMetadata> {
-    let reader = SerializedFileReader::try_from(file.path.as_path()).ok()?;
-    let metadata = reader.metadata();
-    let row_group_bytes = metadata
-        .row_groups()
-        .iter()
-        .map(|row_group| u64::try_from(row_group.compressed_size()).ok())
-        .collect::<Option<Vec<_>>>()?;
-    Some(RowGroupMetadata { row_group_bytes })
+    let file_metadata = SerializedFileReader::try_from(file.path.as_path()).ok().map(|reader| {
+        let metadata = reader.metadata().clone();
+        let row_group_bytes = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| u64::try_from(row_group.compressed_size()).ok())
+            .collect::<Option<Vec<_>>>();
+        let row_group_rows = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| u64::try_from(row_group.num_rows()).ok())
+            .collect::<Option<Vec<_>>>();
+        (row_group_bytes, row_group_rows)
+    });
+    let row_group_bytes =
+        file.row_group_bytes.clone().or_else(|| file_metadata.as_ref().and_then(|(bytes, _rows)| bytes.clone()));
+    let row_group_rows =
+        file.row_group_rows.clone().or_else(|| file_metadata.as_ref().and_then(|(_bytes, rows)| rows.clone()));
+    if row_group_bytes.is_some() || row_group_rows.is_some() {
+        Some(RowGroupMetadata { row_group_bytes, row_group_rows })
+    } else {
+        None
+    }
 }
 
 fn planned_row_groups(
@@ -204,7 +235,7 @@ fn planned_row_groups(
         return Ok(None);
     };
 
-    Ok(Some((0..metadata.row_group_bytes.len()).collect()))
+    Ok(Some((0..metadata.row_group_count()).collect()))
 }
 
 fn validate_selected_row_groups(
@@ -218,7 +249,7 @@ fn validate_selected_row_groups(
     };
 
     for (row_group_position, row_group) in row_groups.iter().enumerate() {
-        if *row_group >= metadata.row_group_bytes.len() {
+        if *row_group >= metadata.row_group_count() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.source_chunk.plan",
@@ -228,7 +259,7 @@ fn validate_selected_row_groups(
             .with_fact("file_index", file_index)
             .with_fact("row_group_position", row_group_position)
             .with_fact("row_group", row_group)
-            .with_fact("max_row_group", metadata.row_group_bytes.len().saturating_sub(1)));
+            .with_fact("max_row_group", metadata.row_group_count().saturating_sub(1)));
         }
     }
 
@@ -250,11 +281,12 @@ fn append_row_group_chunks(
     let mut current = PendingChunk::default();
 
     for row_group in row_groups {
-        let row_group_bytes = metadata.and_then(|metadata| metadata.row_group_bytes.get(*row_group).copied());
+        let row_group_bytes = metadata.and_then(|metadata| metadata.row_group_bytes(*row_group));
+        let row_group_rows = metadata.and_then(|metadata| metadata.row_group_rows(*row_group));
         if current.should_flush_before(row_group_bytes, max_row_groups, policy.max_source_chunk_bytes) {
             push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), &mut current, chunks);
         }
-        current.push(*row_group, row_group_bytes);
+        current.push(*row_group, row_group_bytes, row_group_rows);
     }
 
     push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), &mut current, chunks);
@@ -274,6 +306,7 @@ fn push_pending_chunk(
     }
 
     let known_row_group_bytes = pending.known_bytes();
+    let known_row_count = pending.known_rows();
     let estimated_chunk_bytes = known_row_group_bytes
         .or_else(|| proportional_bytes(file.file_size_bytes, pending.row_groups.len(), planned_row_group_count));
     chunks.push(SourceChunk {
@@ -287,6 +320,8 @@ fn push_pending_chunk(
         known_row_group_bytes,
         estimated_chunk_bytes,
         read_columns: source.read_columns.clone(),
+        zero_column_count: source.is_zero_column_count_source(),
+        known_row_count,
         size_estimate_based: known_row_group_bytes.is_none(),
     });
     pending.clear();
@@ -310,6 +345,8 @@ fn single_all_row_groups_chunk(
         known_row_group_bytes: None,
         estimated_chunk_bytes: file.file_size_bytes,
         read_columns: source.read_columns.clone(),
+        zero_column_count: source.is_zero_column_count_source(),
+        known_row_count: None,
         size_estimate_based: true,
     }
 }
@@ -327,23 +364,45 @@ fn proportional_bytes(total_bytes: Option<u64>, child_row_groups: usize, parent_
 
 #[derive(Debug)]
 struct RowGroupMetadata {
-    row_group_bytes: Vec<u64>,
+    row_group_bytes: Option<Vec<u64>>,
+    row_group_rows: Option<Vec<u64>>,
+}
+
+impl RowGroupMetadata {
+    fn row_group_count(&self) -> usize {
+        self.row_group_bytes.as_ref().or(self.row_group_rows.as_ref()).map_or(0, Vec::len)
+    }
+
+    fn row_group_bytes(&self, row_group: usize) -> Option<u64> {
+        self.row_group_bytes.as_ref().and_then(|bytes| bytes.get(row_group).copied())
+    }
+
+    fn row_group_rows(&self, row_group: usize) -> Option<u64> {
+        self.row_group_rows.as_ref().and_then(|rows| rows.get(row_group).copied())
+    }
 }
 
 #[derive(Debug, Default)]
 struct PendingChunk {
     row_groups: Vec<usize>,
     known_bytes: u64,
+    known_rows: u64,
     has_unknown_bytes: bool,
+    has_unknown_rows: bool,
 }
 
 impl PendingChunk {
-    fn push(&mut self, row_group: usize, row_group_bytes: Option<u64>) {
+    fn push(&mut self, row_group: usize, row_group_bytes: Option<u64>, row_group_rows: Option<u64>) {
         self.row_groups.push(row_group);
         if let Some(row_group_bytes) = row_group_bytes {
             self.known_bytes = self.known_bytes.saturating_add(row_group_bytes);
         } else {
             self.has_unknown_bytes = true;
+        }
+        if let Some(row_group_rows) = row_group_rows {
+            self.known_rows = self.known_rows.saturating_add(row_group_rows);
+        } else {
+            self.has_unknown_rows = true;
         }
     }
 
@@ -374,9 +433,15 @@ impl PendingChunk {
         (!self.has_unknown_bytes).then_some(self.known_bytes)
     }
 
+    fn known_rows(&self) -> Option<u64> {
+        (!self.has_unknown_rows).then_some(self.known_rows)
+    }
+
     fn clear(&mut self) {
         self.row_groups.clear();
         self.known_bytes = 0;
+        self.known_rows = 0;
         self.has_unknown_bytes = false;
+        self.has_unknown_rows = false;
     }
 }

@@ -14,7 +14,8 @@ use cudf::DataFrame;
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionContext, Expr, LimitSpec, LiteralValue,
     LocalParquetFile, LocalParquetSource, MemoryControlPolicy, QueryErrorCode, QueryOutput, QueryPlanBuilder, SortExpr,
-    SortSpec, SourceChunkPlanningPolicy, SourceNode, execute_query_plan, plan_local_parquet_source_chunks,
+    SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -299,6 +300,59 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
     assert_eq!(int64_array(batch, 3).values().as_ref(), &[2, 2, 1]);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_zero_column_count_uses_row_group_metadata_without_read_columns() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let aggregated_schema = Arc::new(Schema::new(vec![Field::new("count_rows", DataType::Int64, false)]));
+    let source = LocalParquetSource::zero_column_count(vec![
+        LocalParquetFile::new("/tmp/count-only.parquet")
+            .with_stable_id("count-only")
+            .with_file_size_bytes(600)
+            .with_row_groups(vec![0, 2])
+            .with_row_group_bytes(vec![100, 200, 300])
+            .with_row_group_rows(vec![5, 7, 11]),
+    ]);
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(ZERO_COLUMN_COUNT_COLUMN), "count_rows")],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("count_rows"), true, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1), aggregated_schema);
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 250,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 2);
+    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.row_groups_selected, 2);
+    assert_eq!(metrics.read_columns, 0);
+    assert_eq!(metrics.input_rows, 16);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[16]);
 }
 
 #[test]

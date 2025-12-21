@@ -6,13 +6,26 @@ use std::{
 
 use arrow::{
     array::{Float64Array, Int32Array, Int64Array},
+    compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::{
+    common::ScalarValue,
     execution::SessionStateBuilder,
+    functions_aggregate::count::count_udaf,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
-    physical_plan::ExecutionPlan,
+    physical_expr::{
+        LexOrdering, PhysicalSortExpr,
+        aggregate::AggregateExprBuilder,
+        expressions::{col, lit},
+    },
+    physical_plan::{
+        ExecutionPlan,
+        aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
+        limit::LocalLimitExec,
+        sorts::sort::SortExec,
+    },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
@@ -44,11 +57,15 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
             sql_plan(&path, direct_friendly_sql_session_config(), sql).await,
         ));
     }
+    items.push(NativeFallbackPressureWorkloadItem::new(
+        "count_only_rewrite",
+        count_only_sort_limit_plan(sql_scan_plan(&path).await),
+    ));
 
     let report = NativeFallbackPressureReport::collect(items);
 
-    assert_eq!(report.rows.len(), 6);
-    assert_eq!(report.rewritten_count(), 4);
+    assert_eq!(report.rows.len(), 7);
+    assert_eq!(report.rewritten_count(), 5);
     assert_eq!(report.rejected_count(), 2);
 
     let rewritten = report_row(&report, "sum_rewrite");
@@ -59,6 +76,13 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(rewritten.source_diagnostics.len(), 1);
     assert!(rewritten.source_diagnostics[0].direct_device_read);
     assert_eq!(rewritten.source_diagnostics[0].predicate_disposition, "pruning_only");
+    assert_eq!(rewritten.source_diagnostics[0].byte_range_disposition, "full_files");
+    assert_eq!(rewritten.source_diagnostics[0].partition_column_disposition, "absent");
+    assert_eq!(rewritten.source_diagnostics[0].zero_column_count_disposition, "not_required");
+    assert_eq!(rewritten.source_diagnostics[0].schema_mapping_disposition, "direct_by_name");
+    assert_eq!(rewritten.source_diagnostics[0].read_column_count, 4);
+    assert_eq!(rewritten.source_diagnostics[0].projected_output_column_count, 3);
+    assert_eq!(rewritten.source_diagnostics[0].pure_filter_column_count, 1);
 
     let not = report_row(&report, "not_rewrite");
     assert_eq!(not.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -78,6 +102,17 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(avg.unsupported_category, None);
     assert!(!avg.rejected_before_execution);
 
+    let count_only = report_row(&report, "count_only_rewrite");
+    assert_eq!(count_only.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(count_only.reason_code, None);
+    assert_eq!(count_only.unsupported_category, None);
+    assert!(!count_only.rejected_before_execution);
+    assert_eq!(count_only.source_diagnostics.len(), 1);
+    assert_eq!(count_only.source_diagnostics[0].read_column_count, 0);
+    assert_eq!(count_only.source_diagnostics[0].projected_output_column_count, 0);
+    assert_eq!(count_only.source_diagnostics[0].pure_filter_column_count, 0);
+    assert_eq!(count_only.source_diagnostics[0].zero_column_count_disposition, "represented");
+
     let filtered = report_row(&report, "filtered_reject");
     assert_eq!(filtered.reason_code.as_deref(), Some("unsupported_expression"));
     assert_eq!(filtered.unsupported_category.as_deref(), Some("aggregate_filter"));
@@ -89,17 +124,19 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(modulo.rejected_before_execution);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 1);
+    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 2);
     assert_eq!(
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
         "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=1\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=2\n"));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("sum_rewrite\tSortExec"));
     assert!(text.contains("not_rewrite\tSortExec"));
     assert!(text.contains("cast_rewrite\tSortExec"));
     assert!(text.contains("avg_rewrite\tSortExec"));
+    assert!(text.contains("count_only_rewrite\t"));
+    assert!(text.contains("zero_column_count=represented"));
     assert!(text.contains("\trewritten\tnone\tnone\t"));
     assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
     assert!(text.contains("\tunsupported_expression\texpression_binary_modulo\t"));
@@ -126,6 +163,8 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(!accepted_row.rejected_before_execution);
     assert_eq!(accepted_row.source_diagnostics.len(), 1);
     assert!(accepted_row.source_diagnostics[0].direct_device_read);
+    assert_eq!(accepted_row.source_diagnostics[0].read_column_count, 4);
+    assert_eq!(accepted_row.source_diagnostics[0].pure_filter_column_count, 1);
 
     let rejected = native_datafusion_planning_report("filtered_session", &path, SQL_FILTERED_QUERY).await;
     assert_eq!(rejected.rows.len(), 1);
@@ -140,12 +179,12 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(rejected_row.source_diagnostics[0].direct_device_read);
 
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 1);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 2);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
         "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=1\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=2\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
@@ -166,6 +205,40 @@ async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> A
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
+}
+
+async fn sql_scan_plan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(direct_friendly_sql_session_config());
+    let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&scan_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    );
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("count_rows", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    Arc::new(LocalLimitExec::new(sort, 1))
 }
 
 async fn native_datafusion_planning_report(
