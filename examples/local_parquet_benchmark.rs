@@ -66,7 +66,9 @@ const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
 const DEFAULT_MIN_NATIVE_GPU_SPEEDUP: f64 = 1.0;
 const DEFAULT_BENCHMARK_DATA_DIR: &str = "/opt/dlami/nvme/data";
+#[cfg(test)]
 const SIX_GIB: u64 = 6 * 1024 * 1024 * 1024;
+#[cfg(test)]
 const TEN_GIB: u64 = 10 * 1024 * 1024 * 1024;
 
 #[tokio::main]
@@ -354,6 +356,7 @@ impl BenchmarkExpectedOutcome {
 }
 
 impl BenchmarkSourceLayout {
+    #[cfg(test)]
     fn name(self) -> &'static str {
         match self {
             Self::SingleFileMultiRowGroup => "single_file_multi_row_group",
@@ -361,6 +364,7 @@ impl BenchmarkSourceLayout {
         }
     }
 
+    #[cfg(test)]
     fn file_count(self) -> usize {
         match self {
             Self::SingleFileMultiRowGroup => 1,
@@ -370,6 +374,7 @@ impl BenchmarkSourceLayout {
 }
 
 impl BenchmarkScalePoint {
+    #[cfg(test)]
     fn name(self) -> &'static str {
         match self {
             Self::ThreeGiB => "3gib",
@@ -378,6 +383,16 @@ impl BenchmarkScalePoint {
         }
     }
 
+    #[cfg(test)]
+    fn input_rows(self) -> usize {
+        match self {
+            Self::ThreeGiB => 12_250_000,
+            Self::SixGiB => 24_500_000,
+            Self::TenGiB => 40_900_000,
+        }
+    }
+
+    #[cfg(test)]
     fn minimum_file_bytes(self) -> u64 {
         match self {
             Self::ThreeGiB => THREE_GIB,
@@ -388,6 +403,7 @@ impl BenchmarkScalePoint {
 }
 
 impl PhaseCMatrixCase {
+    #[cfg(test)]
     fn name(self) -> String {
         format!(
             "{}-{}-{}-{}-{}",
@@ -399,8 +415,10 @@ impl PhaseCMatrixCase {
         )
     }
 
+    #[cfg(test)]
     fn env_overrides(self) -> Vec<(&'static str, String)> {
         vec![
+            ("CUDF_PARQUET_BENCH_ROWS", self.scale.input_rows().to_string()),
             ("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", self.scale.minimum_file_bytes().to_string()),
             ("CUDF_PARQUET_BENCH_COMPRESSION", self.compression.name().to_string()),
             ("CUDF_PARQUET_BENCH_FILES", self.source_layout.file_count().to_string()),
@@ -727,13 +745,34 @@ impl DirectParquetBenchmarkReport {
                 optional_usize_text(native_metrics.allocator_high_water_bytes)
             ),
         );
-        push_line(&mut text, format_args!("native_source_chunks_planned={}", native_metrics.source_chunks_planned));
-        push_line(&mut text, format_args!("native_source_chunks_committed={}", native_metrics.source_chunks_committed));
-        push_line(&mut text, format_args!("native_source_chunks_retried={}", native_metrics.source_chunks_retried));
-        push_line(&mut text, format_args!("native_retry_count={}", native_metrics.retry_count));
+        push_line(
+            &mut text,
+            format_args!("native_reservation_requested_bytes={}", native_metrics.reservation_requested_bytes),
+        );
+        push_line(
+            &mut text,
+            format_args!("native_reservation_granted_bytes={}", native_metrics.reservation_granted_bytes),
+        );
         push_line(
             &mut text,
             format_args!("native_reservation_denied_count={}", native_metrics.reservation_denied_count),
+        );
+        push_line(&mut text, format_args!("native_source_chunks_planned={}", native_metrics.source_chunks_planned));
+        push_line(&mut text, format_args!("native_source_chunks_attempted={}", native_metrics.source_chunks_attempted));
+        push_line(&mut text, format_args!("native_source_chunks_committed={}", native_metrics.source_chunks_committed));
+        push_line(&mut text, format_args!("native_source_chunks_retried={}", native_metrics.source_chunks_retried));
+        push_line(&mut text, format_args!("native_row_groups_planned={}", native_metrics.row_groups_planned));
+        push_line(&mut text, format_args!("native_row_groups_committed={}", native_metrics.row_groups_committed));
+        push_line(&mut text, format_args!("native_partial_aggregate_count={}", native_metrics.partial_aggregate_count));
+        push_line(&mut text, format_args!("native_partial_aggregate_rows={}", native_metrics.partial_aggregate_rows));
+        push_line(&mut text, format_args!("native_retry_count={}", native_metrics.retry_count));
+        push_line(
+            &mut text,
+            format_args!("native_retry_resource_exhausted_count={}", native_metrics.retry_resource_exhausted_count),
+        );
+        push_line(
+            &mut text,
+            format_args!("native_retry_reservation_failure_count={}", native_metrics.retry_reservation_failure_count),
         );
         push_line(&mut text, format_args!("native_final_merge_attempts={}", native_metrics.final_merge_attempts));
         push_line(&mut text, format_args!("native_final_merge_levels={}", native_metrics.final_merge_levels));
@@ -1478,7 +1517,7 @@ fn write_benchmark_parquet_file(
 
     while offset < rows {
         let len = (rows - offset).min(config.batch_size);
-        writer.write(&benchmark_batch(Arc::clone(&schema), start_row + offset, len, config)?)?;
+        writer.write(&benchmark_batch(Arc::clone(&schema), start_row + offset, offset, rows, len, config)?)?;
         offset += len;
     }
 
@@ -1497,6 +1536,8 @@ fn benchmark_schema(measure_columns: usize) -> SchemaRef {
 fn benchmark_batch(
     schema: SchemaRef,
     start: usize,
+    file_local_start: usize,
+    file_rows: usize,
     len: usize,
     config: &LocalParquetBenchmarkConfig,
 ) -> DataFusionResult<RecordBatch> {
@@ -1506,8 +1547,9 @@ fn benchmark_batch(
 
     for offset in 0..len {
         let row = start + offset;
+        let file_local_row = file_local_start + offset;
         keys.push((row % config.group_count) as i32);
-        payload.push(benchmark_payload_value(row, config));
+        payload.push(benchmark_payload_value(file_local_row, file_rows, config));
         for (column_index, values) in measures.iter_mut().enumerate() {
             values.push(measure_value(row, column_index));
         }
@@ -1520,14 +1562,14 @@ fn benchmark_batch(
     Ok(RecordBatch::try_new(schema, columns)?)
 }
 
-fn benchmark_payload_value(row: usize, config: &LocalParquetBenchmarkConfig) -> i32 {
-    let total_row_groups = config.input_rows.div_ceil(config.row_group_size);
+fn benchmark_payload_value(file_local_row: usize, file_rows: usize, config: &LocalParquetBenchmarkConfig) -> i32 {
+    let total_row_groups = file_rows.div_ceil(config.row_group_size);
     let pruned_row_groups = total_row_groups / 2;
-    let row_group = row / config.row_group_size;
+    let row_group = file_local_row / config.row_group_size;
     if row_group < pruned_row_groups {
-        (row % 10) as i32
+        (file_local_row % 10) as i32
     } else {
-        10 + (splitmix64(row as u64 ^ 0x9e37_79b9_7f4a_7c15) % 90) as i32
+        10 + (splitmix64(file_local_row as u64 ^ 0x9e37_79b9_7f4a_7c15) % 90) as i32
     }
 }
 
@@ -2147,6 +2189,7 @@ mod tests {
         assert_eq!(
             case.env_overrides(),
             vec![
+                ("CUDF_PARQUET_BENCH_ROWS", "40900000".to_string()),
                 ("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", TEN_GIB.to_string()),
                 ("CUDF_PARQUET_BENCH_COMPRESSION", "snappy".to_string()),
                 ("CUDF_PARQUET_BENCH_FILES", "4".to_string()),
@@ -2167,6 +2210,8 @@ mod tests {
         .with_fact("memory_boundary", "final_sort")
         .with_fact("stage", "final_sort")
         .with_fact("attempt", 1)
+        .with_fact("row_groups", "0,1")
+        .with_fact("resume_boundary", "final_sort")
         .with_fact("committed_chunks", 2);
         let report = ExpectedResourceFailureReport {
             parquet_file_bytes: TEN_GIB,
@@ -2194,6 +2239,49 @@ mod tests {
         assert!(text.contains("memory_boundary:final_sort"));
         assert!(text.contains("stage:final_sort"));
         assert!(text.contains("attempt:1"));
+        assert!(text.contains("row_groups:0,1"));
+        assert!(text.contains("resume_boundary:final_sort"));
         assert!(text.contains("committed_chunks:2"));
+    }
+
+    #[test]
+    fn benchmark_payload_pruning_pattern_is_file_local() {
+        let config = test_config();
+        let file_rows = config.row_group_size * 4;
+
+        assert!(benchmark_payload_value(0, file_rows, &config) < 10);
+        assert!(benchmark_payload_value(config.row_group_size - 1, file_rows, &config) < 10);
+        assert!(benchmark_payload_value(config.row_group_size, file_rows, &config) < 10);
+        assert!(benchmark_payload_value((config.row_group_size * 2) - 1, file_rows, &config) < 10);
+        assert!(benchmark_payload_value(config.row_group_size * 2, file_rows, &config) >= 10);
+        assert!(benchmark_payload_value((config.row_group_size * 4) - 1, file_rows, &config) >= 10);
+    }
+
+    fn test_config() -> LocalParquetBenchmarkConfig {
+        LocalParquetBenchmarkConfig {
+            input_rows: 16,
+            file_count: 4,
+            measure_columns: 2,
+            batch_size: 4,
+            row_group_size: 4,
+            group_count: 4,
+            limit: 2,
+            warmup_iterations: 0,
+            iterations: 1,
+            minimum_file_bytes: 1,
+            minimum_native_gpu_speedup: 1.0,
+            native_memory_control_policy: NativeMemoryControlPolicy::Bounded {
+                device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
+                max_source_chunk_bytes: DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
+                max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
+                max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+                min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+            },
+            benchmark_paths: BenchmarkPathSet::NativeOnly,
+            compression: BenchmarkCompression::Uncompressed,
+            native_plan_shape: BenchmarkPlanShape::DefaultSql,
+            expected_outcome: BenchmarkExpectedOutcome::Success,
+            output_dir: None,
+        }
     }
 }

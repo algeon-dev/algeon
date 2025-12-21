@@ -92,8 +92,17 @@ fn larger_island_benchmark_report_keeps_required_measurements() {
     assert!(text.contains("cudf_operator_ms"));
     assert!(text.contains("phase_c_memory_control_policy=unbounded"));
     assert!(text.contains("phase_c_runtime_gate=not_evaluated"));
+    assert!(text.contains("reservation_requested_bytes=0"));
+    assert!(text.contains("reservation_granted_bytes=0"));
     assert!(text.contains("source_chunks_planned=0"));
+    assert!(text.contains("source_chunks_attempted=0"));
     assert!(text.contains("reservation_denied_count=0"));
+    assert!(text.contains("row_groups_planned=0"));
+    assert!(text.contains("row_groups_committed=0"));
+    assert!(text.contains("partial_aggregate_count=0"));
+    assert!(text.contains("partial_aggregate_rows=0"));
+    assert!(text.contains("retry_resource_exhausted_count=0"));
+    assert!(text.contains("retry_reservation_failure_count=0"));
     assert!(text.contains("host_to_device_uploads"));
     assert!(text.contains("device_to_host_materializations"));
     assert!(text.contains("fallback_rejected_count"));
@@ -186,6 +195,11 @@ fn phase_c_runtime_gate_passes_only_for_bounded_zero_upload_chunked_native_metri
     metrics.host_to_device_uploads = 1;
     assert_eq!(metrics.assess_phase_c_runtime_gate(true), PhaseCRuntimeGateStatus::Fail);
 
+    metrics.host_to_device_uploads = 0;
+    metrics.source_chunks_committed = 1;
+    assert_eq!(metrics.assess_phase_c_runtime_gate(true), PhaseCRuntimeGateStatus::Fail);
+
+    metrics.source_chunks_committed = 2;
     metrics.phase_c_memory_control_policy = "unbounded";
     assert_eq!(metrics.assess_phase_c_runtime_gate(true), PhaseCRuntimeGateStatus::NotEvaluated);
 }

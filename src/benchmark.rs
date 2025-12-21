@@ -272,6 +272,7 @@ impl LargerIslandBenchmarkMetrics {
         }
         if self.source_chunks_planned == 0
             || self.source_chunks_committed == 0
+            || self.source_chunks_committed != self.source_chunks_planned
             || self.row_groups_planned == 0
             || self.row_groups_committed != self.row_groups_planned
         {
@@ -531,11 +532,21 @@ impl LargerIslandBenchmarkReport {
         let _ = writeln!(output, "parquet_bytes_known={}", self.gpu_metrics.parquet_bytes_known);
         let _ = writeln!(output, "row_groups_selected={}", self.gpu_metrics.row_groups_selected);
         let _ = writeln!(output, "read_columns={}", self.gpu_metrics.read_columns);
+        let _ = writeln!(output, "reservation_requested_bytes={}", self.gpu_metrics.reservation_requested_bytes);
+        let _ = writeln!(output, "reservation_granted_bytes={}", self.gpu_metrics.reservation_granted_bytes);
+        let _ = writeln!(output, "reservation_denied_count={}", self.gpu_metrics.reservation_denied_count);
         let _ = writeln!(output, "source_chunks_planned={}", self.gpu_metrics.source_chunks_planned);
+        let _ = writeln!(output, "source_chunks_attempted={}", self.gpu_metrics.source_chunks_attempted);
         let _ = writeln!(output, "source_chunks_committed={}", self.gpu_metrics.source_chunks_committed);
         let _ = writeln!(output, "source_chunks_retried={}", self.gpu_metrics.source_chunks_retried);
+        let _ = writeln!(output, "row_groups_planned={}", self.gpu_metrics.row_groups_planned);
+        let _ = writeln!(output, "row_groups_committed={}", self.gpu_metrics.row_groups_committed);
+        let _ = writeln!(output, "partial_aggregate_count={}", self.gpu_metrics.partial_aggregate_count);
+        let _ = writeln!(output, "partial_aggregate_rows={}", self.gpu_metrics.partial_aggregate_rows);
         let _ = writeln!(output, "retry_count={}", self.gpu_metrics.retry_count);
-        let _ = writeln!(output, "reservation_denied_count={}", self.gpu_metrics.reservation_denied_count);
+        let _ = writeln!(output, "retry_resource_exhausted_count={}", self.gpu_metrics.retry_resource_exhausted_count);
+        let _ =
+            writeln!(output, "retry_reservation_failure_count={}", self.gpu_metrics.retry_reservation_failure_count);
         let _ = writeln!(
             output,
             "resident_dataframe_peak_bytes={}",
