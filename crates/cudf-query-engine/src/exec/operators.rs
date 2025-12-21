@@ -74,17 +74,19 @@ pub(super) fn validate_global_aggregate_capability(
         .with_fact("schema_output_names", schema_output_names.join(",")));
     }
     for expr in &spec.aggr_exprs {
-        if expr.function != AggregateFunction::Sum {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedOperator,
-                "cudf_query_engine.global_aggregate.validate",
-                "native global aggregate currently supports metadata-backed sum only",
-            )
-            .with_fact("function", format!("{:?}", expr.function)));
+        if expr.function == AggregateFunction::Avg {
+            validate_avg_output_fields(spec, output_schema)?;
         }
-        lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.validate_expr")?;
+        validate_global_aggregate_input_expr(expr)?;
     }
     Ok(())
+}
+
+pub(super) fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Result<()> {
+    match expr.function {
+        AggregateFunction::Count if global_count_star_expr(&expr.expr) => Ok(()),
+        _ => lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.validate_expr").map(|_| ()),
+    }
 }
 
 pub(super) fn validate_aggregate_output_names(
@@ -201,18 +203,15 @@ pub(super) fn execute_aggregate(
 pub(super) fn execute_partial_aggregate(
     context: &ExecutionContext,
     node: &AggregateNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     if node.spec.group_exprs.is_empty() {
-        let output_schema = Arc::new(Schema::new(
-            node.spec
-                .aggr_exprs
-                .iter()
-                .map(|expr| Field::new(expr.alias.as_str(), ArrowDataType::Int64, false))
-                .collect::<Vec<_>>(),
-        ));
-        return execute_global_aggregate(context, &node.spec, input, &output_schema, metrics);
+        let partial_spec = partial_global_aggregate_spec(&node.spec);
+        let output_schema = partial_global_aggregate_output_schema(&node.spec, input_schema, aggregate_output_schema)?;
+        return execute_global_aggregate(context, &partial_spec, input, &output_schema, metrics);
     }
 
     let aggregate = lower_partial_aggregate_spec(&node.spec)?;
@@ -277,43 +276,290 @@ pub(super) fn execute_global_aggregate(
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut columns = Vec::with_capacity(spec.aggr_exprs.len());
-    for expr in &spec.aggr_exprs {
-        let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.lower_expr")?;
-        let series = frame.series(input_column.as_str()).map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.global_aggregate.input",
-                "failed to access native global aggregate input column",
-                error,
-            )
-            .with_fact("column", input_column.as_str())
-        })?;
-        let scalar = series.sum_in(&overrides).map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.global_aggregate.sum",
-                "failed to execute native global sum aggregate",
-                error,
-            )
-            .with_fact("column", input_column.as_str())
-        })?;
-        let output = context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        match expr.function {
+            AggregateFunction::Avg => {
+                let sum_alias = avg_sum_state_alias(index);
+                let count_alias = avg_count_state_alias(index);
+                columns.push((
+                    sum_alias,
+                    reduce_global_aggregate_column(context, &frame, &overrides, expr, AggregateFunction::Sum, None)?,
+                ));
+                columns.push((count_alias, global_count_series(context, &frame, expr)?));
+            },
+            AggregateFunction::Count => {
+                columns.push((expr.alias.clone(), global_count_series(context, &frame, expr)?));
+            },
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
+                columns.push((
+                    expr.alias.clone(),
+                    reduce_global_aggregate_column(
+                        context,
+                        &frame,
+                        &overrides,
+                        expr,
+                        expr.function,
+                        output_schema.field_with_name(expr.alias.as_str()).ok().map(|field| field.data_type()),
+                    )?,
+                ));
+            },
+        }
+    }
+    let mut output = DataFrame::from_series(columns.iter().map(|(name, series)| (name.as_str(), series.clone())))
+        .map_err(|error| {
             QueryError::from_cudf(
                 "cudf_query_engine.global_aggregate.output",
-                "failed to construct native global aggregate output column",
+                "failed to construct native global aggregate output frame",
                 error,
             )
-            .with_fact("alias", expr.alias.as_str())
         })?;
-        columns.push((expr.alias.as_str(), output));
-    }
-    let output = DataFrame::from_series(columns).map_err(|error| {
+    output = cast_global_reduction_output_columns(output, spec, output_schema)?;
+    output = finalize_avg_output_columns(context, output, spec, output_schema)?;
+    output = cast_count_output_columns(output, spec, output_schema)?;
+    let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
-            "cudf_query_engine.global_aggregate.output",
-            "failed to construct native global aggregate output frame",
+            "cudf_query_engine.global_aggregate.select",
+            "failed to select native global aggregate output columns",
             error,
         )
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
+}
+
+pub(super) fn reduce_global_aggregate_column(
+    context: &ExecutionContext,
+    frame: &DataFrame,
+    overrides: &ExecutionOverrides<'_>,
+    expr: &AggregateExpr,
+    function: AggregateFunction,
+    output_type: Option<&ArrowDataType>,
+) -> Result<cudf::Series> {
+    let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.lower_expr")?;
+    let series = frame.series(input_column.as_str()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.input",
+            "failed to access native global aggregate input column",
+            error,
+        )
+        .with_fact("column", input_column.as_str())
+    })?;
+    if matches!(function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+        && series.len() == series.null_count()
+        && let Some(output_type) = output_type
+    {
+        return global_null_output_series(context, output_type, expr.alias.as_str());
+    }
+    let scalar = match function {
+        AggregateFunction::Sum => series.sum_in(overrides),
+        AggregateFunction::Min => series.min_in(overrides),
+        AggregateFunction::Max => series.max_in(overrides),
+        AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
+        AggregateFunction::Count => unreachable!("global COUNT is not a scalar reduction"),
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.reduce",
+            "failed to execute native global aggregate reduction",
+            error,
+        )
+        .with_fact("column", input_column.as_str())
+        .with_fact("function", format!("{function:?}"))
+    })?;
+    context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.output",
+            "failed to construct native global aggregate output column",
+            error,
+        )
+        .with_fact("alias", expr.alias.as_str())
+    })
+}
+
+fn global_null_output_series(
+    context: &ExecutionContext,
+    output_type: &ArrowDataType,
+    alias: &str,
+) -> Result<cudf::Series> {
+    let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.global_aggregate.null_output",
+            "native global aggregate cannot construct a typed null output for this type",
+        )
+        .with_fact("alias", alias)
+        .with_fact("data_type", format!("{output_type:?}"))
+    })?;
+    context.runtime().nulls(dtype, 1).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.null_output",
+            "failed to construct native global aggregate null output column",
+            error,
+        )
+        .with_fact("alias", alias)
+        .with_fact("data_type", format!("{output_type:?}"))
+    })
+}
+
+pub(super) fn global_count_series(
+    context: &ExecutionContext,
+    frame: &DataFrame,
+    expr: &AggregateExpr,
+) -> Result<cudf::Series> {
+    let count = if global_count_star_expr(&expr.expr) {
+        frame.num_rows()
+    } else {
+        let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.count_expr")?;
+        let series = frame.series(input_column.as_str()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.count_input",
+                "failed to access native global count input column",
+                error,
+            )
+            .with_fact("column", input_column.as_str())
+        })?;
+        series.len().saturating_sub(series.null_count())
+    };
+    let count = i64::try_from(count).map_err(|_| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.global_aggregate.count",
+            "global count exceeds i64 output range",
+        )
+        .with_fact("alias", expr.alias.as_str())
+        .with_fact("count", count)
+    })?;
+    let scalar = context.runtime().scalar(count).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.count",
+            "failed to construct native global count scalar",
+            error,
+        )
+        .with_fact("alias", expr.alias.as_str())
+    })?;
+    context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.global_aggregate.count_output",
+            "failed to construct native global count output column",
+            error,
+        )
+        .with_fact("alias", expr.alias.as_str())
+    })
+}
+
+pub(super) fn global_count_star_expr(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Literal(
+            LiteralValue::Boolean(_)
+                | LiteralValue::Int8(_)
+                | LiteralValue::Int16(_)
+                | LiteralValue::Int32(_)
+                | LiteralValue::Int64(_)
+                | LiteralValue::UInt8(_)
+                | LiteralValue::UInt16(_)
+                | LiteralValue::UInt32(_)
+                | LiteralValue::UInt64(_)
+                | LiteralValue::Float32(_)
+                | LiteralValue::Float64(_)
+                | LiteralValue::Utf8(_)
+                | LiteralValue::LargeUtf8(_)
+                | LiteralValue::Decimal128 { .. }
+                | LiteralValue::Date32(_)
+                | LiteralValue::Timestamp { .. }
+                | LiteralValue::Duration { .. }
+                | LiteralValue::IntervalMonthDayNano { .. },
+        )
+    )
+}
+
+pub(super) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
+    AggregateSpec::new(
+        Vec::new(),
+        spec.aggr_exprs
+            .iter()
+            .enumerate()
+            .flat_map(|(index, expr)| match expr.function {
+                AggregateFunction::Avg => vec![
+                    AggregateExpr::new(AggregateFunction::Sum, expr.expr.clone(), avg_sum_state_alias(index)),
+                    AggregateExpr::new(AggregateFunction::Count, expr.expr.clone(), avg_count_state_alias(index)),
+                ],
+                AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => vec![
+                    expr.clone(),
+                    AggregateExpr::new(
+                        AggregateFunction::Count,
+                        expr.expr.clone(),
+                        global_valid_count_state_alias(expr.alias.as_str()),
+                    ),
+                ],
+                _ => vec![expr.clone()],
+            })
+            .collect(),
+    )
+}
+
+pub(super) fn partial_global_aggregate_output_schema(
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<Arc<Schema>> {
+    let mut fields = Vec::with_capacity(spec.aggr_exprs.len());
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        match expr.function {
+            AggregateFunction::Avg => {
+                let input_type = global_aggregate_input_data_type(&expr.expr, input_schema)?;
+                fields.push(Field::new(avg_sum_state_alias(index), input_type, true));
+                fields.push(Field::new(avg_count_state_alias(index), ArrowDataType::Int64, false));
+            },
+            AggregateFunction::Count => {
+                fields.push(Field::new(expr.alias.as_str(), ArrowDataType::Int64, false));
+            },
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
+                fields.push(global_aggregate_output_field(expr.alias.as_str(), aggregate_output_schema)?);
+                fields.push(Field::new(
+                    global_valid_count_state_alias(expr.alias.as_str()),
+                    ArrowDataType::Int64,
+                    false,
+                ));
+            },
+        }
+    }
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+pub(super) fn final_global_aggregate_state_output_schema(
+    spec: &AggregateSpec,
+    input_schema: &arrow::datatypes::SchemaRef,
+    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<Arc<Schema>> {
+    partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)
+}
+
+fn global_aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
+    let input_column = lower_column_expr(expr, "cudf_query_engine.global_aggregate.state_schema")?;
+    let field = input_schema.field_with_name(input_column.as_str()).map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.global_aggregate.state_schema",
+            "global aggregate state references a column missing from its input schema",
+        )
+        .with_fact("column", input_column.as_str())
+        .with_fact("arrow_error", error.to_string())
+    })?;
+    Ok(field.data_type().clone())
+}
+
+fn global_aggregate_output_field(alias: &str, output_schema: &arrow::datatypes::SchemaRef) -> Result<Field> {
+    output_schema.field_with_name(alias).cloned().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.global_aggregate.state_schema",
+            "global aggregate state references a column missing from its output schema",
+        )
+        .with_fact("alias", alias)
+        .with_fact("arrow_error", error.to_string())
+    })
 }
 
 pub(super) fn cast_count_output_columns(
@@ -352,6 +598,44 @@ pub(super) fn cast_count_output_columns(
     Ok(frame)
 }
 
+pub(super) fn cast_global_reduction_output_columns(
+    mut frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    for expr in spec.aggr_exprs.iter().filter(|expr| {
+        matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+    }) {
+        let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.aggregate.cast_reduction",
+                "global reduction output field is missing from output schema",
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        let target_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.aggregate.cast_reduction",
+                "global reduction output schema type is not supported by native execution",
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
+        frame = frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.cast_reduction",
+                "failed to cast native global reduction output column",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
+    }
+    Ok(frame)
+}
+
 pub(super) fn finalize_avg_output_columns(
     context: &ExecutionContext,
     frame: DataFrame,
@@ -378,9 +662,22 @@ pub(super) fn finalize_avg_output_columns(
                 .with_fact("alias", expr.alias.as_str())
             })?;
             let sum = Expr::cast(Expr::column(avg_sum_state_alias(index)), field.data_type().clone());
-            let count = Expr::cast(Expr::column(avg_count_state_alias(index)), field.data_type().clone());
+            let count =
+                Expr::cast(Expr::column(avg_count_state_alias(index)), avg_count_output_data_type(field.data_type()));
             let alias = expr.alias.clone();
-            lower_expr(&Expr::binary(sum, BinaryOp::Divide, count)).map(|lowered| (alias, lowered))
+            let count_is_zero = Expr::binary(
+                Expr::column(avg_count_state_alias(index)),
+                BinaryOp::Eq,
+                Expr::literal(LiteralValue::Int64(0)),
+            );
+            let nullable_value = Expr::case(
+                vec![crate::expr::CaseWhen::new(
+                    count_is_zero,
+                    Expr::literal(LiteralValue::Null(field.data_type().clone())),
+                )],
+                Expr::binary(sum, BinaryOp::Divide, count),
+            );
+            lower_expr(&nullable_value).map(|lowered| (alias, lowered))
         })
         .collect::<Result<Vec<_>>>()?;
     let overrides = execution_overrides(context);
@@ -391,6 +688,19 @@ pub(super) fn finalize_avg_output_columns(
             error,
         )
     })
+}
+
+pub(super) fn global_valid_count_state_alias(alias: &str) -> String {
+    format!("{GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX}{alias}")
+}
+
+const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__cudf_global_valid_count_";
+
+fn avg_count_output_data_type(avg_output_type: &ArrowDataType) -> ArrowDataType {
+    match avg_output_type {
+        ArrowDataType::Decimal128(_, _) => ArrowDataType::Decimal128(arrow::datatypes::DECIMAL128_MAX_PRECISION, 0),
+        _ => avg_output_type.clone(),
+    }
 }
 
 pub(super) fn validate_avg_output_fields(
@@ -406,11 +716,14 @@ pub(super) fn validate_avg_output_fields(
             )
             .with_fact("alias", expr.alias.as_str())
         })?;
-        if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
+        if !matches!(
+            field.data_type(),
+            ArrowDataType::Float32 | ArrowDataType::Float64 | ArrowDataType::Decimal128(_, _)
+        ) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "cudf_query_engine.aggregate.validate_avg",
-                "avg aggregate output schema must be Float32 or Float64",
+                "avg aggregate output schema must be Float32, Float64, or Decimal128",
             )
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type())));

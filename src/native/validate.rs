@@ -51,17 +51,16 @@ pub(super) fn validate_aggregate(
         return Err(FallbackReason::UnsupportedOperator);
     }
     let group_by = aggregate.group_expr();
-    if group_by.expr().is_empty() {
-        return if aggregate_is_count_star_only(aggregate) { Ok(()) } else { Err(FallbackReason::UnsupportedOperator) };
-    }
-    if !group_by.is_single() || group_by.expr().is_empty() {
-        return Err(FallbackReason::UnsupportedOperator);
-    }
-    if group_by.groups().len() != 1 || group_by.groups()[0].iter().any(|is_null| *is_null) {
-        return Err(FallbackReason::UnsupportedOperator);
-    }
     if aggregate.filter_expr().iter().any(Option::is_some) {
         return Err(FallbackReason::UnsupportedExpression);
+    }
+    if !group_by.expr().is_empty() && !group_by.is_single() {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
+    if !group_by.expr().is_empty()
+        && (group_by.groups().len() != 1 || group_by.groups()[0].iter().any(|is_null| *is_null))
+    {
+        return Err(FallbackReason::UnsupportedOperator);
     }
     for aggregate_expr in aggregate.aggr_expr() {
         if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {

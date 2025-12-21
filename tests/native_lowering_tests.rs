@@ -976,7 +976,7 @@ async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
 }
 
 #[tokio::test]
-async fn direct_friendly_sql_global_avg_is_rejected() {
+async fn direct_friendly_sql_global_avg_lowers_to_native_avg() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-global-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
@@ -984,7 +984,85 @@ async fn direct_friendly_sql_global_avg_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
+    assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["m00".to_string(), "payload".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-global-aggregate-parity");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_AGGREGATE_PARITY_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
+    assert_eq!(
+        native_aggregate_functions(&result.plans[0]),
+        vec![
+            AggregateFunction::Sum,
+            AggregateFunction::Min,
+            AggregateFunction::Max,
+            AggregateFunction::Count,
+            AggregateFunction::Avg,
+        ]
+    );
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["m00".to_string(), "m01".to_string(), "payload".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-q6-shaped");
+    let path = dir.join("lineitem.parquet");
+    write_q6_lineitem_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+        panic!("Q6-shaped global aggregate should lower to native");
+    };
+    assert_eq!(candidate.shape, "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))");
+    assert_eq!(candidate.operator_count, 4);
+    assert!(native_aggregate_group_exprs(&result.plans[0]).is_empty());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
+    assert!(matches!(
+        &aggregate_exprs[0].expr,
+        Expr::Column(name) if name.starts_with("__cudf_aggregate_arg_")
+    ));
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec![
+            "l_discount".to_string(),
+            "l_extendedprice".to_string(),
+            "l_quantity".to_string(),
+            "l_shipdate".to_string(),
+        ]
+    );
+    assert!(source.diagnostics.direct_device_read);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1179,6 +1257,30 @@ async fn distributed_final_partial_aggregate_function_mismatch_is_rejected() {
     let plan = with_rewritten_distributed_final_aggregate(plan, |final_aggregate| {
         let original = &final_aggregate.aggr_expr()[0];
         aggregate_expr_on_column_like(original, max_udaf(), final_aggregate.input().schema(), 1, false, vec![])
+    });
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-state-schema-mismatch");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_COUNT_STAR_QUERY).await;
+    let plan = with_rewritten_distributed_final_aggregate(plan, |final_aggregate| {
+        aggregate_expr_on_column_with_alias(
+            sum_udaf(),
+            final_aggregate.input().schema(),
+            1,
+            "count_rows",
+            false,
+            vec![],
+        )
     });
 
     let result = lower_physical_plan_to_native(plan);
@@ -1810,6 +1912,26 @@ fn aggregate_expr_on_column_like(
     )
 }
 
+fn aggregate_expr_on_column_with_alias(
+    udaf: Arc<datafusion::logical_expr::AggregateUDF>,
+    schema: Arc<Schema>,
+    column_index: usize,
+    alias: &str,
+    distinct: bool,
+    order_by: Vec<PhysicalSortExpr>,
+) -> Arc<AggregateFunctionExpr> {
+    let column_name = schema.field(column_index).name();
+    Arc::new(
+        AggregateExprBuilder::new(udaf, vec![col(column_name, &schema).unwrap()])
+            .schema(schema)
+            .order_by(order_by)
+            .with_distinct(distinct)
+            .alias(alias)
+            .build()
+            .unwrap(),
+    )
+}
+
 fn assert_distributed_aggregate_rejection(result: &NativeLoweringResult, expected_reason: FallbackReason) {
     assert_native_rejection(result, expected_reason);
 }
@@ -1896,8 +2018,27 @@ const SQL_GLOBAL_AVG_QUERY: &str = "
 SELECT AVG(m00) AS avg_m00
 FROM bench
 WHERE payload >= 10
-ORDER BY avg_m00 DESC
-LIMIT 1
+";
+
+const SQL_GLOBAL_AGGREGATE_PARITY_QUERY: &str = "
+SELECT
+    SUM(m00) AS sum_m00,
+    MIN(m00) AS min_m00,
+    MAX(m01) AS max_m01,
+    COUNT(payload) AS count_payload,
+    AVG(m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+";
+
+const SQL_Q6_SHAPED_QUERY: &str = "
+SELECT
+    SUM(l_extendedprice * l_discount) AS revenue
+FROM bench
+WHERE l_shipdate >= DATE '1994-01-01'
+  AND l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR
+  AND l_discount BETWEEN 0.05 AND 0.07
+  AND l_quantity < 24
 ";
 
 const SQL_FILTERED_AVG_QUERY: &str = "
@@ -2153,6 +2294,16 @@ fn native_aggregate_exprs(plan: &cudf_query_engine::QueryPlan) -> &[cudf_query_e
         .iter()
         .find_map(|node| match &node.kind {
             PlanNode::Aggregate(aggregate) => Some(aggregate.spec.aggr_exprs.as_slice()),
+            _ => None,
+        })
+        .expect("native plan should contain an aggregate node")
+}
+
+fn native_aggregate_group_exprs(plan: &cudf_query_engine::QueryPlan) -> &[Expr] {
+    plan.nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate.spec.group_exprs.as_slice()),
             _ => None,
         })
         .expect("native plan should contain an aggregate node")
@@ -2512,11 +2663,54 @@ fn write_parquet_file_with_tpch_like_columns(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+fn write_q6_lineitem_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+        Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+        Field::new("l_discount", DataType::Decimal128(15, 2), false),
+        Field::new("l_shipdate", DataType::Date32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(
+                Decimal128Array::from_iter_values([2_300, 2_500, 1_000, 1_200])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+            Arc::new(
+                Decimal128Array::from_iter_values([10_000, 20_000, 30_000, 40_000])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Decimal128Array::from_iter_values([5, 6, 7, 6]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(Date32Array::from(vec![
+                date32(1994, 1, 15),
+                date32(1994, 6, 1),
+                date32(1994, 9, 30),
+                date32(1995, 1, 1),
+            ])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
 fn write_batch(path: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+fn date32(year: i32, month: u32, day: u32) -> i32 {
+    let adjusted_year = year - i32::from(month <= 2);
+    let era = if adjusted_year >= 0 { adjusted_year } else { adjusted_year - 399 } / 400;
+    let year_of_era = adjusted_year - era * 400;
+    let month = month as i32;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146097 + day_of_era - 719468
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

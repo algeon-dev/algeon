@@ -55,12 +55,29 @@ const SPM_SORT_FETCH_PRE_NO_FILTER_SHAPE: &str =
 const SPM_SORT_FETCH_NO_PRE_FILTER_SHAPE: &str =
     "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(FilterExec(LocalParquetScan))))";
 const SPM_SORT_FETCH_MINIMAL_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(LocalParquetScan)))";
-const GLOBAL_COUNT_POST_SHAPE: &str = "ProjectionExec(AggregateExec(LocalParquetScan))";
-const GLOBAL_COUNT_MINIMAL_SHAPE: &str = "AggregateExec(LocalParquetScan)";
-const GLOBAL_COUNT_DISTRIBUTED_POST_SHAPE: &str =
+const GLOBAL_AGG_POST_SHAPE: &str = "ProjectionExec(AggregateExec(LocalParquetScan))";
+const GLOBAL_AGG_MINIMAL_SHAPE: &str = "AggregateExec(LocalParquetScan)";
+const GLOBAL_AGG_POST_PRE_FILTER_SHAPE: &str =
+    "ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))";
+const GLOBAL_AGG_POST_PRE_NO_FILTER_SHAPE: &str = "ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))";
+const GLOBAL_AGG_POST_FILTER_SHAPE: &str = "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))";
+const GLOBAL_AGG_PRE_FILTER_SHAPE: &str = "AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))";
+const GLOBAL_AGG_PRE_NO_FILTER_SHAPE: &str = "AggregateExec(ProjectionExec(LocalParquetScan))";
+const GLOBAL_AGG_FILTER_SHAPE: &str = "AggregateExec(FilterExec(LocalParquetScan))";
+const GLOBAL_AGG_DISTRIBUTED_POST_SHAPE: &str =
     "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan))))";
-const GLOBAL_COUNT_DISTRIBUTED_MINIMAL_SHAPE: &str =
+const GLOBAL_AGG_DISTRIBUTED_MINIMAL_SHAPE: &str =
     "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan)))";
+const GLOBAL_AGG_DISTRIBUTED_POST_PRE_FILTER_SHAPE: &str = "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))))";
+const GLOBAL_AGG_DISTRIBUTED_POST_PRE_NO_FILTER_SHAPE: &str = "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(LocalParquetScan)))))";
+const GLOBAL_AGG_DISTRIBUTED_POST_FILTER_SHAPE: &str =
+    "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(FilterExec(LocalParquetScan)))))";
+const GLOBAL_AGG_DISTRIBUTED_PRE_FILTER_SHAPE: &str =
+    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
+const GLOBAL_AGG_DISTRIBUTED_PRE_NO_FILTER_SHAPE: &str =
+    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(LocalParquetScan))))";
+const GLOBAL_AGG_DISTRIBUTED_FILTER_SHAPE: &str =
+    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(FilterExec(LocalParquetScan))))";
 const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
 const SORT_PRESERVING_MERGE_FETCH_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec)";
 const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
@@ -147,7 +164,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     }
 
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
-        let candidate = GpuCandidate::with_operator_count(GLOBAL_COUNT_POST_SHAPE, plan.schema().fields().len(), 3);
+        let candidate = GpuCandidate::with_operator_count(GLOBAL_AGG_POST_SHAPE, plan.schema().fields().len(), 3);
         let aggregate = required_child::<AggregateExec>(projection.input().as_ref(), candidate)?;
         return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
     }
@@ -213,27 +230,21 @@ fn normalize_global_aggregate_stack<'a>(
     aggregate: &'a AggregateExec,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     let candidate = GpuCandidate::with_operator_count(
-        if post_aggregate_projection.is_some() { GLOBAL_COUNT_POST_SHAPE } else { GLOBAL_COUNT_MINIMAL_SHAPE },
+        if post_aggregate_projection.is_some() { GLOBAL_AGG_POST_SHAPE } else { GLOBAL_AGG_MINIMAL_SHAPE },
         output_schema_fields,
         2 + usize::from(post_aggregate_projection.is_some()),
     );
     let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
         peel_distributed_aggregate_pair_if_present(aggregate, candidate)?;
-    let candidate = if has_distributed_aggregate {
-        GpuCandidate::with_operator_count(
-            if post_aggregate_projection.is_some() {
-                GLOBAL_COUNT_DISTRIBUTED_POST_SHAPE
-            } else {
-                GLOBAL_COUNT_DISTRIBUTED_MINIMAL_SHAPE
-            },
-            output_schema_fields,
-            4 + usize::from(post_aggregate_projection.is_some()),
-        )
-    } else {
-        candidate
-    };
     let (pre_aggregate_projection, filter_or_source) = peel_pre_aggregate_projection(aggregate);
     let (filter, source_input) = peel_filter(peel_repartition(filter_or_source));
+    let candidate = global_aggregate_candidate(
+        output_schema_fields,
+        post_aggregate_projection.is_some(),
+        pre_aggregate_projection.is_some(),
+        filter.is_some(),
+        has_distributed_aggregate,
+    );
     let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate)?;
 
     Ok(NormalizedNativePlan {
@@ -248,6 +259,39 @@ fn normalize_global_aggregate_stack<'a>(
         sort: None,
         limit_fetch: None,
     })
+}
+
+fn global_aggregate_candidate(
+    output_schema_fields: usize,
+    has_post_projection: bool,
+    has_pre_projection: bool,
+    has_filter: bool,
+    has_distributed_aggregate: bool,
+) -> GpuCandidate {
+    let shape = match (has_distributed_aggregate, has_post_projection, has_pre_projection, has_filter) {
+        (false, true, true, true) => GLOBAL_AGG_POST_PRE_FILTER_SHAPE,
+        (false, true, true, false) => GLOBAL_AGG_POST_PRE_NO_FILTER_SHAPE,
+        (false, true, false, true) => GLOBAL_AGG_POST_FILTER_SHAPE,
+        (false, true, false, false) => GLOBAL_AGG_POST_SHAPE,
+        (false, false, true, true) => GLOBAL_AGG_PRE_FILTER_SHAPE,
+        (false, false, true, false) => GLOBAL_AGG_PRE_NO_FILTER_SHAPE,
+        (false, false, false, true) => GLOBAL_AGG_FILTER_SHAPE,
+        (false, false, false, false) => GLOBAL_AGG_MINIMAL_SHAPE,
+        (true, true, true, true) => GLOBAL_AGG_DISTRIBUTED_POST_PRE_FILTER_SHAPE,
+        (true, true, true, false) => GLOBAL_AGG_DISTRIBUTED_POST_PRE_NO_FILTER_SHAPE,
+        (true, true, false, true) => GLOBAL_AGG_DISTRIBUTED_POST_FILTER_SHAPE,
+        (true, true, false, false) => GLOBAL_AGG_DISTRIBUTED_POST_SHAPE,
+        (true, false, true, true) => GLOBAL_AGG_DISTRIBUTED_PRE_FILTER_SHAPE,
+        (true, false, true, false) => GLOBAL_AGG_DISTRIBUTED_PRE_NO_FILTER_SHAPE,
+        (true, false, false, true) => GLOBAL_AGG_DISTRIBUTED_FILTER_SHAPE,
+        (true, false, false, false) => GLOBAL_AGG_DISTRIBUTED_MINIMAL_SHAPE,
+    };
+    let operator_count = 2
+        + usize::from(has_post_projection)
+        + usize::from(has_pre_projection)
+        + usize::from(has_filter)
+        + if has_distributed_aggregate { 2 } else { 0 };
+    GpuCandidate::with_operator_count(shape, output_schema_fields, operator_count)
 }
 
 fn peel_post_aggregate_projection(
@@ -303,6 +347,7 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
                 && final_expr.order_bys().is_empty()
                 && partial_expr.order_bys().is_empty()
         })
+        && distributed_aggregate_state_exprs_are_native_safe(final_aggregate, partial_aggregate)
 }
 
 fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
@@ -322,6 +367,43 @@ fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {
         || name.eq_ignore_ascii_case("max")
         || name.eq_ignore_ascii_case("count")
         || name.eq_ignore_ascii_case("avg")
+}
+
+fn distributed_aggregate_state_exprs_are_native_safe(
+    final_aggregate: &AggregateExec,
+    partial_aggregate: &AggregateExec,
+) -> bool {
+    let mut state_index_base = final_aggregate.group_expr().expr().len();
+    let final_input_schema = final_aggregate.input().schema();
+    let partial_output_schema = partial_aggregate.schema();
+    for (final_expr, partial_expr) in final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()) {
+        let Ok(state_fields) = partial_expr.state_fields() else {
+            return false;
+        };
+        let Ok(final_state_fields) = final_expr.state_fields() else {
+            return false;
+        };
+        if final_state_fields != state_fields
+            || !distributed_state_fields_match_schema(&state_fields, &partial_output_schema, state_index_base)
+            || !distributed_state_fields_match_schema(&state_fields, &final_input_schema, state_index_base)
+        {
+            return false;
+        }
+        state_index_base += state_fields.len();
+    }
+    true
+}
+
+fn distributed_state_fields_match_schema(
+    state_fields: &[arrow::datatypes::FieldRef],
+    schema: &SchemaRef,
+    state_index_base: usize,
+) -> bool {
+    state_index_base.checked_add(state_fields.len()).is_some_and(|end| end <= schema.fields().len())
+        && state_fields
+            .iter()
+            .enumerate()
+            .all(|(state_offset, field)| schema.field(state_index_base + state_offset) == field.as_ref())
 }
 
 fn distributed_final_output_is_native_safe(
