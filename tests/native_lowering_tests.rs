@@ -18,6 +18,7 @@ use cudf_query_engine::{
 };
 use datafusion::{
     common::ScalarValue,
+    config::ConfigOptions,
     datasource::{
         physical_plan::{
             FileGroup, FileScanConfigBuilder, FileSource, ParquetSource,
@@ -27,6 +28,7 @@ use datafusion::{
         table_schema::TableSchema,
     },
     execution::object_store::ObjectStoreUrl,
+    functions::unicode,
     functions_aggregate::{count::count_udaf, first_last::first_value_udaf, min_max::max_udaf, sum::sum_udaf},
     logical_expr::Operator,
     parquet::{
@@ -40,9 +42,9 @@ use datafusion::{
         },
     },
     physical_expr::{
-        LexOrdering, PhysicalExpr, PhysicalSortExpr,
+        LexOrdering, PhysicalExpr, PhysicalSortExpr, ScalarFunctionExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
-        expressions::{CastExpr, NotExpr, TryCastExpr, binary, col, in_list, lit},
+        expressions::{CastExpr, LikeExpr, NotExpr, TryCastExpr, binary, col, in_list, lit},
     },
     physical_plan::{
         ExecutionPlan,
@@ -775,6 +777,33 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
 }
 
 #[test]
+fn adapter_validation_rejects_like_over_non_string_input() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-like-type-reject");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(LikeExpr::new(
+        false,
+        false,
+        col("payload", &scan_schema).unwrap(),
+        lit(ScalarValue::Utf8(Some("1%".to_string()))),
+    ));
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pushed_scan_projection_reads_only_downstream_required_columns() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-scan-projection-pruning");
     let path = dir.join("input.parquet");
@@ -790,6 +819,120 @@ fn pushed_scan_projection_reads_only_downstream_required_columns() {
     assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
     assert!(!source.read_columns.contains(&"payload".to_string()));
     assert_eq!(source.diagnostics.read_column_count, 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn phase2_filter_predicate_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-filter-columns");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_FILTER_REQUIRED_COLUMNS_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
+    assert_eq!(source.projected_output_columns, vec!["key".to_string(), "m00".to_string(), "m01".to_string()]);
+    assert_eq!(source.pure_filter_columns, vec!["label".to_string()]);
+    assert_eq!(source.diagnostics.read_column_count, 4);
+    assert_eq!(source.diagnostics.projected_output_column_count, 3);
+    assert_eq!(source.diagnostics.pure_filter_column_count, 1);
+    assert!(!source.read_columns.contains(&"payload".to_string()));
+    assert!(!source.read_columns.contains(&"amount".to_string()));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn phase2_pre_aggregate_projection_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-pre-projection-columns");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
+    assert!(source.pure_filter_columns.is_empty());
+    for unused in ["payload", "amount", "shipdate", "event_ts"] {
+        assert!(!source.read_columns.contains(&unused.to_string()));
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn phase2_aggregate_argument_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-aggregate-argument-columns");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_AGGREGATE_ARGUMENT_REQUIRED_COLUMNS_QUERY)
+            .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "label".to_string(), "m00".to_string(), "m01".to_string()]);
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert!(matches!(
+        &aggregate_exprs[0].expr,
+        Expr::Column(name) if name.starts_with("__cudf_aggregate_arg_")
+    ));
+    assert!(!source.read_columns.contains(&"payload".to_string()));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn phase2_group_expression_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-group-expression-columns");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_GROUP_REQUIRED_COLUMNS_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["label".to_string(), "m00".to_string(), "shipdate".to_string()]);
+    for unused in ["key", "payload", "m01", "amount", "event_ts"] {
+        assert!(!source.read_columns.contains(&unused.to_string()));
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn pushed_scan_projection_prunes_payload_for_nested_phase2_scalars() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-scan-projection-columns");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_PUSHED_PROJECTION_REQUIRED_COLUMNS_QUERY)
+            .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["label".to_string(), "m00".to_string(), "shipdate".to_string()]);
+    assert_eq!(source.read_column_file_indices, vec![4, 2, 6]);
+    assert!(!source.read_columns.contains(&"payload".to_string()));
+    assert!(!source.read_columns.contains(&"amount".to_string()));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1548,6 +1691,34 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
 }
 
 #[test]
+fn substring_unsupported_arity_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-substring-arity");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let bad_substring: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        "substring",
+        unicode::substr(),
+        vec![col("label", &scan_schema).unwrap()],
+        Arc::new(Field::new("bad_substring", DataType::Utf8, true)),
+        Arc::new(ConfigOptions::new()),
+    ));
+    let plan = grouped_count_projection_plan(scan, bad_substring, "bad_substring");
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn non_numeric_cast_targets_are_rejected_during_native_planning() {
     for (name, target_type, literal) in [
         ("string", DataType::Utf8, ScalarValue::Utf8(Some("10".to_string()))),
@@ -2077,6 +2248,57 @@ ORDER BY distinct_payload DESC, key ASC
 LIMIT 2
 ";
 
+const SQL_PHASE2_FILTER_REQUIRED_COLUMNS_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00
+FROM bench
+WHERE label IS NOT NULL
+  AND CASE WHEN label IS NULL THEN false ELSE true END
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_PHASE2_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY: &str = "
+SELECT key, SUM(x00) AS sum_x00
+FROM (
+    SELECT key, CASE WHEN label IN ('a', 'b') THEN m00 ELSE m01 END AS x00
+    FROM bench
+) projected
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_PHASE2_AGGREGATE_ARGUMENT_REQUIRED_COLUMNS_QUERY: &str = "
+SELECT key, SUM(CASE WHEN label LIKE 'a%' THEN m00 ELSE m01 END) AS sum_x00
+FROM bench
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_PHASE2_GROUP_REQUIRED_COLUMNS_QUERY: &str = "
+SELECT
+    SUBSTRING(label FROM 1 FOR 1) AS label_prefix,
+    EXTRACT(YEAR FROM shipdate) AS ship_year,
+    SUM(m00) AS sum_m00
+FROM bench
+GROUP BY SUBSTRING(label FROM 1 FOR 1), EXTRACT(YEAR FROM shipdate)
+ORDER BY label_prefix ASC, ship_year ASC
+LIMIT 2
+";
+
+const SQL_PHASE2_PUSHED_PROJECTION_REQUIRED_COLUMNS_QUERY: &str = "
+SELECT label_prefix, ship_year, SUM(m00) AS sum_m00
+FROM (
+    SELECT SUBSTRING(label FROM 1 FOR 1) AS label_prefix, EXTRACT(YEAR FROM shipdate) AS ship_year, m00
+    FROM bench
+) projected
+GROUP BY label_prefix, ship_year
+ORDER BY label_prefix ASC, ship_year ASC
+LIMIT 2
+";
+
 fn parquet_scan_with_pushed_down_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     parquet_scan_with_pushed_down_predicate_value(path, 10)
 }
@@ -2380,6 +2602,45 @@ fn aggregate_sort_limit_plan_without_filter(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
+fn grouped_count_projection_plan(
+    scan: Arc<dyn ExecutionPlan>,
+    projection_expr: Arc<dyn PhysicalExpr>,
+    projection_alias: &str,
+) -> Arc<dyn ExecutionPlan> {
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new([ProjectionExpr { expr: projection_expr, alias: projection_alias.to_string() }], scan)
+            .unwrap(),
+    );
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(
+        col(projection_alias, &projection_schema).unwrap(),
+        projection_alias.to_string(),
+    )]);
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&projection_schema))
+        .alias("count_rows")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(count)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col(projection_alias, &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    Arc::new(LocalLimitExec::new(Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(2))), 2))
+}
+
 fn aggregate_topk_plan(
     scan: Arc<dyn ExecutionPlan>,
     projection_operator: Operator,
@@ -2639,7 +2900,7 @@ fn write_parquet_file_with_tpch_like_columns(path: &std::path::Path) {
         Field::new("payload", DataType::Int32, false),
         Field::new("m00", DataType::Int64, false),
         Field::new("m01", DataType::Int64, false),
-        Field::new("label", DataType::Utf8, false),
+        Field::new("label", DataType::Utf8, true),
         Field::new("amount", DataType::Decimal128(15, 2), false),
         Field::new("shipdate", DataType::Date32, false),
         Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),

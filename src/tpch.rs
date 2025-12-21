@@ -13,9 +13,22 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
+    common::ScalarValue,
     error::DataFusionError,
     execution::SessionStateBuilder,
+    functions_aggregate::count::count_udaf,
+    logical_expr::Operator,
     parquet::{arrow::ArrowWriter, errors::ParquetError, file::properties::WriterProperties},
+    physical_expr::{
+        PhysicalExpr,
+        aggregate::AggregateExprBuilder,
+        expressions::{BinaryExpr, IsNotNullExpr, col, in_list, lit},
+    },
+    physical_plan::{
+        ExecutionPlan,
+        aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
+        filter::FilterExec,
+    },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use parquet::file::reader::{FileReader, SerializedFileReader};
@@ -257,6 +270,80 @@ pub async fn tpch_fallback_pressure_workload_items(
     Ok(items)
 }
 
+pub async fn tpch_scalar_fallback_pressure_workload_items(
+    root: &Path,
+    config: SessionConfig,
+) -> TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+    let ctx = SessionContext::new_with_config(config);
+    register_tpch_tables(&ctx, root).await?;
+
+    let mut items = Vec::with_capacity(TPCH_SCALAR_FALLBACK_PRESSURE_QUERIES.len());
+    let lineitem_scan = ctx.table("lineitem").await?.create_physical_plan().await?;
+    let lineitem_schema = lineitem_scan.schema();
+    let in_list_with_null = in_list(
+        col("l_orderkey", &lineitem_schema)?,
+        vec![lit(ScalarValue::Int64(Some(1))), lit(ScalarValue::Int64(None))],
+        &false,
+        lineitem_schema.as_ref(),
+    )?;
+    items.push(NativeFallbackPressureWorkloadItem::new(
+        "q12_scalar_in_list_null",
+        count_filter_plan(Arc::clone(&lineitem_scan), in_list_with_null)?,
+    ));
+
+    let interval_minus_date: Arc<dyn PhysicalExpr> = Arc::new(IsNotNullExpr::new(Arc::new(BinaryExpr::new(
+        lit(ScalarValue::new_interval_mdn(0, 1, 0)),
+        Operator::Minus,
+        col("l_shipdate", &lineitem_schema)?,
+    ))));
+    items.push(NativeFallbackPressureWorkloadItem::new(
+        "q01_scalar_interval_minus_date",
+        count_filter_plan(lineitem_scan, interval_minus_date)?,
+    ));
+
+    for query in TPCH_SCALAR_FALLBACK_PRESSURE_QUERIES {
+        let item = match ctx.sql(query.sql).await {
+            Ok(df) => match df.create_physical_plan().await {
+                Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
+                Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
+                    query.id,
+                    "physical_planning",
+                    "physical_planning_failed",
+                    error.to_string(),
+                ),
+            },
+            Err(error) => NativeFallbackPressureWorkloadItem::planning_failure(
+                query.id,
+                "sql_to_logical_plan",
+                "sql_planning_failed",
+                error.to_string(),
+            ),
+        };
+        items.push(item);
+    }
+    Ok(items)
+}
+
+fn count_filter_plan(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn PhysicalExpr>,
+) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan)?);
+    let filter_schema = filter.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&filter_schema))
+        .alias("count_rows")
+        .build()?;
+    Ok(Arc::new(AggregateExec::try_new(
+        AggregateMode::Single,
+        PhysicalGroupBy::new_single(Vec::new()),
+        vec![Arc::new(count)],
+        vec![None],
+        filter,
+        filter_schema,
+    )?))
+}
+
 pub async fn tpch_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
@@ -282,6 +369,30 @@ pub async fn tpch_datafusion_planning_workload_items(
     }
     Ok(items)
 }
+
+struct TpchScalarFallbackPressureQuery {
+    id: &'static str,
+    sql: &'static str,
+}
+
+const TPCH_SCALAR_FALLBACK_PRESSURE_QUERIES: &[TpchScalarFallbackPressureQuery] = &[
+    TpchScalarFallbackPressureQuery {
+        id: "q22_scalar_substring_dynamic_start",
+        sql: "
+SELECT COUNT(*) AS count_rows
+FROM customer
+WHERE SUBSTRING(c_phone FROM c_custkey FOR 2) = '13'
+",
+    },
+    TpchScalarFallbackPressureQuery {
+        id: "q07_scalar_extract_hour",
+        sql: "
+SELECT COUNT(*) AS count_rows
+FROM orders
+WHERE EXTRACT(HOUR FROM o_orderdate) = 1
+",
+    },
+];
 
 async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> TpchWorkloadResult<()> {
     for table in TPCH_TABLES {

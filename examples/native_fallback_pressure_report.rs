@@ -17,7 +17,7 @@ use datafusion::{
 };
 use datafusion_cudf::{
     NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, TpchDatasetMetadata, prepare_tpch_report_dataset,
-    tpch_fallback_pressure_workload_items, tpch_report_session_config,
+    tpch_fallback_pressure_workload_items, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
 };
 
 #[tokio::main]
@@ -31,9 +31,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let TpchWorkload { items, metadata } = tpch_workload_items(&dir).await?;
             (items, Some(metadata))
         },
+        "tpch_scalar" => {
+            let TpchWorkload { items, metadata } = tpch_scalar_workload_items(&dir).await?;
+            (items, Some(metadata))
+        },
         value => {
             return Err(format!(
-                "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic or tpch"
+                "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic, tpch, or tpch_scalar"
             )
             .into());
         },
@@ -82,6 +86,12 @@ async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPr
 async fn tpch_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchWorkload> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let items = tpch_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
+    Ok(TpchWorkload { items, metadata })
+}
+
+async fn tpch_scalar_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchWorkload> {
+    let (root, metadata) = prepare_tpch_report_dataset(dir)?;
+    let items = tpch_scalar_fallback_pressure_workload_items(&root, tpch_report_session_config()).await?;
     Ok(TpchWorkload { items, metadata })
 }
 

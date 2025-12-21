@@ -5,9 +5,9 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray},
+    array::{ArrayRef, Date32Array, Decimal128Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray},
     compute::SortOptions as ArrowSortOptions,
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
@@ -451,8 +451,55 @@ async fn native_runtime_phase2_nullable_scalar_expressions_match_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
+    let cases = [
+        ("like", SQL_PHASE2_NULL_SEMANTICS_LIKE_QUERY),
+        ("substring", SQL_PHASE2_NULL_SEMANTICS_SUBSTRING_QUERY),
+        ("in-list", SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY),
+        ("case", SQL_PHASE2_NULL_SEMANTICS_CASE_QUERY),
+        ("extract", SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY),
+        ("interval", SQL_PHASE2_NULL_SEMANTICS_INTERVAL_QUERY),
+        ("modulo", SQL_PHASE2_NULL_SEMANTICS_MODULO_QUERY),
+        ("is-null", SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY),
+    ];
+
+    for (name, sql) in cases {
+        let dir = unique_temp_dir(format!("datafusion-cudf-native-runtime-phase2-null-semantics-{name}").as_str());
+        let path = dir.join("input.parquet");
+        write_nullable_phase2_scalar_input_parquet(&path);
+
+        let cpu_batches = cpu_sql_output(&path, sql).await;
+        let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
+        let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
+        let lowering = lower_physical_plan_to_native(native_physical_plan);
+        assert_eq!(lowering.rewritten_count(), 1, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+        assert_eq!(lowering.rejected_count(), 0, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+
+        let context = bounded_execution_context();
+        let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+        cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+        let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
+        assert_eq!(result.metrics().boundary.host_to_device_uploads, 0, "{name}");
+        assert_eq!(result.metrics().boundary.device_to_host_materializations, 1, "{name}");
+
+        let QueryOutput::HostArrow(native_batch) = result.output() else {
+            panic!("{name} native host sink should return a RecordBatch");
+        };
+        assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_execution() {
-    for (name, sql) in [("substring-zero-start", SQL_INVALID_SUBSTRING_QUERY)] {
+    for (name, sql) in [
+        ("substring-zero-start", SQL_INVALID_SUBSTRING_ZERO_START_QUERY),
+        ("substring-dynamic-start", SQL_INVALID_SUBSTRING_DYNAMIC_START_QUERY),
+        ("substring-dynamic-length", SQL_INVALID_SUBSTRING_DYNAMIC_LENGTH_QUERY),
+        ("substring-negative-length", SQL_INVALID_SUBSTRING_NEGATIVE_LENGTH_QUERY),
+        ("substring-stop-overflow", SQL_INVALID_SUBSTRING_STOP_OVERFLOW_QUERY),
+    ] {
         let dir = unique_temp_dir(format!("datafusion-cudf-native-runtime-invalid-{name}").as_str());
         let path = dir.join("input.parquet");
         write_phase2_scalar_input_parquet(&path);
@@ -984,10 +1031,161 @@ ORDER BY
 LIMIT 20
 ";
 
-const SQL_INVALID_SUBSTRING_QUERY: &str = "
+const SQL_PHASE2_NULL_SEMANTICS_LIKE_QUERY: &str = "
+SELECT row_id, like_match, not_like_match, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, status LIKE 'O%' AS like_match, status NOT LIKE 'O%' AS not_like_match
+    FROM bench
+) null_semantics
+GROUP BY row_id, like_match, not_like_match
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_SUBSTRING_QUERY: &str = "
+SELECT row_id, status_prefix, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, SUBSTRING(status FROM 1 FOR 1) AS status_prefix
+    FROM bench
+) null_semantics
+GROUP BY row_id, status_prefix
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY: &str = "
+SELECT row_id, status_in_list, status_not_in_list, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, status IN ('O', 'P') AS status_in_list, status NOT IN ('F') AS status_not_in_list
+    FROM bench
+) null_semantics
+GROUP BY row_id, status_in_list, status_not_in_list
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_CASE_QUERY: &str = "
+SELECT row_id, status_label, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        CASE
+            WHEN status IS NULL THEN 'missing'
+            WHEN status IN ('O', 'P') THEN 'listed'
+            ELSE 'other'
+        END AS status_label
+    FROM bench
+) null_semantics
+GROUP BY row_id, status_label
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY: &str = "
+SELECT row_id, ship_year, ship_month, ship_day, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        EXTRACT(YEAR FROM shipdate) AS ship_year,
+        EXTRACT(MONTH FROM shipdate) AS ship_month,
+        EXTRACT(DAY FROM shipdate) AS ship_day
+    FROM bench
+) null_semantics
+GROUP BY row_id, ship_year, ship_month, ship_day
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_INTERVAL_QUERY: &str = "
+SELECT row_id, shipdate_plus_month, shipdate_minus_day, event_ts_plus_second, event_ts_minus_second, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        shipdate + INTERVAL '1' MONTH AS shipdate_plus_month,
+        shipdate - INTERVAL '1' DAY AS shipdate_minus_day,
+        event_ts + INTERVAL '1' SECOND AS event_ts_plus_second,
+        event_ts - INTERVAL '1' SECOND AS event_ts_minus_second
+    FROM bench
+) null_semantics
+GROUP BY row_id, shipdate_plus_month, shipdate_minus_day, event_ts_plus_second, event_ts_minus_second
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_MODULO_QUERY: &str = "
+SELECT row_id, order_mod, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, orderkey % 2 AS order_mod
+    FROM bench
+) null_semantics
+GROUP BY row_id, order_mod
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY: &str = "
+SELECT row_id, status_is_null, status_is_not_null, shipdate_is_null, COUNT(*) AS row_count
+FROM (
+    SELECT
+        row_id,
+        status IS NULL AS status_is_null,
+        status IS NOT NULL AS status_is_not_null,
+        shipdate IS NULL AS shipdate_is_null
+    FROM bench
+) null_semantics
+GROUP BY row_id, status_is_null, status_is_not_null, shipdate_is_null
+ORDER BY row_id ASC
+LIMIT 20
+";
+
+const SQL_INVALID_SUBSTRING_ZERO_START_QUERY: &str = "
 SELECT status_prefix, COUNT(*) AS count_rows
 FROM (
     SELECT SUBSTRING(status FROM 0 FOR 1) AS status_prefix
+    FROM bench
+) invalid_substring
+GROUP BY status_prefix
+ORDER BY status_prefix ASC
+LIMIT 10
+";
+
+const SQL_INVALID_SUBSTRING_DYNAMIC_START_QUERY: &str = "
+SELECT status_prefix, COUNT(*) AS count_rows
+FROM (
+    SELECT SUBSTRING(status FROM orderkey FOR 1) AS status_prefix
+    FROM bench
+) invalid_substring
+GROUP BY status_prefix
+ORDER BY status_prefix ASC
+LIMIT 10
+";
+
+const SQL_INVALID_SUBSTRING_DYNAMIC_LENGTH_QUERY: &str = "
+SELECT status_prefix, COUNT(*) AS count_rows
+FROM (
+    SELECT SUBSTRING(status FROM 1 FOR orderkey) AS status_prefix
+    FROM bench
+) invalid_substring
+GROUP BY status_prefix
+ORDER BY status_prefix ASC
+LIMIT 10
+";
+
+const SQL_INVALID_SUBSTRING_NEGATIVE_LENGTH_QUERY: &str = "
+SELECT status_prefix, COUNT(*) AS count_rows
+FROM (
+    SELECT SUBSTRING(status FROM 1 FOR -1) AS status_prefix
+    FROM bench
+) invalid_substring
+GROUP BY status_prefix
+ORDER BY status_prefix ASC
+LIMIT 10
+";
+
+const SQL_INVALID_SUBSTRING_STOP_OVERFLOW_QUERY: &str = "
+SELECT status_prefix, COUNT(*) AS count_rows
+FROM (
+    SELECT SUBSTRING(status FROM 2147483647 FOR 1) AS status_prefix
     FROM bench
 ) invalid_substring
 GROUP BY status_prefix
@@ -1123,15 +1321,26 @@ fn write_q6_lineitem_parquet(path: &std::path::Path) {
 
 fn write_nullable_phase2_scalar_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
+        Field::new("row_id", DataType::Int32, false),
         Field::new("orderkey", DataType::Int64, true),
         Field::new("shipdate", DataType::Date32, true),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
         Field::new("status", DataType::Utf8, true),
     ]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
             Arc::new(Int64Array::from(vec![Some(1), Some(2), None, Some(4), Some(5), None])),
             Arc::new(Date32Array::from(vec![Some(18_262), None, Some(18_322), Some(18_353), None, Some(18_414)])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                Some(100_000_000),
+                None,
+                Some(300_000_000),
+                Some(400_000_000),
+                None,
+                Some(600_000_000),
+            ])),
             Arc::new(StringArray::from(vec![Some("O"), Some("F"), None, Some("P"), Some("OX"), Some("R")])),
         ],
     )

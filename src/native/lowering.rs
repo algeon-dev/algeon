@@ -259,6 +259,9 @@ fn validate_required_scalar_expressions(
             validate_physical_expr(&expr, &aggregate.input().schema())?;
         }
     }
+    for (group_expr, _alias) in aggregate.group_expr().expr() {
+        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+    }
     if let Some(projection) = post_aggregate_projection {
         for projection_expr in projection.expr() {
             validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
@@ -688,7 +691,7 @@ fn lower_substring_function(
     }
     let length = if args.len() == 3 { Some(literal_i32(&args[2])?) } else { None };
     if let Some(length) = length
-        && (length < 0 || (start - 1).checked_add(length).is_none())
+        && (length < 0 || start.checked_add(length).is_none())
     {
         return Err(FallbackReason::UnsupportedExpression);
     }

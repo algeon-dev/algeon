@@ -185,15 +185,28 @@ fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<cudf:
     let zero_based_start = start - 1;
     let stop = length
         .map(|length| {
-            zero_based_start.checked_add(length).ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedExpression,
-                    "cudf_query_engine.expr.lower_substring",
-                    "native substring stop position exceeds i32 range",
-                )
-                .with_fact("start", start)
-                .with_fact("length", length)
-            })
+            start
+                .checked_add(length)
+                .ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.expr.lower_substring",
+                        "native substring stop position exceeds i32 range",
+                    )
+                    .with_fact("start", start)
+                    .with_fact("length", length)
+                })
+                .and_then(|_| {
+                    zero_based_start.checked_add(length).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::UnsupportedExpression,
+                            "cudf_query_engine.expr.lower_substring",
+                            "native substring stop position exceeds i32 range",
+                        )
+                        .with_fact("start", start)
+                        .with_fact("length", length)
+                    })
+                })
         })
         .transpose()?;
     let options = StringSliceOptions::new(Some(zero_based_start), stop);
