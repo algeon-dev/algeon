@@ -1,6 +1,6 @@
 use std::{fmt::Write, sync::Arc};
 
-use cudf_query_engine::SourceDiagnostics as NativeSourceDiagnostics;
+use cudf_query_engine::{SourceDiagnostics as NativeSourceDiagnostics, is_supported_arrow_type};
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -607,20 +607,7 @@ fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {
 }
 
 fn literal_is_supported(value: &ScalarValue) -> bool {
-    matches!(
-        value,
-        ScalarValue::Boolean(Some(_))
-            | ScalarValue::Int8(Some(_))
-            | ScalarValue::Int16(Some(_))
-            | ScalarValue::Int32(Some(_))
-            | ScalarValue::Int64(Some(_))
-            | ScalarValue::UInt8(Some(_))
-            | ScalarValue::UInt16(Some(_))
-            | ScalarValue::UInt32(Some(_))
-            | ScalarValue::UInt64(Some(_))
-            | ScalarValue::Float32(Some(_))
-            | ScalarValue::Float64(Some(_))
-    )
+    is_supported_arrow_type(&value.data_type())
 }
 
 fn binary_operator_is_supported(op: &Operator) -> bool {

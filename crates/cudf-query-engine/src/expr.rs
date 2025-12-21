@@ -1,6 +1,6 @@
 use std::fmt;
 
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, TimeUnit};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -64,8 +64,38 @@ pub enum LiteralValue {
     UInt64(u64),
     Float32(f32),
     Float64(f64),
-    String(String),
-    Null,
+    Utf8(String),
+    LargeUtf8(String),
+    Decimal128 { raw: i128, precision: u8, scale: i8 },
+    Date32(i32),
+    Timestamp { raw: i64, unit: TimeUnit },
+    Duration { raw: i64, unit: TimeUnit },
+    Null(DataType),
+}
+
+impl LiteralValue {
+    pub fn data_type(&self) -> DataType {
+        match self {
+            Self::Boolean(_) => DataType::Boolean,
+            Self::Int8(_) => DataType::Int8,
+            Self::Int16(_) => DataType::Int16,
+            Self::Int32(_) => DataType::Int32,
+            Self::Int64(_) => DataType::Int64,
+            Self::UInt8(_) => DataType::UInt8,
+            Self::UInt16(_) => DataType::UInt16,
+            Self::UInt32(_) => DataType::UInt32,
+            Self::UInt64(_) => DataType::UInt64,
+            Self::Float32(_) => DataType::Float32,
+            Self::Float64(_) => DataType::Float64,
+            Self::Utf8(_) => DataType::Utf8,
+            Self::LargeUtf8(_) => DataType::LargeUtf8,
+            Self::Decimal128 { precision, scale, .. } => DataType::Decimal128(*precision, *scale),
+            Self::Date32(_) => DataType::Date32,
+            Self::Timestamp { unit, .. } => DataType::Timestamp(*unit, None),
+            Self::Duration { unit, .. } => DataType::Duration(*unit),
+            Self::Null(data_type) => data_type.clone(),
+        }
+    }
 }
 
 impl fmt::Display for LiteralValue {
@@ -82,8 +112,14 @@ impl fmt::Display for LiteralValue {
             Self::UInt64(value) => write!(f, "{value}"),
             Self::Float32(value) => write!(f, "{value}"),
             Self::Float64(value) => write!(f, "{value}"),
-            Self::String(value) => write!(f, "{value:?}"),
-            Self::Null => f.write_str("NULL"),
+            Self::Utf8(value) | Self::LargeUtf8(value) => write!(f, "{value:?}"),
+            Self::Decimal128 { raw, precision, scale } => {
+                write!(f, "DECIMAL128({raw}, precision={precision}, scale={scale})")
+            },
+            Self::Date32(value) => write!(f, "DATE32({value})"),
+            Self::Timestamp { raw, unit } => write!(f, "TIMESTAMP({raw}, {unit:?})"),
+            Self::Duration { raw, unit } => write!(f, "DURATION({raw}, {unit:?})"),
+            Self::Null(data_type) => write!(f, "NULL::{data_type}"),
         }
     }
 }

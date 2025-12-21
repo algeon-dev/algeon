@@ -6,8 +6,11 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, Float64Array, Int32Array, Int64Array},
-    datatypes::{DataType, Field, Schema},
+    array::{
+        Array, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
+        TimestampNanosecondArray,
+    },
+    datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use cudf::DataFrame;
@@ -146,6 +149,110 @@ fn native_query_executes_multi_file_direct_parquet_source() {
     };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[808, 606]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_filter_projection_over_tpch_like_types() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-tpch-like-types");
+    let path = dir.join("tpch-like.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_tpch_like_types_parquet(&runtime, &path);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+        Field::new("shipdate", DataType::Date32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("event_ts_plus", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("large_literal", DataType::Utf8, false),
+        Field::new("null_amount", DataType::Decimal128(15, 2), true),
+        Field::new("null_shipdate", DataType::Date32, true),
+        Field::new("null_event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), true),
+        Field::new("null_status", DataType::Utf8, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec![
+            "orderkey".to_string(),
+            "amount".to_string(),
+            "shipdate".to_string(),
+            "event_ts".to_string(),
+            "status".to_string(),
+        ],
+    );
+    let filter = Expr::binary(
+        Expr::binary(
+            Expr::binary(
+                Expr::binary(
+                    Expr::column("amount"),
+                    BinaryOp::Gt,
+                    Expr::literal(LiteralValue::Decimal128 { raw: 20_000, precision: 15, scale: 2 }),
+                ),
+                BinaryOp::And,
+                Expr::binary(Expr::column("shipdate"), BinaryOp::GtEq, Expr::literal(LiteralValue::Date32(18_322))),
+            ),
+            BinaryOp::And,
+            Expr::binary(
+                Expr::column("event_ts"),
+                BinaryOp::Lt,
+                Expr::literal(LiteralValue::Timestamp { raw: 400, unit: TimeUnit::Nanosecond }),
+            ),
+        ),
+        BinaryOp::And,
+        Expr::binary(Expr::column("status"), BinaryOp::Eq, Expr::literal(LiteralValue::Utf8("O".to_string()))),
+    );
+    let projection = vec![
+        Expr::column("orderkey"),
+        Expr::column("amount"),
+        Expr::column("shipdate"),
+        Expr::column("event_ts"),
+        Expr::binary(
+            Expr::column("event_ts"),
+            BinaryOp::Add,
+            Expr::literal(LiteralValue::Duration { raw: 10, unit: TimeUnit::Nanosecond }),
+        )
+        .alias("event_ts_plus"),
+        Expr::column("status"),
+        Expr::literal(LiteralValue::LargeUtf8("wide".to_string())).alias("large_literal"),
+        Expr::literal(LiteralValue::Null(DataType::Decimal128(15, 2))).alias("null_amount"),
+        Expr::literal(LiteralValue::Null(DataType::Date32)).alias("null_shipdate"),
+        Expr::literal(LiteralValue::Null(DataType::Timestamp(TimeUnit::Nanosecond, None))).alias("null_event_ts"),
+        Expr::literal(LiteralValue::Null(DataType::Utf8)).alias("null_status"),
+    ];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let projection = builder.add_projection(filter, projection, projected_schema);
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.parquet_files, 1);
+    assert_eq!(metrics.read_columns, 5);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int64_array(batch, 0).value(0), 3);
+    let amount = decimal128_array(batch, 1);
+    assert_eq!(amount.value(0), 22_222);
+    assert!(matches!(amount.data_type(), DataType::Decimal128(_, 2)));
+    assert_eq!(date32_array(batch, 2).value(0), 18_322);
+    assert_eq!(timestamp_ns_array(batch, 3).value(0), 300);
+    assert_eq!(timestamp_ns_array(batch, 4).value(0), 310);
+    assert_eq!(string_array(batch, 5).value(0), "O");
+    assert_eq!(string_array(batch, 6).value(0), "wide");
+    for index in 7..11 {
+        assert!(batch.column(index).is_null(0), "projection column {index} should be a typed null");
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1312,7 +1419,7 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
         vec!["key".into(), "value".into()],
     );
     let unsupported_filter =
-        Expr::binary(Expr::column("key"), BinaryOp::Eq, Expr::literal(LiteralValue::String("unsupported".to_string())));
+        Expr::binary(Expr::column("key"), BinaryOp::Eq, Expr::literal(LiteralValue::Null(DataType::Binary)));
     let aggregate = AggregateSpec::new(
         vec![Expr::column("key")],
         vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
@@ -1340,7 +1447,7 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
         Err(error) => error,
     };
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.operation(), "cudf_query_engine.expr.lower_literal");
     assert!(error.fact_value("path").is_none());
 }
@@ -1359,6 +1466,31 @@ fn write_input_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<S
             Arc::new(Int64Array::from(vec![5, 10, 20, 20])),
             Arc::new(Int64Array::from(vec![100, 200, 300, 400])),
             Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_tpch_like_types_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, false),
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+        Field::new("shipdate", DataType::Date32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
+        Field::new("status", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(
+                Decimal128Array::from_iter_values([12_345, 67_890, 22_222]).with_precision_and_scale(15, 2).unwrap(),
+            ),
+            Arc::new(Date32Array::from(vec![18_262, 18_293, 18_322])),
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            Arc::new(StringArray::from(vec!["O", "F", "O"])),
         ],
     )
     .unwrap();
@@ -1537,6 +1669,22 @@ fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
 
 fn float64_array(batch: &RecordBatch, index: usize) -> &Float64Array {
     batch.column(index).as_any().downcast_ref::<Float64Array>().expect("expected Float64Array")
+}
+
+fn decimal128_array(batch: &RecordBatch, index: usize) -> &Decimal128Array {
+    batch.column(index).as_any().downcast_ref::<Decimal128Array>().expect("expected Decimal128Array")
+}
+
+fn date32_array(batch: &RecordBatch, index: usize) -> &Date32Array {
+    batch.column(index).as_any().downcast_ref::<Date32Array>().expect("expected Date32Array")
+}
+
+fn timestamp_ns_array(batch: &RecordBatch, index: usize) -> &TimestampNanosecondArray {
+    batch.column(index).as_any().downcast_ref::<TimestampNanosecondArray>().expect("expected TimestampNanosecondArray")
+}
+
+fn string_array(batch: &RecordBatch, index: usize) -> &StringArray {
+    batch.column(index).as_any().downcast_ref::<StringArray>().expect("expected StringArray")
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

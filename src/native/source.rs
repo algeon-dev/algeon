@@ -432,6 +432,80 @@ fn native_literal_value(value: &datafusion::common::ScalarValue) -> Result<Nativ
         ScalarValue::UInt64(Some(value)) => Ok(NativeLiteralValue::UInt64(*value)),
         ScalarValue::Float32(Some(value)) => Ok(NativeLiteralValue::Float32(*value)),
         ScalarValue::Float64(Some(value)) => Ok(NativeLiteralValue::Float64(*value)),
+        ScalarValue::Utf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
+            Ok(NativeLiteralValue::Utf8(value.clone()))
+        },
+        ScalarValue::LargeUtf8(Some(value)) => Ok(NativeLiteralValue::LargeUtf8(value.clone())),
+        ScalarValue::Decimal128(Some(raw), precision, scale) => {
+            Ok(NativeLiteralValue::Decimal128 { raw: *raw, precision: *precision, scale: *scale })
+        },
+        ScalarValue::Date32(Some(value)) => Ok(NativeLiteralValue::Date32(*value)),
+        ScalarValue::TimestampSecond(Some(raw), None) => {
+            Ok(NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Second })
+        },
+        ScalarValue::TimestampMillisecond(Some(raw), None) => {
+            Ok(NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Millisecond })
+        },
+        ScalarValue::TimestampMicrosecond(Some(raw), None) => {
+            Ok(NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Microsecond })
+        },
+        ScalarValue::TimestampNanosecond(Some(raw), None) => {
+            Ok(NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Nanosecond })
+        },
+        ScalarValue::DurationSecond(Some(raw)) => {
+            Ok(NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Second })
+        },
+        ScalarValue::DurationMillisecond(Some(raw)) => {
+            Ok(NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Millisecond })
+        },
+        ScalarValue::DurationMicrosecond(Some(raw)) => {
+            Ok(NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Microsecond })
+        },
+        ScalarValue::DurationNanosecond(Some(raw)) => {
+            Ok(NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Nanosecond })
+        },
+        ScalarValue::Boolean(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Boolean)),
+        ScalarValue::Int8(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Int8)),
+        ScalarValue::Int16(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Int16)),
+        ScalarValue::Int32(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Int32)),
+        ScalarValue::Int64(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Int64)),
+        ScalarValue::UInt8(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::UInt8)),
+        ScalarValue::UInt16(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::UInt16)),
+        ScalarValue::UInt32(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::UInt32)),
+        ScalarValue::UInt64(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::UInt64)),
+        ScalarValue::Float32(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Float32)),
+        ScalarValue::Float64(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Float64)),
+        ScalarValue::Utf8(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Utf8)),
+        ScalarValue::Utf8View(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Utf8View)),
+        ScalarValue::LargeUtf8(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::LargeUtf8)),
+        ScalarValue::Decimal128(None, precision, scale) => {
+            Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Decimal128(*precision, *scale)))
+        },
+        ScalarValue::Date32(None) => Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Date32)),
+        ScalarValue::TimestampSecond(None, None) => Ok(NativeLiteralValue::Null(
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None),
+        )),
+        ScalarValue::TimestampMillisecond(None, None) => Ok(NativeLiteralValue::Null(
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, None),
+        )),
+        ScalarValue::TimestampMicrosecond(None, None) => Ok(NativeLiteralValue::Null(
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
+        )),
+        ScalarValue::TimestampNanosecond(None, None) => Ok(NativeLiteralValue::Null(
+            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, None),
+        )),
+        ScalarValue::DurationSecond(None) => {
+            Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Second)))
+        },
+        ScalarValue::DurationMillisecond(None) => {
+            Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Millisecond)))
+        },
+        ScalarValue::DurationMicrosecond(None) => {
+            Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Microsecond)))
+        },
+        ScalarValue::DurationNanosecond(None) => {
+            Ok(NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Nanosecond)))
+        },
         _ => Err(FallbackReason::UnsupportedType),
     }
 }

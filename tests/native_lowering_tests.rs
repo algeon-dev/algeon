@@ -5,7 +5,9 @@ use std::{
 };
 
 use arrow::{
-    array::{Float64Array, Int32Array, Int64Array, StringArray},
+    array::{
+        Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
+    },
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -254,20 +256,31 @@ fn unsupported_projection_expression_is_rejected_during_native_planning() {
 }
 
 #[test]
-fn unsupported_source_type_is_rejected_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-unsupported-type");
+fn tpch_like_source_types_do_not_reject_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-types");
     let path = dir.join("input.parquet");
-    write_parquet_file_with_string_column(&path);
-    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
-    ));
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec![
+            "amount".to_string(),
+            "event_ts".to_string(),
+            "key".to_string(),
+            "label".to_string(),
+            "m00".to_string(),
+            "m01".to_string(),
+            "payload".to_string(),
+            "shipdate".to_string()
+        ]
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -618,7 +631,7 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
 }
 
 #[test]
-fn parquet_utf8_partition_columns_are_rejected_until_string_partition_contract_is_modeled() {
+fn parquet_utf8_partition_columns_are_represented_in_native_source_contract() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -631,14 +644,15 @@ fn parquet_utf8_partition_columns_are_rejected_until_string_partition_contract_i
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
-    ));
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "rejected");
+    assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "represented");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.partition_columns.len(), 1);
+    assert_eq!(source.partition_columns[0].data_type, DataType::Utf8);
+    assert_eq!(source.files[0].partition_values, vec![LiteralValue::Utf8("2026".to_string())]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2269,13 +2283,16 @@ fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-fn write_parquet_file_with_string_column(path: &std::path::Path) {
+fn write_parquet_file_with_tpch_like_columns(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int32, false),
         Field::new("m00", DataType::Int64, false),
         Field::new("m01", DataType::Int64, false),
         Field::new("label", DataType::Utf8, false),
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+        Field::new("shipdate", DataType::Date32, false),
+        Field::new("event_ts", DataType::Timestamp(TimeUnit::Nanosecond, None), false),
     ]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
@@ -2285,6 +2302,11 @@ fn write_parquet_file_with_string_column(path: &std::path::Path) {
             Arc::new(Int64Array::from(vec![100, 200, 300])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
             Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(
+                Decimal128Array::from_iter_values([12_345, 67_890, 22_222]).with_precision_and_scale(15, 2).unwrap(),
+            ),
+            Arc::new(Date32Array::from(vec![18_262, 18_293, 18_322])),
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
         ],
     )
     .unwrap();

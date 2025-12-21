@@ -1,4 +1,5 @@
 use std::{
+    error::Error,
     fs::{self, File},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -14,11 +15,35 @@ use datafusion::{
     physical_plan::ExecutionPlan,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem};
+use datafusion_cudf::{
+    NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, tpch_fallback_pressure_workload_items,
+    tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn Error>> {
     let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure");
+    let workload = std::env::var("CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD").unwrap_or_else(|_| "synthetic".to_string());
+
+    let items = match workload.as_str() {
+        "synthetic" => synthetic_workload_items(&dir).await,
+        "tpch" => tpch_workload_items(&dir).await?,
+        value => {
+            return Err(format!(
+                "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic or tpch"
+            )
+            .into());
+        },
+    };
+
+    let report = NativeFallbackPressureReport::collect(items);
+    print!("{}", report.to_tsv());
+
+    fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+async fn synthetic_workload_items(dir: &std::path::Path) -> Vec<NativeFallbackPressureWorkloadItem> {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
 
@@ -45,10 +70,14 @@ async fn main() {
         items.push(NativeFallbackPressureWorkloadItem::new(query_id, sql_plan(&path, SessionConfig::new(), sql).await));
     }
 
-    let report = NativeFallbackPressureReport::collect(items);
-    print!("{}", report.to_tsv());
+    items
+}
 
-    fs::remove_dir_all(dir).unwrap();
+async fn tpch_workload_items(
+    dir: &std::path::Path,
+) -> datafusion_cudf::TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
+    write_tiny_tpch_parquet_dataset(dir)?;
+    tpch_fallback_pressure_workload_items(dir, tpch_report_session_config()).await
 }
 
 async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {
