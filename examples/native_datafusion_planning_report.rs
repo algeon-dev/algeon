@@ -37,6 +37,13 @@ async fn main() {
     for (query_id, sql) in workload {
         reports.push(native_datafusion_planning_report(query_id, &path, sql).await);
     }
+    for (query_id, sql) in [
+        ("distributed_avg_session", SQL_AVG_QUERY),
+        ("distributed_filtered_avg_session", SQL_FILTERED_AVG_QUERY),
+        ("distributed_distinct_avg_session", SQL_DISTINCT_AVG_QUERY),
+    ] {
+        reports.push(native_datafusion_planning_report_with_session(query_id, &path, sql, SessionConfig::new()).await);
+    }
 
     let rows = reports.into_iter().flat_map(|report| report.rows).collect();
     let report = NativeDataFusionPlanningReport { rows };
@@ -50,12 +57,21 @@ async fn native_datafusion_planning_report(
     path: &std::path::Path,
     sql: &str,
 ) -> NativeDataFusionPlanningReport {
+    native_datafusion_planning_report_with_session(query_id, path, sql, direct_friendly_sql_session_config()).await
+}
+
+async fn native_datafusion_planning_report_with_session(
+    query_id: &str,
+    path: &std::path::Path,
+    sql: &str,
+    session_config: SessionConfig,
+) -> NativeDataFusionPlanningReport {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(direct_friendly_sql_session_config())
+        .with_config(session_config)
         .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -150,6 +166,24 @@ FROM bench
 WHERE payload >= 10
 GROUP BY key
 ORDER BY sum_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_FILTERED_AVG_QUERY: &str = "
+SELECT key, AVG(m00) FILTER (WHERE payload >= 10) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_DISTINCT_AVG_QUERY: &str = "
+SELECT key, AVG(DISTINCT m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
 LIMIT 2
 ";
 

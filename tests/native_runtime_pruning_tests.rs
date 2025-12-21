@@ -11,7 +11,7 @@ use arrow::{
     record_batch::RecordBatch,
     util::display::array_value_to_string,
 };
-use cudf_query_engine::{ExecutionContext, QueryOutput, execute_query_plan};
+use cudf_query_engine::{ExecutionContext, MemoryControlPolicy, QueryOutput, execute_query_plan};
 use datafusion::{
     common::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
@@ -81,6 +81,80 @@ async fn native_runtime_default_sql_count_star_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_default_sql_distributed_avg_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-default-avg");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+
+    assert_default_sql_native_parity(&path, SQL_AVG_AGGREGATE_QUERY, Some((2, total_row_groups))).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_nullable_distributed_avg_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-nullable-avg");
+    let path = dir.join("input.parquet");
+    write_nullable_avg_input_parquet(&path);
+
+    assert_default_sql_native_parity(&path, SQL_AVG_BY_KEY_NO_FILTER_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_uneven_row_group_distributed_avg_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-uneven-avg");
+    let path = dir.join("input.parquet");
+    write_uneven_avg_input_parquet(&path);
+
+    assert_default_sql_native_parity(&path, SQL_AVG_BY_KEY_NO_FILTER_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_sort_null_ordering_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-sort-nulls");
+    let path = dir.join("input.parquet");
+    write_nullable_sort_input_parquet(&path);
+
+    for sql in [
+        SQL_SORT_NULLS_ASC_FIRST_QUERY,
+        SQL_SORT_NULLS_ASC_LAST_QUERY,
+        SQL_SORT_NULLS_DESC_FIRST_QUERY,
+        SQL_SORT_NULLS_DESC_LAST_QUERY,
+    ] {
+        assert_default_sql_native_parity(&path, sql, None).await;
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_bounded_topk_null_ordering_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-topk-nulls");
+    let path = dir.join("input.parquet");
+    write_nullable_sort_input_parquet(&path);
+
+    assert_default_sql_native_parity(&path, SQL_SORT_NULLS_TOPK_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_nullable_avg_output_ordering_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-nullable-avg-sort");
+    let path = dir.join("input.parquet");
+    write_nullable_avg_input_parquet(&path);
+
+    assert_default_sql_native_parity(&path, SQL_AVG_ORDER_BY_VALUE_QUERY, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_columns() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-zero-column-count");
     let path = dir.join("input.parquet");
@@ -96,8 +170,7 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 0);
     assert_eq!(lowering.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
 
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(runtime);
+    let context = bounded_execution_context();
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -239,6 +312,77 @@ async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
 }
 
 #[tokio::test]
+async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_engine() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-avg");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+    let cpu_batches = cpu_sql_output(&path, SQL_AVG_AGGREGATE_QUERY).await;
+
+    let plan = native_datafusion_sql_plan(&path, SQL_AVG_AGGREGATE_QUERY, native_datafusion_config()).await;
+
+    assert_eq!(plan.name(), "NativeCudfExec");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize(), 2);
+    assert!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize() < total_row_groups);
+    assert_eq!(
+        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
+        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
+    );
+    assert_eq!(
+        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
+        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-nullable-avg-sort");
+    let path = dir.join("input.parquet");
+    write_nullable_avg_input_parquet(&path);
+    let cpu_batches = cpu_sql_output(&path, SQL_AVG_ORDER_BY_VALUE_QUERY).await;
+
+    let plan = native_datafusion_sql_plan(&path, SQL_AVG_ORDER_BY_VALUE_QUERY, native_datafusion_config()).await;
+
+    assert_eq!(plan.name(), "NativeCudfExec");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(
+        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
+        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
+    );
+    assert_eq!(
+        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
+        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_execution() {
     let dir = unique_temp_dir("datafusion-cudf-native-datafusion-fallback");
     let path = dir.join("input.parquet");
@@ -292,8 +436,7 @@ async fn assert_default_sql_native_parity(
         assert!(selected_row_groups < total_row_groups);
     }
 
-    let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(runtime);
+    let context = bounded_execution_context();
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
@@ -307,6 +450,9 @@ async fn assert_default_sql_native_parity(
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.host_to_device_uploaded_rows, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.source_chunks_planned, metrics.source_chunks_committed);
+    assert!(metrics.source_chunks_committed > 0);
+    assert_eq!(metrics.row_groups_planned, metrics.row_groups_committed);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
@@ -392,6 +538,20 @@ fn constrained_native_datafusion_config() -> NativeCudfExecutionConfig {
     NativeCudfExecutionConfig::bounded(1, 1, 1, 1, 1).with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
 }
 
+fn bounded_execution_context() -> ExecutionContext {
+    ExecutionContext::builder()
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 512 * 1024 * 1024,
+            max_source_chunk_bytes: 256 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 3,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap()
+}
+
 fn adapter_error(error: &DataFusionError) -> &Error {
     let DataFusionError::External(source) = error else {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
@@ -429,9 +589,74 @@ SELECT COUNT(*) AS count_rows
 FROM bench
 ";
 
+const SQL_AVG_AGGREGATE_QUERY: &str = "
+SELECT key, AVG(m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 3
+";
+
+const SQL_AVG_BY_KEY_NO_FILTER_QUERY: &str = "
+SELECT key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY key
+ORDER BY key ASC
+LIMIT 3
+";
+
+const SQL_AVG_ORDER_BY_VALUE_QUERY: &str = "
+SELECT key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 3
+";
+
 const SQL_GLOBAL_AVG_QUERY: &str = "
 SELECT AVG(m00) AS avg_m00
 FROM bench
+";
+
+const SQL_SORT_NULLS_ASC_FIRST_QUERY: &str = "
+SELECT group_key, tie_key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY group_key, tie_key
+ORDER BY avg_m00 ASC NULLS FIRST, tie_key DESC
+LIMIT 8
+";
+
+const SQL_SORT_NULLS_ASC_LAST_QUERY: &str = "
+SELECT group_key, tie_key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY group_key, tie_key
+ORDER BY avg_m00 ASC NULLS LAST, tie_key DESC
+LIMIT 8
+";
+
+const SQL_SORT_NULLS_DESC_FIRST_QUERY: &str = "
+SELECT group_key, tie_key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY group_key, tie_key
+ORDER BY avg_m00 DESC NULLS FIRST, tie_key DESC
+LIMIT 8
+";
+
+const SQL_SORT_NULLS_DESC_LAST_QUERY: &str = "
+SELECT group_key, tie_key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY group_key, tie_key
+ORDER BY avg_m00 DESC NULLS LAST, tie_key DESC
+LIMIT 8
+";
+
+const SQL_SORT_NULLS_TOPK_QUERY: &str = "
+SELECT group_key, tie_key, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY group_key, tie_key
+ORDER BY avg_m00 ASC NULLS LAST, tie_key DESC
+LIMIT 4
 ";
 
 fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
@@ -452,6 +677,82 @@ fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
     )
     .unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_nullable_sort_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("group_key", DataType::Int32, false),
+        Field::new("tie_key", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40, 30, 20, 10, 50, 60])),
+            Arc::new(Int32Array::from(vec![3, 1, 2, 1, 3, 2, 2, 1, 1])),
+            Arc::new(Int64Array::from(vec![
+                None,
+                Some(20),
+                Some(12),
+                None,
+                Some(13),
+                Some(22),
+                None,
+                Some(31),
+                Some(11),
+            ])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_nullable_avg_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2, 2, 3])),
+            Arc::new(Int32Array::from(vec![10, 10, 10, 10, 10])),
+            Arc::new(Int64Array::from(vec![None, None, Some(10), None, Some(30)])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn write_uneven_avg_input_parquet(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 2, 1, 1, 3])),
+            Arc::new(Int32Array::from(vec![10, 10, 10, 10, 10, 10])),
+            Arc::new(Int64Array::from(vec![0, 100, 200, 30, 30, 300])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(3)).build();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();

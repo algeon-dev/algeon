@@ -31,13 +31,42 @@ pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root
 #[derive(Debug, Clone)]
 pub struct NativeFallbackPressureWorkloadItem {
     pub query_id: String,
-    pub plan: Arc<dyn ExecutionPlan>,
+    pub input: NativeFallbackPressureWorkloadInput,
 }
 
 impl NativeFallbackPressureWorkloadItem {
     pub fn new(query_id: impl Into<String>, plan: Arc<dyn ExecutionPlan>) -> Self {
-        Self { query_id: query_id.into(), plan }
+        Self { query_id: query_id.into(), input: NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) }
     }
+
+    pub fn planning_failure(
+        query_id: impl Into<String>,
+        stage: impl Into<String>,
+        reason_code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            query_id: query_id.into(),
+            input: NativeFallbackPressureWorkloadInput::PlanningFailure(NativeFallbackPressurePlanningFailure {
+                stage: stage.into(),
+                reason_code: reason_code.into(),
+                message: message.into(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeFallbackPressureWorkloadInput {
+    PhysicalPlan(Arc<dyn ExecutionPlan>),
+    PlanningFailure(NativeFallbackPressurePlanningFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeFallbackPressurePlanningFailure {
+    pub stage: String,
+    pub reason_code: String,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -257,10 +286,19 @@ pub struct NativeSourceDiagnosticSummary {
 }
 
 fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeFallbackPressureRow> {
-    let physical_root = item.plan.name().to_string();
-    let physical_shape = physical_plan_shape(item.plan.as_ref());
-    let source_diagnostics_plan = Arc::clone(&item.plan);
-    let result = lower_physical_plan_to_native(item.plan);
+    match item.input {
+        NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) => report_rows_for_plan(item.query_id, plan),
+        NativeFallbackPressureWorkloadInput::PlanningFailure(failure) => {
+            vec![report_row_for_planning_failure(item.query_id, failure)]
+        },
+    }
+}
+
+fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<NativeFallbackPressureRow> {
+    let physical_root = plan.name().to_string();
+    let physical_shape = physical_plan_shape(plan.as_ref());
+    let source_diagnostics_plan = Arc::clone(&plan);
+    let result = lower_physical_plan_to_native(plan);
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
 
     result
@@ -269,7 +307,7 @@ fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeF
         .iter()
         .map(|outcome| match outcome {
             CandidateOutcome::Rewritten { candidate } => NativeFallbackPressureRow {
-                query_id: item.query_id.clone(),
+                query_id: query_id.clone(),
                 physical_root: physical_root.clone(),
                 physical_shape: physical_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
@@ -280,7 +318,7 @@ fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeF
                 rejected_before_execution: false,
             },
             CandidateOutcome::Rejected { candidate, reason } => NativeFallbackPressureRow {
-                query_id: item.query_id.clone(),
+                query_id: query_id.clone(),
                 physical_root: physical_root.clone(),
                 physical_shape: physical_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
@@ -292,6 +330,23 @@ fn report_rows_for_item(item: NativeFallbackPressureWorkloadItem) -> Vec<NativeF
             },
         })
         .collect()
+}
+
+fn report_row_for_planning_failure(
+    query_id: String,
+    failure: NativeFallbackPressurePlanningFailure,
+) -> NativeFallbackPressureRow {
+    NativeFallbackPressureRow {
+        query_id,
+        physical_root: "PlanningFailure".to_string(),
+        physical_shape: failure.stage,
+        native_candidate_shape: None,
+        outcome: NativeFallbackPressureOutcome::Rejected,
+        reason_code: Some(failure.reason_code),
+        unsupported_category: Some("planning".to_string()),
+        source_diagnostics: Vec::new(),
+        rejected_before_execution: true,
+    }
 }
 
 fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem) -> Vec<NativeDataFusionPlanningRow> {
@@ -427,21 +482,23 @@ fn unsupported_category(plan: &dyn ExecutionPlan, _candidate: GpuCandidate, reas
     }
 }
 
-// TODO: this returns the category of the first AggregateExec encountered top-down. For partial/final aggregate pairs the rejecting node may be the other one — prefer Final / FinalPartitioned modes when both exist.
 fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
-        for filter in aggregate.filter_expr() {
-            if filter.is_some() {
-                return Some("aggregate_filter".to_string());
-            }
+        if let Some(category) = aggregate_semantic_modifier_category(aggregate) {
+            return Some(category);
         }
+    }
+
+    for child in plan.children() {
+        if let Some(category) = first_aggregate_category(child.as_ref())
+            && matches!(category.as_str(), "aggregate_filter" | "aggregate_distinct" | "aggregate_order_by")
+        {
+            return Some(category);
+        }
+    }
+
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
         for expr in aggregate.aggr_expr() {
-            if expr.is_distinct() {
-                return Some("aggregate_distinct".to_string());
-            }
-            if !expr.order_bys().is_empty() {
-                return Some("aggregate_order_by".to_string());
-            }
             let function = stable_identifier(expr.fun().name());
             if !matches!(function.as_str(), "sum" | "min" | "max" | "count") {
                 return Some(format!("aggregate_{function}"));
@@ -459,6 +516,23 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
     for child in plan.children() {
         if let Some(category) = first_aggregate_category(child.as_ref()) {
             return Some(category);
+        }
+    }
+    None
+}
+
+fn aggregate_semantic_modifier_category(aggregate: &AggregateExec) -> Option<String> {
+    for filter in aggregate.filter_expr() {
+        if filter.is_some() {
+            return Some("aggregate_filter".to_string());
+        }
+    }
+    for expr in aggregate.aggr_expr() {
+        if expr.is_distinct() {
+            return Some("aggregate_distinct".to_string());
+        }
+        if !expr.order_bys().is_empty() {
+            return Some("aggregate_order_by".to_string());
         }
     }
     None
