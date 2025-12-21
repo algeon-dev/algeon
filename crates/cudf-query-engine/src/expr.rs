@@ -1,10 +1,13 @@
 use std::fmt;
 
+use arrow::datatypes::DataType;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     Column(String),
     Literal(LiteralValue),
     Not(Box<Expr>),
+    Cast { expr: Box<Expr>, target_type: DataType },
     Binary { left: Box<Expr>, op: BinaryOp, right: Box<Expr> },
     Alias { expr: Box<Expr>, alias: String },
 }
@@ -26,6 +29,10 @@ impl Expr {
         Self::Not(Box::new(expr))
     }
 
+    pub fn cast(expr: Self, target_type: DataType) -> Self {
+        Self::Cast { expr: Box::new(expr), target_type }
+    }
+
     pub fn alias(self, alias: impl Into<String>) -> Self {
         Self::Alias { expr: Box::new(self), alias: alias.into() }
     }
@@ -37,6 +44,7 @@ impl fmt::Display for Expr {
             Self::Column(name) => f.write_str(name),
             Self::Literal(value) => write!(f, "{value}"),
             Self::Not(expr) => write!(f, "NOT {expr}"),
+            Self::Cast { expr, target_type } => write!(f, "CAST({expr} AS {target_type})"),
             Self::Binary { left, op, right } => write!(f, "({left} {op} {right})"),
             Self::Alias { expr, alias } => write!(f, "{expr} AS {alias}"),
         }

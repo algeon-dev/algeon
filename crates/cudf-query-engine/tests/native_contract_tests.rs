@@ -88,6 +88,13 @@ fn native_expr_can_represent_boolean_not() {
 }
 
 #[test]
+fn native_expr_can_represent_numeric_cast() {
+    let expr = Expr::cast(Expr::column("payload"), DataType::Int64).alias("payload_i64");
+
+    assert_eq!(expr.to_string(), "CAST(payload AS Int64) AS payload_i64");
+}
+
+#[test]
 fn query_error_codes_and_facts_are_stable_without_datafusion() {
     let error = QueryError::new(
         QueryErrorCode::UnsupportedExpression,

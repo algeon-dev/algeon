@@ -25,7 +25,7 @@ use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
         aggregate::AggregateExprBuilder,
-        expressions::{NotExpr, binary, col, lit},
+        expressions::{CastExpr, NotExpr, binary, col, lit},
     },
     physical_plan::{
         ExecutionPlan,
@@ -92,6 +92,29 @@ async fn native_runtime_default_sql_not_filter_matches_cpu() {
     .unwrap();
     let predicate = Arc::new(NotExpr::new(payload_lt_10));
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+    assert_native_physical_plan_parity(plan, None).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_widening_numeric_cast_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-cast");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let scan = parquet_scan(&path).await;
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(datafusion::common::ScalarValue::Int32(Some(10))),
+        &scan_schema,
+    )
+    .unwrap();
+    let cast_payload = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Int64, None));
+    let x00 = binary(cast_payload, Operator::Plus, col("m00", &scan_schema).unwrap(), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_projected_x00(scan, predicate, x00);
     assert_native_physical_plan_parity(plan, None).await;
 
     fs::remove_dir_all(dir).unwrap();
@@ -304,6 +327,54 @@ fn aggregate_sort_limit_plan_with_filter(
         &filter_schema,
     )
     .unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &filter_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: x00, alias: "x00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("x00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_x00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_x00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate));
+    Arc::new(LocalLimitExec::new(sort, 2))
+}
+
+fn aggregate_sort_limit_plan_with_projected_x00(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn PhysicalExpr>,
+    x00: Arc<dyn PhysicalExpr>,
+) -> Arc<dyn ExecutionPlan> {
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+
+    let filter_schema = filter.schema();
     let projection: Arc<dyn ExecutionPlan> = Arc::new(
         ProjectionExec::try_new(
             [

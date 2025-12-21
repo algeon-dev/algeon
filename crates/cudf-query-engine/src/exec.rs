@@ -361,6 +361,7 @@ fn execute_bounded_query_plan(
     }
 
     let frame = execute_final_aggregate_merge(context, &bounded, partials, &mut reservations, metrics)?;
+    let frame = execute_post_aggregate_projection(context, &bounded, frame, &mut reservations, metrics)?;
     let frame = execute_final_sort_limit_with_retry(context, &bounded, frame, &mut reservations, metrics)?;
 
     record_device_memory_observation(&frame.frame, metrics)?;
@@ -627,6 +628,7 @@ struct BoundedPlan<'a> {
     projection: Option<(&'a ProjectionNode, &'a arrow::datatypes::SchemaRef)>,
     aggregate_id: NodeId,
     aggregate: (&'a AggregateNode, &'a arrow::datatypes::SchemaRef),
+    post_aggregate_projection: Option<(&'a ProjectionNode, &'a arrow::datatypes::SchemaRef)>,
     sort: Option<&'a SortNode>,
     limit: Option<&'a LimitNode>,
 }
@@ -655,6 +657,19 @@ impl<'a> BoundedPlan<'a> {
                 "limit_without_sort",
             ));
         }
+
+        let post_aggregate_projection = match plan.node(current) {
+            Some(node) => match &node.kind {
+                PlanNode::Projection(projection) => {
+                    current = projection.input;
+                    Some((projection, &node.facts.output_schema))
+                },
+                _ => None,
+            },
+            None => {
+                return Err(invalid_node_reference(current, "bounded query plan references a missing sort input node"));
+            },
+        };
 
         let aggregate_id = current;
         let aggregate_node = plan
@@ -704,6 +719,7 @@ impl<'a> BoundedPlan<'a> {
             projection,
             aggregate_id,
             aggregate: (aggregate, &aggregate_node.facts.output_schema),
+            post_aggregate_projection,
             sort,
             limit,
         })
@@ -720,6 +736,10 @@ impl<'a> BoundedPlan<'a> {
 
         validate_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
         validate_final_aggregate_capability(self.aggregate.0, self.aggregate.1)?;
+
+        if let Some((projection, output_schema)) = self.post_aggregate_projection {
+            validate_projection_capability(projection, output_schema)?;
+        }
 
         if let Some(sort) = self.sort {
             lower_sort_spec(&sort.spec)?;
@@ -1004,6 +1024,44 @@ fn execute_final_aggregate_merge(
     }
 
     Ok(partials.pop().expect("final merge loop leaves exactly one partial"))
+}
+
+fn execute_post_aggregate_projection(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let Some((projection, output_schema)) = bounded.post_aggregate_projection else {
+        return Ok(input);
+    };
+
+    let request =
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes, reservations.budget())
+            .with_memory_boundary("post_aggregate_projection")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("post_aggregate_projection");
+    let work_reservation = reservations.try_reserve(request, metrics)?;
+    let result = execute_projection(context, projection, input.frame, output_schema, metrics);
+    reservations.release(work_reservation);
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(input.reservation);
+            return Err(error);
+        },
+    };
+
+    reservations.release(input.reservation);
+    let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
+            .with_memory_boundary("post_aggregate_projection_output")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("post_aggregate_projection");
+    let output_reservation = reservations.try_reserve(output_request, metrics)?;
+    Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1893,6 +1951,22 @@ fn arrow_type_to_cudf_type_id(data_type: &ArrowDataType) -> Option<TypeId> {
     }
 }
 
+fn arrow_numeric_type_to_cudf_type_id(data_type: &ArrowDataType) -> Option<TypeId> {
+    match data_type {
+        ArrowDataType::Int8 => Some(TypeId::Int8),
+        ArrowDataType::Int16 => Some(TypeId::Int16),
+        ArrowDataType::Int32 => Some(TypeId::Int32),
+        ArrowDataType::Int64 => Some(TypeId::Int64),
+        ArrowDataType::UInt8 => Some(TypeId::UInt8),
+        ArrowDataType::UInt16 => Some(TypeId::UInt16),
+        ArrowDataType::UInt32 => Some(TypeId::UInt32),
+        ArrowDataType::UInt64 => Some(TypeId::UInt64),
+        ArrowDataType::Float32 => Some(TypeId::Float32),
+        ArrowDataType::Float64 => Some(TypeId::Float64),
+        _ => None,
+    }
+}
+
 fn execute_sort(
     context: &ExecutionContext,
     node: &SortNode,
@@ -2021,12 +2095,13 @@ fn materialize_bounded_to_host(
         MemoryReservationRequest::new(ReservationKind::Materialization, input.reservation.bytes, reservations.budget())
             .with_memory_boundary("host_materialization")
             .with_node_id(final_node_id)
-            .with_stage("materialization");
+            .with_stage("materialization")
+            .with_attempt(1, 1);
     let materialization_reservation = match reservations.try_reserve(request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => {
             reservations.release(input.reservation);
-            return Err(error);
+            return Err(host_materialization_failure_facts(metrics).attach_to_error(error));
         },
     };
 
@@ -2034,6 +2109,13 @@ fn materialize_bounded_to_host(
     reservations.release(materialization_reservation);
     reservations.release(input.reservation);
     result
+}
+
+fn host_materialization_failure_facts(metrics: &QueryMetrics) -> RetryFacts {
+    RetryFacts::new()
+        .with_resume_boundary("host_materialization")
+        .with_committed_chunks(metrics.source_chunks_committed as usize)
+        .with_committed_partials(metrics.partial_aggregate_count as usize)
 }
 
 fn execution_overrides(context: &ExecutionContext) -> ExecutionOverrides<'_> {
@@ -2078,6 +2160,17 @@ fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::Column(name) => Ok(col(name)),
         Expr::Literal(value) => lower_literal(value),
         Expr::Not(expr) => Ok(lower_expr(expr)?.not()),
+        Expr::Cast { expr, target_type } => {
+            let target_type = arrow_numeric_type_to_cudf_type_id(target_type).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.expr.lower_cast",
+                    "native execution supports casts only to primitive numeric types",
+                )
+                .with_fact("target_type", format!("{target_type:?}"))
+            })?;
+            Ok(lower_expr(expr)?.cast(target_type))
+        },
         Expr::Binary { left, op, right } => lower_binary(lower_expr(left)?, *op, lower_expr(right)?),
         Expr::Alias { expr, alias } => Ok(lower_expr(expr)?.alias(alias)),
     }

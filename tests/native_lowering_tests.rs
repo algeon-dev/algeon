@@ -7,7 +7,7 @@ use std::{
 use arrow::{
     array::{Int32Array, Int64Array, StringArray},
     compute::SortOptions as ArrowSortOptions,
-    datatypes::{DataType, Field, Schema},
+    datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{AggregateFunction, Expr, LiteralValue, PlanNode, ResultSink, SourceNode};
@@ -37,7 +37,7 @@ use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalExpr, PhysicalSortExpr,
         aggregate::{AggregateExprBuilder, AggregateFunctionExpr},
-        expressions::{NotExpr, binary, col, lit},
+        expressions::{CastExpr, NotExpr, TryCastExpr, binary, col, lit},
     },
     physical_plan::{
         ExecutionPlan,
@@ -965,6 +965,135 @@ async fn direct_friendly_sql_not_filter_lowers_to_native_expr() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let predicate =
+        binary(col("payload", &scan_schema).unwrap(), Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema)
+            .unwrap();
+    let filter_schema = scan_schema;
+    let cast_payload = Arc::new(CastExpr::new(col("payload", &filter_schema).unwrap(), DataType::Int64, None));
+    let x00 = binary(cast_payload, Operator::Plus, col("m00", &filter_schema).unwrap(), &filter_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_projected_x00(scan, predicate, x00);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projection = native_projection_exprs(&result.plans[0])
+        .iter()
+        .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "x00"))
+        .expect("native plan should include x00 projection");
+    assert!(matches!(
+        projection,
+        Expr::Alias { expr, .. }
+            if matches!(
+                expr.as_ref(),
+                Expr::Binary { left, .. }
+                    if matches!(
+                        left.as_ref(),
+                        Expr::Cast { expr, target_type }
+                            if matches!(expr.as_ref(), Expr::Column(name) if name == "payload")
+                                && *target_type == DataType::Int64
+                    )
+            )
+    ));
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(
+        source.read_columns,
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn try_cast_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-try-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let try_cast = Arc::new(TryCastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Int64));
+    let predicate = binary(try_cast, Operator::GtEq, lit(ScalarValue::Int64(Some(10))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn non_numeric_cast_targets_are_rejected_during_native_planning() {
+    for (name, target_type, literal) in [
+        ("string", DataType::Utf8, ScalarValue::Utf8(Some("10".to_string()))),
+        ("decimal", DataType::Decimal128(10, 0), ScalarValue::Decimal128(Some(10), 10, 0)),
+        (
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            ScalarValue::TimestampNanosecond(Some(10), None),
+        ),
+    ] {
+        let dir = unique_temp_dir(format!("datafusion-cudf-native-lowering-{name}-cast").as_str());
+        let path = dir.join("input.parquet");
+        write_numeric_parquet_file(&path);
+        let scan = parquet_scan(&path);
+        let scan_schema = scan.schema();
+        let cast = Arc::new(CastExpr::new(col("payload", &scan_schema).unwrap(), target_type, None));
+        let predicate = binary(cast, Operator::Eq, lit(literal), &scan_schema).unwrap();
+        let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+        let result = lower_physical_plan_to_native(plan);
+
+        assert!(result.plans.is_empty(), "{name} cast should not lower");
+        assert_eq!(result.rejected_count(), 1, "{name} cast outcomes={:?}", result.report.outcomes());
+        assert!(
+            matches!(
+                result.report.outcomes()[0],
+                CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+            ),
+            "{name} cast outcomes={:?}",
+            result.report.outcomes()
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn lossy_numeric_cast_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-lossy-cast");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let cast = Arc::new(CastExpr::new(col("m00", &scan_schema).unwrap(), DataType::Int32, None));
+    let predicate = binary(cast, Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema).unwrap();
+    let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_native_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-rewrite");
@@ -1490,6 +1619,16 @@ fn native_aggregate_exprs(plan: &cudf_query_engine::QueryPlan) -> &[cudf_query_e
         .expect("native plan should contain an aggregate node")
 }
 
+fn native_projection_exprs(plan: &cudf_query_engine::QueryPlan) -> &[Expr] {
+    plan.nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Projection(projection) => Some(projection.expressions.as_slice()),
+            _ => None,
+        })
+        .expect("native plan should contain a projection node")
+}
+
 fn native_filter_expr(plan: &cudf_query_engine::QueryPlan) -> &Expr {
     plan.nodes()
         .iter()
@@ -1592,6 +1731,54 @@ fn aggregate_sort_plan_with_filter(
     ])
     .unwrap();
     Arc::new(SortExec::new(sort_exprs, aggregate))
+}
+
+fn aggregate_sort_limit_plan_with_projected_x00(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn PhysicalExpr>,
+    x00: Arc<dyn PhysicalExpr>,
+) -> Arc<dyn ExecutionPlan> {
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+
+    let filter_schema = filter.schema();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &filter_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: x00, alias: "x00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("x00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_x00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_x00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate));
+    Arc::new(LocalLimitExec::new(sort, 2))
 }
 
 fn aggregate_sort_plan_without_filter(

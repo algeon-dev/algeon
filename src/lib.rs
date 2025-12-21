@@ -21,8 +21,9 @@ pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use exec::{CudfExecutionConfig, CudfGpuIslandExec};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
 pub use native_report::{
-    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
-    NativeFallbackPressureWorkloadItem, NativeSourceDiagnosticSummary,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeFallbackPressureOutcome,
+    NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadItem,
+    NativeSourceDiagnosticSummary,
 };
 pub use planner::{CudfOptimizerConfig, CudfPhysicalOptimizerRule, OptimizationResult, optimize_plan};
 pub use policy::{FallbackReason, GpuFallbackPolicy};

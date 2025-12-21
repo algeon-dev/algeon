@@ -15,7 +15,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeFallbackPressureOutcome,
+    NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
 };
 
 #[tokio::test]
@@ -26,6 +27,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
     let workload = [
         ("sum_rewrite", SQL_SUM_QUERY),
+        ("not_rewrite", SQL_NOT_QUERY),
+        ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_reject", SQL_AVG_QUERY),
         ("filtered_reject", SQL_FILTERED_QUERY),
         ("modulo_reject", SQL_MODULO_QUERY),
@@ -40,8 +43,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
     let report = NativeFallbackPressureReport::collect(items);
 
-    assert_eq!(report.rows.len(), 4);
-    assert_eq!(report.rewritten_count(), 1);
+    assert_eq!(report.rows.len(), 6);
+    assert_eq!(report.rewritten_count(), 3);
     assert_eq!(report.rejected_count(), 3);
 
     let rewritten = report_row(&report, "sum_rewrite");
@@ -52,6 +55,18 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(rewritten.source_diagnostics.len(), 1);
     assert!(rewritten.source_diagnostics[0].direct_device_read);
     assert_eq!(rewritten.source_diagnostics[0].predicate_disposition, "pruning_only");
+
+    let not = report_row(&report, "not_rewrite");
+    assert_eq!(not.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(not.reason_code, None);
+    assert_eq!(not.unsupported_category, None);
+    assert!(!not.rejected_before_execution);
+
+    let cast = report_row(&report, "cast_rewrite");
+    assert_eq!(cast.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(cast.reason_code, None);
+    assert_eq!(cast.unsupported_category, None);
+    assert!(!cast.rejected_before_execution);
 
     let avg = report_row(&report, "avg_reject");
     assert_eq!(avg.outcome, NativeFallbackPressureOutcome::Rejected);
@@ -70,10 +85,16 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(modulo.rejected_before_execution);
 
     let text = report.to_tsv();
-    assert!(text.starts_with(
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution\n"
-    ));
+    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 1);
+    assert_eq!(
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution"
+    );
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=1\n"));
+    assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("sum_rewrite\tSortExec"));
+    assert!(text.contains("not_rewrite\tSortExec"));
+    assert!(text.contains("cast_rewrite\tSortExec"));
     assert!(text.contains("\trewritten\tnone\tnone\t"));
     assert!(text.contains("avg_reject\tSortExec"));
     assert!(text.contains("\tunsupported_operator\taggregate_avg\t"));
@@ -146,6 +167,24 @@ FROM bench
 WHERE payload >= 10
 GROUP BY key
 ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_NOT_QUERY: &str = "
+SELECT key, SUM(m00 + m01) AS sum_x00
+FROM bench
+WHERE NOT (payload < 10)
+GROUP BY key
+ORDER BY sum_x00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_CAST_QUERY: &str = "
+SELECT key, SUM(CAST(key AS BIGINT)) AS sum_cast
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY sum_cast DESC, key ASC
 LIMIT 2
 ";
 
