@@ -13,6 +13,8 @@ use arrow::{
 };
 use cudf_query_engine::{ExecutionContext, QueryOutput, execute_query_plan};
 use datafusion::{
+    common::DataFusionError,
+    execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
     parquet::{
@@ -38,7 +40,10 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::lower_physical_plan_to_native;
+use datafusion_cudf::{
+    CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, GpuFallbackPolicy, NativeCudfExec,
+    NativeCudfExecutionConfig, lower_physical_plan_to_native,
+};
 
 static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::new(());
 
@@ -128,6 +133,81 @@ async fn native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parque
     let total_row_groups = parquet_row_group_count(&path);
 
     assert_default_sql_native_parity(&path, SQL_SUM_EXPRESSION_QUERY, Some((2, total_row_groups))).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-exec");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+    let cpu_batches = cpu_sql_output(&path, SQL_SUM_EXPRESSION_QUERY).await;
+
+    let plan = native_datafusion_sql_plan(&path, SQL_SUM_EXPRESSION_QUERY, native_datafusion_config()).await;
+
+    assert_eq!(plan.name(), "NativeCudfExec");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize(), 2);
+    assert!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize() < total_row_groups);
+    assert_eq!(
+        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
+        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
+    );
+    assert_eq!(
+        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
+        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_execution() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-fallback");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+
+    let plan = native_datafusion_sql_plan(&path, SQL_GLOBAL_AVG_QUERY, native_datafusion_config()).await;
+
+    assert_ne!(plan.name(), "NativeCudfExec");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_none());
+    assert!(plan.metrics().is_none_or(|metrics| metrics.sum_by_name("host_to_device_uploads").is_none()));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_datafusion_exec_resource_failure_preserves_adapter_facts() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-resource-failure");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let plan =
+        native_datafusion_sql_plan(&path, SQL_SUM_EXPRESSION_QUERY, constrained_native_datafusion_config()).await;
+
+    assert_eq!(plan.name(), "NativeCudfExec");
+    let error = collect(plan, Arc::new(TaskContext::default())).await.unwrap_err();
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
+    assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
+    assert_eq!(adapter_error.fact_value("cpu_fallback_after_native_start"), Some("false"));
+    assert!(adapter_error.fact_value("native_operation").is_some());
+    assert!(adapter_error.fact_value("memory_boundary").is_some());
+    assert!(adapter_error.fact_value("reservation_kind").is_some());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -226,6 +306,35 @@ async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> A
     df.create_physical_plan().await.unwrap()
 }
 
+async fn native_datafusion_sql_plan(
+    path: &std::path::Path,
+    sql: &str,
+    native_config: NativeCudfExecutionConfig,
+) -> Arc<dyn ExecutionPlan> {
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let state = SessionStateBuilder::new_with_default_features().with_cudf_gpu_islands(config).build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let df = ctx.sql(sql).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+fn native_datafusion_config() -> NativeCudfExecutionConfig {
+    NativeCudfExecutionConfig::bounded(512 * 1024 * 1024, 256 * 1024 * 1024, 1, 3, 1)
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+}
+
+fn constrained_native_datafusion_config() -> NativeCudfExecutionConfig {
+    NativeCudfExecutionConfig::bounded(1, 1, 1, 1, 1).with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+}
+
+fn adapter_error(error: &DataFusionError) -> &Error {
+    let DataFusionError::External(source) = error else {
+        panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
+    };
+    source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_cudf::Error")
+}
+
 const SQL_SUM_EXPRESSION_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00
 FROM bench
@@ -249,6 +358,11 @@ FROM bench
 GROUP BY key
 ORDER BY key ASC
 LIMIT 2
+";
+
+const SQL_GLOBAL_AVG_QUERY: &str = "
+SELECT AVG(m00) AS avg_m00
+FROM bench
 ";
 
 fn write_row_group_pruning_parquet_file(path: &std::path::Path) {

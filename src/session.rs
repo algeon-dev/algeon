@@ -5,8 +5,9 @@ use datafusion::{
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
 };
 
-use crate::planner::{CudfOptimizerConfig, CudfPhysicalOptimizerRule};
+use crate::planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule};
 
+pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native";
 pub const CUDF_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_gpu_island";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
@@ -27,6 +28,17 @@ pub fn cudf_physical_optimizer_rules_with_rule(rule: Arc<CudfPhysicalOptimizerRu
     rules
 }
 
+/// Return DataFusion's default physical optimizer rules with caller-retained cudf
+/// native and GPU-island rules inserted before final plan validation.
+pub fn cudf_physical_optimizer_rules_with_retained_rules(
+    native_rule: Option<Arc<CudfNativePhysicalOptimizerRule>>,
+    gpu_island_rule: Arc<CudfPhysicalOptimizerRule>,
+) -> PhysicalOptimizerRules {
+    let mut rules = PhysicalOptimizer::new().rules;
+    insert_cudf_rules_before_final_validation(&mut rules, native_rule, gpu_island_rule);
+    rules
+}
+
 pub trait CudfSessionStateBuilderExt {
     /// Register cudf GPU island rewriting before DataFusion's final physical-plan
     /// validation rule.
@@ -35,6 +47,14 @@ pub trait CudfSessionStateBuilderExt {
     /// Register a caller-retained cudf GPU island rule before DataFusion's final
     /// physical-plan validation rule.
     fn with_cudf_gpu_island_rule(self, rule: Arc<CudfPhysicalOptimizerRule>) -> Self;
+
+    /// Register caller-retained cudf native and GPU island rules before
+    /// DataFusion's final physical-plan validation rule.
+    fn with_cudf_native_and_gpu_island_rules(
+        self,
+        native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+        gpu_island_rule: Arc<CudfPhysicalOptimizerRule>,
+    ) -> Self;
 }
 
 impl CudfSessionStateBuilderExt for SessionStateBuilder {
@@ -45,6 +65,16 @@ impl CudfSessionStateBuilderExt for SessionStateBuilder {
     fn with_cudf_gpu_island_rule(mut self, rule: Arc<CudfPhysicalOptimizerRule>) -> Self {
         let mut rules = take_physical_optimizer_rules(&mut self);
         insert_cudf_rule_before_final_validation(&mut rules, rule);
+        self.with_physical_optimizer_rules(rules)
+    }
+
+    fn with_cudf_native_and_gpu_island_rules(
+        mut self,
+        native_rule: Arc<CudfNativePhysicalOptimizerRule>,
+        gpu_island_rule: Arc<CudfPhysicalOptimizerRule>,
+    ) -> Self {
+        let mut rules = take_physical_optimizer_rules(&mut self);
+        insert_cudf_rules_before_final_validation(&mut rules, Some(native_rule), gpu_island_rule);
         self.with_physical_optimizer_rules(rules)
     }
 }
@@ -64,12 +94,30 @@ fn take_physical_optimizer_rules(builder: &mut SessionStateBuilder) -> PhysicalO
 }
 
 fn insert_cudf_rule_before_final_validation(rules: &mut PhysicalOptimizerRules, rule: Arc<CudfPhysicalOptimizerRule>) {
-    rules.retain(|existing| existing.name() != CUDF_PHYSICAL_OPTIMIZER_RULE_NAME);
+    let native_rule = rule
+        .config()
+        .native_execution_enabled()
+        .then(|| Arc::new(CudfNativePhysicalOptimizerRule::new(rule.config().clone())));
+    insert_cudf_rules_before_final_validation(rules, native_rule, rule);
+}
+
+fn insert_cudf_rules_before_final_validation(
+    rules: &mut PhysicalOptimizerRules,
+    native_rule: Option<Arc<CudfNativePhysicalOptimizerRule>>,
+    gpu_island_rule: Arc<CudfPhysicalOptimizerRule>,
+) {
+    rules.retain(|existing| {
+        existing.name() != CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != CUDF_PHYSICAL_OPTIMIZER_RULE_NAME
+    });
     let final_validation = rules
         .iter()
         .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)
         .map(|position| rules.remove(position));
-    rules.push(rule);
+    if let Some(native_rule) = native_rule {
+        rules.push(native_rule);
+    }
+    rules.push(gpu_island_rule);
     if let Some(final_validation) = final_validation {
         rules.push(final_validation);
     }

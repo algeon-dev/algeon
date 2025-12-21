@@ -67,8 +67,11 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
 fn native_memory_reservation_error_preserves_adapter_classification_and_facts() {
     let native_error =
         cudf_query_engine::MemoryReservationRequest::new(cudf_query_engine::ReservationKind::FinalSort, 4096, 2048)
+            .with_memory_boundary("final_sort")
             .with_node_id("n5")
             .with_stage("final_sort")
+            .with_chunk_index(7)
+            .with_row_groups(vec![3, 5])
             .with_attempt(1, 3)
             .denied_error(1024);
 
@@ -80,7 +83,39 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
     assert_eq!(adapter_error.status(), ErrorStatus::Temporary);
     assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
     assert_eq!(adapter_error.fact_value("reservation_kind"), Some("final_sort"));
+    assert_eq!(adapter_error.fact_value("memory_boundary"), Some("final_sort"));
     assert_eq!(adapter_error.fact_value("node_id"), Some("n5"));
+    assert_eq!(adapter_error.fact_value("stage"), Some("final_sort"));
+    assert_eq!(adapter_error.fact_value("chunk_index"), Some("7"));
+    assert_eq!(adapter_error.fact_value("row_groups"), Some("3,5"));
     assert_eq!(adapter_error.fact_value("attempt"), Some("1"));
     assert_eq!(adapter_error.fact_value("max_attempts"), Some("3"));
+}
+
+#[test]
+fn native_retry_error_preserves_resume_boundary_facts() {
+    let native_error = cudf_query_engine::RetryFacts::new()
+        .with_retry_action("reduce_final_sort_fan_in")
+        .with_resume_boundary("final_sort")
+        .with_committed_chunks(4)
+        .with_committed_partials(4)
+        .with_merge_level(2)
+        .with_merge_fan_in(8)
+        .attach_to_error(cudf_query_engine::QueryError::new(
+            cudf_query_engine::QueryErrorCode::MemoryReservationFailed,
+            "cudf_query_engine.final_sort.topk_concat",
+            "native final sort exhausted bounded memory",
+        ));
+
+    let adapter_error =
+        Error::from_native("datafusion_cudf.native_exec.execute", "native cudf query execution failed", native_error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
+    assert_eq!(adapter_error.fact_value("native_operation"), Some("cudf_query_engine.final_sort.topk_concat"));
+    assert_eq!(adapter_error.fact_value("retry_action"), Some("reduce_final_sort_fan_in"));
+    assert_eq!(adapter_error.fact_value("resume_boundary"), Some("final_sort"));
+    assert_eq!(adapter_error.fact_value("committed_chunks"), Some("4"));
+    assert_eq!(adapter_error.fact_value("committed_partials"), Some("4"));
+    assert_eq!(adapter_error.fact_value("merge_level"), Some("2"));
+    assert_eq!(adapter_error.fact_value("merge_fan_in"), Some("8"));
 }
