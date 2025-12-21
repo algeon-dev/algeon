@@ -5,6 +5,7 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode},
+        coalesce_partitions::CoalescePartitionsExec,
         filter::FilterExec,
         limit::LocalLimitExec,
         projection::ProjectionExec,
@@ -53,6 +54,12 @@ const SPM_SORT_FETCH_PRE_NO_FILTER_SHAPE: &str =
 const SPM_SORT_FETCH_NO_PRE_FILTER_SHAPE: &str =
     "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(FilterExec(LocalParquetScan))))";
 const SPM_SORT_FETCH_MINIMAL_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(LocalParquetScan)))";
+const GLOBAL_COUNT_POST_SHAPE: &str = "ProjectionExec(AggregateExec(LocalParquetScan))";
+const GLOBAL_COUNT_MINIMAL_SHAPE: &str = "AggregateExec(LocalParquetScan)";
+const GLOBAL_COUNT_DISTRIBUTED_POST_SHAPE: &str =
+    "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan))))";
+const GLOBAL_COUNT_DISTRIBUTED_MINIMAL_SHAPE: &str =
+    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan)))";
 const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
 const SORT_PRESERVING_MERGE_FETCH_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec)";
 const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
@@ -67,8 +74,8 @@ pub(super) struct NormalizedNativePlan<'a> {
     pub(super) aggregate_allows_partial: bool,
     pub(super) aggregate_output_schema: SchemaRef,
     pub(super) post_aggregate_projection: Option<&'a ProjectionExec>,
-    pub(super) sort: &'a SortExec,
-    pub(super) limit_fetch: usize,
+    pub(super) sort: Option<&'a SortExec>,
+    pub(super) limit_fetch: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -138,6 +145,16 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         return normalize_sort_stack(NativeStackRoot::SortFetch, plan.schema().fields().len(), sort, Some(fetch));
     }
 
+    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+        let candidate = GpuCandidate::with_operator_count(GLOBAL_COUNT_POST_SHAPE, plan.schema().fields().len(), 3);
+        let aggregate = required_child::<AggregateExec>(projection.input().as_ref(), candidate)?;
+        return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
+    }
+
+    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+        return normalize_global_aggregate_stack(plan.schema().fields().len(), None, aggregate);
+    }
+
     Err(NativePlanRejection {
         candidate: GpuCandidate::with_operator_count(UNSUPPORTED_NATIVE_PLAN_SHAPE, plan.schema().fields().len(), 1),
         reason: FallbackReason::UnsupportedOperator,
@@ -184,8 +201,51 @@ fn normalize_sort_stack<'a>(
         aggregate_allows_partial,
         aggregate_output_schema,
         post_aggregate_projection,
-        sort,
-        limit_fetch,
+        sort: Some(sort),
+        limit_fetch: Some(limit_fetch),
+    })
+}
+
+fn normalize_global_aggregate_stack<'a>(
+    output_schema_fields: usize,
+    post_aggregate_projection: Option<&'a ProjectionExec>,
+    aggregate: &'a AggregateExec,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+    let candidate = GpuCandidate::with_operator_count(
+        if post_aggregate_projection.is_some() { GLOBAL_COUNT_POST_SHAPE } else { GLOBAL_COUNT_MINIMAL_SHAPE },
+        output_schema_fields,
+        2 + usize::from(post_aggregate_projection.is_some()),
+    );
+    let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
+        peel_distributed_aggregate_pair_if_present(aggregate, candidate)?;
+    let candidate = if has_distributed_aggregate {
+        GpuCandidate::with_operator_count(
+            if post_aggregate_projection.is_some() {
+                GLOBAL_COUNT_DISTRIBUTED_POST_SHAPE
+            } else {
+                GLOBAL_COUNT_DISTRIBUTED_MINIMAL_SHAPE
+            },
+            output_schema_fields,
+            4 + usize::from(post_aggregate_projection.is_some()),
+        )
+    } else {
+        candidate
+    };
+    let (pre_aggregate_projection, filter_or_source) = peel_pre_aggregate_projection(aggregate);
+    let (filter, source_input) = peel_filter(peel_repartition(filter_or_source));
+    let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate)?;
+
+    Ok(NormalizedNativePlan {
+        candidate,
+        source_exec,
+        filter,
+        pre_aggregate_projection,
+        aggregate,
+        aggregate_allows_partial,
+        aggregate_output_schema,
+        post_aggregate_projection,
+        sort: None,
+        limit_fetch: None,
     })
 }
 
@@ -211,7 +271,7 @@ fn peel_distributed_aggregate_pair_if_present<'a>(
     aggregate: &'a AggregateExec,
     candidate: GpuCandidate,
 ) -> Result<(&'a AggregateExec, bool, bool, SchemaRef), NativePlanRejection> {
-    if !matches!(aggregate.mode(), AggregateMode::FinalPartitioned) {
+    if !matches!(aggregate.mode(), AggregateMode::Final | AggregateMode::FinalPartitioned) {
         return Ok((aggregate, false, false, aggregate.schema()));
     }
 
@@ -252,6 +312,8 @@ fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {
 fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
     if let Some(repartition) = plan.as_any().downcast_ref::<RepartitionExec>() {
         repartition.input().as_ref()
+    } else if let Some(coalesce) = plan.as_any().downcast_ref::<CoalescePartitionsExec>() {
+        coalesce.input().as_ref()
     } else {
         plan
     }

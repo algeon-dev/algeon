@@ -152,7 +152,7 @@ pub(super) fn execute_bounded_chunk_attempt(
         max_attempts,
     );
     let source_reservation = reservations.try_reserve(source_request, metrics)?;
-    let mut frame = match read_local_parquet_chunk(context, chunk, metrics) {
+    let mut frame = match read_local_parquet_chunk(context, bounded.source, chunk, metrics) {
         Ok(frame) => frame,
         Err(error) => {
             reservations.release(source_reservation);
@@ -1525,6 +1525,7 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         known_row_group_bytes,
         estimated_chunk_bytes,
         read_columns: parent.read_columns.clone(),
+        partition_values: parent.partition_values.clone(),
         zero_column_count: parent.zero_column_count,
         known_row_count,
         size_estimate_based: true,

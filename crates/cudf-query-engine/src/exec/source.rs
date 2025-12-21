@@ -28,6 +28,27 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
             )
             .with_fact("file_index", file_index));
         }
+        if file.partition_values.len() != source.partition_columns.len() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "local parquet source file partition values must match source partition columns",
+            )
+            .with_fact("reason", "partition_value_count_mismatch")
+            .with_fact("file_index", file_index)
+            .with_fact("partition_columns", source.partition_columns.len())
+            .with_fact("partition_values", file.partition_values.len()));
+        }
+        for (partition_index, (partition_column, partition_value)) in
+            source.partition_columns.iter().zip(&file.partition_values).enumerate()
+        {
+            validate_partition_value_type(partition_column, partition_value).map_err(|error| {
+                error
+                    .with_fact("file_index", file_index)
+                    .with_fact("partition_index", partition_index)
+                    .with_fact("partition_column", partition_column.name.as_str())
+            })?;
+        }
     }
 
     if source.read_columns.is_empty() && !source.is_zero_column_count_source() {
@@ -42,25 +63,25 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
     validate_local_parquet_source_contract(source)?;
 
     for projected_column in &source.projected_output_columns {
-        if !source.read_columns.contains(projected_column) {
+        if source.source_column_ref(projected_column).is_none() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.local_parquet_source.validate",
-                "local parquet projected output column must be included in read columns",
+                "local parquet projected output column must be available from file or partition columns",
             )
-            .with_fact("reason", "projected_column_not_read")
+            .with_fact("reason", "projected_column_not_available")
             .with_fact("column", projected_column));
         }
     }
 
     for filter_column in &source.pure_filter_columns {
-        if !source.read_columns.contains(filter_column) {
+        if source.source_column_ref(filter_column).is_none() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.local_parquet_source.validate",
-                "local parquet pure-filter column must be included in read columns",
+                "local parquet pure-filter column must be available from file or partition columns",
             )
-            .with_fact("reason", "filter_column_not_read")
+            .with_fact("reason", "filter_column_not_available")
             .with_fact("column", filter_column));
         }
     }
@@ -123,11 +144,19 @@ pub(super) fn validate_local_parquet_source_contract(source: &LocalParquetSource
     if diagnostics.byte_range_disposition == ByteRangeDisposition::Rejected {
         return Err(unsupported_source_contract_fact("byte_range", diagnostics.byte_range_disposition.as_str()));
     }
-    if diagnostics.partition_column_disposition != PartitionColumnDisposition::Absent {
-        return Err(unsupported_source_contract_fact(
-            "partition_columns",
-            diagnostics.partition_column_disposition.as_str(),
-        ));
+    match diagnostics.partition_column_disposition {
+        PartitionColumnDisposition::Absent => {
+            if !source.partition_columns.is_empty() {
+                return Err(unsupported_source_contract_fact("partition_columns", "diagnostic_absent_but_present"));
+            }
+        },
+        PartitionColumnDisposition::Represented => validate_represented_partition_columns(source)?,
+        PartitionColumnDisposition::Rejected => {
+            return Err(unsupported_source_contract_fact(
+                "partition_columns",
+                diagnostics.partition_column_disposition.as_str(),
+            ));
+        },
     }
     match diagnostics.zero_column_count_disposition {
         ZeroColumnCountDisposition::NotRequired => {},
@@ -148,9 +177,9 @@ pub(super) fn validate_local_parquet_source_contract(source: &LocalParquetSource
     if diagnostics.read_column_count != source.read_columns.len()
         || source.read_column_file_indices.len() != source.read_columns.len()
         || diagnostics.projected_output_column_count != source.projected_output_columns.len()
-        || source.projected_output_column_file_indices.len() != source.projected_output_columns.len()
+        || source.projected_output_column_source_refs.len() != source.projected_output_columns.len()
         || diagnostics.pure_filter_column_count != source.pure_filter_columns.len()
-        || source.pure_filter_column_file_indices.len() != source.pure_filter_columns.len()
+        || source.pure_filter_column_source_refs.len() != source.pure_filter_columns.len()
     {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -163,22 +192,105 @@ pub(super) fn validate_local_parquet_source_contract(source: &LocalParquetSource
         .with_fact("read_column_file_indices", source.read_column_file_indices.len())
         .with_fact("diagnostic_projected_output_columns", diagnostics.projected_output_column_count)
         .with_fact("projected_output_columns", source.projected_output_columns.len())
-        .with_fact("projected_output_column_file_indices", source.projected_output_column_file_indices.len())
+        .with_fact("projected_output_column_source_refs", source.projected_output_column_source_refs.len())
         .with_fact("diagnostic_pure_filter_columns", diagnostics.pure_filter_column_count)
         .with_fact("pure_filter_columns", source.pure_filter_columns.len())
-        .with_fact("pure_filter_column_file_indices", source.pure_filter_column_file_indices.len()));
+        .with_fact("pure_filter_column_source_refs", source.pure_filter_column_source_refs.len()));
     }
 
     Ok(())
+}
+
+pub(super) fn validate_represented_partition_columns(source: &LocalParquetSource) -> Result<()> {
+    if source.partition_columns.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "represented partition source must declare at least one partition column",
+        )
+        .with_fact("reason", "empty_partition_columns"));
+    }
+
+    for (partition_index, partition_column) in source.partition_columns.iter().enumerate() {
+        if source.read_columns.iter().any(|column| column == &partition_column.name) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "partition column must not also be read from the parquet file",
+            )
+            .with_fact("reason", "partition_column_also_read")
+            .with_fact("partition_index", partition_index)
+            .with_fact("partition_column", partition_column.name.as_str()));
+        }
+        let field = source.schema.field_with_name(partition_column.name.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "represented partition column must exist in source output schema",
+            )
+            .with_fact("reason", "missing_partition_schema_field")
+            .with_fact("partition_index", partition_index)
+            .with_fact("partition_column", partition_column.name.as_str())
+        })?;
+        if field.data_type() != &partition_column.data_type || field.is_nullable() != partition_column.nullable {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_source.validate",
+                "represented partition column schema must match source output schema",
+            )
+            .with_fact("reason", "partition_schema_mismatch")
+            .with_fact("partition_index", partition_index)
+            .with_fact("partition_column", partition_column.name.as_str())
+            .with_fact("declared_type", format!("{:?}", partition_column.data_type))
+            .with_fact("schema_type", format!("{:?}", field.data_type()))
+            .with_fact("declared_nullable", partition_column.nullable)
+            .with_fact("schema_nullable", field.is_nullable()));
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn validate_partition_value_type(
+    partition_column: &PartitionColumn,
+    partition_value: &LiteralValue,
+) -> Result<()> {
+    let matches = matches!(
+        (&partition_column.data_type, partition_value),
+        (ArrowDataType::Boolean, LiteralValue::Boolean(_))
+            | (ArrowDataType::Int8, LiteralValue::Int8(_))
+            | (ArrowDataType::Int16, LiteralValue::Int16(_))
+            | (ArrowDataType::Int32, LiteralValue::Int32(_))
+            | (ArrowDataType::Int64, LiteralValue::Int64(_))
+            | (ArrowDataType::UInt8, LiteralValue::UInt8(_))
+            | (ArrowDataType::UInt16, LiteralValue::UInt16(_))
+            | (ArrowDataType::UInt32, LiteralValue::UInt32(_))
+            | (ArrowDataType::UInt64, LiteralValue::UInt64(_))
+            | (ArrowDataType::Float32, LiteralValue::Float32(_))
+            | (ArrowDataType::Float64, LiteralValue::Float64(_))
+    );
+    if matches {
+        return Ok(());
+    }
+
+    Err(QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "cudf_query_engine.local_parquet_source.validate",
+        "partition value literal must match its partition column type",
+    )
+    .with_fact("reason", "partition_value_type_mismatch")
+    .with_fact("partition_type", format!("{:?}", partition_column.data_type))
+    .with_fact("partition_value", partition_value))
 }
 
 pub(super) fn validate_represented_zero_column_count_source(source: &LocalParquetSource) -> Result<()> {
     if !source.read_columns.is_empty()
         || !source.read_column_file_indices.is_empty()
         || !source.projected_output_columns.is_empty()
-        || !source.projected_output_column_file_indices.is_empty()
+        || !source.projected_output_column_source_refs.is_empty()
         || !source.pure_filter_columns.is_empty()
-        || !source.pure_filter_column_file_indices.is_empty()
+        || !source.pure_filter_column_source_refs.is_empty()
+        || !source.partition_columns.is_empty()
     {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -188,7 +300,8 @@ pub(super) fn validate_represented_zero_column_count_source(source: &LocalParque
         .with_fact("reason", "invalid_zero_column_count_columns")
         .with_fact("read_columns", source.read_columns.len())
         .with_fact("projected_output_columns", source.projected_output_columns.len())
-        .with_fact("pure_filter_columns", source.pure_filter_columns.len()));
+        .with_fact("pure_filter_columns", source.pure_filter_columns.len())
+        .with_fact("partition_columns", source.partition_columns.len()));
     }
 
     if source.schema.field_with_name(ZERO_COLUMN_COUNT_COLUMN).is_err() {
@@ -229,7 +342,8 @@ pub fn read_local_parquet_source(
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut frames = Vec::with_capacity(source.files.len());
     for file in &source.files {
-        frames.push(read_local_parquet_file(context, file, &columns, metrics)?);
+        let frame = read_local_parquet_file(context, file, &columns, metrics)?;
+        frames.push(inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame());
     }
 
     let mut frames = frames.into_iter();
@@ -327,6 +441,92 @@ pub(super) fn read_local_parquet_file(
     Ok(frame)
 }
 
+pub(super) fn inject_partition_columns(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    partition_values: &[LiteralValue],
+    frame: DataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if source.partition_columns.is_empty() {
+        return Ok(GpuDataFrame::new(frame));
+    }
+    if source.partition_columns.len() != partition_values.len() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.inject_partitions",
+            "partition value count must match source partition columns",
+        )
+        .with_fact("partition_columns", source.partition_columns.len())
+        .with_fact("partition_values", partition_values.len()));
+    }
+
+    let rows = frame.num_rows();
+    let timer = Instant::now();
+    let mut output = frame;
+    for (partition_column, partition_value) in source.partition_columns.iter().zip(partition_values) {
+        let series = partition_value_series(context, partition_value, rows).map_err(|error| {
+            error
+                .with_fact("partition_column", partition_column.name.as_str())
+                .with_fact("partition_value", partition_value)
+        })?;
+        output = output.with_column(partition_column.name.as_str(), series).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.local_parquet_source.inject_partitions",
+                "failed to inject native parquet partition column",
+                error,
+            )
+            .with_fact("partition_column", partition_column.name.as_str())
+            .with_fact("partition_value", partition_value)
+        })?;
+    }
+    metrics.source_read_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+pub(super) fn partition_value_series(
+    context: &ExecutionContext,
+    value: &LiteralValue,
+    rows: usize,
+) -> Result<cudf::Series> {
+    let scalar = match value {
+        LiteralValue::Boolean(value) => context.runtime().scalar(*value),
+        LiteralValue::Int8(value) => context.runtime().scalar(*value),
+        LiteralValue::Int16(value) => context.runtime().scalar(*value),
+        LiteralValue::Int32(value) => context.runtime().scalar(*value),
+        LiteralValue::Int64(value) => context.runtime().scalar(*value),
+        LiteralValue::UInt8(value) => context.runtime().scalar(*value),
+        LiteralValue::UInt16(value) => context.runtime().scalar(*value),
+        LiteralValue::UInt32(value) => context.runtime().scalar(*value),
+        LiteralValue::UInt64(value) => context.runtime().scalar(*value),
+        LiteralValue::Float32(value) => context.runtime().scalar(*value),
+        LiteralValue::Float64(value) => context.runtime().scalar(*value),
+        LiteralValue::String(value) => context.runtime().string_scalar(value),
+        LiteralValue::Null => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.local_parquet_source.partition_value",
+                "native parquet partition columns require non-null literal values",
+            ));
+        },
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.partition_value",
+            "failed to construct native parquet partition scalar",
+            error,
+        )
+    })?;
+
+    context.runtime().series_from_scalar(&scalar, rows).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.partition_value",
+            "failed to construct native parquet partition column",
+            error,
+        )
+    })
+}
+
 pub(super) fn cudf_row_groups(file: &LocalParquetFile) -> Result<Option<Vec<i32>>> {
     let Some(row_groups) = &file.row_groups else {
         return Ok(None);
@@ -356,6 +556,7 @@ pub(super) fn cudf_row_groups(file: &LocalParquetFile) -> Result<Option<Vec<i32>
 
 pub(super) fn read_local_parquet_chunk(
     context: &ExecutionContext,
+    source: &LocalParquetSource,
     chunk: &SourceChunk,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -425,7 +626,7 @@ pub(super) fn read_local_parquet_chunk(
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     metrics.record_input_batch(frame.num_rows() as u64);
-    Ok(GpuDataFrame::new(frame))
+    inject_partition_columns(context, source, &chunk.partition_values, frame, metrics)
 }
 
 pub(super) fn zero_column_count_frame(

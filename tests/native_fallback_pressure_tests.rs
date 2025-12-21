@@ -6,26 +6,13 @@ use std::{
 
 use arrow::{
     array::{Float64Array, Int32Array, Int64Array},
-    compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::{
-    common::ScalarValue,
     execution::SessionStateBuilder,
-    functions_aggregate::count::count_udaf,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
-    physical_expr::{
-        LexOrdering, PhysicalSortExpr,
-        aggregate::AggregateExprBuilder,
-        expressions::{col, lit},
-    },
-    physical_plan::{
-        ExecutionPlan,
-        aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
-        limit::LocalLimitExec,
-        sorts::sort::SortExec,
-    },
+    physical_plan::ExecutionPlan,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
@@ -59,7 +46,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     }
     items.push(NativeFallbackPressureWorkloadItem::new(
         "count_only_rewrite",
-        count_only_sort_limit_plan(sql_scan_plan(&path).await),
+        sql_plan(&path, count_only_sql_session_config(), SQL_COUNT_ONLY_QUERY).await,
     ));
 
     let report = NativeFallbackPressureReport::collect(items);
@@ -104,6 +91,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
     let count_only = report_row(&report, "count_only_rewrite");
     assert_eq!(count_only.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(count_only.native_candidate_shape.as_deref(), Some("ProjectionExec(AggregateExec(LocalParquetScan))"));
     assert_eq!(count_only.reason_code, None);
     assert_eq!(count_only.unsupported_category, None);
     assert!(!count_only.rejected_before_execution);
@@ -166,6 +154,22 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(accepted_row.source_diagnostics[0].read_column_count, 4);
     assert_eq!(accepted_row.source_diagnostics[0].pure_filter_column_count, 1);
 
+    let count_only = native_datafusion_planning_report("count_only_session", &path, SQL_COUNT_ONLY_QUERY).await;
+    assert_eq!(count_only.rows.len(), 1);
+    assert_eq!(count_only.accepted_count(), 1);
+    assert_eq!(count_only.rejected_count(), 0);
+    let count_only_row = &count_only.rows[0];
+    assert_eq!(count_only_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(
+        count_only_row.native_candidate_shape.as_deref(),
+        Some("ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan))))")
+    );
+    assert_eq!(count_only_row.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(count_only_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(count_only_row.source_diagnostics.len(), 1);
+    assert_eq!(count_only_row.source_diagnostics[0].read_column_count, 0);
+    assert_eq!(count_only_row.source_diagnostics[0].zero_column_count_disposition, "represented");
+
     let rejected = native_datafusion_planning_report("filtered_session", &path, SQL_FILTERED_QUERY).await;
     assert_eq!(rejected.rows.len(), 1);
     assert_eq!(rejected.accepted_count(), 0);
@@ -207,40 +211,6 @@ async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> A
     df.create_physical_plan().await.unwrap()
 }
 
-async fn sql_scan_plan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
-    let ctx = SessionContext::new_with_config(direct_friendly_sql_session_config());
-    let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-    df.create_physical_plan().await.unwrap()
-}
-
-fn count_only_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    let scan_schema = scan.schema();
-    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
-        .schema(Arc::clone(&scan_schema))
-        .alias("count_rows")
-        .build()
-        .unwrap();
-    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
-        AggregateExec::try_new(
-            AggregateMode::Single,
-            PhysicalGroupBy::new_single(Vec::new()),
-            vec![Arc::new(count)],
-            vec![None],
-            scan,
-            scan_schema,
-        )
-        .unwrap(),
-    );
-    let aggregate_schema = aggregate.schema();
-    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
-        col("count_rows", &aggregate_schema).unwrap(),
-        ArrowSortOptions::new(true, false),
-    )])
-    .unwrap();
-    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
-    Arc::new(LocalLimitExec::new(sort, 1))
-}
-
 async fn native_datafusion_planning_report(
     query_id: &str,
     path: &std::path::Path,
@@ -270,6 +240,12 @@ fn direct_friendly_sql_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config
+}
+
+fn count_only_sql_session_config() -> SessionConfig {
+    let mut config = direct_friendly_sql_session_config().with_collect_statistics(false);
+    config.options_mut().execution.collect_statistics = false;
     config
 }
 
@@ -338,6 +314,11 @@ WHERE payload >= 10
 GROUP BY key
 ORDER BY avg_m00 DESC, key ASC
 LIMIT 2
+";
+
+const SQL_COUNT_ONLY_QUERY: &str = "
+SELECT COUNT(*) AS count_rows
+FROM bench
 ";
 
 const SQL_FILTERED_QUERY: &str = "

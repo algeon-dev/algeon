@@ -13,9 +13,9 @@ use arrow::{
 use cudf::DataFrame;
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionContext, Expr, LimitSpec, LiteralValue,
-    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, QueryErrorCode, QueryOutput, QueryPlanBuilder, SortExpr,
-    SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    plan_local_parquet_source_chunks,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryOutput,
+    QueryPlanBuilder, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    execute_query_plan, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -146,6 +146,66 @@ fn native_query_executes_multi_file_direct_parquet_source() {
     };
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[808, 606]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_query_executes_filter_projection_and_group_by_on_partition_columns() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-partitions");
+    let first_path = dir.join("part-001.parquet");
+    let second_path = dir.join("part-002.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let file_schema = write_input_parquet(&runtime, &first_path);
+    write_input_parquet(&runtime, &second_path);
+    let plan = partition_column_query_plan(&first_path, &second_path, file_schema);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1000]);
+    assert_eq!(result.metrics().parquet_files, 2);
+    assert_eq!(result.metrics().read_columns, 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_partition_columns_per_source_chunk() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-bounded-partitions");
+    let first_path = dir.join("part-001.parquet");
+    let second_path = dir.join("part-002.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let file_schema = write_input_parquet(&runtime, &first_path);
+    write_input_parquet(&runtime, &second_path);
+    let plan = partition_column_query_plan(&first_path, &second_path, file_schema);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1000]);
+    assert_eq!(result.metrics().source_chunks_planned, 2);
+    assert_eq!(result.metrics().source_chunks_committed, 2);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1304,6 +1364,58 @@ fn write_input_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<S
     .unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
     schema
+}
+
+fn partition_column_query_plan(
+    first_path: &Path,
+    second_path: &Path,
+    file_schema: Arc<Schema>,
+) -> cudf_query_engine::QueryPlan {
+    let source_schema = Arc::new(Schema::new(
+        file_schema
+            .fields()
+            .iter()
+            .map(|field| field.as_ref().clone())
+            .chain([Field::new("part", DataType::Int32, false)])
+            .collect::<Vec<_>>(),
+    ));
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("part", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(first_path)
+                .with_file_size_bytes(fs::metadata(first_path).unwrap().len())
+                .with_partition_values(vec![LiteralValue::Int32(1)]),
+            LocalParquetFile::new(second_path)
+                .with_file_size_bytes(fs::metadata(second_path).unwrap().len())
+                .with_partition_values(vec![LiteralValue::Int32(2)]),
+        ],
+        Arc::clone(&source_schema),
+        vec!["m00".to_string()],
+    )
+    .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)])
+    .with_column_roles(vec!["part".to_string(), "m00".to_string()], vec!["part".to_string()]);
+    let filter = Expr::binary(Expr::column("part"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2)));
+    let projection = vec![Expr::column("part"), Expr::column("m00")];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("part")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("part"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, source_schema);
+    let projection = builder.add_projection(filter, projection, projected_schema);
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    builder.finish_with_host_sink(sort)
 }
 
 fn write_row_grouped_input_parquet(path: &Path) -> Arc<Schema> {

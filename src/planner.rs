@@ -20,7 +20,10 @@ use crate::{
     native_exec::{NativeCudfExec, NativeCudfExecutionConfig},
     policy::{FallbackReason, GpuFallbackPolicy},
     report::{GpuCandidate, PlanningReport},
-    session::{CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_PHYSICAL_OPTIMIZER_RULE_NAME},
+    session::{
+        CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        CUDF_PHYSICAL_OPTIMIZER_RULE_NAME,
+    },
 };
 
 #[derive(Debug, Clone)]
@@ -106,20 +109,35 @@ pub struct NativePlanningDiagnostics {
 #[derive(Debug)]
 pub struct CudfNativePhysicalOptimizerRule {
     config: CudfOptimizerConfig,
+    phase: NativeOptimizerPhase,
+    state: Arc<CudfNativePhysicalOptimizerRuleState>,
+}
+
+#[derive(Debug)]
+struct CudfNativePhysicalOptimizerRuleState {
     last_input_plan_root: Mutex<Option<String>>,
     last_input_plan_shape: Mutex<Option<String>>,
     last_report: Mutex<Option<PlanningReport>>,
     last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeOptimizerPhase {
+    CountOnlyProbe,
+    Final,
+}
+
 impl CudfNativePhysicalOptimizerRule {
     pub fn new(config: CudfOptimizerConfig) -> Self {
         Self {
             config,
-            last_input_plan_root: Mutex::new(None),
-            last_input_plan_shape: Mutex::new(None),
-            last_report: Mutex::new(None),
-            last_source_diagnostics: Mutex::new(Vec::new()),
+            phase: NativeOptimizerPhase::Final,
+            state: Arc::new(CudfNativePhysicalOptimizerRuleState {
+                last_input_plan_root: Mutex::new(None),
+                last_input_plan_shape: Mutex::new(None),
+                last_report: Mutex::new(None),
+                last_source_diagnostics: Mutex::new(Vec::new()),
+            }),
         }
     }
 
@@ -127,23 +145,33 @@ impl CudfNativePhysicalOptimizerRule {
         &self.config
     }
 
+    pub(crate) fn count_only_probe_rule(&self) -> Self {
+        Self {
+            config: self.config.clone(),
+            phase: NativeOptimizerPhase::CountOnlyProbe,
+            state: Arc::clone(&self.state),
+        }
+    }
+
     pub fn last_report(&self) -> Option<PlanningReport> {
-        self.last_report.lock().expect("native planning report mutex poisoned").clone()
+        self.state.last_report.lock().expect("native planning report mutex poisoned").clone()
     }
 
     pub fn last_source_diagnostics(&self) -> Vec<cudf_query_engine::SourceDiagnostics> {
-        self.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
+        self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned").clone()
     }
 
     pub fn last_planning_diagnostics(&self) -> Option<NativePlanningDiagnostics> {
         self.last_report().map(|report| NativePlanningDiagnostics {
             input_plan_root: self
+                .state
                 .last_input_plan_root
                 .lock()
                 .expect("native input plan root mutex poisoned")
                 .clone()
                 .unwrap_or_default(),
             input_plan_shape: self
+                .state
                 .last_input_plan_shape
                 .lock()
                 .expect("native input plan shape mutex poisoned")
@@ -161,20 +189,37 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        *self.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
+        if plan.as_any().downcast_ref::<NativeCudfExec>().is_some() {
+            return Ok(plan);
+        }
+        if let Some(native_plan) = peel_cooperative_native_exec(&plan) {
+            return Ok(native_plan);
+        }
+
+        *self.state.last_input_plan_root.lock().expect("native input plan root mutex poisoned") =
             Some(plan.name().to_string());
-        *self.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
+        *self.state.last_input_plan_shape.lock().expect("native input plan shape mutex poisoned") =
             Some(physical_plan_shape(plan.as_ref()));
 
         let Some(native_execution_config) = self.config.native_execution_config() else {
-            *self.last_report.lock().expect("native planning report mutex poisoned") = Some(PlanningReport::new());
-            *self.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") = Vec::new();
+            *self.state.last_report.lock().expect("native planning report mutex poisoned") =
+                Some(PlanningReport::new());
+            *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") = Vec::new();
             return Ok(plan);
         };
 
-        let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
-        *self.last_report.lock().expect("native planning report mutex poisoned") = Some(lowering.report.clone());
-        *self.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
+        let lowering_input = match self.phase {
+            NativeOptimizerPhase::CountOnlyProbe => peel_output_requirement_exec(Arc::clone(&plan)),
+            NativeOptimizerPhase::Final => Arc::clone(&plan),
+        };
+        let lowering = match self.phase {
+            NativeOptimizerPhase::CountOnlyProbe => {
+                crate::native::lower_count_only_physical_plan_to_native(lowering_input)
+            },
+            NativeOptimizerPhase::Final => crate::native::lower_physical_plan_to_native(Arc::clone(&plan)),
+        };
+        *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(lowering.report.clone());
+        *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
             lowering.source_diagnostics.clone();
 
         if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
@@ -187,12 +232,35 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     }
 
     fn name(&self) -> &str {
-        CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+        match self.phase {
+            NativeOptimizerPhase::CountOnlyProbe => CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
+            NativeOptimizerPhase::Final => CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        }
     }
 
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+fn peel_output_requirement_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    if plan.name() == "OutputRequirementExec"
+        && let [child] = plan.children().as_slice()
+    {
+        return Arc::clone(child);
+    }
+    plan
+}
+
+fn peel_cooperative_native_exec(plan: &Arc<dyn ExecutionPlan>) -> Option<Arc<dyn ExecutionPlan>> {
+    if plan.name() != "CooperativeExec" {
+        return None;
+    }
+    let children = plan.children();
+    let [child] = children.as_slice() else {
+        return None;
+    };
+    child.as_any().downcast_ref::<NativeCudfExec>().is_some().then(|| Arc::clone(child))
 }
 
 fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {

@@ -4,6 +4,7 @@ use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
+    expr::LiteralValue,
     plan::NodeId,
     runtime::MemoryControlPolicy,
     source::{LocalParquetFile, LocalParquetSource},
@@ -42,7 +43,7 @@ impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SourceChunkPlan {
     pub chunks: Vec<SourceChunk>,
     pub source_node_id: NodeId,
@@ -61,7 +62,7 @@ impl SourceChunkPlan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SourceChunk {
     pub source_node_id: NodeId,
     pub chunk_index: usize,
@@ -73,6 +74,7 @@ pub struct SourceChunk {
     pub known_row_group_bytes: Option<u64>,
     pub estimated_chunk_bytes: Option<u64>,
     pub read_columns: Vec<String>,
+    pub partition_values: Vec<LiteralValue>,
     pub zero_column_count: bool,
     pub known_row_count: Option<u64>,
     pub size_estimate_based: bool,
@@ -320,6 +322,7 @@ fn push_pending_chunk(
         known_row_group_bytes,
         estimated_chunk_bytes,
         read_columns: source.read_columns.clone(),
+        partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
         known_row_count,
         size_estimate_based: known_row_group_bytes.is_none(),
@@ -345,6 +348,7 @@ fn single_all_row_groups_chunk(
         known_row_group_bytes: None,
         estimated_chunk_bytes: file.file_size_bytes,
         read_columns: source.read_columns.clone(),
+        partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
         known_row_count: None,
         size_estimate_based: true,

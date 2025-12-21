@@ -32,7 +32,7 @@ pub use runtime::{
     MemoryResourcePolicy, ReservationKind, RetryFacts,
 };
 pub use source::{
-    ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumnDisposition, PredicateDisposition,
-    RejectedSourceFeature, SchemaMappingDisposition, SourceDiagnostics, SourceFormat, SourceNode,
-    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,
+    PredicateDisposition, RejectedSourceFeature, SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics,
+    SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };

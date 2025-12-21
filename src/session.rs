@@ -8,7 +8,9 @@ use datafusion::{
 use crate::planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule};
 
 pub const CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native";
+pub const CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_native_count_only";
 pub const CUDF_PHYSICAL_OPTIMIZER_RULE_NAME: &str = "datafusion_cudf_gpu_island";
+const DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME: &str = "aggregate_statistics";
 const DATAFUSION_FINAL_VALIDATION_RULE_NAME: &str = "SanityCheckPlan";
 
 pub type PhysicalOptimizerRules = Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>;
@@ -108,8 +110,15 @@ fn insert_cudf_rules_before_final_validation(
 ) {
     rules.retain(|existing| {
         existing.name() != CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME
+            && existing.name() != CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME
             && existing.name() != CUDF_PHYSICAL_OPTIMIZER_RULE_NAME
     });
+    if let Some(native_rule) = native_rule.as_ref() {
+        let count_only_rule = Arc::new(native_rule.count_only_probe_rule());
+        let insertion_position =
+            rules.iter().position(|existing| existing.name() == DATAFUSION_AGGREGATE_STATISTICS_RULE_NAME).unwrap_or(0);
+        rules.insert(insertion_position, count_only_rule);
+    }
     let final_validation = rules
         .iter()
         .rposition(|existing| existing.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME)

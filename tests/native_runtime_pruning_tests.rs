@@ -118,6 +118,33 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
 }
 
 #[tokio::test]
+async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
+    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-count-only");
+    let path = dir.join("input.parquet");
+    write_row_group_pruning_parquet_file(&path);
+    let cpu_batches = cpu_sql_output(&path, SQL_COUNT_ONLY_QUERY).await;
+
+    let plan = native_datafusion_sql_plan(&path, SQL_COUNT_ONLY_QUERY, native_datafusion_config()).await;
+
+    assert_eq!(plan.name(), "NativeCudfExec");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
+
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("read_columns").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_default_sql_not_filter_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-not-filter");
     let path = dir.join("input.parquet");
@@ -395,6 +422,11 @@ FROM bench
 GROUP BY key
 ORDER BY key ASC
 LIMIT 2
+";
+
+const SQL_COUNT_ONLY_QUERY: &str = "
+SELECT COUNT(*) AS count_rows
+FROM bench
 ";
 
 const SQL_GLOBAL_AVG_QUERY: &str = "
