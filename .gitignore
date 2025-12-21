@@ -22,4 +22,4 @@ rustc-ice-*.txt
 cufile.log
 
 # Large generated benchmark/test datasets
-/test/data/
+/tests/data/
