@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, Int32Array, Int64Array},
+    array::{Array, Decimal128Array, Int32Array, Int64Array},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema, SchemaRef},
     record_batch::RecordBatch,
@@ -70,6 +70,10 @@ fn int32_values(batch: &RecordBatch, index: usize) -> Vec<i32> {
 
 fn int64_values(batch: &RecordBatch, index: usize) -> Vec<i64> {
     batch.column(index).as_any().downcast_ref::<Int64Array>().expect("expected Int64Array").values().to_vec()
+}
+
+fn decimal128_values(batch: &RecordBatch, index: usize) -> Vec<i128> {
+    batch.column(index).as_any().downcast_ref::<Decimal128Array>().expect("expected Decimal128Array").values().to_vec()
 }
 
 fn write_parquet_file(path: &std::path::Path, batch: &RecordBatch) {
@@ -159,6 +163,36 @@ fn gpu_island_executes_filter_and_projection_roundtrip() {
     assert_eq!(batches[0].schema().field(1).name(), "total");
     assert_eq!(int32_values(&batches[0], 0), vec![2, 3, 4]);
     assert_eq!(int32_values(&batches[0], 1), vec![22, 33, 44]);
+}
+
+#[test]
+fn gpu_island_executes_decimal128_literal_projection_roundtrip() {
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), false)]));
+    let discounts = Decimal128Array::from_iter_values([5, 10, 25]).with_precision_and_scale(15, 2).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(discounts)]).unwrap();
+    let source: Arc<dyn ExecutionPlan> =
+        TestMemoryExec::try_new_exec(&[vec![batch]], Arc::clone(&schema), None).unwrap();
+    let one = lit(ScalarValue::Decimal128(Some(100), 15, 2));
+    let one_minus_discount = binary(one, Operator::Minus, col("discount", &schema).unwrap(), &schema).unwrap();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [ProjectionExpr { expr: one_minus_discount, alias: "one_minus_discount".to_string() }],
+            source,
+        )
+        .unwrap(),
+    );
+
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_min_operators_per_island(1);
+    let result = optimize_plan(projection, &config).unwrap();
+    assert_eq!(result.plan.name(), "CudfGpuIslandExec");
+
+    let batches = futures::executor::block_on(collect(result.plan, Arc::new(TaskContext::default()))).unwrap();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].schema().field(0).name(), "one_minus_discount");
+    assert_eq!(batches[0].schema().field(0).data_type(), &DataType::Decimal128(38, 2));
+    assert_eq!(decimal128_values(&batches[0], 0), vec![95, 90, 75]);
 }
 
 #[test]

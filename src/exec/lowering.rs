@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use arrow::datatypes::DataType;
 use cudf::{
     Expr, GroupByAgg,
-    ops::{col, lit},
+    ops::{col, expr::lit_decimal128_raw, lit},
 };
+use cudf_query_engine::is_supported_arrow_type;
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -213,6 +215,9 @@ fn lower_literal(value: &ScalarValue) -> AdapterResult<Expr> {
         ScalarValue::UInt64(Some(value)) => Ok(lit(*value)),
         ScalarValue::Float32(Some(value)) => Ok(lit(*value)),
         ScalarValue::Float64(Some(value)) => Ok(lit(*value)),
+        ScalarValue::Decimal128(Some(raw), precision, scale) => {
+            Ok(lit_decimal128_raw(*raw, datafusion_decimal_scale_to_cudf_scale(*precision, *scale)))
+        },
         _ => Err(Error::new(
             ErrorCode::UnsupportedExpression,
             "datafusion_cudf.expr.lower_literal",
@@ -220,6 +225,11 @@ fn lower_literal(value: &ScalarValue) -> AdapterResult<Expr> {
         )
         .with_fact("literal", format!("{value:?}"))),
     }
+}
+
+fn datafusion_decimal_scale_to_cudf_scale(precision: u8, scale: i8) -> i32 {
+    debug_assert!(is_supported_arrow_type(&DataType::Decimal128(precision, scale)));
+    -i32::from(scale)
 }
 
 fn lower_binary(left: Expr, op: &Operator, right: Expr) -> AdapterResult<Expr> {

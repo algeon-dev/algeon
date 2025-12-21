@@ -1,3 +1,4 @@
+mod literal;
 mod lowering;
 mod normalize;
 mod pruning;

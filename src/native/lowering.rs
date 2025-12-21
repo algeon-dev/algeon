@@ -4,7 +4,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
     AggregateSpec as NativeAggregateSpec, BinaryOp as NativeBinaryOp, Expr as NativeExpr, LimitSpec as NativeLimitSpec,
-    LiteralValue as NativeLiteralValue, LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
+    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
     QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr, SortSpec as NativeSortSpec,
     SourceNode as NativeSourceNode, ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
 };
@@ -25,6 +25,7 @@ use datafusion::{
 };
 
 use super::{
+    literal::{NativeLiteralContext, native_literal_value},
     normalize::NormalizedNativePlan,
     source::{
         local_parquet_files, local_parquet_source_diagnostics, required_parquet_column_requirements,
@@ -413,93 +414,7 @@ fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(),
 }
 
 fn lower_literal(value: &ScalarValue) -> Result<NativeExpr, FallbackReason> {
-    let literal = match value {
-        ScalarValue::Boolean(Some(value)) => NativeLiteralValue::Boolean(*value),
-        ScalarValue::Int8(Some(value)) => NativeLiteralValue::Int8(*value),
-        ScalarValue::Int16(Some(value)) => NativeLiteralValue::Int16(*value),
-        ScalarValue::Int32(Some(value)) => NativeLiteralValue::Int32(*value),
-        ScalarValue::Int64(Some(value)) => NativeLiteralValue::Int64(*value),
-        ScalarValue::UInt8(Some(value)) => NativeLiteralValue::UInt8(*value),
-        ScalarValue::UInt16(Some(value)) => NativeLiteralValue::UInt16(*value),
-        ScalarValue::UInt32(Some(value)) => NativeLiteralValue::UInt32(*value),
-        ScalarValue::UInt64(Some(value)) => NativeLiteralValue::UInt64(*value),
-        ScalarValue::Float32(Some(value)) => NativeLiteralValue::Float32(*value),
-        ScalarValue::Float64(Some(value)) => NativeLiteralValue::Float64(*value),
-        ScalarValue::Utf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => NativeLiteralValue::Utf8(value.clone()),
-        ScalarValue::LargeUtf8(Some(value)) => NativeLiteralValue::LargeUtf8(value.clone()),
-        ScalarValue::Decimal128(Some(raw), precision, scale) => {
-            NativeLiteralValue::Decimal128 { raw: *raw, precision: *precision, scale: *scale }
-        },
-        ScalarValue::Date32(Some(value)) => NativeLiteralValue::Date32(*value),
-        ScalarValue::TimestampSecond(Some(raw), None) => {
-            NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Second }
-        },
-        ScalarValue::TimestampMillisecond(Some(raw), None) => {
-            NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Millisecond }
-        },
-        ScalarValue::TimestampMicrosecond(Some(raw), None) => {
-            NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Microsecond }
-        },
-        ScalarValue::TimestampNanosecond(Some(raw), None) => {
-            NativeLiteralValue::Timestamp { raw: *raw, unit: arrow::datatypes::TimeUnit::Nanosecond }
-        },
-        ScalarValue::DurationSecond(Some(raw)) => {
-            NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Second }
-        },
-        ScalarValue::DurationMillisecond(Some(raw)) => {
-            NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Millisecond }
-        },
-        ScalarValue::DurationMicrosecond(Some(raw)) => {
-            NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Microsecond }
-        },
-        ScalarValue::DurationNanosecond(Some(raw)) => {
-            NativeLiteralValue::Duration { raw: *raw, unit: arrow::datatypes::TimeUnit::Nanosecond }
-        },
-        ScalarValue::Boolean(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Boolean),
-        ScalarValue::Int8(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Int8),
-        ScalarValue::Int16(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Int16),
-        ScalarValue::Int32(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Int32),
-        ScalarValue::Int64(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Int64),
-        ScalarValue::UInt8(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::UInt8),
-        ScalarValue::UInt16(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::UInt16),
-        ScalarValue::UInt32(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::UInt32),
-        ScalarValue::UInt64(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::UInt64),
-        ScalarValue::Float32(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Float32),
-        ScalarValue::Float64(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Float64),
-        ScalarValue::Utf8(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Utf8),
-        ScalarValue::Utf8View(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Utf8View),
-        ScalarValue::LargeUtf8(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::LargeUtf8),
-        ScalarValue::Decimal128(None, precision, scale) => {
-            NativeLiteralValue::Null(arrow::datatypes::DataType::Decimal128(*precision, *scale))
-        },
-        ScalarValue::Date32(None) => NativeLiteralValue::Null(arrow::datatypes::DataType::Date32),
-        ScalarValue::TimestampSecond(None, None) => {
-            NativeLiteralValue::Null(arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Second, None))
-        },
-        ScalarValue::TimestampMillisecond(None, None) => NativeLiteralValue::Null(
-            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, None),
-        ),
-        ScalarValue::TimestampMicrosecond(None, None) => NativeLiteralValue::Null(
-            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None),
-        ),
-        ScalarValue::TimestampNanosecond(None, None) => NativeLiteralValue::Null(
-            arrow::datatypes::DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, None),
-        ),
-        ScalarValue::DurationSecond(None) => {
-            NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Second))
-        },
-        ScalarValue::DurationMillisecond(None) => {
-            NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Millisecond))
-        },
-        ScalarValue::DurationMicrosecond(None) => {
-            NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Microsecond))
-        },
-        ScalarValue::DurationNanosecond(None) => {
-            NativeLiteralValue::Null(arrow::datatypes::DataType::Duration(arrow::datatypes::TimeUnit::Nanosecond))
-        },
-        _ => return Err(FallbackReason::UnsupportedExpression),
-    };
-    Ok(NativeExpr::literal(literal))
+    Ok(NativeExpr::literal(native_literal_value(value, NativeLiteralContext::Expression)?))
 }
 
 fn lower_binary_operator(op: &Operator) -> Result<NativeBinaryOp, FallbackReason> {

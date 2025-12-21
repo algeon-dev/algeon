@@ -6,13 +6,29 @@ use std::{
 
 use arrow::{
     array::{Float64Array, Int32Array, Int64Array},
+    compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::{
+    common::ScalarValue,
     execution::SessionStateBuilder,
+    functions_aggregate::sum::sum_udaf,
+    logical_expr::Operator,
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
-    physical_plan::ExecutionPlan,
+    physical_expr::{
+        LexOrdering, PhysicalSortExpr,
+        aggregate::AggregateExprBuilder,
+        expressions::{TryCastExpr, binary, col, lit},
+    },
+    physical_plan::{
+        ExecutionPlan,
+        aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
+        filter::FilterExec,
+        limit::LocalLimitExec,
+        projection::{ProjectionExec, ProjectionExpr},
+        sorts::sort::SortExec,
+    },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
@@ -184,6 +200,30 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 }
 
 #[tokio::test]
+async fn native_fallback_pressure_report_keeps_supported_typed_null_literals_out_of_unsupported_category() {
+    let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure-typed-null-literal");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path).await;
+    let plan = typed_null_and_try_cast_reject_plan(scan);
+
+    let report = NativeFallbackPressureReport::collect([NativeFallbackPressureWorkloadItem::new(
+        "typed_null_try_cast_reject",
+        plan,
+    )]);
+
+    assert_eq!(report.rows.len(), 1);
+    let row = report_row(&report, "typed_null_try_cast_reject");
+    assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected);
+    assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"));
+    assert_eq!(row.unsupported_category.as_deref(), Some("expression_try_cast"));
+    assert_ne!(row.unsupported_category.as_deref(), Some("expression_literal"));
+    assert!(row.rejected_before_execution);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes() {
     let dir = unique_temp_dir("datafusion-cudf-native-datafusion-planning-report");
     let path = dir.join("input.parquet");
@@ -330,6 +370,68 @@ async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> A
     ctx.register_parquet("bench", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let df = ctx.sql(sql).await.unwrap();
     df.create_physical_plan().await.unwrap()
+}
+
+async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(direct_friendly_sql_session_config());
+    let df = ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+fn typed_null_and_try_cast_reject_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let typed_null_comparison =
+        binary(lit(ScalarValue::Int64(None)), Operator::Eq, lit(ScalarValue::Int64(None)), &scan_schema).unwrap();
+    let try_cast = Arc::new(TryCastExpr::new(col("payload", &scan_schema).unwrap(), DataType::Int32));
+    let try_cast_comparison =
+        binary(try_cast, Operator::GtEq, lit(ScalarValue::Int32(Some(10))), &scan_schema).unwrap();
+    let predicate = binary(typed_null_comparison, Operator::And, try_cast_comparison, &scan_schema).unwrap();
+    aggregate_sort_limit_plan_with_filter(scan, predicate)
+}
+
+fn aggregate_sort_limit_plan_with_filter(
+    scan: Arc<dyn ExecutionPlan>,
+    predicate: Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+) -> Arc<dyn ExecutionPlan> {
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+    let filter_schema = filter.schema();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &filter_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: col("m00", &filter_schema).unwrap(), alias: "m00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+    let projection_schema = projection.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &projection_schema).unwrap(), "key".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &projection_schema).unwrap()])
+        .schema(Arc::clone(&projection_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum)],
+            vec![None],
+            projection,
+            projection_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([
+        PhysicalSortExpr::new(col("sum_m00", &aggregate_schema).unwrap(), ArrowSortOptions::new(true, false)),
+        PhysicalSortExpr::new(col("key", &aggregate_schema).unwrap(), ArrowSortOptions::new(false, false)),
+    ])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(2)));
+    Arc::new(LocalLimitExec::new(sort, 2))
 }
 
 async fn native_datafusion_planning_report(
