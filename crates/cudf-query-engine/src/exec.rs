@@ -513,7 +513,7 @@ fn execute_bounded_chunk_attempt(
         if let Some((projection, output_schema)) = bounded.projection {
             frame = execute_projection(context, projection, frame, output_schema, metrics)?;
         }
-        execute_aggregate(context, bounded.aggregate.0, frame, bounded.aggregate.1, metrics)
+        execute_partial_aggregate(context, bounded.aggregate.0, frame, metrics)
     })();
     metrics.chunk_operator_time += chunk_operator_timer.elapsed();
     let frame = match chunk_output {
@@ -792,6 +792,10 @@ fn validate_final_aggregate_capability(
     output_schema: &arrow::datatypes::SchemaRef,
 ) -> Result<()> {
     let aggregate = lower_final_aggregate_spec(&node.spec)?;
+    if aggregate_spec_has_avg(&node.spec) {
+        validate_avg_output_fields(&node.spec, output_schema)?;
+        return Ok(());
+    }
     validate_aggregate_output_names(
         &aggregate,
         output_schema,
@@ -1122,7 +1126,8 @@ fn execute_final_aggregate_merge(
         }
     }
 
-    Ok(partials.pop().expect("final merge loop leaves exactly one partial"))
+    let partial = partials.pop().expect("final merge loop leaves exactly one partial");
+    execute_final_aggregate_projection(context, bounded, partial, reservations, metrics)
 }
 
 fn execute_post_aggregate_projection(
@@ -1179,6 +1184,77 @@ fn execute_post_aggregate_projection(
             .with_memory_boundary("post_aggregate_projection_output")
             .with_node_id(bounded.aggregate_id)
             .with_stage("post_aggregate_projection");
+    let output_reservation = reservations.try_reserve(output_request, metrics)?;
+    Ok(CommittedPartial { frame, reservation: output_reservation })
+}
+
+fn execute_final_aggregate_projection(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    if !aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
+        return Ok(input);
+    }
+
+    let request =
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
+            .with_memory_boundary("final_aggregate_projection")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("final_projection");
+    let work_reservation = reservations.try_reserve(request, metrics)?;
+    let expected_output_names =
+        bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    let result =
+        finalize_avg_output_columns(context, input.frame.into_frame(), &bounded.aggregate.0.spec, bounded.aggregate.1)
+            .and_then(|frame| {
+                frame.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.final_projection.select",
+                        "failed to select bounded native final aggregate output columns",
+                        error,
+                    )
+                })
+            })
+            .map(GpuDataFrame::new);
+    reservations.release(work_reservation);
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(input.reservation);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: "final_aggregate_projection",
+                stage: "final_projection",
+                node_id: bounded.aggregate_id,
+                attempt: 1,
+                max_attempts: 1,
+                resume_boundary: "final_projection",
+                metrics,
+            }
+            .attach_to(error));
+        },
+    };
+
+    reservations.release(input.reservation);
+    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: "final_aggregate_projection_output",
+            stage: "final_projection",
+            node_id: bounded.aggregate_id,
+            attempt: 1,
+            max_attempts: 1,
+            resume_boundary: "final_projection",
+            metrics,
+        }
+        .attach_to(error)
+    })?;
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
+            .with_memory_boundary("final_aggregate_projection_output")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("final_projection");
     let output_reservation = reservations.try_reserve(output_request, metrics)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
@@ -1942,14 +2018,19 @@ fn execute_final_aggregate(
     input: GpuDataFrame,
 ) -> Result<GpuDataFrame> {
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
-    validate_aggregate_output_names(
-        &aggregate,
-        bounded.aggregate.1,
-        "cudf_query_engine.final_merge.validate",
-        "final aggregate output names must match output schema fields",
-    )?;
-    let expected_output_names =
-        bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    if !aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
+        validate_aggregate_output_names(
+            &aggregate,
+            bounded.aggregate.1,
+            "cudf_query_engine.final_merge.validate",
+            "final aggregate output names must match output schema fields",
+        )?;
+    }
+    let expected_output_names = if aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
+        aggregate.output_names.clone()
+    } else {
+        bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>()
+    };
 
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
@@ -2053,18 +2134,55 @@ fn execute_aggregate(
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
+    let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute")?;
+    output = cast_count_output_columns(output, &node.spec, output_schema)?;
+    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.select",
+            "failed to select native cudf aggregate output columns",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+fn execute_partial_aggregate(
+    context: &ExecutionContext,
+    node: &AggregateNode,
+    input: GpuDataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    let expected_output_names = aggregate.output_names.clone();
+    let frame = input.into_frame();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output =
+        execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute_partial")?
+            .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.aggregate.select_partial",
+                    "failed to select native partial aggregate output columns",
+                    error,
+                )
+            })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+fn execute_groupby_aggregate(
+    overrides: &ExecutionOverrides<'_>,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    operation: &'static str,
+) -> Result<DataFrame> {
     let mut output = frame
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
-        .with_execution(&overrides)
+        .with_execution(overrides)
         .agg(&aggregate.aggregations)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.aggregate.execute",
-                "failed to execute native cudf aggregate",
-                error,
-            )
-        })?;
-    output = cast_count_output_columns(output, &node.spec, output_schema)?;
+        .map_err(|error| QueryError::from_cudf(operation, "failed to execute native cudf aggregate", error))?;
     let key_renames = aggregate
         .key_columns
         .iter()
@@ -2081,15 +2199,7 @@ fn execute_aggregate(
             )
         })?;
     }
-    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.aggregate.select",
-            "failed to select native cudf aggregate output columns",
-            error,
-        )
-    })?;
-    metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(output))
+    Ok(output)
 }
 
 fn cast_count_output_columns(
@@ -2126,6 +2236,70 @@ fn cast_count_output_columns(
         })?;
     }
     Ok(frame)
+}
+
+fn finalize_avg_output_columns(
+    context: &ExecutionContext,
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    if !aggregate_spec_has_avg(spec) {
+        return Ok(frame);
+    }
+
+    validate_avg_output_fields(spec, output_schema)?;
+    let avg_exprs = spec
+        .aggr_exprs
+        .iter()
+        .enumerate()
+        .filter(|(_, expr)| expr.function == AggregateFunction::Avg)
+        .map(|(index, expr)| {
+            let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.aggregate.finalize_avg",
+                    "avg aggregate output field is missing from output schema",
+                )
+                .with_fact("alias", expr.alias.as_str())
+            })?;
+            let sum = Expr::cast(Expr::column(avg_sum_state_alias(index)), field.data_type().clone());
+            let count = Expr::cast(Expr::column(avg_count_state_alias(index)), field.data_type().clone());
+            let alias = expr.alias.clone();
+            lower_expr(&Expr::binary(sum, BinaryOp::Divide, count)).map(|lowered| (alias, lowered))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let overrides = execution_overrides(context);
+    frame.with_execution(&overrides).with_columns(avg_exprs).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.finalize_avg",
+            "failed to finalize native avg aggregate output columns",
+            error,
+        )
+    })
+}
+
+fn validate_avg_output_fields(spec: &AggregateSpec, output_schema: &arrow::datatypes::SchemaRef) -> Result<()> {
+    for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg) {
+        let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.aggregate.validate_avg",
+                "avg aggregate output field is missing from output schema",
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        if !matches!(field.data_type(), ArrowDataType::Float32 | ArrowDataType::Float64) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.aggregate.validate_avg",
+                "avg aggregate output schema must be Float32 or Float64",
+            )
+            .with_fact("alias", expr.alias.as_str())
+            .with_fact("data_type", format!("{:?}", field.data_type())));
+        }
+    }
+    Ok(())
 }
 
 fn arrow_type_to_cudf_type_id(data_type: &ArrowDataType) -> Option<TypeId> {
@@ -2431,6 +2605,112 @@ struct LoweredAggregate {
 }
 
 fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+    let mut aggregate = lower_aggregate_spec_keys(spec)?;
+    let aggregations = spec
+        .aggr_exprs
+        .iter()
+        .map(|expr| {
+            let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.aggregate.lower_expr")?;
+            let function = lower_aggregate_function(expr.function);
+            Ok(CudfAggSpec::new(input_column, function).with_alias(expr.alias.as_str()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    aggregate.aggregations = aggregations;
+    aggregate.output_names =
+        aggregate.output_key_names.iter().chain(spec.aggr_exprs.iter().map(|expr| &expr.alias)).cloned().collect();
+    Ok(aggregate)
+}
+
+fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+    let mut aggregate = lower_aggregate_spec_keys(spec)?;
+    let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len());
+    let mut output_names = aggregate.output_key_names.clone();
+
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.aggregate.lower_partial_expr")?;
+        match expr.function {
+            AggregateFunction::Avg => {
+                let sum_alias = avg_sum_state_alias(index);
+                let count_alias = avg_count_state_alias(index);
+                aggregations
+                    .push(CudfAggSpec::new(input_column.as_str(), GroupByAgg::Sum).with_alias(sum_alias.as_str()));
+                aggregations.push(
+                    CudfAggSpec::new(input_column.as_str(), GroupByAgg::Count { include_nulls: false })
+                        .with_alias(count_alias.as_str()),
+                );
+                output_names.push(sum_alias);
+                output_names.push(count_alias);
+            },
+            _ => {
+                aggregations.push(
+                    CudfAggSpec::new(input_column, lower_aggregate_function(expr.function))
+                        .with_alias(expr.alias.as_str()),
+                );
+                output_names.push(expr.alias.clone());
+            },
+        }
+    }
+
+    aggregate.aggregations = aggregations;
+    aggregate.output_names = output_names;
+    Ok(aggregate)
+}
+
+fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
+    let partial = lower_partial_aggregate_spec(spec)?;
+    let mut aggregations = Vec::with_capacity(partial.aggregations.len());
+    let mut output_names = partial.output_key_names.clone();
+    for (index, expr) in spec.aggr_exprs.iter().enumerate() {
+        match expr.function {
+            AggregateFunction::Avg => {
+                let sum_alias = avg_sum_state_alias(index);
+                let count_alias = avg_count_state_alias(index);
+                aggregations.push(CudfAggSpec::new(sum_alias.as_str(), GroupByAgg::Sum).with_alias(sum_alias.as_str()));
+                aggregations
+                    .push(CudfAggSpec::new(count_alias.as_str(), GroupByAgg::Sum).with_alias(count_alias.as_str()));
+                output_names.push(sum_alias);
+                output_names.push(count_alias);
+            },
+            _ => {
+                aggregations.push(
+                    CudfAggSpec::new(expr.alias.as_str(), lower_final_aggregate_function(expr.function))
+                        .with_alias(expr.alias.as_str()),
+                );
+                output_names.push(expr.alias.clone());
+            },
+        }
+    }
+
+    Ok(LoweredAggregate {
+        key_columns: partial.output_key_names.clone(),
+        output_key_names: partial.output_key_names,
+        aggregations,
+        output_names,
+    })
+}
+
+fn lower_aggregate_function(function: AggregateFunction) -> GroupByAgg {
+    match function {
+        AggregateFunction::Sum => GroupByAgg::Sum,
+        AggregateFunction::Min => GroupByAgg::Min,
+        AggregateFunction::Max => GroupByAgg::Max,
+        AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
+        AggregateFunction::Avg => GroupByAgg::Mean,
+    }
+}
+
+fn lower_final_aggregate_function(function: AggregateFunction) -> GroupByAgg {
+    match function {
+        AggregateFunction::Sum => GroupByAgg::Sum,
+        AggregateFunction::Min => GroupByAgg::Min,
+        AggregateFunction::Max => GroupByAgg::Max,
+        AggregateFunction::Count => GroupByAgg::Sum,
+        AggregateFunction::Avg => unreachable!("avg final aggregate is lowered as explicit sum/count state"),
+    }
+}
+
+fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result<LoweredAggregate> {
     if spec.group_exprs.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
@@ -2454,56 +2734,19 @@ fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
         output_key_names.push(output_name);
     }
 
-    let aggregations = spec
-        .aggr_exprs
-        .iter()
-        .map(|expr| {
-            let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.aggregate.lower_expr")?;
-            let function = lower_aggregate_function(expr.function);
-            Ok(CudfAggSpec::new(input_column, function).with_alias(expr.alias.as_str()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let output_names = output_key_names.iter().chain(spec.aggr_exprs.iter().map(|expr| &expr.alias)).cloned().collect();
-
-    Ok(LoweredAggregate { key_columns, output_key_names, aggregations, output_names })
+    Ok(LoweredAggregate { key_columns, output_key_names, aggregations: Vec::new(), output_names: Vec::new() })
 }
 
-fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
-    let partial = lower_aggregate_spec(spec)?;
-    let aggregations = spec
-        .aggr_exprs
-        .iter()
-        .map(|expr| {
-            CudfAggSpec::new(expr.alias.as_str(), lower_final_aggregate_function(expr.function))
-                .with_alias(expr.alias.as_str())
-        })
-        .collect::<Vec<_>>();
-
-    Ok(LoweredAggregate {
-        key_columns: partial.output_key_names.clone(),
-        output_key_names: partial.output_key_names,
-        aggregations,
-        output_names: partial.output_names,
-    })
+fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Avg)
 }
 
-fn lower_aggregate_function(function: AggregateFunction) -> GroupByAgg {
-    match function {
-        AggregateFunction::Sum => GroupByAgg::Sum,
-        AggregateFunction::Min => GroupByAgg::Min,
-        AggregateFunction::Max => GroupByAgg::Max,
-        AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
-    }
+fn avg_sum_state_alias(index: usize) -> String {
+    format!("__cudf_avg_{index}_sum")
 }
 
-fn lower_final_aggregate_function(function: AggregateFunction) -> GroupByAgg {
-    match function {
-        AggregateFunction::Sum => GroupByAgg::Sum,
-        AggregateFunction::Min => GroupByAgg::Min,
-        AggregateFunction::Max => GroupByAgg::Max,
-        AggregateFunction::Count => GroupByAgg::Sum,
-    }
+fn avg_count_state_alias(index: usize) -> String {
+    format!("__cudf_avg_{index}_count")
 }
 
 struct LoweredSort {

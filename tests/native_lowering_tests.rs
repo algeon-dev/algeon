@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Int32Array, Int64Array, StringArray},
+    array::{Float64Array, Int32Array, Int64Array, StringArray},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
@@ -56,7 +56,7 @@ use datafusion_cudf::{CandidateOutcome, FallbackReason, NativeLoweringResult, lo
 fn benchmark_shape_lowers_to_one_native_query_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering");
     let path = dir.join("input.parquet");
-    write_numeric_parquet_file(&path);
+    write_float_measure_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
 
     let result = lower_physical_plan_to_native(plan);
@@ -654,6 +654,71 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
 }
 
 #[tokio::test]
+async fn direct_friendly_sql_avg_aggregate_lowers_to_native_avg() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-avg");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_AVG_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
+    assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.read_columns, vec!["key".to_string(), "m00".to_string(), "payload".to_string()]);
+    assert!(source.diagnostics.direct_device_read);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_global_avg_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-global-avg");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_AVG_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_filtered_avg_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-filtered-avg");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_FILTERED_AVG_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedExpression);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn direct_friendly_sql_distinct_avg_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distinct-avg");
+    let path = dir.join("input.parquet");
+    write_float_measure_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_DISTINCT_AVG_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -751,7 +816,7 @@ async fn default_sql_distributed_avg_aggregate_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::UnsupportedOperator);
+    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1385,6 +1450,10 @@ fn aggregate_expr_on_column_like(
 }
 
 fn assert_distributed_aggregate_rejection(result: &NativeLoweringResult, expected_reason: FallbackReason) {
+    assert_native_rejection(result, expected_reason);
+}
+
+fn assert_native_rejection(result: &NativeLoweringResult, expected_reason: FallbackReason) {
     assert!(result.plans.is_empty());
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 0);
@@ -1444,6 +1513,32 @@ LIMIT 2
 
 const SQL_AVG_AGGREGATE_QUERY: &str = "
 SELECT key, AVG(m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_GLOBAL_AVG_QUERY: &str = "
+SELECT AVG(m00) AS avg_m00
+FROM bench
+WHERE payload >= 10
+ORDER BY avg_m00 DESC
+LIMIT 1
+";
+
+const SQL_FILTERED_AVG_QUERY: &str = "
+SELECT key, AVG(m00) FILTER (WHERE payload >= 10) AS avg_m00
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY avg_m00 DESC, key ASC
+LIMIT 2
+";
+
+const SQL_DISTINCT_AVG_QUERY: &str = "
+SELECT key, AVG(DISTINCT m00) AS avg_m00
 FROM bench
 WHERE payload >= 10
 GROUP BY key
@@ -1842,6 +1937,26 @@ fn write_numeric_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![5, 10, 20])),
             Arc::new(Int64Array::from(vec![100, 200, 300])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_float_measure_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Float64, false),
+        Field::new("m01", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![5, 10, 20])),
+            Arc::new(Float64Array::from(vec![100.0, 200.0, 300.0])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
         ],
     )
     .unwrap();

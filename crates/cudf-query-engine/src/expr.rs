@@ -154,6 +154,7 @@ pub enum AggregateFunction {
     Min,
     Max,
     Count,
+    Avg,
 }
 
 #[derive(Debug, Clone, PartialEq)]

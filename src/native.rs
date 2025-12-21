@@ -315,11 +315,19 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
         && partial_aggregate.filter_expr().iter().all(Option::is_none)
         && final_aggregate.aggr_expr().iter().zip(partial_aggregate.aggr_expr()).all(|(final_expr, partial_expr)| {
             final_expr.fun().name().eq_ignore_ascii_case(partial_expr.fun().name())
+                && distributed_aggregate_function_is_native_safe(final_expr.fun().name())
                 && !final_expr.is_distinct()
                 && !partial_expr.is_distinct()
                 && final_expr.order_bys().is_empty()
                 && partial_expr.order_bys().is_empty()
         })
+}
+
+fn distributed_aggregate_function_is_native_safe(name: &str) -> bool {
+    // DataFusion distributed AVG exposes its own partial-state schema. Native AVG
+    // has a separate sum/count state model, so accepting that shape requires an
+    // explicit state mapping rather than reusing DataFusion's partial aggregate.
+    !name.eq_ignore_ascii_case("avg")
 }
 
 fn peel_repartition(plan: &dyn ExecutionPlan) -> &dyn ExecutionPlan {
@@ -1326,6 +1334,8 @@ fn lower_native_aggregate_function(name: &str) -> Result<NativeAggregateFunction
         Ok(NativeAggregateFunction::Max)
     } else if name.eq_ignore_ascii_case("count") {
         Ok(NativeAggregateFunction::Count)
+    } else if name.eq_ignore_ascii_case("avg") {
+        Ok(NativeAggregateFunction::Avg)
     } else {
         Err(FallbackReason::UnsupportedOperator)
     }
