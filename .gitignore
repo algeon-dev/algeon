@@ -20,3 +20,6 @@ rustc-ice-*.txt
 
 # CUDA/cuFile runtime logs
 cufile.log
+
+# Large generated benchmark/test datasets
+/test/data/

@@ -819,6 +819,7 @@ dependencies = [
  "cudf-query-engine",
  "datafusion",
  "futures",
+ "serde_json",
  "tokio",
 ]
 
