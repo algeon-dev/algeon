@@ -63,6 +63,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "hash_join_build_count",
     "hash_join_cache_hits",
     "hash_join_cache_misses",
+    "hash_join_hash_table_bytes",
     "parquet_read_time",
     "source_read_time",
     "operator_time",
@@ -373,6 +374,7 @@ struct NativeCudfMetrics {
     hash_join_build_count: Count,
     hash_join_cache_hits: Count,
     hash_join_cache_misses: Count,
+    hash_join_hash_table_bytes: Count,
     parquet_read_time: Time,
     source_read_time: Time,
     operator_time: Time,
@@ -438,6 +440,7 @@ impl NativeCudfMetrics {
             hash_join_build_count: summary_counter(metrics, "hash_join_build_count", partition),
             hash_join_cache_hits: summary_counter(metrics, "hash_join_cache_hits", partition),
             hash_join_cache_misses: summary_counter(metrics, "hash_join_cache_misses", partition),
+            hash_join_hash_table_bytes: summary_counter(metrics, "hash_join_hash_table_bytes", partition),
             parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             source_read_time: summary_timer(metrics, "source_read_time", partition),
             operator_time: summary_timer(metrics, "operator_time", partition),
@@ -486,6 +489,7 @@ impl NativeCudfMetrics {
         self.hash_join_build_count.add(count(metrics.hash_join_build_count));
         self.hash_join_cache_hits.add(count(metrics.hash_join_cache_hits));
         self.hash_join_cache_misses.add(count(metrics.hash_join_cache_misses));
+        self.hash_join_hash_table_bytes.add(count(hash_join_hash_table_bytes(metrics)));
         self.parquet_read_time.add_duration(metrics.parquet_read_time);
         self.source_read_time.add_duration(metrics.source_read_time);
         self.operator_time.add_duration(metrics.operator_time);
@@ -516,6 +520,10 @@ impl NativeCudfMetrics {
 
 fn count(value: u64) -> usize {
     usize::try_from(value).unwrap_or(usize::MAX)
+}
+
+fn hash_join_hash_table_bytes(metrics: &QueryMetrics) -> u64 {
+    metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).map(|join| join.hash_table_bytes).sum()
 }
 
 fn add_optional_count(metric: &Count, value: Option<u64>) {

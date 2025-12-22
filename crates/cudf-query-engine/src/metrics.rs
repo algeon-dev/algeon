@@ -167,10 +167,10 @@ pub struct JoinOperatorMetrics {
     pub build_bytes: u64,
     pub probe_rows: u64,
     pub probe_bytes: u64,
-    /// Bytes owned by the cuDF hash table when directly observable.
+    /// Device bytes retained by the reusable cuDF hash-join build artifact.
     ///
-    /// This remains `0` until cudf-rs exposes hash-table memory observability;
-    /// callers must not treat it as an estimate.
+    /// This is a direct cudf-rs observation. It remains `0` for join paths that
+    /// do not build a reusable hash table.
     pub hash_table_bytes: u64,
     pub output_rows: u64,
     pub output_bytes: u64,

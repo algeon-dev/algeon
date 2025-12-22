@@ -16,6 +16,7 @@ use datafusion::{
         aggregates::AggregateExec,
         filter::FilterExec,
         joins::{HashJoinExec, NestedLoopJoinExec},
+        metrics::MetricsSet,
         projection::ProjectionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
     },
@@ -32,6 +33,8 @@ pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 5;
 pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
 pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 5;
 pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
+pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION: u32 = 1;
+pub const NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_diagnostics";
 pub const NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN: &str = "unsupported_native_physical_plan";
 pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE: &str = "sort_local_parquet_aggregate";
 pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE: &str = "sort_fetch_local_parquet_aggregate";
@@ -262,6 +265,136 @@ pub enum NativeDataFusionPlanningWorkloadInput {
     PlanningFailure(NativePlanningFailure),
 }
 
+#[derive(Debug, Clone)]
+pub struct NativeDataFusionExecutionWorkloadItem {
+    pub query_id: String,
+    pub input: NativeDataFusionExecutionWorkloadInput,
+}
+
+impl NativeDataFusionExecutionWorkloadItem {
+    pub fn new(
+        query_id: impl Into<String>,
+        planned_plan: Arc<dyn ExecutionPlan>,
+        native_diagnostics: NativePlanningDiagnostics,
+        runtime: NativeDataFusionRuntime,
+    ) -> Self {
+        Self {
+            query_id: query_id.into(),
+            input: NativeDataFusionExecutionWorkloadInput::Planned { planned_plan, native_diagnostics, runtime },
+        }
+    }
+
+    pub fn planning_failure(
+        query_id: impl Into<String>,
+        stage: impl Into<String>,
+        reason_code: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            query_id: query_id.into(),
+            input: NativeDataFusionExecutionWorkloadInput::PlanningFailure(NativePlanningFailure {
+                stage: stage.into(),
+                reason_code: reason_code.into(),
+                message: message.into(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeDataFusionExecutionWorkloadInput {
+    Planned {
+        planned_plan: Arc<dyn ExecutionPlan>,
+        native_diagnostics: NativePlanningDiagnostics,
+        runtime: NativeDataFusionRuntime,
+    },
+    PlanningFailure(NativePlanningFailure),
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeDataFusionRuntime {
+    NotStarted,
+    Succeeded { output_batches: usize, output_rows: usize, output_bytes: usize, metrics: MetricsSet },
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeDataFusionExecutionReport {
+    pub rows: Vec<NativeDataFusionExecutionRow>,
+    pub tpch_dataset: Option<TpchDatasetMetadata>,
+}
+
+impl NativeDataFusionExecutionReport {
+    pub fn collect(items: impl IntoIterator<Item = NativeDataFusionExecutionWorkloadItem>) -> Self {
+        let rows = items.into_iter().flat_map(datafusion_execution_rows_for_item).collect();
+        Self { rows, tpch_dataset: None }
+    }
+
+    pub fn with_tpch_dataset_metadata(mut self, metadata: TpchDatasetMetadata) -> Self {
+        self.tpch_dataset = Some(metadata);
+        self
+    }
+
+    pub fn runtime_started_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.native_runtime_started).count()
+    }
+
+    pub fn rejected_before_execution_count(&self) -> usize {
+        self.rows.iter().filter(|row| row.rejected_before_execution).count()
+    }
+
+    pub fn to_tsv(&self) -> String {
+        let mut output = String::new();
+        let _ = writeln!(
+            output,
+            "# native_datafusion_execution_tsv_schema_version={NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION}"
+        );
+        write_tpch_dataset_metadata(&mut output, self.tpch_dataset.as_ref());
+        output.push_str(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
+        output.push('\n');
+        for row in &self.rows {
+            let _ = writeln!(
+                output,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                row.query_id,
+                row.physical_root,
+                row.physical_shape,
+                row.native_candidate_shape.as_deref().unwrap_or("none"),
+                row.native_candidate_shape_family.as_deref().unwrap_or("none"),
+                row.planning_outcome.as_str(),
+                row.reason_code.as_deref().unwrap_or("none"),
+                row.unsupported_category.as_deref().unwrap_or("none"),
+                row.post_native_plan_root,
+                row.post_native_execution_path.as_str(),
+                row.rejected_before_execution,
+                row.native_runtime_started,
+                row.runtime_outcome.as_str(),
+                row.runtime_failure.as_deref().unwrap_or("none"),
+                row.output_batches.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+                row.output_rows.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+                row.output_bytes.map_or_else(|| "not_run".to_string(), |value| value.to_string()),
+                row.metrics.host_to_device_uploads,
+                row.metrics.host_to_device_uploaded_rows,
+                row.metrics.host_to_device_uploaded_bytes,
+                row.metrics.device_to_host_materializations,
+                row.metrics.device_to_host_materialized_rows,
+                row.metrics.device_to_host_materialized_bytes,
+                row.metrics.parquet_files,
+                row.metrics.parquet_bytes_known,
+                row.metrics.row_groups_selected,
+                row.metrics.read_columns,
+                row.metrics.resident_dataframe_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                row.metrics.allocator_high_water_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                row.metrics.reservation_requested_bytes,
+                row.metrics.reservation_granted_bytes,
+                row.metrics.reservation_denied_count,
+                format_source_diagnostics(&row.source_diagnostics),
+            );
+        }
+        output
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDataFusionPlanningRow {
     pub query_id: String,
@@ -279,6 +412,29 @@ pub struct NativeDataFusionPlanningRow {
     pub rejected_before_execution: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeDataFusionExecutionRow {
+    pub query_id: String,
+    pub physical_root: String,
+    pub physical_shape: String,
+    pub native_candidate_shape: Option<String>,
+    pub native_candidate_shape_family: Option<String>,
+    pub planning_outcome: NativeDataFusionPlanningOutcome,
+    pub reason_code: Option<String>,
+    pub unsupported_category: Option<String>,
+    pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
+    pub post_native_plan_root: String,
+    pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub rejected_before_execution: bool,
+    pub native_runtime_started: bool,
+    pub runtime_outcome: NativeDataFusionRuntimeOutcome,
+    pub runtime_failure: Option<String>,
+    pub output_batches: Option<usize>,
+    pub output_rows: Option<usize>,
+    pub output_bytes: Option<usize>,
+    pub metrics: NativeDataFusionExecutionMetrics,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeDataFusionPlanningOutcome {
     AcceptedReplaced,
@@ -290,6 +446,64 @@ impl NativeDataFusionPlanningOutcome {
         match self {
             Self::AcceptedReplaced => "accepted_replaced",
             Self::RejectedBeforeExecution => "rejected_before_execution",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeDataFusionRuntimeOutcome {
+    NotStarted,
+    Succeeded,
+    Failed,
+}
+
+impl NativeDataFusionRuntimeOutcome {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "not_started",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeDataFusionExecutionMetrics {
+    pub host_to_device_uploads: usize,
+    pub host_to_device_uploaded_rows: usize,
+    pub host_to_device_uploaded_bytes: usize,
+    pub device_to_host_materializations: usize,
+    pub device_to_host_materialized_rows: usize,
+    pub device_to_host_materialized_bytes: usize,
+    pub parquet_files: usize,
+    pub parquet_bytes_known: usize,
+    pub row_groups_selected: usize,
+    pub read_columns: usize,
+    pub resident_dataframe_peak_bytes: Option<usize>,
+    pub allocator_high_water_bytes: Option<usize>,
+    pub reservation_requested_bytes: usize,
+    pub reservation_granted_bytes: usize,
+    pub reservation_denied_count: usize,
+}
+
+impl NativeDataFusionExecutionMetrics {
+    pub fn from_metrics(metrics: &MetricsSet) -> Self {
+        Self {
+            host_to_device_uploads: metric_count(metrics, "host_to_device_uploads"),
+            host_to_device_uploaded_rows: metric_count(metrics, "host_to_device_uploaded_rows"),
+            host_to_device_uploaded_bytes: metric_count(metrics, "host_to_device_uploaded_bytes"),
+            device_to_host_materializations: metric_count(metrics, "device_to_host_materializations"),
+            device_to_host_materialized_rows: metric_count(metrics, "device_to_host_materialized_rows"),
+            device_to_host_materialized_bytes: metric_count(metrics, "device_to_host_materialized_bytes"),
+            parquet_files: metric_count(metrics, "parquet_files"),
+            parquet_bytes_known: metric_count(metrics, "parquet_bytes_known"),
+            row_groups_selected: metric_count(metrics, "row_groups_selected"),
+            read_columns: metric_count(metrics, "read_columns"),
+            resident_dataframe_peak_bytes: optional_metric_count(metrics, "resident_dataframe_peak_bytes"),
+            allocator_high_water_bytes: optional_metric_count(metrics, "allocator_high_water_bytes"),
+            reservation_requested_bytes: metric_count(metrics, "reservation_requested_bytes"),
+            reservation_granted_bytes: metric_count(metrics, "reservation_granted_bytes"),
+            reservation_denied_count: metric_count(metrics, "reservation_denied_count"),
         }
     }
 }
@@ -496,6 +710,74 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
         .collect()
 }
 
+fn datafusion_execution_rows_for_item(
+    item: NativeDataFusionExecutionWorkloadItem,
+) -> Vec<NativeDataFusionExecutionRow> {
+    let (planned_plan, native_diagnostics, runtime) = match item.input {
+        NativeDataFusionExecutionWorkloadInput::Planned { planned_plan, native_diagnostics, runtime } => {
+            (planned_plan, native_diagnostics, runtime)
+        },
+        NativeDataFusionExecutionWorkloadInput::PlanningFailure(failure) => {
+            return vec![datafusion_execution_row_for_planning_failure(item.query_id, failure)];
+        },
+    };
+    let post_native_plan_root = planned_plan.name().to_string();
+    let post_native_execution_path = post_native_execution_path(planned_plan.as_ref());
+    let source_diagnostics =
+        native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
+    let runtime_summary = NativeDataFusionRuntimeSummary::from_runtime(runtime);
+
+    native_diagnostics
+        .report
+        .outcomes()
+        .iter()
+        .map(|outcome| match outcome {
+            CandidateOutcome::Rewritten { candidate } => NativeDataFusionExecutionRow {
+                query_id: item.query_id.clone(),
+                physical_root: native_diagnostics.input_plan_root.clone(),
+                physical_shape: native_diagnostics.input_plan_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+                reason_code: None,
+                unsupported_category: None,
+                source_diagnostics: source_diagnostics.clone(),
+                post_native_plan_root: post_native_plan_root.clone(),
+                post_native_execution_path,
+                rejected_before_execution: false,
+                native_runtime_started: runtime_summary.started,
+                runtime_outcome: runtime_summary.outcome,
+                runtime_failure: runtime_summary.failure.clone(),
+                output_batches: runtime_summary.output_batches,
+                output_rows: runtime_summary.output_rows,
+                output_bytes: runtime_summary.output_bytes,
+                metrics: runtime_summary.metrics.clone(),
+            },
+            CandidateOutcome::Rejected { candidate, reason } => NativeDataFusionExecutionRow {
+                query_id: item.query_id.clone(),
+                physical_root: native_diagnostics.input_plan_root.clone(),
+                physical_shape: native_diagnostics.input_plan_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+                reason_code: Some(reason.code().to_string()),
+                unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
+                source_diagnostics: source_diagnostics.clone(),
+                post_native_plan_root: post_native_plan_root.clone(),
+                post_native_execution_path,
+                rejected_before_execution: true,
+                native_runtime_started: false,
+                runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
+                runtime_failure: None,
+                output_batches: None,
+                output_rows: None,
+                output_bytes: None,
+                metrics: NativeDataFusionExecutionMetrics::default(),
+            },
+        })
+        .collect()
+}
+
 fn datafusion_planning_row_for_planning_failure(
     query_id: String,
     failure: NativePlanningFailure,
@@ -514,6 +796,78 @@ fn datafusion_planning_row_for_planning_failure(
         post_native_plan_root: "PlanningFailure".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
         rejected_before_execution: true,
+    }
+}
+
+fn datafusion_execution_row_for_planning_failure(
+    query_id: String,
+    failure: NativePlanningFailure,
+) -> NativeDataFusionExecutionRow {
+    NativeDataFusionExecutionRow {
+        query_id,
+        physical_root: "PlanningFailure".to_string(),
+        physical_shape: failure.stage,
+        native_candidate_shape: None,
+        native_candidate_shape_family: None,
+        planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        reason_code: Some(failure.reason_code),
+        unsupported_category: Some("planning".to_string()),
+        source_diagnostics: Vec::new(),
+        post_native_plan_root: "PlanningFailure".to_string(),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        rejected_before_execution: true,
+        native_runtime_started: false,
+        runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
+        runtime_failure: Some(stable_tsv_field(&failure.message)),
+        output_batches: None,
+        output_rows: None,
+        output_bytes: None,
+        metrics: NativeDataFusionExecutionMetrics::default(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NativeDataFusionRuntimeSummary {
+    started: bool,
+    outcome: NativeDataFusionRuntimeOutcome,
+    failure: Option<String>,
+    output_batches: Option<usize>,
+    output_rows: Option<usize>,
+    output_bytes: Option<usize>,
+    metrics: NativeDataFusionExecutionMetrics,
+}
+
+impl NativeDataFusionRuntimeSummary {
+    fn from_runtime(runtime: NativeDataFusionRuntime) -> Self {
+        match runtime {
+            NativeDataFusionRuntime::NotStarted => Self {
+                started: false,
+                outcome: NativeDataFusionRuntimeOutcome::NotStarted,
+                failure: None,
+                output_batches: None,
+                output_rows: None,
+                output_bytes: None,
+                metrics: NativeDataFusionExecutionMetrics::default(),
+            },
+            NativeDataFusionRuntime::Succeeded { output_batches, output_rows, output_bytes, metrics } => Self {
+                started: true,
+                outcome: NativeDataFusionRuntimeOutcome::Succeeded,
+                failure: None,
+                output_batches: Some(output_batches),
+                output_rows: Some(output_rows),
+                output_bytes: Some(output_bytes),
+                metrics: NativeDataFusionExecutionMetrics::from_metrics(&metrics),
+            },
+            NativeDataFusionRuntime::Failed { message } => Self {
+                started: true,
+                outcome: NativeDataFusionRuntimeOutcome::Failed,
+                failure: Some(stable_tsv_field(&message)),
+                output_batches: None,
+                output_rows: None,
+                output_bytes: None,
+                metrics: NativeDataFusionExecutionMetrics::default(),
+            },
+        }
     }
 }
 
@@ -1247,4 +1601,16 @@ fn write_tpch_dataset_metadata(output: &mut String, metadata: Option<&TpchDatase
 
 fn metadata_value(value: &str) -> String {
     value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn stable_tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn metric_count(metrics: &MetricsSet, name: &str) -> usize {
+    metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
+}
+
+fn optional_metric_count(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    metrics.sum_by_name(name).map(|value| value.as_usize())
 }
