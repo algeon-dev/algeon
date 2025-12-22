@@ -737,7 +737,7 @@ fn write_customer(root: &Path) -> TpchWorkloadResult<()> {
             i64s([1, 2, 3]),
             strings(["13-111-111-1111", "31-222-222-2222", "23-333-333-3333"]),
             money([71156, 12165, -300]),
-            strings(["BUILDING", "AUTOMOBILE", "HOUSEHOLD"]),
+            strings(["BUILDING", "AUTOMOBILE", "BUILDING"]),
             strings(["regular customer", "priority customer", "careful customer"]),
         ],
     )

@@ -10,7 +10,7 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{LocalParquetSource, MemoryControlPolicy, QueryPlan, QueryPlanBuilder, SourceNode};
+use cudf_query_engine::{LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode};
 use datafusion::{
     common::{ScalarValue, config::ConfigOptions},
     functions_aggregate::sum::sum_udaf,
@@ -71,12 +71,12 @@ fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
 }
 
 #[test]
-fn native_exec_rejects_unbounded_memory_control_policy() {
-    let config = bounded_config().with_memory_control_policy(MemoryControlPolicy::Unbounded);
-    let error = NativeCudfExec::try_new(host_sink_plan(), config).unwrap_err();
+fn native_exec_accepts_unbounded_memory_control_policy() {
+    let exec = NativeCudfExec::try_new(host_sink_plan(), NativeCudfExecutionConfig::unbounded()).unwrap();
 
-    assert_eq!(error.code(), ErrorCode::InvalidExecutionPlan);
-    assert_eq!(error.fact_value("memory_control_policy"), Some("unbounded"));
+    let display = displayable(&exec).one_line().to_string();
+    assert!(display.contains("NativeCudfExec"));
+    assert!(display.contains("memory_control_policy=unbounded"));
 }
 
 #[test]
@@ -116,6 +116,31 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
         report.outcomes()[0],
         CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedExpression, .. }
     ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_rejects_bounded_join_plan_before_replacement() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-join-rejected");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_none());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), 1);
+    assert!(matches!(
+        report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeBoundedJoinUnsupported, .. }
+    ));
+    assert_eq!(rule.last_source_diagnostics().len(), 2);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -175,6 +200,39 @@ fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     );
     let df =
         futures::executor::block_on(ctx.read_parquet(path.to_str().unwrap(), ParquetReadOptions::default())).unwrap();
+    futures::executor::block_on(df.create_physical_plan()).unwrap()
+}
+
+fn join_aggregate_sort_limit_sql_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_repartition_file_scans(false)
+            .with_repartition_joins(false)
+            .with_repartition_sorts(false)
+            .with_target_partitions(1),
+    );
+    futures::executor::block_on(ctx.register_parquet(
+        "left_input",
+        left.to_str().unwrap(),
+        ParquetReadOptions::default(),
+    ))
+    .unwrap();
+    futures::executor::block_on(ctx.register_parquet(
+        "right_input",
+        right.to_str().unwrap(),
+        ParquetReadOptions::default(),
+    ))
+    .unwrap();
+    let sql = "
+SELECT l.key, SUM(l.m00 + r.m01) AS sum_x00
+FROM left_input l
+JOIN right_input r ON l.key = r.key
+WHERE l.payload >= 10 AND r.payload >= 10
+GROUP BY l.key
+ORDER BY sum_x00 DESC, l.key ASC
+LIMIT 2
+";
+    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
 }
 

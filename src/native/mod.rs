@@ -58,11 +58,13 @@ fn lower_physical_plan_to_native_with_mode(
     match normalize_native_plan(plan.as_ref()) {
         Ok(normalized)
             if mode == NativeLoweringMode::CountOnly
-                && !native_zero_column_count_source_is_safe(
-                    normalized.filter,
-                    normalized.pre_aggregate_projection,
-                    normalized.aggregate,
-                ) =>
+                && !normalized.single_source_input().is_some_and(|source| {
+                    native_zero_column_count_source_is_safe(
+                        source.filter,
+                        normalized.pre_aggregate_projection,
+                        normalized.aggregate,
+                    )
+                }) =>
         {
             let mut report = PlanningReport::new();
             report.push_rejected(normalized.candidate.clone(), crate::policy::FallbackReason::UnsupportedOperator);

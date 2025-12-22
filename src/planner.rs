@@ -19,7 +19,7 @@ use crate::{
     exec::CudfExecutionConfig,
     native_exec::{NativeCudfExec, NativeCudfExecutionConfig},
     policy::{FallbackReason, GpuFallbackPolicy},
-    report::{GpuCandidate, PlanningReport},
+    report::{CandidateOutcome, GpuCandidate, PlanningReport},
     session::{
         CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
         CUDF_PHYSICAL_OPTIMIZER_RULE_NAME,
@@ -225,6 +225,11 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
         if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
             return Ok(plan);
         }
+        if native_execution_boundary_rejection(&lowering.plans[0], native_execution_config).is_some() {
+            let boundary_report = native_execution_boundary_report(&lowering.report);
+            *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(boundary_report);
+            return Ok(plan);
+        }
 
         NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
             .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
@@ -241,6 +246,29 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+fn native_execution_boundary_rejection(
+    plan: &cudf_query_engine::QueryPlan,
+    execution_config: &NativeCudfExecutionConfig,
+) -> Option<FallbackReason> {
+    if execution_config.memory_control_policy().is_bounded() && plan.contains_join() {
+        Some(FallbackReason::NativeBoundedJoinUnsupported)
+    } else {
+        None
+    }
+}
+
+fn native_execution_boundary_report(report: &PlanningReport) -> PlanningReport {
+    PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
+        CandidateOutcome::Rewritten { candidate } => CandidateOutcome::Rejected {
+            candidate: candidate.clone(),
+            reason: FallbackReason::NativeBoundedJoinUnsupported,
+        },
+        CandidateOutcome::Rejected { candidate, reason } => {
+            CandidateOutcome::Rejected { candidate: candidate.clone(), reason: *reason }
+        },
+    }))
 }
 
 fn peel_output_requirement_exec(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {

@@ -17,6 +17,7 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::NativeSortPreservingMergeUnsupported, "native_sort_preserving_merge_unsupported"),
         (FallbackReason::NativeDistributedAggregateUnsupported, "native_distributed_aggregate_unsupported"),
         (FallbackReason::NativePartitionPreservingSortUnsupported, "native_partition_preserving_sort_unsupported"),
+        (FallbackReason::NativeBoundedJoinUnsupported, "native_bounded_join_unsupported"),
         (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
         (FallbackReason::NativeSourceExprAdapter, "native_source_expr_adapter"),
