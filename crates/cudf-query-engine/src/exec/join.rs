@@ -657,9 +657,11 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
         },
         Expr::Literal(_) => Ok(()),
-        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::Alias { expr: inner, .. } => {
-            collect_join_expr_columns(inner, left, right)
-        },
+        Expr::Not(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::Cast { expr: inner, .. }
+        | Expr::Alias { expr: inner, .. } => collect_join_expr_columns(inner, left, right),
         Expr::Binary { left: lhs, right: rhs, .. } => {
             collect_join_expr_columns(lhs, left, right)?;
             collect_join_expr_columns(rhs, left, right)
@@ -671,14 +673,12 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             }
             Ok(())
         },
-        Expr::Cast { .. } | Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
-            Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                "cudf_query_engine.join.residual_columns",
-                "native join residual predicates do not yet support this expression family",
-            )
-            .with_fact("expression", expr))
-        },
+        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.residual_columns",
+            "native join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
     }
 }
 
@@ -819,6 +819,30 @@ fn lower_join_ast_expr(
                 )
             })
         },
+        Expr::Cast { expr, target_type } => {
+            let input = lower_join_ast_expr(context, expr, residual_columns)?;
+            let expression = match target_type {
+                ArrowDataType::Int64 => AstExpression::cast_to_int64(input),
+                ArrowDataType::UInt64 => AstExpression::cast_to_uint64(input),
+                ArrowDataType::Float64 => AstExpression::cast_to_float64(input),
+                _ => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.join.lower_residual",
+                        "native join residual cast is not supported by the cudf AST contract",
+                    )
+                    .with_fact("target_type", format!("{target_type:?}")));
+                },
+            };
+            expression.map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.join.lower_residual",
+                    "failed to build cudf AST cast expression",
+                    error,
+                )
+                .with_fact("target_type", format!("{target_type:?}"))
+            })
+        },
         Expr::Binary { left, op, right } => {
             let left = lower_join_ast_expr(context, left, residual_columns)?;
             let right = lower_join_ast_expr(context, right, residual_columns)?;
@@ -870,14 +894,12 @@ fn lower_join_ast_expr(
             })
         },
         Expr::Alias { expr, .. } => lower_join_ast_expr(context, expr, residual_columns),
-        Expr::Cast { .. } | Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => {
-            Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                "cudf_query_engine.join.lower_residual",
-                "native join residual predicates do not yet support this expression family",
-            )
-            .with_fact("expression", expr))
-        },
+        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "native join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
     }
 }
 

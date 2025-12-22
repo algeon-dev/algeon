@@ -239,6 +239,10 @@ pub(super) fn execute_groupby_aggregate(
     aggregate: &LoweredAggregate,
     operation: &'static str,
 ) -> Result<DataFrame> {
+    if aggregate.aggregations.is_empty() {
+        return execute_groupby_distinct(overrides, frame, aggregate, operation);
+    }
+
     let mut output = frame
         .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
         .options(GroupByOptions::builder().include_null_keys(true).build())
@@ -262,6 +266,46 @@ pub(super) fn execute_groupby_aggregate(
         })?;
     }
     Ok(output)
+}
+
+fn execute_groupby_distinct(
+    overrides: &ExecutionOverrides<'_>,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let key_columns = aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut output = frame
+        .with_execution(overrides)
+        .drop_duplicates(
+            DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
+        )
+        .map_err(|error| {
+            QueryError::from_cudf(operation, "failed to execute native cudf group-only aggregate", error)
+        })?;
+    let key_renames = aggregate
+        .key_columns
+        .iter()
+        .zip(&aggregate.output_key_names)
+        .filter(|(input, output)| input != output)
+        .map(|(input, output)| (input.as_str(), output.as_str()))
+        .collect::<Vec<_>>();
+    if !key_renames.is_empty() {
+        output = output.rename_columns(key_renames).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.rename_group_only_keys",
+                "failed to rename native group-only aggregate keys",
+                error,
+            )
+        })?;
+    }
+    output.select(aggregate.output_key_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.select_group_only_keys",
+            "failed to select native group-only aggregate keys",
+            error,
+        )
+    })
 }
 
 pub(super) fn execute_global_aggregate(

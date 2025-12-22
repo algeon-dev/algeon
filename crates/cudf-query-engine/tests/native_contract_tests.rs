@@ -21,7 +21,8 @@ use cudf_query_engine::{
     SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
     ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
-    is_supported_arrow_cast, is_supported_arrow_type, plan_local_parquet_source_chunks, validate_local_parquet_source,
+    is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
+    plan_local_parquet_source_chunks, validate_local_parquet_source,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -57,12 +58,24 @@ fn decimal128_type_support_policy_rejects_invalid_arrow_decimals() {
 fn decimal128_cast_support_uses_type_support_policy() {
     let valid_source = DataType::Decimal128(20, -1);
     let valid_target = DataType::Decimal128(38, 2);
+    let float64_target = DataType::Float64;
+    let float64_source = DataType::Float64;
+    let int32_source = DataType::Int32;
     let invalid_decimal = DataType::Decimal128(39, 2);
 
     assert!(is_supported_arrow_cast(&valid_source, &valid_target));
+    assert!(is_supported_arrow_cast(&valid_source, &float64_target));
+    assert!(is_supported_arrow_cast(&float64_source, &valid_target));
+    assert!(is_supported_arrow_cast(&int32_source, &valid_target));
+    assert!(is_supported_arrow_implicit_cast(&valid_source, &valid_target));
+    assert!(!is_supported_arrow_implicit_cast(&valid_source, &float64_target));
+    assert!(!is_supported_arrow_implicit_cast(&float64_source, &valid_target));
     assert!(!is_supported_arrow_cast(&invalid_decimal, &invalid_decimal));
     assert!(!is_supported_arrow_cast(&invalid_decimal, &valid_target));
+    assert!(!is_supported_arrow_cast(&invalid_decimal, &float64_target));
+    assert!(!is_supported_arrow_implicit_cast(&invalid_decimal, &float64_target));
     assert!(!is_supported_arrow_cast(&valid_source, &invalid_decimal));
+    assert!(!is_supported_arrow_cast(&float64_source, &invalid_decimal));
 }
 
 #[test]

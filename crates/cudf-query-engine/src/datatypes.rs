@@ -55,9 +55,15 @@ pub fn timestamp_unit_to_cudf_resolution(unit: &TimeUnit) -> TimestampResolution
 }
 
 pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    is_supported_arrow_implicit_cast(source_type, target_type)
+        || is_supported_decimal_to_float64_cast(source_type, target_type)
+        || is_supported_numeric_to_decimal_cast(source_type, target_type)
+}
+
+pub fn is_supported_arrow_implicit_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     (source_type == target_type && is_supported_arrow_type(source_type))
         || is_supported_numeric_widening_cast(source_type, target_type)
-        || is_supported_decimal_cast(source_type, target_type)
+        || is_supported_decimal_to_decimal_cast(source_type, target_type)
         || is_supported_string_cast(source_type, target_type)
         || is_supported_timestamp_cast(source_type, target_type)
         || is_supported_duration_cast(source_type, target_type)
@@ -87,7 +93,35 @@ pub fn is_supported_numeric_widening_cast(source_type: &ArrowDataType, target_ty
     )
 }
 
-fn is_supported_decimal_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+fn is_supported_decimal_to_float64_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    match (source_type, target_type) {
+        (ArrowDataType::Decimal128(source_precision, source_scale), ArrowDataType::Float64) => {
+            is_supported_decimal128(*source_precision, *source_scale)
+        },
+        _ => false,
+    }
+}
+
+fn is_supported_numeric_to_decimal_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+    match (source_type, target_type) {
+        (
+            ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+            | ArrowDataType::Float32
+            | ArrowDataType::Float64,
+            ArrowDataType::Decimal128(target_precision, target_scale),
+        ) => is_supported_decimal128(*target_precision, *target_scale),
+        _ => false,
+    }
+}
+
+fn is_supported_decimal_to_decimal_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     match (source_type, target_type) {
         (
             ArrowDataType::Decimal128(source_precision, source_scale),
