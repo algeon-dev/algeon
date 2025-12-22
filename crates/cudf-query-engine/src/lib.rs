@@ -36,6 +36,7 @@ pub use plan::{
     QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{
+    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
     BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder,
     MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, ProbeExecutionBoundary, ReservationKind,
     ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,

@@ -12,15 +12,16 @@ use arrow::{
 };
 use cudf::{DataType as CudfDataType, TypeId};
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, BuildMaterializationBoundary,
-    ByteRangeDisposition, ColumnRef, DataPlacement, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource,
-    JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec,
-    LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics,
-    PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, QueryError,
-    QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
-    ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition,
-    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary,
-    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, BoundedJoinReservationContract,
+    BoundedJoinReservationStatus, BuildMaterializationBoundary, ByteRangeDisposition, ColumnRef, DataPlacement,
+    ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics,
+    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
+    MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics, PartitionColumn, PartitionColumnDisposition,
+    PlanNode, PredicateDisposition, ProbeExecutionBoundary, QueryError, QueryErrorCode, QueryErrorKind,
+    QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, ReservationKind,
+    ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr,
+    SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary, ZERO_COLUMN_COUNT_COLUMN,
+    ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
     is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
     plan_local_parquet_source_chunks, validate_local_parquet_source,
@@ -304,10 +305,92 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(ReservationKind::HashTable.as_str(), "hash_table");
     assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
     assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
+    assert_eq!(ReservationKind::Materialization.as_str(), "materialization");
 
     let chunk_policy = SourceChunkPlanningPolicy::from(bounded);
     assert_eq!(chunk_policy.max_source_chunk_bytes, Some(512 * 1024 * 1024));
     assert_eq!(chunk_policy.max_row_groups_per_chunk, 2);
+}
+
+#[test]
+fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
+    let contract = BoundedJoinReservationContract;
+    let requirements = contract.requirements();
+    let expected = [
+        (
+            ReservationKind::BuildSide,
+            "build_side",
+            "join_build_side",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_before_execution",
+        ),
+        (
+            ReservationKind::HashTable,
+            "hash_table",
+            "join_hash_table",
+            BoundedJoinReservationStatus::BlockedByLowerLevel,
+            "unsupported_by_libcudf",
+        ),
+        (
+            ReservationKind::ProbeSide,
+            "probe_side",
+            "join_probe_side",
+            BoundedJoinReservationStatus::DeferredUntilPrerequisite,
+            "requires_hash_table_reservation",
+        ),
+        (
+            ReservationKind::GatherMap,
+            "gather_map",
+            "join_gather_map",
+            BoundedJoinReservationStatus::DeferredUntilPrerequisite,
+            "requires_hash_table_reservation",
+        ),
+        (
+            ReservationKind::JoinOutput,
+            "join_output",
+            "join_output",
+            BoundedJoinReservationStatus::DeferredUntilPrerequisite,
+            "requires_hash_table_reservation",
+        ),
+        (
+            ReservationKind::Materialization,
+            "materialization",
+            "host_materialization",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_explicit_sink_boundary",
+        ),
+    ];
+
+    assert_eq!(requirements.len(), expected.len());
+    assert_eq!(contract.model_status(), "modeled");
+    assert_eq!(contract.execution_status(), "disabled");
+    assert!(!contract.enabled());
+
+    for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
+        requirements.iter().zip(expected)
+    {
+        assert_eq!(kind.as_str(), expected_name);
+        assert_eq!(requirement.reservation_kind(), kind);
+        assert_eq!(requirement.memory_boundary(), expected_boundary);
+        assert_eq!(requirement.status(), expected_status);
+        assert_eq!(requirement.detail(), expected_detail);
+        assert!(!requirement.required_contract().contains("estimate"));
+        let request = MemoryReservationRequest::new(kind, 4096, 8192).with_stage("bounded_join");
+        assert_eq!(request.reservation_kind, kind);
+        assert_eq!(request.memory_boundary, expected_name);
+        assert_eq!(request.requested_bytes, 4096);
+        assert_eq!(request.budget_bytes, 8192);
+        assert_eq!(request.stage.as_deref(), Some("bounded_join"));
+    }
+
+    assert_eq!(
+        contract.reservation_kinds_csv(),
+        "build_side,hash_table,probe_side,gather_map,join_output,materialization"
+    );
+    assert_eq!(contract.lower_level_blockers_csv(), "hash_join_pre_build_reservation_size_bytes");
+    assert_eq!(contract.blocking_reservation_kinds_csv(), "hash_table,probe_side,gather_map,join_output");
+    assert_eq!(contract.modeled_reservation_kinds_csv(), "build_side,materialization");
+    assert_eq!(contract.deferred_reservation_kinds_csv(), "probe_side,gather_map,join_output");
 }
 
 #[test]
@@ -339,22 +422,66 @@ fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
 
 #[test]
 fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initialization() {
-    let error = ExecutionContext::builder()
-        .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 0,
-            max_source_chunk_bytes: 512 * 1024 * 1024,
-            max_row_groups_per_chunk: 2,
-            max_retry_attempts: 3,
-            min_retry_chunk_row_groups: 1,
-        })
-        .build()
-        .unwrap_err();
+    for (field, policy) in [
+        (
+            "device_budget_bytes",
+            MemoryControlPolicy::Bounded {
+                device_budget_bytes: 0,
+                max_source_chunk_bytes: 512 * 1024 * 1024,
+                max_row_groups_per_chunk: 2,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            },
+        ),
+        (
+            "max_source_chunk_bytes",
+            MemoryControlPolicy::Bounded {
+                device_budget_bytes: 4 * 1024 * 1024,
+                max_source_chunk_bytes: 0,
+                max_row_groups_per_chunk: 2,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            },
+        ),
+        (
+            "max_row_groups_per_chunk",
+            MemoryControlPolicy::Bounded {
+                device_budget_bytes: 4 * 1024 * 1024,
+                max_source_chunk_bytes: 512 * 1024,
+                max_row_groups_per_chunk: 0,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 1,
+            },
+        ),
+        (
+            "max_retry_attempts",
+            MemoryControlPolicy::Bounded {
+                device_budget_bytes: 4 * 1024 * 1024,
+                max_source_chunk_bytes: 512 * 1024,
+                max_row_groups_per_chunk: 2,
+                max_retry_attempts: 0,
+                min_retry_chunk_row_groups: 1,
+            },
+        ),
+        (
+            "min_retry_chunk_row_groups",
+            MemoryControlPolicy::Bounded {
+                device_budget_bytes: 4 * 1024 * 1024,
+                max_source_chunk_bytes: 512 * 1024,
+                max_row_groups_per_chunk: 2,
+                max_retry_attempts: 3,
+                min_retry_chunk_row_groups: 0,
+            },
+        ),
+    ] {
+        let error = ExecutionContext::builder().with_memory_control_policy(policy).build().unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "cudf_query_engine.memory_policy.validate");
-    assert_eq!(error.fact_value("policy"), Some("bounded"));
-    assert_eq!(error.fact_value("field"), Some("device_budget_bytes"));
-    assert_eq!(error.fact_value("reason"), Some("zero"));
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan, "{field}");
+        assert_eq!(error.operation(), "cudf_query_engine.memory_policy.validate", "{field}");
+        assert_eq!(error.fact_value("policy"), Some("bounded"), "{field}");
+        assert_eq!(error.fact_value("field"), Some(field), "{field}");
+        assert_eq!(error.fact_value("reason"), Some("zero"), "{field}");
+    }
 }
 
 #[test]

@@ -11,10 +11,11 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    GpuResidentSource, LocalParquetFile, LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
+    ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSpec, JoinType, LocalParquetFile, LocalParquetSource,
+    QueryPlan, QueryPlanBuilder, SourceNode,
 };
 use datafusion::{
-    common::{ScalarValue, config::ConfigOptions},
+    common::{DataFusionError, ScalarValue, config::ConfigOptions},
     execution::context::TaskContext,
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
@@ -230,6 +231,41 @@ fn native_optimizer_rule_rejects_bounded_join_plan_before_replacement() {
 }
 
 #[test]
+fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
+    let native_plan = bounded_inner_join_host_sink_plan();
+    let exec = Arc::new(NativeCudfExec::try_new(native_plan, bounded_config()).unwrap()) as Arc<dyn ExecutionPlan>;
+
+    let error = futures::executor::block_on(collect(exec, Arc::new(TaskContext::default()))).unwrap_err();
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
+    assert_eq!(adapter_error.fact_value("native_operation"), Some("cudf_query_engine.bounded.plan"));
+    assert_eq!(adapter_error.fact_value("reason"), Some("join_memory_reservation_contract_blocked_by_lower_level"));
+    assert_eq!(adapter_error.fact_value("bounded_join_enabled"), Some("false"));
+    assert_eq!(
+        adapter_error.fact_value("boundary_policy"),
+        Some(
+            "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
+        )
+    );
+    assert_eq!(adapter_error.fact_value("source_read_boundary"), Some("direct_device_local_parquet"));
+    assert_eq!(adapter_error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
+    assert_eq!(adapter_error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
+    assert_eq!(adapter_error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
+    assert_eq!(adapter_error.fact_value("blocked_reservations"), Some("hash_table,probe_side,gather_map,join_output"));
+    assert_eq!(adapter_error.fact_value("modeled_reservations"), Some("build_side,materialization"));
+    assert_eq!(
+        adapter_error.fact_value("bounded_join_lower_level_blockers"),
+        Some("hash_join_pre_build_reservation_size_bytes")
+    );
+    assert_eq!(adapter_error.fact_value("path"), None);
+    assert_eq!(adapter_error.fact_value("file_index"), None);
+    assert_eq!(adapter_error.fact_value("row_groups"), None);
+    assert_eq!(adapter_error.fact_value("chunk_index"), None);
+}
+
+#[test]
 fn native_optimizer_rule_is_inserted_before_gpu_island_rule_when_enabled() {
     let rules = cudf_physical_optimizer_rules(native_optimizer_config());
     let names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
@@ -270,6 +306,17 @@ fn gpu_resident_plan() -> QueryPlan {
     builder.finish_gpu_resident(source)
 }
 
+fn bounded_inner_join_host_sink_plan() -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+    let right = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+    let key = JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"));
+    let spec = JoinSpec::new(JoinType::Inner, vec![key])
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]);
+    let join = builder.add_join(left, right, spec, schema());
+    builder.finish_with_host_sink(join)
+}
+
 fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
@@ -293,6 +340,13 @@ fn local_parquet_source() -> LocalParquetSource {
 
 fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
     batch.column(index).as_any().downcast_ref::<Int32Array>().unwrap()
+}
+
+fn adapter_error(error: &DataFusionError) -> &datafusion_cudf::Error {
+    let DataFusionError::External(source) = error else {
+        panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
+    };
+    source.downcast_ref::<datafusion_cudf::Error>().expect("DataFusion external error should preserve adapter Error")
 }
 
 fn schema() -> Arc<Schema> {

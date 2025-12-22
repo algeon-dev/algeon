@@ -128,20 +128,39 @@ fn execute_bounded_generic_query_plan(
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
+        let contract = BoundedJoinReservationContract;
         return Err(unsupported_bounded_shape(
-            "bounded native join execution requires join-specific build/probe/hash/gather/output reservations before execution",
-            "join_memory_reservations_not_implemented",
+            "bounded native join execution is disabled until the join reservation contract has lower-level pre-build hash-table sizing",
+            "join_memory_reservation_contract_blocked_by_lower_level",
         )
         .with_fact("boundary_policy", context.boundary_policy())
         .with_fact("source_read_boundary", context.boundary_policy().source_read())
         .with_fact("build_materialization_boundary", context.boundary_policy().build_materialization())
         .with_fact("probe_execution_boundary", context.boundary_policy().probe_execution())
         .with_fact("result_materialization_boundary", context.boundary_policy().result_materialization())
+        .with_fact("bounded_join_reservation_model", contract.model_status())
+        .with_fact("bounded_join_execution_status", contract.execution_status())
+        .with_fact("bounded_join_enabled", contract.enabled())
+        .with_fact("bounded_join_reservation_kinds", contract.reservation_kinds_csv())
+        .with_fact("bounded_join_reservation_statuses", contract.reservation_statuses_csv())
+        .with_fact("blocked_reservations", contract.blocking_reservation_kinds_csv())
+        .with_fact("modeled_reservations", contract.modeled_reservation_kinds_csv())
+        .with_fact("deferred_reservations", contract.deferred_reservation_kinds_csv())
+        .with_fact("bounded_join_lower_level_blockers", contract.lower_level_blockers_csv())
+        .with_fact("bounded_join_reservation_requirements", contract.requirement_details_csv())
         .with_fact("cudf_rs_hash_table_observability", "hash_table_device_allocated_size_bytes")
         .with_fact("cudf_rs_gather_map_observability", "join_indices_device_allocated_size_bytes")
-        .with_fact("bounded_join_reservation_model", "not_implemented")
-        .with_fact("missing_reservations", "build_side,probe_side,hash_table,gather_map,join_output")
-        .with_fact("bounded_join_enabled", false));
+        .with_fact("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size")
+        .with_fact("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size")
+        .with_fact(
+            "cudf_rs_hash_join_pre_build_reservation_contract",
+            "hash_join_pre_build_reservation_size_bytes",
+        )
+        .with_fact(
+            "cudf_rs_hash_join_pre_build_reservation_status",
+            "unsupported_by_libcudf",
+        )
+        .with_fact("missing_reservations", contract.blocking_reservation_kinds_csv()));
     }
 
     Ok(())

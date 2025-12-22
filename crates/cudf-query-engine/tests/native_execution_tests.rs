@@ -15,12 +15,13 @@ use arrow::{
 };
 use cudf::DataFrame;
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BuildMaterializationBoundary, ExecutionBoundaryPolicy,
-    ExecutionContext, Expr, GpuHashJoinBuildCache, GpuResidentInputMap, GpuResidentSource, JoinKey, JoinNullEquality,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, SortExpr,
-    SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
+    BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuHashJoinBuildCache,
+    GpuResidentInputMap, GpuResidentSource, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
+    LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn,
+    QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, SortExpr, SortSpec, SourceChunkPlanningPolicy,
+    SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -2429,6 +2430,64 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
 }
 
 #[test]
+fn bounded_native_query_casts_single_partial_grouped_count_to_output_schema() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-native-single-partial-count");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("count_payload", DataType::Int64, false),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("payload"), "count_payload")],
+    );
+    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let aggregate = builder.add_aggregate(filter, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 8 * 1024 * 1024 * 1024,
+            max_row_groups_per_chunk: 16,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 1);
+    assert_eq!(metrics.partial_aggregate_count, 1);
+    assert_eq!(metrics.final_merge_attempts, 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.column(1).data_type(), &DataType::Int64);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[2, 2, 1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-native-global-aggregate-parity");
     let path = dir.join("input.parquet");
@@ -4010,16 +4069,7 @@ fn bounded_native_query_join_rejection_facts_record_hash_table_observability_and
         Err(error) => error,
     };
 
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
-    assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
-    assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
-    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
-    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some("not_implemented"));
-    assert_eq!(
-        error.fact_value("missing_reservations"),
-        Some("build_side,probe_side,hash_table,gather_map,join_output")
-    );
+    assert_bounded_join_rejection_contract(&error);
 }
 
 #[test]
@@ -4093,15 +4143,61 @@ fn bounded_native_query_rejects_join_under_aggregate_before_source_read() {
         Err(error) => error,
     };
 
+    assert_bounded_join_rejection_contract(&error);
+}
+
+fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError) {
+    let contract = BoundedJoinReservationContract;
+
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
-    assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
-    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
-    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some("not_implemented"));
+    assert_eq!(error.fact_value("reason"), Some("join_memory_reservation_contract_blocked_by_lower_level"));
+    assert_eq!(error.fact_value("bounded_join_reservation_model"), Some(contract.model_status()));
+    assert_eq!(error.fact_value("bounded_join_execution_status"), Some(contract.execution_status()));
+    assert_eq!(error.fact_value("bounded_join_enabled"), Some("false"));
     assert_eq!(
-        error.fact_value("missing_reservations"),
-        Some("build_side,probe_side,hash_table,gather_map,join_output")
+        error.fact_value("boundary_policy"),
+        Some(
+            "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
+        )
     );
+    assert_eq!(error.fact_value("source_read_boundary"), Some("direct_device_local_parquet"));
+    assert_eq!(error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
+    assert_eq!(error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
+    assert_eq!(error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
+    assert_eq!(error.fact_value("bounded_join_reservation_kinds"), Some(contract.reservation_kinds_csv().as_str()));
+    assert_eq!(
+        error.fact_value("bounded_join_reservation_statuses"),
+        Some(contract.reservation_statuses_csv().as_str())
+    );
+    assert_eq!(error.fact_value("blocked_reservations"), Some(contract.blocking_reservation_kinds_csv().as_str()));
+    assert_eq!(error.fact_value("modeled_reservations"), Some(contract.modeled_reservation_kinds_csv().as_str()));
+    assert_eq!(error.fact_value("deferred_reservations"), Some(contract.deferred_reservation_kinds_csv().as_str()));
+    assert_eq!(
+        error.fact_value("bounded_join_lower_level_blockers"),
+        Some(contract.lower_level_blockers_csv().as_str())
+    );
+    assert_eq!(
+        error.fact_value("bounded_join_reservation_requirements"),
+        Some(contract.requirement_details_csv().as_str())
+    );
+    assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
+    assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
+    assert_eq!(error.fact_value("cudf_rs_hash_join_output_size_observability"), Some("hash_join_exact_output_size"));
+    assert_eq!(error.fact_value("cudf_rs_hash_join_probe_output_size_hint"), Some("hash_join_probe_with_output_size"));
+    assert_eq!(
+        error.fact_value("cudf_rs_hash_join_pre_build_reservation_contract"),
+        Some("hash_join_pre_build_reservation_size_bytes")
+    );
+    assert_eq!(error.fact_value("cudf_rs_hash_join_pre_build_reservation_status"), Some("unsupported_by_libcudf"));
+    assert_eq!(error.fact_value("missing_lower_level_contract"), None);
+    assert_eq!(error.fact_value("missing_reservations"), Some(contract.blocking_reservation_kinds_csv().as_str()));
+    assert!(error.facts().iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
+    assert_eq!(error.fact_value("path"), None);
+    assert_eq!(error.fact_value("file_index"), None);
+    assert_eq!(error.fact_value("row_groups"), None);
+    assert_eq!(error.fact_value("chunk_index"), None);
+    assert!(error.source_error().is_none());
 }
 
 fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {

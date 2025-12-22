@@ -219,16 +219,16 @@ pub(super) fn execute_partial_aggregate(
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let output =
-        execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute_partial")?
-            .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
-            .map_err(|error| {
-                QueryError::from_cudf(
-                    "cudf_query_engine.aggregate.select_partial",
-                    "failed to select native partial aggregate output columns",
-                    error,
-                )
-            })?;
+    let mut output =
+        execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute_partial")?;
+    output = cast_count_output_columns(output, &node.spec, aggregate_output_schema)?;
+    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.select_partial",
+            "failed to select native partial aggregate output columns",
+            error,
+        )
+    })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
 }
