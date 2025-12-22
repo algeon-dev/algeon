@@ -291,6 +291,29 @@ async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
 }
 
 #[tokio::test]
+async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q19-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q19 = TPCH_QUERIES.iter().find(|query| query.id == "q19").expect("TPC-H Q19 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q19.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q19 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 #[ignore = "requires local TPC-H SF1 Parquet data"]
 async fn native_runtime_tpch_q6_sf1_matches_cpu() {
     let root = std::env::var("CUDF_TPCH_PARQUET_DIR")

@@ -441,8 +441,8 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     let report = NativeFallbackPressureReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.rewritten_count(), 4);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 4);
+    assert_eq!(report.rewritten_count(), 5);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 5);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
@@ -735,9 +735,9 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
     TpchFallbackPressureBaseline {
         query_id: "q19",
-        outcome: NativeFallbackPressureOutcome::Rejected,
-        reason_code: "unsupported_expression",
-        unsupported_category: "expression",
+        outcome: NativeFallbackPressureOutcome::Rewritten,
+        reason_code: "none",
+        unsupported_category: "none",
     },
     TpchFallbackPressureBaseline {
         query_id: "q20",
@@ -803,7 +803,7 @@ fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str,
         "q01" => ("unsupported_expression", "expression"),
         "q03" | "q04" | "q12" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         "q14" => ("unsupported_type", "type"),
-        "q19" => ("unsupported_expression", "expression"),
+        "q19" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         _ => ("unsupported_operator", expected_tpch_operator_unsupported_category(query_id)),
     }
 }
