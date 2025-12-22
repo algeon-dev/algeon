@@ -5,8 +5,8 @@ use arrow::datatypes::{DataType as ArrowDataType, SchemaRef, TimeUnit};
 use super::*;
 use crate::{
     datatypes::{is_supported_arrow_cast, is_supported_arrow_type},
-    expr::CaseWhen,
-    plan::QueryNode,
+    expr::{CaseWhen, ColumnQualifier, ColumnRef},
+    plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, QueryNode},
 };
 
 pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
@@ -76,13 +76,14 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let right = input_node(plan, join.inputs[1], node.id)?;
                 let left_available = available_columns(&available_columns_by_node, join.inputs[0])?;
                 let right_available = available_columns(&available_columns_by_node, join.inputs[1])?;
-                for key in &join.spec.keys {
-                    validate_column(key.left.name(), left.output_schema(), left_available)?;
-                    validate_column(key.right.name(), right.output_schema(), right_available)?;
-                }
-                if let Some(predicate) = &join.spec.residual_predicate {
-                    validate_expr(predicate, node.output_schema(), &schema_column_names(node.output_schema()))?;
-                }
+                validate_join_capability(
+                    join,
+                    left.output_schema(),
+                    left_available,
+                    right.output_schema(),
+                    right_available,
+                    node.output_schema(),
+                )?;
                 schema_column_names(node.output_schema())
             },
         };
@@ -154,6 +155,134 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
             Ok(available)
         },
     }
+}
+
+fn validate_join_capability(
+    join: &JoinNode,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+    output_schema: &SchemaRef,
+) -> Result<()> {
+    if join.spec.join_type != JoinType::Inner {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "cudf_query_engine.join.validate",
+            "native join execution currently supports only inner equi joins",
+        )
+        .with_fact("join_type", join.spec.join_type));
+    }
+    if join.spec.keys.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "native join requires at least one equality key",
+        ));
+    }
+    if join.spec.residual_predicate.is_some() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "cudf_query_engine.join.validate",
+            "native join execution does not yet support residual predicates",
+        )
+        .with_fact("join_type", join.spec.join_type));
+    }
+
+    for key in &join.spec.keys {
+        validate_join_column_ref(&key.left, JoinSide::Left)?;
+        validate_join_column_ref(&key.right, JoinSide::Right)?;
+        let left_type = validate_column(key.left.name(), left_schema, left_available)?;
+        let right_type = validate_column(key.right.name(), right_schema, right_available)?;
+        require_comparable_types(&left_type, &right_type)?;
+    }
+
+    validate_join_output_projection(
+        &join.spec.output_projection,
+        left_schema,
+        left_available,
+        right_schema,
+        right_available,
+        output_schema,
+    )
+}
+
+fn validate_join_column_ref(column: &ColumnRef, side: JoinSide) -> Result<()> {
+    let expected_input = match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
+    };
+    match column.qualifier() {
+        Some(ColumnQualifier::Input { index }) if *index == expected_input => Ok(()),
+        Some(ColumnQualifier::Input { index }) => Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "join column qualifier references the wrong input side",
+        )
+        .with_fact("column", column.name())
+        .with_fact("side", side)
+        .with_fact("qualifier_input", *index)
+        .with_fact("expected_input", expected_input)),
+        Some(qualifier) => Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "join execution requires input-qualified column references",
+        )
+        .with_fact("column", column.name())
+        .with_fact("side", side)
+        .with_fact("qualifier", qualifier)),
+        None => Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "join execution requires input-qualified column references",
+        )
+        .with_fact("column", column.name())
+        .with_fact("side", side)),
+    }
+}
+
+fn validate_join_output_projection(
+    projection: &[JoinOutputColumn],
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+    output_schema: &SchemaRef,
+) -> Result<()> {
+    let output_names = projection.iter().map(|column| column.output_name.clone()).collect::<Vec<_>>();
+    let schema_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    if output_names != schema_names {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.join.validate",
+            "join output projection names must match output schema fields",
+        )
+        .with_fact("projection_output_names", output_names.join(","))
+        .with_fact("schema_output_names", schema_names.join(",")));
+    }
+
+    for (index, output) in projection.iter().enumerate() {
+        validate_join_column_ref(&output.column, output.side)?;
+        let (schema, available) = match output.side {
+            JoinSide::Left => (left_schema, left_available),
+            JoinSide::Right => (right_schema, right_available),
+        };
+        let data_type = validate_column(output.column.name(), schema, available)?;
+        let expected = output_schema.field(index).data_type();
+        if &data_type != expected {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.join.validate",
+                "join output projection type must match output schema field",
+            )
+            .with_fact("output_name", output.output_name.as_str())
+            .with_fact("column", output.column.name())
+            .with_fact("side", output.side)
+            .with_fact("column_type", format!("{data_type:?}"))
+            .with_fact("output_type", format!("{expected:?}")));
+        }
+    }
+    Ok(())
 }
 
 fn input_node(plan: &QueryPlan, input: NodeId, consumer: NodeId) -> Result<&QueryNode> {

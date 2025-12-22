@@ -30,9 +30,9 @@ pub use expr::{
 };
 pub use metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryMetrics};
 pub use plan::{
-    AggregateNode, DataPlacement, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinSide, JoinSpec, JoinType,
-    LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink,
-    SchemaBehavior, SortNode,
+    AggregateNode, DataPlacement, FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide,
+    JoinSpec, JoinType, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode, QueryPlan, QueryPlanBuilder,
+    ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{
     DevicePlacement, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
