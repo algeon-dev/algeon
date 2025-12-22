@@ -308,7 +308,7 @@ pub struct LargerIslandBenchmarkPlanning {
     pub candidate_count: usize,
     pub rewritten_count: usize,
     pub rejected_count: usize,
-    pub rewritten_shapes: Vec<&'static str>,
+    pub rewritten_shapes: Vec<String>,
     pub rejected_reasons: Vec<FallbackReason>,
 }
 
@@ -319,7 +319,7 @@ impl LargerIslandBenchmarkPlanning {
 
         for outcome in report.outcomes() {
             match outcome {
-                CandidateOutcome::Rewritten { candidate } => rewritten_shapes.push(candidate.shape),
+                CandidateOutcome::Rewritten { candidate } => rewritten_shapes.push(candidate.shape.clone()),
                 CandidateOutcome::Rejected { reason, .. } => rejected_reasons.push(*reason),
             }
         }

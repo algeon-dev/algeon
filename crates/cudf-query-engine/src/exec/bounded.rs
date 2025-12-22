@@ -8,6 +8,10 @@ pub(super) fn execute_bounded_query_plan(
     plan: &QueryPlan,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
+    if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
+        return execute_bounded_generic_query_plan(context, plan, metrics);
+    }
+
     let bounded = BoundedPlan::analyze(plan)?;
     validate_local_parquet_source(bounded.source)?;
     bounded.validate_capabilities()?;
@@ -52,6 +56,43 @@ pub(super) fn execute_bounded_query_plan(
         },
         ResultSink::HostArrow { schema, .. } => {
             let output = materialize_bounded_to_host(frame, plan.sink().input(), schema, &mut reservations, metrics)?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+fn execute_bounded_generic_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!("execute_bounded_query_plan is called only for bounded policies");
+    };
+    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let frame = execute_node(context, plan, plan.sink().input(), metrics)?;
+    let frame_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, frame_bytes, reservations.budget())
+            .with_memory_boundary("operator_output")
+            .with_node_id(plan.sink().input())
+            .with_stage("bounded_generic")
+            .with_attempt(1, 1),
+        metrics,
+    )?;
+    let committed = CommittedPartial { frame, reservation };
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let frame = committed.frame;
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(frame))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output =
+                materialize_bounded_to_host(committed, plan.sink().input(), schema, &mut reservations, metrics)?;
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
@@ -342,12 +383,13 @@ impl<'a> BoundedPlan<'a> {
         let source_node = plan
             .node(current)
             .ok_or_else(|| invalid_node_reference(current, "bounded query plan references a missing source node"))?;
-        let PlanNode::Source(crate::source::SourceNode::LocalParquet(source)) = &source_node.kind else {
+        let PlanNode::Source(source_node) = &source_node.kind else {
             return Err(unsupported_bounded_shape(
                 "bounded execution currently supports only local parquet sources",
                 "non_local_parquet_source",
             ));
         };
+        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref();
 
         Ok(Self {
             source_id: current,
@@ -786,394 +828,368 @@ pub(super) fn execute_final_sort_limit_with_retry(
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let result = execute_full_final_sort_limit_attempt(
-        context,
-        bounded,
-        sort,
-        bounded.limit,
-        &input,
-        1,
-        max_attempts,
-        reservations,
-        metrics,
-    );
+    let mut final_sort = FinalSortExecutor { context, bounded, sort, max_attempts, reservations, metrics };
+    let result = final_sort.full_sort_limit_attempt(bounded.limit, &input, 1);
 
     match result {
         Ok(output) => {
-            metrics.final_sort_time += timer.elapsed();
-            reservations.release(input.reservation);
+            final_sort.metrics.final_sort_time += timer.elapsed();
+            final_sort.reservations.release(input.reservation);
             Ok(output)
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
-            record_final_sort_retry_error(&error, metrics);
+            record_final_sort_retry_error(&error, final_sort.metrics);
             if max_attempts > 1
                 && let Some(limit) = bounded.limit
             {
-                match execute_hierarchical_topk_final_sort(
-                    context,
-                    bounded,
-                    sort,
-                    limit,
-                    input,
-                    max_attempts,
-                    reservations,
-                    metrics,
-                ) {
+                match final_sort.hierarchical_topk(limit, input) {
                     Ok(output) => {
-                        metrics.final_sort_time += timer.elapsed();
+                        final_sort.metrics.final_sort_time += timer.elapsed();
                         Ok(output)
                     },
                     Err(error) => {
-                        metrics.final_sort_time += timer.elapsed();
+                        final_sort.metrics.final_sort_time += timer.elapsed();
                         Err(error)
                     },
                 }
             } else {
-                metrics.final_sort_time += timer.elapsed();
-                reservations.release(input.reservation);
-                Err(final_sort_retry_facts("retry_attempts_exhausted", metrics).attach_to_error(error))
+                final_sort.metrics.final_sort_time += timer.elapsed();
+                final_sort.reservations.release(input.reservation);
+                Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error))
             }
         },
         Err(error) => {
-            metrics.final_sort_time += timer.elapsed();
-            reservations.release(input.reservation);
+            final_sort.metrics.final_sort_time += timer.elapsed();
+            final_sort.reservations.release(input.reservation);
             Err(error)
         },
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn execute_full_final_sort_limit_attempt(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    sort: &SortNode,
-    limit: Option<&LimitNode>,
-    input: &CommittedPartial,
-    attempt: usize,
+struct FinalSortExecutor<'a, 'plan> {
+    context: &'a ExecutionContext,
+    bounded: &'a BoundedPlan<'plan>,
+    sort: &'a SortNode,
     max_attempts: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
-    let sort_request =
-        MemoryReservationRequest::new(ReservationKind::FinalSort, input.reservation.bytes(), reservations.budget())
-            .with_memory_boundary("final_sort")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage("final_sort")
-            .with_attempt(attempt, max_attempts);
-    let sort_reservation = reservations.try_reserve(sort_request, metrics)?;
-
-    let result = execute_sort_on_frame(context, sort, input.frame.frame().clone(), metrics)
-        .and_then(|frame| execute_optional_limit(context, limit, frame, metrics));
-    reservations.release(sort_reservation);
-    let frame = result.map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: "final_sort",
-            stage: "final_sort",
-            node_id: bounded.aggregate_id,
-            attempt,
-            max_attempts,
-            resume_boundary: "final_sort",
-            metrics,
-        }
-        .attach_to(error)
-    })?;
-    reserve_final_sort_output(bounded, frame, attempt, max_attempts, reservations, metrics)
+    reservations: &'a mut ReservationTracker,
+    metrics: &'a mut QueryMetrics,
 }
 
-pub(super) fn execute_hierarchical_topk_final_sort(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    sort: &SortNode,
-    limit: &LimitNode,
-    input: CommittedPartial,
-    max_attempts: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
-    let keep_rows = topk_candidate_rows(limit.spec)?;
-    if keep_rows == 0 {
-        let output = match execute_limit_on_frame(context, limit, input.frame.frame().clone(), metrics) {
-            Ok(output) => output,
-            Err(error) => {
-                reservations.release(input.reservation);
-                return Err(error);
-            },
-        };
-        reservations.release(input.reservation);
-        return reserve_final_sort_output(bounded, output, 2, max_attempts, reservations, metrics);
-    }
-
-    let input_rows = input.frame.num_rows();
-    if input_rows == 0 {
-        return Ok(input);
-    }
-    let bytes_per_row = estimated_bytes_per_row(input.reservation.bytes(), input_rows);
-    let initial_rows_per_chunk = final_sort_rows_per_chunk(
-        input_rows,
-        bytes_per_row,
-        reservations.budget().saturating_sub(input.reservation.bytes()),
-    );
-    let mut candidates = match execute_initial_topk_candidates(
-        context,
-        bounded,
-        sort,
-        &input,
-        keep_rows,
-        bytes_per_row,
-        initial_rows_per_chunk,
-        max_attempts,
-        reservations,
-        metrics,
-    ) {
-        Ok(candidates) => candidates,
-        Err(error) => {
-            record_final_sort_retry_error(&error, metrics);
-            reservations.release(input.reservation);
-            return Err(final_sort_retry_facts("hierarchical_topk_initial_failed", metrics).attach_to_error(error));
-        },
-    };
-
-    reservations.release(input.reservation);
-
-    let mut merge_level = 1;
-    while candidates.len() > 1 {
-        let mut merge_fan_in = candidates.len();
-        let mut attempt = 2;
-
-        loop {
-            match execute_topk_merge_level_attempt(
-                context,
-                bounded,
-                sort,
-                &candidates,
-                keep_rows,
-                merge_fan_in,
-                attempt,
-                max_attempts,
-                reservations,
-                metrics,
-            ) {
-                Ok(level_output) => {
-                    candidates = commit_topk_merge_level(candidates, level_output, reservations);
-                    merge_level += 1;
-                    break;
-                },
-                Err(error) if is_retryable_final_sort_error(&error) => {
-                    record_final_sort_retry_error(&error, metrics);
-                    if attempt < max_attempts
-                        && let Some(reduced_fan_in) = reduce_merge_fan_in(merge_fan_in)
-                    {
-                        merge_fan_in = reduced_fan_in;
-                        attempt += 1;
-                        continue;
-                    }
-
-                    release_committed_partials(candidates, reservations);
-                    return Err(final_sort_topk_retry_facts(merge_level, merge_fan_in, metrics).attach_to_error(error));
-                },
-                Err(error) => {
-                    release_committed_partials(candidates, reservations);
-                    return Err(error);
-                },
-            }
-        }
-    }
-
-    let candidate = candidates.pop().expect("hierarchical top-k leaves exactly one candidate");
-    if limit.spec.skip == 0 && candidate.frame.num_rows() <= limit.spec.fetch {
-        return Ok(candidate);
-    }
-
-    let output = execute_limit(context, limit, candidate.frame, metrics).map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: "final_sort_limit",
-            stage: "final_sort",
-            node_id: bounded.aggregate_id,
-            attempt: max_attempts,
-            max_attempts,
-            resume_boundary: "final_sort",
-            metrics,
-        }
-        .attach_to(error)
-    })?;
-    reservations.release(candidate.reservation);
-    reserve_final_sort_output(bounded, output, max_attempts, max_attempts, reservations, metrics)
-}
-
-pub(super) fn execute_initial_topk_candidates(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    sort: &SortNode,
-    input: &CommittedPartial,
+#[derive(Clone, Copy)]
+struct TopKCandidatePlan {
     keep_rows: usize,
     bytes_per_row: u64,
     rows_per_chunk: usize,
-    max_attempts: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<Vec<CommittedPartial>> {
-    let input_rows = input.frame.num_rows();
-    let mut candidates = Vec::with_capacity(input_rows.div_ceil(rows_per_chunk));
-    let mut offset = 0;
-    while offset < input_rows {
-        let length = rows_per_chunk.min(input_rows - offset);
-        match execute_topk_slice_attempt(
-            context,
-            bounded,
-            sort,
-            input,
-            offset,
-            length,
-            keep_rows,
-            bytes_per_row,
-            2,
-            max_attempts,
-            reservations,
-            metrics,
-        ) {
-            Ok(candidate) => candidates.push(candidate),
-            Err(error) => {
-                release_committed_partials(candidates, reservations);
-                return Err(error);
-            },
-        }
-        offset += length;
-    }
-    Ok(candidates)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn execute_topk_slice_attempt(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    sort: &SortNode,
-    input: &CommittedPartial,
+#[derive(Clone, Copy)]
+struct TopKSliceAttempt {
     offset: usize,
     length: usize,
     keep_rows: usize,
     bytes_per_row: u64,
     attempt: usize,
-    max_attempts: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
-    let requested_bytes = estimate_rows_bytes(bytes_per_row, length);
-    let request = MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, reservations.budget())
-        .with_memory_boundary("final_sort_topk_chunk")
-        .with_node_id(bounded.aggregate_id)
-        .with_stage("final_sort")
-        .with_attempt(attempt, max_attempts);
-    let work_reservation = reservations.try_reserve(request, metrics)?;
-
-    let result = input
-        .frame
-        .frame()
-        .clone()
-        .with_execution(&execution_overrides(context))
-        .slice(offset, length)
-        .map(GpuDataFrame::new)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.final_sort.topk_slice",
-                "failed to slice bounded native final sort input",
-                error,
-            )
-        })
-        .and_then(|frame| execute_topk_candidate(context, sort, frame, keep_rows, metrics));
-    reservations.release(work_reservation);
-    let frame = result.map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: "final_sort_topk_chunk",
-            stage: "final_sort",
-            node_id: bounded.aggregate_id,
-            attempt,
-            max_attempts,
-            resume_boundary: "final_sort",
-            metrics,
-        }
-        .attach_to(error)
-    })?;
-    reserve_final_sort_output(bounded, frame, attempt, max_attempts, reservations, metrics)
 }
 
-pub(super) fn execute_topk_merge_level_attempt(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    sort: &SortNode,
-    candidates: &[CommittedPartial],
+#[derive(Clone, Copy)]
+struct TopKMergeAttempt {
     keep_rows: usize,
     merge_fan_in: usize,
     attempt: usize,
-    max_attempts: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<Vec<TopKLevelItem>> {
-    let mut output = Vec::with_capacity(candidates.len().div_ceil(merge_fan_in));
-
-    for (group_index, group) in candidates.chunks(merge_fan_in).enumerate() {
-        if group.len() == 1 {
-            output.push(TopKLevelItem::Carry { partial_index: group_index * merge_fan_in });
-            continue;
-        }
-
-        match execute_topk_merge_group_attempt(
-            context,
-            bounded,
-            sort,
-            group,
-            keep_rows,
-            attempt,
-            max_attempts,
-            reservations,
-            metrics,
-        ) {
-            Ok(candidate) => output.push(TopKLevelItem::Merged(candidate)),
-            Err(error) => {
-                release_topk_level_items(output, reservations);
-                return Err(error);
-            },
-        }
-    }
-
-    Ok(output)
 }
 
-pub(super) fn execute_topk_merge_group_attempt(
-    context: &ExecutionContext,
-    bounded: &BoundedPlan<'_>,
-    sort: &SortNode,
-    candidates: &[CommittedPartial],
-    keep_rows: usize,
-    attempt: usize,
-    max_attempts: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
-    debug_assert!(candidates.len() > 1);
-    let requested_bytes = candidates.iter().map(|candidate| candidate.reservation.bytes()).sum::<u64>();
-    let request = MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, reservations.budget())
-        .with_memory_boundary("final_sort_topk_merge")
-        .with_node_id(bounded.aggregate_id)
+impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
+    fn full_sort_limit_attempt(
+        &mut self,
+        limit: Option<&LimitNode>,
+        input: &CommittedPartial,
+        attempt: usize,
+    ) -> Result<CommittedPartial> {
+        let sort_request = MemoryReservationRequest::new(
+            ReservationKind::FinalSort,
+            input.reservation.bytes(),
+            self.reservations.budget(),
+        )
+        .with_memory_boundary("final_sort")
+        .with_node_id(self.bounded.aggregate_id)
         .with_stage("final_sort")
-        .with_attempt(attempt, max_attempts);
-    let merge_reservation = reservations.try_reserve(request, metrics)?;
+        .with_attempt(attempt, self.max_attempts);
+        let sort_reservation = self.reservations.try_reserve(sort_request, self.metrics)?;
 
-    let result = concat_committed_frames(context, candidates, "cudf_query_engine.final_sort.topk_concat")
-        .and_then(|frame| execute_topk_candidate(context, sort, frame, keep_rows, metrics));
-    reservations.release(merge_reservation);
-    let frame = result.map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: "final_sort_topk_merge",
-            stage: "final_sort",
-            node_id: bounded.aggregate_id,
-            attempt,
-            max_attempts,
-            resume_boundary: "final_sort",
-            metrics,
+        let result = execute_sort_on_frame(self.context, self.sort, input.frame.frame().clone(), self.metrics)
+            .and_then(|frame| execute_optional_limit(self.context, limit, frame, self.metrics));
+        self.reservations.release(sort_reservation);
+        let frame = result.map_err(|error| {
+            RuntimeResourceFacts {
+                memory_boundary: "final_sort",
+                stage: "final_sort",
+                node_id: self.bounded.aggregate_id,
+                attempt,
+                max_attempts: self.max_attempts,
+                resume_boundary: "final_sort",
+                metrics: self.metrics,
+            }
+            .attach_to(error)
+        })?;
+        reserve_final_sort_output(self.bounded, frame, attempt, self.max_attempts, self.reservations, self.metrics)
+    }
+
+    fn hierarchical_topk(&mut self, limit: &LimitNode, input: CommittedPartial) -> Result<CommittedPartial> {
+        let keep_rows = topk_candidate_rows(limit.spec)?;
+        if keep_rows == 0 {
+            let output = match execute_limit_on_frame(self.context, limit, input.frame.frame().clone(), self.metrics) {
+                Ok(output) => output,
+                Err(error) => {
+                    self.reservations.release(input.reservation);
+                    return Err(error);
+                },
+            };
+            self.reservations.release(input.reservation);
+            return reserve_final_sort_output(
+                self.bounded,
+                output,
+                2,
+                self.max_attempts,
+                self.reservations,
+                self.metrics,
+            );
         }
-        .attach_to(error)
-    })?;
-    reserve_final_sort_output(bounded, frame, attempt, max_attempts, reservations, metrics)
+
+        let input_rows = input.frame.num_rows();
+        if input_rows == 0 {
+            return Ok(input);
+        }
+        let bytes_per_row = estimated_bytes_per_row(input.reservation.bytes(), input_rows);
+        let rows_per_chunk = final_sort_rows_per_chunk(
+            input_rows,
+            bytes_per_row,
+            self.reservations.budget().saturating_sub(input.reservation.bytes()),
+        );
+        let mut candidates = match self
+            .initial_topk_candidates(&input, TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk })
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                record_final_sort_retry_error(&error, self.metrics);
+                self.reservations.release(input.reservation);
+                return Err(
+                    final_sort_retry_facts("hierarchical_topk_initial_failed", self.metrics).attach_to_error(error)
+                );
+            },
+        };
+
+        self.reservations.release(input.reservation);
+
+        let mut merge_level = 1;
+        while candidates.len() > 1 {
+            let mut merge_fan_in = candidates.len();
+            let mut attempt = 2;
+
+            loop {
+                match self.topk_merge_level_attempt(&candidates, TopKMergeAttempt { keep_rows, merge_fan_in, attempt })
+                {
+                    Ok(level_output) => {
+                        candidates = commit_topk_merge_level(candidates, level_output, self.reservations);
+                        merge_level += 1;
+                        break;
+                    },
+                    Err(error) if is_retryable_final_sort_error(&error) => {
+                        record_final_sort_retry_error(&error, self.metrics);
+                        if attempt < self.max_attempts
+                            && let Some(reduced_fan_in) = reduce_merge_fan_in(merge_fan_in)
+                        {
+                            merge_fan_in = reduced_fan_in;
+                            attempt += 1;
+                            continue;
+                        }
+
+                        release_committed_partials(candidates, self.reservations);
+                        return Err(
+                            final_sort_topk_retry_facts(merge_level, merge_fan_in, self.metrics).attach_to_error(error)
+                        );
+                    },
+                    Err(error) => {
+                        release_committed_partials(candidates, self.reservations);
+                        return Err(error);
+                    },
+                }
+            }
+        }
+
+        let candidate = candidates.pop().expect("hierarchical top-k leaves exactly one candidate");
+        if limit.spec.skip == 0 && candidate.frame.num_rows() <= limit.spec.fetch {
+            return Ok(candidate);
+        }
+
+        let output = execute_limit(self.context, limit, candidate.frame, self.metrics).map_err(|error| {
+            RuntimeResourceFacts {
+                memory_boundary: "final_sort_limit",
+                stage: "final_sort",
+                node_id: self.bounded.aggregate_id,
+                attempt: self.max_attempts,
+                max_attempts: self.max_attempts,
+                resume_boundary: "final_sort",
+                metrics: self.metrics,
+            }
+            .attach_to(error)
+        })?;
+        self.reservations.release(candidate.reservation);
+        reserve_final_sort_output(
+            self.bounded,
+            output,
+            self.max_attempts,
+            self.max_attempts,
+            self.reservations,
+            self.metrics,
+        )
+    }
+
+    fn initial_topk_candidates(
+        &mut self,
+        input: &CommittedPartial,
+        plan: TopKCandidatePlan,
+    ) -> Result<Vec<CommittedPartial>> {
+        let input_rows = input.frame.num_rows();
+        let mut candidates = Vec::with_capacity(input_rows.div_ceil(plan.rows_per_chunk));
+        let mut offset = 0;
+        while offset < input_rows {
+            let length = plan.rows_per_chunk.min(input_rows - offset);
+            match self.topk_slice_attempt(
+                input,
+                TopKSliceAttempt {
+                    offset,
+                    length,
+                    keep_rows: plan.keep_rows,
+                    bytes_per_row: plan.bytes_per_row,
+                    attempt: 2,
+                },
+            ) {
+                Ok(candidate) => candidates.push(candidate),
+                Err(error) => {
+                    release_committed_partials(candidates, self.reservations);
+                    return Err(error);
+                },
+            }
+            offset += length;
+        }
+        Ok(candidates)
+    }
+
+    fn topk_slice_attempt(&mut self, input: &CommittedPartial, slice: TopKSliceAttempt) -> Result<CommittedPartial> {
+        let requested_bytes = estimate_rows_bytes(slice.bytes_per_row, slice.length);
+        let request =
+            MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, self.reservations.budget())
+                .with_memory_boundary("final_sort_topk_chunk")
+                .with_node_id(self.bounded.aggregate_id)
+                .with_stage("final_sort")
+                .with_attempt(slice.attempt, self.max_attempts);
+        let work_reservation = self.reservations.try_reserve(request, self.metrics)?;
+
+        let result = input
+            .frame
+            .frame()
+            .clone()
+            .with_execution(&execution_overrides(self.context))
+            .slice(slice.offset, slice.length)
+            .map(GpuDataFrame::new)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.final_sort.topk_slice",
+                    "failed to slice bounded native final sort input",
+                    error,
+                )
+            })
+            .and_then(|frame| execute_topk_candidate(self.context, self.sort, frame, slice.keep_rows, self.metrics));
+        self.reservations.release(work_reservation);
+        let frame = result.map_err(|error| {
+            RuntimeResourceFacts {
+                memory_boundary: "final_sort_topk_chunk",
+                stage: "final_sort",
+                node_id: self.bounded.aggregate_id,
+                attempt: slice.attempt,
+                max_attempts: self.max_attempts,
+                resume_boundary: "final_sort",
+                metrics: self.metrics,
+            }
+            .attach_to(error)
+        })?;
+        reserve_final_sort_output(
+            self.bounded,
+            frame,
+            slice.attempt,
+            self.max_attempts,
+            self.reservations,
+            self.metrics,
+        )
+    }
+
+    fn topk_merge_level_attempt(
+        &mut self,
+        candidates: &[CommittedPartial],
+        merge: TopKMergeAttempt,
+    ) -> Result<Vec<TopKLevelItem>> {
+        let mut output = Vec::with_capacity(candidates.len().div_ceil(merge.merge_fan_in));
+
+        for (group_index, group) in candidates.chunks(merge.merge_fan_in).enumerate() {
+            if group.len() == 1 {
+                output.push(TopKLevelItem::Carry { partial_index: group_index * merge.merge_fan_in });
+                continue;
+            }
+
+            match self.topk_merge_group_attempt(
+                group,
+                TopKMergeAttempt { keep_rows: merge.keep_rows, merge_fan_in: group.len(), attempt: merge.attempt },
+            ) {
+                Ok(candidate) => output.push(TopKLevelItem::Merged(candidate)),
+                Err(error) => {
+                    release_topk_level_items(output, self.reservations);
+                    return Err(error);
+                },
+            }
+        }
+
+        Ok(output)
+    }
+
+    fn topk_merge_group_attempt(
+        &mut self,
+        candidates: &[CommittedPartial],
+        merge: TopKMergeAttempt,
+    ) -> Result<CommittedPartial> {
+        debug_assert!(candidates.len() > 1);
+        let requested_bytes = candidates.iter().map(|candidate| candidate.reservation.bytes()).sum::<u64>();
+        let request =
+            MemoryReservationRequest::new(ReservationKind::FinalSort, requested_bytes, self.reservations.budget())
+                .with_memory_boundary("final_sort_topk_merge")
+                .with_node_id(self.bounded.aggregate_id)
+                .with_stage("final_sort")
+                .with_attempt(merge.attempt, self.max_attempts);
+        let merge_reservation = self.reservations.try_reserve(request, self.metrics)?;
+
+        let result = concat_committed_frames(self.context, candidates, "cudf_query_engine.final_sort.topk_concat")
+            .and_then(|frame| execute_topk_candidate(self.context, self.sort, frame, merge.keep_rows, self.metrics));
+        self.reservations.release(merge_reservation);
+        let frame = result.map_err(|error| {
+            RuntimeResourceFacts {
+                memory_boundary: "final_sort_topk_merge",
+                stage: "final_sort",
+                node_id: self.bounded.aggregate_id,
+                attempt: merge.attempt,
+                max_attempts: self.max_attempts,
+                resume_boundary: "final_sort",
+                metrics: self.metrics,
+            }
+            .attach_to(error)
+        })?;
+        reserve_final_sort_output(
+            self.bounded,
+            frame,
+            merge.attempt,
+            self.max_attempts,
+            self.reservations,
+            self.metrics,
+        )
+    }
 }
 
 pub(super) fn execute_topk_candidate(

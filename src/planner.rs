@@ -366,14 +366,14 @@ fn handle_candidate(
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let rejection = rejection_reason(&candidate, config);
     if let Some(reason) = rejection {
-        report.push_rejected(candidate.public, reason);
+        report.push_rejected(candidate.public.clone(), reason);
         if config.fallback_policy == GpuFallbackPolicy::GpuOnly {
             return Err(candidate_rejected_error(&candidate.public, reason, config).into());
         }
         return Ok(plan);
     }
 
-    report.push_rewritten(candidate.public);
+    report.push_rewritten(candidate.public.clone());
     crate::exec::CudfGpuIslandExec::try_new_from_plan_with_execution_config(plan, config.execution_config().clone())
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(Into::into)
@@ -398,7 +398,7 @@ fn candidate_rejected_error(candidate: &GpuCandidate, reason: FallbackReason, co
         "datafusion_cudf.optimize_plan",
         "GPU candidate rejected by adapter policy",
     )
-    .with_fact("candidate_shape", candidate.shape)
+    .with_fact("candidate_shape", candidate.shape.as_str())
     .with_fact("fallback_reason", reason.code())
     .with_fact("fallback_policy", config.fallback_policy())
     .with_fact("operator_count", candidate.operator_count)

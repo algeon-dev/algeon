@@ -12,13 +12,14 @@ use arrow::{
 };
 use cudf::{DataType as CudfDataType, TypeId};
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, ByteRangeDisposition, DataPlacement,
-    ExecutionContext, Expr, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemoryReservationRequest, PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition, QueryError,
-    QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
-    ReservationKind, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr, SortSpec,
-    SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
-    cudf_dtype_from_arrow_type,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, ByteRangeDisposition, ColumnRef,
+    DataPlacement, ExecutionContext, Expr, JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinSide, JoinSpec,
+    JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
+    MemoryReservationRequest, OperatorMetrics, PartitionColumn, PartitionColumnDisposition, PlanNode,
+    PredicateDisposition, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder,
+    RejectedSourceFeature, ReservationKind, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr,
+    SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
     is_supported_arrow_cast, is_supported_arrow_type, plan_local_parquet_source_chunks, validate_local_parquet_source,
 };
@@ -127,7 +128,7 @@ fn native_plan_can_represent_proven_benchmark_shape() {
 
 #[test]
 fn native_expr_can_represent_boolean_not() {
-    let expr = Expr::not(Expr::binary(Expr::column("payload"), BinaryOp::Lt, Expr::literal(LiteralValue::Int64(10))));
+    let expr = !Expr::binary(Expr::column("payload"), BinaryOp::Lt, Expr::literal(LiteralValue::Int64(10)));
 
     assert_eq!(expr.to_string(), "NOT (payload < 10)");
 }
@@ -261,6 +262,11 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(bounded.as_str(), "bounded");
     assert!(bounded.is_bounded());
     assert_eq!(ReservationKind::FinalMerge.as_str(), "final_merge");
+    assert_eq!(ReservationKind::BuildSide.as_str(), "build_side");
+    assert_eq!(ReservationKind::ProbeSide.as_str(), "probe_side");
+    assert_eq!(ReservationKind::HashTable.as_str(), "hash_table");
+    assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
+    assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
 
     let chunk_policy = SourceChunkPlanningPolicy::from(bounded);
     assert_eq!(chunk_policy.max_source_chunk_bytes, Some(512 * 1024 * 1024));
@@ -345,6 +351,108 @@ fn query_metrics_make_host_device_boundaries_explicit() {
     boundary.record_host_to_device_upload(10, 1024);
     assert_eq!(boundary.host_to_device_uploads, 1);
     assert_eq!(boundary.host_to_device_uploaded_bytes, 1024);
+}
+
+#[test]
+fn native_expr_preserves_qualified_column_identity_separate_from_display_name() {
+    let left = ColumnRef::input(0, "id", "left_id");
+    let right = ColumnRef::input(1, "id", "right_id");
+
+    assert_ne!(left, right);
+    assert_eq!(left.name(), "id");
+    assert_eq!(left.display_name(), "left_id");
+    assert!(left.is_qualified());
+    assert_eq!(Expr::Column(left.clone()).to_string(), "input0.id");
+    assert_eq!(Expr::Column(right.clone()).to_string(), "input1.id");
+}
+
+#[test]
+fn native_plan_graph_represents_binary_join_with_same_named_inputs() {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_id", DataType::Int32, false),
+    ]));
+    let left_source = LocalParquetSource::new("/tmp/left.parquet", Arc::clone(&left_schema), vec!["id".into()]);
+    let right_source = LocalParquetSource::new("/tmp/right.parquet", Arc::clone(&right_schema), vec!["id".into()]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+        )
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+
+    let PlanNode::Join(join_node) = &plan.root_node().kind else {
+        panic!("root node should be a native join contract");
+    };
+    assert_eq!(plan.root_node().input_ids(), &[left, right]);
+    assert_eq!(join_node.spec.keys[0].left.name(), "id");
+    assert_eq!(join_node.spec.keys[0].left.display_name(), "left_id");
+    assert_eq!(join_node.spec.keys[0].right.name(), "id");
+    assert_eq!(join_node.spec.keys[0].right.display_name(), "right_id");
+    assert_eq!(plan.root_node().facts.schema_behavior, SchemaBehavior::Join);
+    assert!(plan.to_string().contains("Join left=n0 right=n1 type=inner key_count=1"));
+}
+
+#[test]
+fn native_query_validation_rejects_unreachable_dag_nodes() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let root = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root.parquet",
+        Arc::clone(&schema),
+        vec!["id".into()],
+    )));
+    let _unreachable = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/unreachable.parquet",
+        Arc::clone(&schema),
+        vec!["id".into()],
+    )));
+    let plan = builder.finish_with_host_sink(root);
+    let unreachable = plan.unreachable_node_ids().iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert_eq!(unreachable, vec!["n1"]);
+}
+
+#[test]
+fn query_metrics_have_join_operator_contract() {
+    let mut metrics = QueryMetrics::default();
+    metrics.record_operator_metrics(OperatorMetrics::join(
+        "n2",
+        JoinOperatorMetrics {
+            join_type: "inner".into(),
+            key_count: 2,
+            residual_predicate: true,
+            null_equality: "nulls_do_not_match".into(),
+            build_side: "right".into(),
+            probe_side: "left".into(),
+            build_rows: 10,
+            build_bytes: 1024,
+            probe_rows: 20,
+            probe_bytes: 2048,
+            hash_table_bytes: 4096,
+            output_rows: 5,
+            output_bytes: 512,
+        },
+    ));
+
+    assert_eq!(metrics.operators.len(), 1);
+    let join = metrics.operators[0].join.as_ref().expect("join metrics should be attached");
+    assert_eq!(join.join_type, "inner");
+    assert_eq!(join.key_count, 2);
+    assert_eq!(join.hash_table_bytes, 4096);
+    assert_eq!(join.build_side, "right");
+    assert_eq!(join.probe_side, "left");
 }
 
 #[test]

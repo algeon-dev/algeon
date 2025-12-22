@@ -340,10 +340,10 @@ pub(super) fn required_parquet_column_requirements(
     let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
     let (partition_columns, partition_column_indices) =
         native_required_partition_columns(file_scan, &required_source_columns)?;
-    let read_column_file_indices = column_file_indices(&file_schema, &read_columns)?;
+    let read_column_file_indices = column_file_indices(file_schema, &read_columns)?;
     let projected_output_column_source_refs =
-        column_source_refs(&file_schema, &partition_columns, &projected_output_columns)?;
-    let pure_filter_column_source_refs = column_source_refs(&file_schema, &partition_columns, &pure_filter_columns)?;
+        column_source_refs(file_schema, &partition_columns, &projected_output_columns)?;
+    let pure_filter_column_source_refs = column_source_refs(file_schema, &partition_columns, &pure_filter_columns)?;
 
     Ok(NativeParquetColumnRequirements {
         read_columns,

@@ -45,8 +45,8 @@ pub(super) fn validate_aggregate(
     aggregate_args_must_be_columns: bool,
     allow_partial: bool,
 ) -> Result<(), FallbackReason> {
-    if !matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
-        && !(allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
+    if !(matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::SinglePartitioned)
+        || allow_partial && matches!(aggregate.mode(), AggregateMode::Partial))
     {
         return Err(FallbackReason::UnsupportedOperator);
     }
@@ -548,11 +548,16 @@ fn validate_substring_arguments_contract(function: &ScalarFunctionExpr) -> Resul
     }
     if args.len() == 3 {
         let length = literal_i32(&args[2])?;
-        if length < 0 || start.checked_add(length).is_none() {
+        if length < 0 || substring_stop_position(start, length).is_none() {
             return Err(FallbackReason::UnsupportedExpression);
         }
     }
     Ok(())
+}
+
+fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
 }
 
 fn validate_string_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {

@@ -42,8 +42,8 @@ fn planning_report_keeps_rewritten_and_rejected_candidates_in_order() {
     let filter = GpuCandidate::new("FilterExec", 2);
     let projection_filter = GpuCandidate::new("ProjectionExec(FilterExec(child))", 3);
 
-    report.push_rejected(filter, FallbackReason::InsufficientIslandSize);
-    report.push_rewritten(projection_filter);
+    report.push_rejected(filter.clone(), FallbackReason::InsufficientIslandSize);
+    report.push_rewritten(projection_filter.clone());
 
     assert_eq!(report.rejected_count(), 1);
     assert_eq!(report.rewritten_count(), 1);

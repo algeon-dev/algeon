@@ -6,8 +6,14 @@ shift
 
 for arg in "$@"; do
     case "$arg" in
-        /home/ubuntu/code/datafusion/*)
-            exec "$rustc" -A deprecated "$@"
+        */datafusion/datafusion/*)
+            exec "$rustc" "$@" -A deprecated
+            ;;
+        @*)
+            response_file="${arg#@}"
+            if [[ -f "$response_file" ]] && grep -q '/datafusion/datafusion/' "$response_file"; then
+                exec "$rustc" "$@" -A deprecated
+            fi
             ;;
     esac
 done

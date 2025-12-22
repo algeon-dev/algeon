@@ -1,19 +1,19 @@
 use crate::policy::FallbackReason;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuCandidate {
-    pub shape: &'static str,
+    pub shape: String,
     pub output_schema_fields: usize,
     pub operator_count: usize,
 }
 
 impl GpuCandidate {
-    pub const fn new(shape: &'static str, output_schema_fields: usize) -> Self {
-        Self { shape, output_schema_fields, operator_count: 1 }
+    pub fn new(shape: impl Into<String>, output_schema_fields: usize) -> Self {
+        Self { shape: shape.into(), output_schema_fields, operator_count: 1 }
     }
 
-    pub const fn with_operator_count(shape: &'static str, output_schema_fields: usize, operator_count: usize) -> Self {
-        Self { shape, output_schema_fields, operator_count }
+    pub fn with_operator_count(shape: impl Into<String>, output_schema_fields: usize, operator_count: usize) -> Self {
+        Self { shape: shape.into(), output_schema_fields, operator_count }
     }
 }
 

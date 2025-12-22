@@ -3,7 +3,7 @@ use std::fmt;
 use arrow::datatypes::SchemaRef;
 
 use crate::{
-    expr::{AggregateSpec, Expr, LimitSpec, SortExpr, SortSpec},
+    expr::{AggregateSpec, ColumnRef, Expr, LimitSpec, SortExpr, SortSpec},
     source::SourceNode,
 };
 
@@ -46,6 +46,22 @@ impl QueryPlan {
 
     pub fn node_count(&self) -> usize {
         self.nodes.len()
+    }
+
+    pub fn unreachable_node_ids(&self) -> Vec<NodeId> {
+        let mut reachable = vec![false; self.nodes.len()];
+        let mut stack = vec![self.sink.input()];
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if reachable[id.index()] {
+                continue;
+            }
+            reachable[id.index()] = true;
+            stack.extend(node.input_ids().iter().copied());
+        }
+        self.nodes.iter().filter(|node| !reachable[node.id.index()]).map(|node| node.id).collect()
     }
 }
 
@@ -106,38 +122,40 @@ impl QueryNode {
     fn fmt_with_indent(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
         let padding = "  ".repeat(indent);
         match &self.kind {
-            PlanNode::Source(SourceNode::LocalParquet(source)) => {
-                writeln!(
-                    f,
-                    "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
-                    self.id,
-                    source.diagnostics.file_count,
-                    source.files.first().map_or_else(|| "none".to_string(), |file| file.path.display().to_string()),
-                    source.diagnostics.format,
-                    source.diagnostics.direct_device_read,
-                    source.diagnostics.known_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
-                    source
-                        .diagnostics
-                        .selected_row_groups
-                        .map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string()),
-                    source.diagnostics.read_column_count,
-                    source.diagnostics.projected_output_column_count,
-                    source.diagnostics.pure_filter_column_count,
-                    source.diagnostics.predicate_disposition.as_str(),
-                    source.diagnostics.byte_range_disposition.as_str(),
-                    source.diagnostics.partition_column_disposition.as_str(),
-                    source.diagnostics.zero_column_count_disposition.as_str(),
-                    source.diagnostics.schema_mapping_disposition.as_str(),
-                    source
-                        .diagnostics
-                        .rejected_features
-                        .iter()
-                        .map(|feature| feature.as_str())
-                        .collect::<Vec<_>>()
-                        .join(","),
-                    self.facts.placement,
-                    self.facts.schema_behavior
-                )
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => {
+                    writeln!(
+                        f,
+                        "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
+                        self.id,
+                        source.diagnostics.file_count,
+                        source.files.first().map_or_else(|| "none".to_string(), |file| file.path.display().to_string()),
+                        source.diagnostics.format,
+                        source.diagnostics.direct_device_read,
+                        source.diagnostics.known_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
+                        source
+                            .diagnostics
+                            .selected_row_groups
+                            .map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string()),
+                        source.diagnostics.read_column_count,
+                        source.diagnostics.projected_output_column_count,
+                        source.diagnostics.pure_filter_column_count,
+                        source.diagnostics.predicate_disposition.as_str(),
+                        source.diagnostics.byte_range_disposition.as_str(),
+                        source.diagnostics.partition_column_disposition.as_str(),
+                        source.diagnostics.zero_column_count_disposition.as_str(),
+                        source.diagnostics.schema_mapping_disposition.as_str(),
+                        source
+                            .diagnostics
+                            .rejected_features
+                            .iter()
+                            .map(|feature| feature.as_str())
+                            .collect::<Vec<_>>()
+                            .join(","),
+                        self.facts.placement,
+                        self.facts.schema_behavior
+                    )
+                },
             },
             PlanNode::Filter(node) => writeln!(
                 f,
@@ -180,6 +198,20 @@ impl QueryNode {
                 f,
                 "{padding}{} Limit input={} skip={} fetch={} placement={} schema_behavior={}",
                 self.id, node.input, node.spec.skip, node.spec.fetch, self.facts.placement, self.facts.schema_behavior
+            ),
+            PlanNode::Join(node) => writeln!(
+                f,
+                "{padding}{} Join left={} right={} type={} key_count={} residual={} null_equality={} build_side={} placement={} schema_behavior={}",
+                self.id,
+                node.inputs[0],
+                node.inputs[1],
+                node.spec.join_type,
+                node.spec.keys.len(),
+                node.spec.residual_predicate.as_ref().map_or("none".to_string(), ToString::to_string),
+                node.spec.null_equality,
+                node.spec.build_side,
+                self.facts.placement,
+                self.facts.schema_behavior
             ),
         }
     }
@@ -226,12 +258,13 @@ fn format_sort_exprs(expressions: &[SortExpr]) -> String {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanNode {
-    Source(SourceNode),
+    Source(Box<SourceNode>),
     Filter(FilterNode),
     Projection(ProjectionNode),
     Aggregate(AggregateNode),
     Sort(SortNode),
     Limit(LimitNode),
+    Join(JoinNode),
 }
 
 impl PlanNode {
@@ -243,6 +276,7 @@ impl PlanNode {
             Self::Aggregate(node) => std::slice::from_ref(&node.input),
             Self::Sort(node) => std::slice::from_ref(&node.input),
             Self::Limit(node) => std::slice::from_ref(&node.input),
+            Self::Join(node) => &node.inputs,
         }
     }
 }
@@ -287,6 +321,7 @@ pub enum SchemaBehavior {
     PreservesInput,
     Projection,
     Aggregate,
+    Join,
 }
 
 impl fmt::Display for SchemaBehavior {
@@ -296,6 +331,7 @@ impl fmt::Display for SchemaBehavior {
             Self::PreservesInput => "preserves_input",
             Self::Projection => "projection",
             Self::Aggregate => "aggregate",
+            Self::Join => "join",
         })
     }
 }
@@ -337,7 +373,7 @@ impl QueryPlanBuilder {
 
     pub fn add_source(&mut self, source: SourceNode) -> NodeId {
         let output_schema = source.output_schema().clone();
-        self.push(PlanNode::Source(source), PlanFacts::device(output_schema, SchemaBehavior::SourceOutput))
+        self.push(PlanNode::Source(Box::new(source)), PlanFacts::device(output_schema, SchemaBehavior::SourceOutput))
     }
 
     pub fn add_filter(&mut self, input: NodeId, predicate: Expr, output_schema: SchemaRef) -> NodeId {
@@ -380,6 +416,15 @@ impl QueryPlanBuilder {
         self.push(
             PlanNode::Limit(LimitNode { input, spec }),
             PlanFacts::device(output_schema, SchemaBehavior::PreservesInput).with_output_ordering(output_ordering),
+        )
+    }
+
+    pub fn add_join(&mut self, left: NodeId, right: NodeId, spec: JoinSpec, output_schema: SchemaRef) -> NodeId {
+        self.assert_input_exists(left);
+        self.assert_input_exists(right);
+        self.push(
+            PlanNode::Join(JoinNode { inputs: [left, right], spec }),
+            PlanFacts::device(output_schema, SchemaBehavior::Join),
         )
     }
 
@@ -441,4 +486,111 @@ pub struct SortNode {
 pub struct LimitNode {
     pub input: NodeId,
     pub spec: LimitSpec,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinNode {
+    pub inputs: [NodeId; 2],
+    pub spec: JoinSpec,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JoinSpec {
+    pub join_type: JoinType,
+    pub keys: Vec<JoinKey>,
+    pub residual_predicate: Option<Expr>,
+    pub null_equality: JoinNullEquality,
+    pub build_side: JoinSide,
+}
+
+impl JoinSpec {
+    pub fn new(join_type: JoinType, keys: Vec<JoinKey>) -> Self {
+        Self {
+            join_type,
+            keys,
+            residual_predicate: None,
+            null_equality: JoinNullEquality::NullsDoNotMatch,
+            build_side: JoinSide::Right,
+        }
+    }
+
+    pub fn with_residual_predicate(mut self, predicate: Expr) -> Self {
+        self.residual_predicate = Some(predicate);
+        self
+    }
+
+    pub fn with_null_equality(mut self, null_equality: JoinNullEquality) -> Self {
+        self.null_equality = null_equality;
+        self
+    }
+
+    pub fn with_build_side(mut self, build_side: JoinSide) -> Self {
+        self.build_side = build_side;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinKey {
+    pub left: ColumnRef,
+    pub right: ColumnRef,
+}
+
+impl JoinKey {
+    pub fn new(left: ColumnRef, right: ColumnRef) -> Self {
+        Self { left, right }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JoinType {
+    Inner,
+    Left,
+    Right,
+    Full,
+    Semi,
+    Anti,
+}
+
+impl fmt::Display for JoinType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Inner => "inner",
+            Self::Left => "left",
+            Self::Right => "right",
+            Self::Full => "full",
+            Self::Semi => "semi",
+            Self::Anti => "anti",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JoinNullEquality {
+    NullsDoNotMatch,
+    NullsMatch,
+}
+
+impl fmt::Display for JoinNullEquality {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::NullsDoNotMatch => "nulls_do_not_match",
+            Self::NullsMatch => "nulls_match",
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum JoinSide {
+    Left,
+    Right,
+}
+
+impl fmt::Display for JoinSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Left => "left",
+            Self::Right => "right",
+        })
+    }
 }

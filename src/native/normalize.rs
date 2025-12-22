@@ -17,67 +17,6 @@ use datafusion::{
 use super::validate::is_supported_native_type;
 use crate::{policy::FallbackReason, report::GpuCandidate};
 
-const LOCAL_LIMIT_SHAPE: &str = "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
-const LOCAL_LIMIT_NO_FILTER_SHAPE: &str = "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(LocalParquetScan))))";
-const LOCAL_LIMIT_NO_PRE_PROJECTION_SHAPE: &str =
-    "LocalLimitExec(SortExec(AggregateExec(FilterExec(LocalParquetScan))))";
-const LOCAL_LIMIT_MINIMAL_SHAPE: &str = "LocalLimitExec(SortExec(AggregateExec(LocalParquetScan)))";
-const LOCAL_LIMIT_POST_PRE_FILTER_SHAPE: &str =
-    "LocalLimitExec(SortExec(ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))))";
-const LOCAL_LIMIT_POST_PRE_NO_FILTER_SHAPE: &str =
-    "LocalLimitExec(SortExec(ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))))";
-const LOCAL_LIMIT_POST_FILTER_SHAPE: &str =
-    "LocalLimitExec(SortExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))))";
-const LOCAL_LIMIT_POST_NO_FILTER_SHAPE: &str =
-    "LocalLimitExec(SortExec(ProjectionExec(AggregateExec(LocalParquetScan))))";
-const SORT_FETCH_SHAPE: &str = "SortExec(fetch)(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))";
-const SORT_FETCH_NO_FILTER_SHAPE: &str = "SortExec(fetch)(AggregateExec(ProjectionExec(LocalParquetScan)))";
-const SORT_FETCH_NO_PRE_PROJECTION_SHAPE: &str = "SortExec(fetch)(AggregateExec(FilterExec(LocalParquetScan)))";
-const SORT_FETCH_MINIMAL_SHAPE: &str = "SortExec(fetch)(AggregateExec(LocalParquetScan))";
-const SQL_SORT_FETCH_POST_PRE_FILTER_SHAPE: &str =
-    "SortExec(fetch)(ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
-const SQL_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE: &str =
-    "SortExec(fetch)(ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan))))";
-const SQL_SORT_FETCH_SHAPE: &str = "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))";
-const SQL_SORT_FETCH_NO_FILTER_SHAPE: &str = "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))";
-const SPM_SORT_FETCH_POST_PRE_FILTER_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))))";
-const SPM_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE: &str =
-    "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))))";
-const SPM_SORT_FETCH_POST_FILTER_SHAPE: &str =
-    "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))))";
-const SPM_SORT_FETCH_DISTRIBUTED_POST_FILTER_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan)))))))";
-const SPM_SORT_FETCH_POST_NO_FILTER_SHAPE: &str =
-    "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec(LocalParquetScan))))";
-const SPM_SORT_FETCH_PRE_FILTER_SHAPE: &str =
-    "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
-const SPM_SORT_FETCH_PRE_NO_FILTER_SHAPE: &str =
-    "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(ProjectionExec(LocalParquetScan))))";
-const SPM_SORT_FETCH_NO_PRE_FILTER_SHAPE: &str =
-    "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(FilterExec(LocalParquetScan))))";
-const SPM_SORT_FETCH_MINIMAL_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec(AggregateExec(LocalParquetScan)))";
-const GLOBAL_AGG_POST_SHAPE: &str = "ProjectionExec(AggregateExec(LocalParquetScan))";
-const GLOBAL_AGG_MINIMAL_SHAPE: &str = "AggregateExec(LocalParquetScan)";
-const GLOBAL_AGG_POST_PRE_FILTER_SHAPE: &str =
-    "ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))";
-const GLOBAL_AGG_POST_PRE_NO_FILTER_SHAPE: &str = "ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))";
-const GLOBAL_AGG_POST_FILTER_SHAPE: &str = "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))";
-const GLOBAL_AGG_PRE_FILTER_SHAPE: &str = "AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))";
-const GLOBAL_AGG_PRE_NO_FILTER_SHAPE: &str = "AggregateExec(ProjectionExec(LocalParquetScan))";
-const GLOBAL_AGG_FILTER_SHAPE: &str = "AggregateExec(FilterExec(LocalParquetScan))";
-const GLOBAL_AGG_DISTRIBUTED_POST_SHAPE: &str =
-    "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan))))";
-const GLOBAL_AGG_DISTRIBUTED_MINIMAL_SHAPE: &str =
-    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan)))";
-const GLOBAL_AGG_DISTRIBUTED_POST_PRE_FILTER_SHAPE: &str = "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))))";
-const GLOBAL_AGG_DISTRIBUTED_POST_PRE_NO_FILTER_SHAPE: &str = "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(LocalParquetScan)))))";
-const GLOBAL_AGG_DISTRIBUTED_POST_FILTER_SHAPE: &str =
-    "ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(FilterExec(LocalParquetScan)))))";
-const GLOBAL_AGG_DISTRIBUTED_PRE_FILTER_SHAPE: &str =
-    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))";
-const GLOBAL_AGG_DISTRIBUTED_PRE_NO_FILTER_SHAPE: &str =
-    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(ProjectionExec(LocalParquetScan))))";
-const GLOBAL_AGG_DISTRIBUTED_FILTER_SHAPE: &str =
-    "FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(FilterExec(LocalParquetScan))))";
 const SORT_PRESERVING_MERGE_SHAPE: &str = "SortPreservingMergeExec";
 const SORT_PRESERVING_MERGE_FETCH_SHAPE: &str = "SortPreservingMergeExec(fetch)(SortExec)";
 const UNSUPPORTED_NATIVE_PLAN_SHAPE: &str = "UnsupportedNativePhysicalPlan";
@@ -96,7 +35,7 @@ pub(super) struct NormalizedNativePlan<'a> {
     pub(super) limit_fetch: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(super) struct NativePlanRejection {
     pub(super) candidate: GpuCandidate,
     pub(super) reason: FallbackReason,
@@ -107,6 +46,12 @@ enum NativeStackRoot {
     LocalLimit,
     SortFetch,
     SortPreservingMergeFetch,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NativeAggregateShapeKind {
+    Global,
+    SortStack(NativeStackRoot),
 }
 
 pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
@@ -123,20 +68,19 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         };
         let candidate =
             GpuCandidate::with_operator_count(SORT_PRESERVING_MERGE_FETCH_SHAPE, plan.schema().fields().len(), 2);
-        let sort = merge
-            .input()
-            .as_any()
-            .downcast_ref::<SortExec>()
-            .ok_or(NativePlanRejection { candidate, reason: FallbackReason::NativeSortPreservingMergeUnsupported })?;
+        let sort = merge.input().as_any().downcast_ref::<SortExec>().ok_or(NativePlanRejection {
+            candidate: candidate.clone(),
+            reason: FallbackReason::NativeSortPreservingMergeUnsupported,
+        })?;
         if !sort_orderings_match(merge.expr(), sort.expr()) {
             return Err(NativePlanRejection {
-                candidate,
+                candidate: candidate.clone(),
                 reason: FallbackReason::NativeSortPreservingMergeUnsupported,
             });
         }
         if sort.fetch().is_some_and(|sort_fetch| sort_fetch < fetch) {
             return Err(NativePlanRejection {
-                candidate,
+                candidate: candidate.clone(),
                 reason: FallbackReason::NativeSortPreservingMergeUnsupported,
             });
         }
@@ -149,14 +93,16 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     }
 
     if let Some(limit) = plan.as_any().downcast_ref::<LocalLimitExec>() {
-        let candidate = GpuCandidate::with_operator_count(LOCAL_LIMIT_SHAPE, plan.schema().fields().len(), 5);
+        let candidate =
+            native_stack_candidate(NativeStackRoot::LocalLimit, plan.schema().fields().len(), false, true, true, false);
         let sort = required_child::<SortExec>(limit.input().as_ref(), candidate)?;
         let fetch = sort.fetch().map_or(limit.fetch(), |sort_fetch| sort_fetch.min(limit.fetch()));
         return normalize_sort_stack(NativeStackRoot::LocalLimit, plan.schema().fields().len(), sort, Some(fetch));
     }
 
     if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
-        let candidate = GpuCandidate::with_operator_count(SORT_FETCH_SHAPE, plan.schema().fields().len(), 5);
+        let candidate =
+            native_stack_candidate(NativeStackRoot::SortFetch, plan.schema().fields().len(), false, true, true, false);
         let Some(fetch) = sort.fetch() else {
             return Err(NativePlanRejection { candidate, reason: FallbackReason::UnsupportedOperator });
         };
@@ -164,7 +110,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     }
 
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
-        let candidate = GpuCandidate::with_operator_count(GLOBAL_AGG_POST_SHAPE, plan.schema().fields().len(), 3);
+        let candidate = global_aggregate_candidate(plan.schema().fields().len(), true, false, false, false);
         let aggregate = required_child::<AggregateExec>(projection.input().as_ref(), candidate)?;
         return normalize_global_aggregate_stack(plan.schema().fields().len(), Some(projection), aggregate);
     }
@@ -193,9 +139,12 @@ fn normalize_sort_stack<'a>(
         });
     }
     let Some(limit_fetch) = limit_fetch else {
-        return Err(NativePlanRejection { candidate: initial_candidate, reason: FallbackReason::UnsupportedOperator });
+        return Err(NativePlanRejection {
+            candidate: initial_candidate.clone(),
+            reason: FallbackReason::UnsupportedOperator,
+        });
     };
-    let (post_aggregate_projection, aggregate) = peel_post_aggregate_projection(sort, initial_candidate)?;
+    let (post_aggregate_projection, aggregate) = peel_post_aggregate_projection(sort, initial_candidate.clone())?;
     let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
         peel_distributed_aggregate_pair_if_present(aggregate, initial_candidate)?;
     let (pre_aggregate_projection, filter_or_source) = peel_pre_aggregate_projection(aggregate);
@@ -208,7 +157,7 @@ fn normalize_sort_stack<'a>(
         filter.is_some(),
         has_distributed_aggregate,
     );
-    let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate)?;
+    let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate.clone())?;
 
     Ok(NormalizedNativePlan {
         candidate,
@@ -229,11 +178,8 @@ fn normalize_global_aggregate_stack<'a>(
     post_aggregate_projection: Option<&'a ProjectionExec>,
     aggregate: &'a AggregateExec,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
-    let candidate = GpuCandidate::with_operator_count(
-        if post_aggregate_projection.is_some() { GLOBAL_AGG_POST_SHAPE } else { GLOBAL_AGG_MINIMAL_SHAPE },
-        output_schema_fields,
-        2 + usize::from(post_aggregate_projection.is_some()),
-    );
+    let candidate =
+        global_aggregate_candidate(output_schema_fields, post_aggregate_projection.is_some(), false, false, false);
     let (aggregate, aggregate_allows_partial, has_distributed_aggregate, aggregate_output_schema) =
         peel_distributed_aggregate_pair_if_present(aggregate, candidate)?;
     let (pre_aggregate_projection, filter_or_source) = peel_pre_aggregate_projection(aggregate);
@@ -245,7 +191,7 @@ fn normalize_global_aggregate_stack<'a>(
         filter.is_some(),
         has_distributed_aggregate,
     );
-    let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate)?;
+    let source_exec = required_child::<DataSourceExec>(peel_repartition(source_input), candidate.clone())?;
 
     Ok(NormalizedNativePlan {
         candidate,
@@ -268,24 +214,13 @@ fn global_aggregate_candidate(
     has_filter: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
-    let shape = match (has_distributed_aggregate, has_post_projection, has_pre_projection, has_filter) {
-        (false, true, true, true) => GLOBAL_AGG_POST_PRE_FILTER_SHAPE,
-        (false, true, true, false) => GLOBAL_AGG_POST_PRE_NO_FILTER_SHAPE,
-        (false, true, false, true) => GLOBAL_AGG_POST_FILTER_SHAPE,
-        (false, true, false, false) => GLOBAL_AGG_POST_SHAPE,
-        (false, false, true, true) => GLOBAL_AGG_PRE_FILTER_SHAPE,
-        (false, false, true, false) => GLOBAL_AGG_PRE_NO_FILTER_SHAPE,
-        (false, false, false, true) => GLOBAL_AGG_FILTER_SHAPE,
-        (false, false, false, false) => GLOBAL_AGG_MINIMAL_SHAPE,
-        (true, true, true, true) => GLOBAL_AGG_DISTRIBUTED_POST_PRE_FILTER_SHAPE,
-        (true, true, true, false) => GLOBAL_AGG_DISTRIBUTED_POST_PRE_NO_FILTER_SHAPE,
-        (true, true, false, true) => GLOBAL_AGG_DISTRIBUTED_POST_FILTER_SHAPE,
-        (true, true, false, false) => GLOBAL_AGG_DISTRIBUTED_POST_SHAPE,
-        (true, false, true, true) => GLOBAL_AGG_DISTRIBUTED_PRE_FILTER_SHAPE,
-        (true, false, true, false) => GLOBAL_AGG_DISTRIBUTED_PRE_NO_FILTER_SHAPE,
-        (true, false, false, true) => GLOBAL_AGG_DISTRIBUTED_FILTER_SHAPE,
-        (true, false, false, false) => GLOBAL_AGG_DISTRIBUTED_MINIMAL_SHAPE,
-    };
+    let shape = native_aggregate_shape(
+        NativeAggregateShapeKind::Global,
+        has_post_projection,
+        has_pre_projection,
+        has_filter,
+        has_distributed_aggregate,
+    );
     let operator_count = 2
         + usize::from(has_post_projection)
         + usize::from(has_pre_projection)
@@ -312,18 +247,20 @@ fn peel_pre_aggregate_projection(aggregate: &AggregateExec) -> (Option<&Projecti
     }
 }
 
-fn peel_distributed_aggregate_pair_if_present<'a>(
-    aggregate: &'a AggregateExec,
+fn peel_distributed_aggregate_pair_if_present(
+    aggregate: &AggregateExec,
     candidate: GpuCandidate,
-) -> Result<(&'a AggregateExec, bool, bool, SchemaRef), NativePlanRejection> {
+) -> Result<(&AggregateExec, bool, bool, SchemaRef), NativePlanRejection> {
     if !matches!(aggregate.mode(), AggregateMode::Final | AggregateMode::FinalPartitioned) {
         return Ok((aggregate, false, false, aggregate.schema()));
     }
 
-    let partial = peel_repartition(aggregate.input().as_ref())
-        .as_any()
-        .downcast_ref::<AggregateExec>()
-        .ok_or(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported })?;
+    let partial = peel_repartition(aggregate.input().as_ref()).as_any().downcast_ref::<AggregateExec>().ok_or(
+        NativePlanRejection {
+            candidate: candidate.clone(),
+            reason: FallbackReason::NativeDistributedAggregateUnsupported,
+        },
+    )?;
     if !distributed_aggregate_pair_is_safe(aggregate, partial) {
         return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported });
     }
@@ -448,42 +385,13 @@ fn native_stack_candidate(
     has_filter: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
-    if has_distributed_aggregate {
-        let shape = match (root, has_post_aggregate_projection, has_pre_aggregate_projection, has_filter) {
-            (NativeStackRoot::SortPreservingMergeFetch, true, false, true) => {
-                SPM_SORT_FETCH_DISTRIBUTED_POST_FILTER_SHAPE
-            },
-            _ => SORT_PRESERVING_MERGE_FETCH_SHAPE,
-        };
-        return GpuCandidate::with_operator_count(shape, output_schema_fields, 9);
-    }
-
-    let shape = match (root, has_post_aggregate_projection, has_pre_aggregate_projection, has_filter) {
-        (NativeStackRoot::LocalLimit, false, true, true) => LOCAL_LIMIT_SHAPE,
-        (NativeStackRoot::LocalLimit, false, true, false) => LOCAL_LIMIT_NO_FILTER_SHAPE,
-        (NativeStackRoot::LocalLimit, false, false, true) => LOCAL_LIMIT_NO_PRE_PROJECTION_SHAPE,
-        (NativeStackRoot::LocalLimit, false, false, false) => LOCAL_LIMIT_MINIMAL_SHAPE,
-        (NativeStackRoot::LocalLimit, true, true, true) => LOCAL_LIMIT_POST_PRE_FILTER_SHAPE,
-        (NativeStackRoot::LocalLimit, true, true, false) => LOCAL_LIMIT_POST_PRE_NO_FILTER_SHAPE,
-        (NativeStackRoot::LocalLimit, true, false, true) => LOCAL_LIMIT_POST_FILTER_SHAPE,
-        (NativeStackRoot::LocalLimit, true, false, false) => LOCAL_LIMIT_POST_NO_FILTER_SHAPE,
-        (NativeStackRoot::SortFetch, false, true, true) => SORT_FETCH_SHAPE,
-        (NativeStackRoot::SortFetch, false, true, false) => SORT_FETCH_NO_FILTER_SHAPE,
-        (NativeStackRoot::SortFetch, false, false, true) => SORT_FETCH_NO_PRE_PROJECTION_SHAPE,
-        (NativeStackRoot::SortFetch, false, false, false) => SORT_FETCH_MINIMAL_SHAPE,
-        (NativeStackRoot::SortFetch, true, true, true) => SQL_SORT_FETCH_POST_PRE_FILTER_SHAPE,
-        (NativeStackRoot::SortFetch, true, true, false) => SQL_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE,
-        (NativeStackRoot::SortFetch, true, false, true) => SQL_SORT_FETCH_SHAPE,
-        (NativeStackRoot::SortFetch, true, false, false) => SQL_SORT_FETCH_NO_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, false, true, true) => SPM_SORT_FETCH_PRE_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, false, true, false) => SPM_SORT_FETCH_PRE_NO_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, false, false, true) => SPM_SORT_FETCH_NO_PRE_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, false, false, false) => SPM_SORT_FETCH_MINIMAL_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, true, true, true) => SPM_SORT_FETCH_POST_PRE_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, true, true, false) => SPM_SORT_FETCH_POST_PRE_NO_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, true, false, true) => SPM_SORT_FETCH_POST_FILTER_SHAPE,
-        (NativeStackRoot::SortPreservingMergeFetch, true, false, false) => SPM_SORT_FETCH_POST_NO_FILTER_SHAPE,
-    };
+    let shape = native_sort_stack_shape(
+        root,
+        has_post_aggregate_projection,
+        has_pre_aggregate_projection,
+        has_filter,
+        has_distributed_aggregate,
+    );
     let operator_count = 3
         + usize::from(has_post_aggregate_projection)
         + usize::from(has_pre_aggregate_projection)
@@ -491,8 +399,80 @@ fn native_stack_candidate(
     GpuCandidate::with_operator_count(
         shape,
         output_schema_fields,
-        operator_count + usize::from(matches!(root, NativeStackRoot::SortPreservingMergeFetch)),
+        if has_distributed_aggregate {
+            9
+        } else {
+            operator_count + usize::from(matches!(root, NativeStackRoot::SortPreservingMergeFetch))
+        },
     )
+}
+
+fn native_sort_stack_shape(
+    root: NativeStackRoot,
+    has_post_projection: bool,
+    has_pre_projection: bool,
+    has_filter: bool,
+    has_distributed_aggregate: bool,
+) -> String {
+    let aggregate = native_aggregate_shape(
+        NativeAggregateShapeKind::SortStack(root),
+        has_post_projection,
+        has_pre_projection,
+        has_filter,
+        has_distributed_aggregate,
+    );
+    match root {
+        NativeStackRoot::LocalLimit => wrap_shape("LocalLimitExec", wrap_shape("SortExec", aggregate)),
+        NativeStackRoot::SortFetch => wrap_shape("SortExec(fetch)", aggregate),
+        NativeStackRoot::SortPreservingMergeFetch => {
+            wrap_shape("SortPreservingMergeExec(fetch)", wrap_shape("SortExec", aggregate))
+        },
+    }
+}
+
+fn native_aggregate_shape(
+    kind: NativeAggregateShapeKind,
+    has_post_projection: bool,
+    has_pre_projection: bool,
+    has_filter: bool,
+    has_distributed_aggregate: bool,
+) -> String {
+    let mut source = "LocalParquetScan".to_string();
+    if matches!(kind, NativeAggregateShapeKind::SortStack(NativeStackRoot::SortPreservingMergeFetch))
+        && has_distributed_aggregate
+    {
+        source = wrap_shape("RepartitionExec", source);
+    }
+    if has_filter {
+        source = wrap_shape("FilterExec", source);
+    }
+    if has_pre_projection {
+        source = wrap_shape("ProjectionExec", source);
+    }
+
+    let mut aggregate = if has_distributed_aggregate {
+        match kind {
+            NativeAggregateShapeKind::SortStack(NativeStackRoot::SortPreservingMergeFetch) => wrap_shape(
+                "FinalAggregateExec",
+                wrap_shape("RepartitionExec", wrap_shape("PartialAggregateExec", source)),
+            ),
+            NativeAggregateShapeKind::Global | NativeAggregateShapeKind::SortStack(_) => wrap_shape(
+                "FinalAggregateExec",
+                wrap_shape("CoalescePartitionsExec", wrap_shape("PartialAggregateExec", source)),
+            ),
+        }
+    } else {
+        wrap_shape("AggregateExec", source)
+    };
+
+    if has_post_projection {
+        aggregate = wrap_shape("ProjectionExec", aggregate);
+    }
+    aggregate
+}
+
+fn wrap_shape(operator: &str, input: String) -> String {
+    format!("{operator}({input})")
 }
 
 fn required_child<T: 'static>(plan: &dyn ExecutionPlan, candidate: GpuCandidate) -> Result<&T, NativePlanRejection> {

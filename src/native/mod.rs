@@ -65,7 +65,7 @@ fn lower_physical_plan_to_native_with_mode(
                 ) =>
         {
             let mut report = PlanningReport::new();
-            report.push_rejected(normalized.candidate, crate::policy::FallbackReason::UnsupportedOperator);
+            report.push_rejected(normalized.candidate.clone(), crate::policy::FallbackReason::UnsupportedOperator);
             NativeLoweringResult {
                 plans: Vec::new(),
                 report,
@@ -75,7 +75,7 @@ fn lower_physical_plan_to_native_with_mode(
         Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
             |reason| {
                 let mut report = PlanningReport::new();
-                report.push_rejected(normalized.candidate, reason);
+                report.push_rejected(normalized.candidate.clone(), reason);
                 NativeLoweringResult {
                     plans: Vec::new(),
                     report,
@@ -84,7 +84,7 @@ fn lower_physical_plan_to_native_with_mode(
             },
             |native_plan| {
                 let mut report = PlanningReport::new();
-                report.push_rewritten(normalized.candidate);
+                report.push_rewritten(normalized.candidate.clone());
                 NativeLoweringResult {
                     plans: vec![native_plan],
                     report,

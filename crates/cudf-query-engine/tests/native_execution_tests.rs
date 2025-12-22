@@ -406,14 +406,14 @@ fn native_query_executes_phase2_scalar_expression_families() {
     assert_eq!(string_array(batch, 7).value(2), "other");
     assert_eq!(boolean_array(batch, 8).values().iter().collect::<Vec<_>>(), vec![true, true, false]);
     assert_eq!(boolean_array(batch, 9).values().iter().collect::<Vec<_>>(), vec![false, false, true]);
-    assert_eq!(boolean_array(batch, 10).value(0), true);
-    assert_eq!(boolean_array(batch, 10).value(1), true);
+    assert!(boolean_array(batch, 10).value(0));
+    assert!(boolean_array(batch, 10).value(1));
     assert!(boolean_array(batch, 10).is_null(2));
-    assert_eq!(boolean_array(batch, 11).value(0), true);
-    assert_eq!(boolean_array(batch, 11).value(1), true);
+    assert!(boolean_array(batch, 11).value(0));
+    assert!(boolean_array(batch, 11).value(1));
     assert!(boolean_array(batch, 11).is_null(2));
-    assert_eq!(boolean_array(batch, 12).value(0), true);
-    assert_eq!(boolean_array(batch, 12).value(1), true);
+    assert!(boolean_array(batch, 12).value(0));
+    assert!(boolean_array(batch, 12).value(1));
     assert!(boolean_array(batch, 12).is_null(2));
 
     fs::remove_dir_all(dir).unwrap();
@@ -454,6 +454,56 @@ fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
 }
 
 #[test]
+fn native_query_rejects_date64_temporal_scalars_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("event_date64", DataType::Date64, true)]));
+
+    let cases = [
+        (
+            "extract_date64",
+            vec![Expr::extract(cudf_query_engine::DatePart::Year, Expr::column("event_date64")).alias("event_year")],
+            Arc::new(Schema::new(vec![Field::new("event_year", DataType::Int32, true)])),
+        ),
+        (
+            "interval_date64",
+            vec![
+                Expr::binary(
+                    Expr::column("event_date64"),
+                    BinaryOp::Add,
+                    Expr::literal(LiteralValue::IntervalMonthDayNano { months: 0, days: 1, nanoseconds: 0 }),
+                )
+                .alias("event_plus_one_day"),
+            ],
+            Arc::new(Schema::new(vec![Field::new(
+                "event_plus_one_day",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            )])),
+        ),
+    ];
+
+    for (name, projection, output_schema) in cases {
+        let source = LocalParquetSource::new(
+            format!("/tmp/does-not-need-to-exist-for-date64-{name}.parquet"),
+            Arc::clone(&input_schema),
+            vec!["event_date64".to_string()],
+        );
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let projection = builder.add_projection(source, projection, output_schema);
+        let plan = builder.finish_with_host_sink(projection);
+        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+        let error = match execute_query_plan(&context, &plan) {
+            Ok(_) => panic!("{name} should reject Date64 before source read"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType, "{name}");
+        assert!(error.fact_value("path").is_none(), "{name} should fail before source read");
+    }
+}
+
+#[test]
 fn native_query_rejects_out_of_envelope_substring_before_source_read() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = Arc::new(Schema::new(vec![
@@ -476,7 +526,7 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
         ),
         (
             "stop_overflow",
-            Expr::substring(Expr::column("status"), i32::MAX, Some(1)).alias("bad_substring"),
+            Expr::substring(Expr::column("status"), i32::MAX, Some(2)).alias("bad_substring"),
             QueryErrorCode::UnsupportedExpression,
             None,
         ),
@@ -2173,11 +2223,16 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
 }
 
 #[test]
-fn bounded_native_query_rejects_unsupported_shape_before_source_read() {
+fn bounded_native_query_executes_non_aggregate_source_plan() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-only");
+    let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
-    let source =
-        LocalParquetSource::new("/tmp/does-not-need-to-exist.parquet", Arc::clone(&schema), vec!["key".into()]);
+    let schema = write_row_grouped_input_parquet(&path);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["key".into(), "payload".into(), "m00".into(), "m01".into()],
+    );
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
@@ -2194,12 +2249,15 @@ fn bounded_native_query_rejects_unsupported_shape_before_source_read() {
         .build()
         .unwrap();
 
-    let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("bounded execution should reject plans without a grouped aggregate"),
-        Err(error) => error,
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should return a RecordBatch");
     };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("reason"), Some("missing_grouped_aggregate"));
+    assert_eq!(batch.num_rows(), 6);
+    assert_eq!(result.metrics().parquet_files, 1);
+    assert!(result.metrics().reservation_granted_bytes > 0);
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

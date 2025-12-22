@@ -10,7 +10,7 @@ pub(super) struct ConfiguredBenchmarkCaseReport {
 
 #[derive(Debug)]
 pub(super) enum BenchmarkCaseReport {
-    Success(DirectParquetBenchmarkReport),
+    Success(Box<DirectParquetBenchmarkReport>),
     PlanningRejected(ExpectedPlanningRejectedReport),
     ResourceFailure(ExpectedResourceFailureReport),
 }
@@ -40,10 +40,10 @@ pub(super) async fn run_configured_benchmark_case(
 
     let source_diagnostic = local_parquet_scan_diagnostic(&path).await?;
     let report = match config.expected_outcome {
-        BenchmarkExpectedOutcome::Success => BenchmarkCaseReport::Success(
+        BenchmarkExpectedOutcome::Success => BenchmarkCaseReport::Success(Box::new(
             run_direct_parquet_benchmark(&path, parquet_file_bytes, dataset_layout, source_diagnostic.clone(), config)
                 .await?,
-        ),
+        )),
         BenchmarkExpectedOutcome::PlanningRejected => BenchmarkCaseReport::PlanningRejected(
             run_expected_planning_rejection_probe(
                 &path,

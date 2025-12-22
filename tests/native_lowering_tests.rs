@@ -6,7 +6,7 @@ use std::{
 
 use arrow::{
     array::{
-        BinaryArray, Date32Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
+        BinaryArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array, Int64Array, StringArray,
         TimestampNanosecondArray,
     },
     compute::SortOptions as ArrowSortOptions,
@@ -106,9 +106,10 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
         Expr::Binary { right, .. } if matches!(right.as_ref(), Expr::Literal(LiteralValue::Int32(10)))
     ));
     let source_node = plan.node(filter.input).expect("filter input should exist");
-    let PlanNode::Source(SourceNode::LocalParquet(source)) = &source_node.kind else {
+    let PlanNode::Source(source_node) = &source_node.kind else {
         panic!("filter input should be a local parquet source");
     };
+    let SourceNode::LocalParquet(source) = source_node.as_ref();
     assert_eq!(source.file_count(), 1);
     assert_eq!(source.files[0].file_size_bytes, Some(fs::metadata(&path).unwrap().len()));
     assert_eq!(
@@ -153,7 +154,9 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
         .nodes()
         .iter()
         .find_map(|node| match &node.kind {
-            PlanNode::Source(SourceNode::LocalParquet(source)) => Some(source),
+            PlanNode::Source(source_node) => match source_node.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+            },
             _ => None,
         })
         .expect("native plan should contain a local parquet source");
@@ -803,6 +806,25 @@ fn adapter_validation_rejects_like_over_non_string_input() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn adapter_validation_rejects_extract_over_date64_until_native_dtype_contract_exists() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-date64-extract-reject");
+    let path = dir.join("input.parquet");
+    write_date64_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_DATE64_EXTRACT_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::UnsupportedType, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn pushed_scan_projection_reads_only_downstream_required_columns() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-scan-projection-pruning");
@@ -888,7 +910,7 @@ async fn phase2_aggregate_argument_required_source_columns_are_exact() {
     assert_eq!(aggregate_exprs.len(), 1);
     assert!(matches!(
         &aggregate_exprs[0].expr,
-        Expr::Column(name) if name.starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
     ));
     assert!(!source.read_columns.contains(&"payload".to_string()));
 
@@ -949,7 +971,7 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL plan should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
@@ -1011,7 +1033,7 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
         .expect("native aggregate should include COUNT(*)");
     assert!(matches!(
         &count_expr.expr,
-        Expr::Column(name) if name.starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
     ));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
@@ -1051,7 +1073,7 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
-    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == ZERO_COLUMN_COUNT_COLUMN));
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == ZERO_COLUMN_COUNT_COLUMN));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1089,7 +1111,7 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
-    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == ZERO_COLUMN_COUNT_COLUMN));
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == ZERO_COLUMN_COUNT_COLUMN));
     assert!(matches!(result.plans[0].root_node().kind, PlanNode::Projection(_)));
 
     fs::remove_dir_all(dir).unwrap();
@@ -1182,7 +1204,7 @@ async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
-    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
         panic!("Q6-shaped global aggregate should lower to native");
     };
     assert_eq!(candidate.shape, "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))");
@@ -1193,7 +1215,7 @@ async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
     assert!(matches!(
         &aggregate_exprs[0].expr,
-        Expr::Column(name) if name.starts_with("__cudf_aggregate_arg_")
+        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
     ));
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(
@@ -1303,12 +1325,12 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
         panic!("default SQL plan should lower to native");
     };
     assert_eq!(
         candidate.shape,
-        "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan)))))))"
+        "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan))))))))"
     );
     assert_eq!(candidate.operator_count, 9);
     assert_eq!(result.plans.len(), 1);
@@ -1343,7 +1365,7 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Avg);
     assert_eq!(aggregate_exprs[0].alias, "avg(bench.m00)");
-    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(name) if name == "__cudf_aggregate_arg_0"));
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__cudf_aggregate_arg_0"));
     assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
         expr,
         Expr::Alias { expr, alias }
@@ -1352,7 +1374,7 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
                     expr.as_ref(),
                     Expr::Cast { expr, target_type }
                         if target_type == &DataType::Float64
-                            && matches!(expr.as_ref(), Expr::Column(name) if name == "m00")
+                            && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m00")
                 )
     )));
     assert_eq!(result.plans[0].output_schema().field_with_name("avg_m00").unwrap().data_type(), &DataType::Float64);
@@ -1508,8 +1530,7 @@ async fn distributed_aggregate_order_by_expr_is_rejected() {
             let order_by =
                 vec![PhysicalSortExpr::new(col("key", &input_schema).unwrap(), ArrowSortOptions::new(false, false))];
             let original = &final_aggregate.aggr_expr()[0];
-            let ordered = aggregate_expr_on_column_like(original, first_value_udaf(), input_schema, 1, false, order_by);
-            ordered
+            aggregate_expr_on_column_like(original, first_value_udaf(), input_schema, 1, false, order_by)
         },
     );
 
@@ -1548,7 +1569,7 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL filter plan should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))");
@@ -1628,7 +1649,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
                     if matches!(
                         left.as_ref(),
                         Expr::Cast { expr, target_type }
-                            if matches!(expr.as_ref(), Expr::Column(name) if name == "payload")
+                            if matches!(expr.as_ref(), Expr::Column(column) if column.name() == "payload")
                                 && *target_type == DataType::Int64
                     )
             )
@@ -1790,7 +1811,7 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.rewritten_count(), 1);
     assert_eq!(result.rejected_count(), 0);
-    let CandidateOutcome::Rewritten { candidate } = result.report.outcomes()[0] else {
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
         panic!("direct-friendly SQL no-filter plan should lower to native");
     };
     assert_eq!(candidate.shape, "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))");
@@ -2299,6 +2320,17 @@ ORDER BY label_prefix ASC, ship_year ASC
 LIMIT 2
 ";
 
+const SQL_DATE64_EXTRACT_QUERY: &str = "
+SELECT event_year, COUNT(*) AS row_count
+FROM (
+    SELECT EXTRACT(YEAR FROM event_date64) AS event_year
+    FROM bench
+) projected
+GROUP BY event_year
+ORDER BY event_year ASC
+LIMIT 2
+";
+
 fn parquet_scan_with_pushed_down_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     parquet_scan_with_pushed_down_predicate_value(path, 10)
 }
@@ -2501,7 +2533,9 @@ fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_que
     plan.nodes()
         .iter()
         .find_map(|node| match &node.kind {
-            PlanNode::Source(SourceNode::LocalParquet(source)) => Some(source),
+            PlanNode::Source(source_node) => match source_node.as_ref() {
+                SourceNode::LocalParquet(source) => Some(source),
+            },
             _ => None,
         })
         .expect("native plan should contain a local parquet source")
@@ -2864,6 +2898,22 @@ fn write_float_measure_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![5, 10, 20])),
             Arc::new(Float64Array::from(vec![100.0, 200.0, 300.0])),
             Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_date64_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("event_date64", DataType::Date64, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Date64Array::from(vec![1_577_836_800_000, 1_580_428_800_000, 1_583_020_800_000])),
+            Arc::new(Int64Array::from(vec![10, 20, 30])),
         ],
     )
     .unwrap();

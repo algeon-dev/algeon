@@ -35,11 +35,12 @@ use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
     GpuFallbackPolicy, NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfExecutionConfig,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
-    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, TPCH_QUERY_COUNT,
-    TPCH_TABLES, tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items,
-    tpch_fallback_pressure_workload_items, tpch_query_ids, tpch_report_session_config,
-    tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionPostNativeExecutionPath, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
+    NativeFallbackPressureWorkloadItem, TPCH_QUERY_COUNT, TPCH_TABLES, describe_tpch_dataset_with_content_fingerprint,
+    tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
+    tpch_query_ids, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
+    write_tiny_tpch_parquet_dataset,
 };
 
 #[tokio::test]
@@ -126,7 +127,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(
         distributed_avg.native_candidate_shape.as_deref(),
         Some(
-            "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan)))))))",
+            "SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec(RepartitionExec(PartialAggregateExec(FilterExec(RepartitionExec(LocalParquetScan))))))))",
         )
     );
     assert_eq!(distributed_avg.reason_code, None);
@@ -177,12 +178,12 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(planning_failure.rejected_before_execution);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 3);
+    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 4);
     assert_eq!(
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=3\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=4\n"));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("sum_rewrite\tSortExec"));
     assert!(text.contains("not_rewrite\tSortExec"));
@@ -195,7 +196,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("\tnative_distributed_aggregate_unsupported\taggregate_filter\t"));
     assert!(text.contains("\tunsupported_operator\toperator_sortpreservingmerge\t"));
     assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
-    assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\trejected\tsql_planning_failed\tplanning\tnone\ttrue"));
+    assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\trejected\tsql_planning_failed\tplanning\tnone\tnone\ttrue"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -292,13 +293,35 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(rejected_row.source_diagnostics.len(), 1);
     assert!(rejected_row.source_diagnostics[0].direct_device_read);
 
+    let planning_failure =
+        NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::planning_failure(
+            "broken_session",
+            "sql_to_logical_plan",
+            "sql_planning_failed",
+            "synthetic planning failure",
+        )]);
+    assert_eq!(planning_failure.rows.len(), 1);
+    assert_eq!(planning_failure.accepted_count(), 0);
+    assert_eq!(planning_failure.rejected_count(), 1);
+    let planning_failure_row = &planning_failure.rows[0];
+    assert_eq!(planning_failure_row.physical_root, "PlanningFailure");
+    assert_eq!(planning_failure_row.physical_shape, "sql_to_logical_plan");
+    assert_eq!(planning_failure_row.native_candidate_shape, None);
+    assert_eq!(planning_failure_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+    assert_eq!(planning_failure_row.reason_code.as_deref(), Some("sql_planning_failed"));
+    assert_eq!(planning_failure_row.unsupported_category.as_deref(), Some("planning"));
+    assert!(planning_failure_row.source_diagnostics.is_empty());
+    assert_eq!(planning_failure_row.post_native_plan_root, "PlanningFailure");
+    assert_eq!(planning_failure_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Cpu);
+    assert!(planning_failure_row.rejected_before_execution);
+
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 3);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 4);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=3\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=4\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
@@ -330,7 +353,8 @@ async fn tpch_workload_builder_generates_stable_query_items() {
         metadata.table_file_counts(),
         "customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1"
     );
-    assert!(metadata.fingerprint.starts_with("metadata-fnv1a64:"));
+    assert!(metadata.metadata_fingerprint.starts_with("metadata-fnv1a64:"));
+    assert_eq!(metadata.content_fingerprint, None);
 
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let actual_ids = items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>();
@@ -340,6 +364,71 @@ async fn tpch_workload_builder_generates_stable_query_items() {
     assert_eq!(actual_ids, expected_ids);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_metadata_accepts_directory_layouts_and_pins_fingerprint_semantics() {
+    let source = unique_temp_dir("datafusion-cudf-tpch-directory-layout-source");
+    let layout_a = unique_temp_dir("datafusion-cudf-tpch-directory-layout-a");
+    let layout_b = unique_temp_dir("datafusion-cudf-tpch-directory-layout-b");
+    write_tiny_tpch_parquet_dataset(&source).unwrap();
+    copy_tiny_tpch_as_directory_layout(&source, &layout_a, &["part-000.parquet"]);
+    copy_tiny_tpch_as_directory_layout(&source, &layout_b, &["renamed-000.parquet"]);
+
+    let metadata =
+        describe_tpch_dataset_with_content_fingerprint(&layout_a, "tiny", "directory_layout", "copy_tiny", true)
+            .unwrap();
+    assert_eq!(metadata.table_count, TPCH_TABLES.len());
+    assert_eq!(metadata.file_count, TPCH_TABLES.len());
+    assert_eq!(metadata.total_rows, 26);
+    assert!(metadata.metadata_fingerprint.starts_with("metadata-fnv1a64:"));
+    assert!(metadata.content_fingerprint.as_deref().unwrap().starts_with("content-fnv1a64:"));
+
+    let lineitem = metadata.tables.iter().find(|table| table.table == "lineitem").unwrap();
+    assert_eq!(lineitem.path, layout_a.join("lineitem"));
+    assert_eq!(lineitem.file_count, 1);
+    assert_eq!(lineitem.files[0].relative_path, "lineitem/part-000.parquet");
+    assert!(lineitem.schema.contains("l_orderkey"));
+
+    let same_content_different_paths =
+        describe_tpch_dataset_with_content_fingerprint(&layout_b, "tiny", "directory_layout", "copy_tiny", true)
+            .unwrap();
+    assert_ne!(
+        metadata.metadata_fingerprint, same_content_different_paths.metadata_fingerprint,
+        "metadata fingerprint must include table-relative file paths"
+    );
+    assert_ne!(
+        metadata.content_fingerprint, same_content_different_paths.content_fingerprint,
+        "content fingerprint includes relative paths as part of dataset identity"
+    );
+
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(layout_a).unwrap();
+    fs::remove_dir_all(layout_b).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_workload_builder_registers_multi_file_directory_layout() {
+    let source = unique_temp_dir("datafusion-cudf-tpch-multi-file-source");
+    let layout = unique_temp_dir("datafusion-cudf-tpch-multi-file-layout");
+    write_tiny_tpch_parquet_dataset(&source).unwrap();
+    copy_tiny_tpch_as_directory_layout(&source, &layout, &["part-000.parquet", "part-001.parquet"]);
+
+    let metadata =
+        describe_tpch_dataset_with_content_fingerprint(&layout, "tiny", "directory_layout", "copy_tiny", false)
+            .unwrap();
+    assert_eq!(metadata.file_count, TPCH_TABLES.len() * 2);
+    assert_eq!(metadata.total_rows, 52);
+    assert_eq!(
+        metadata.table_file_counts(),
+        "customer=2,lineitem=2,nation=2,orders=2,part=2,partsupp=2,region=2,supplier=2"
+    );
+
+    let items = tpch_fallback_pressure_workload_items(&layout, tpch_report_session_config()).await.unwrap();
+    assert_eq!(items.len(), TPCH_QUERY_COUNT);
+
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(layout).unwrap();
 }
 
 #[tokio::test]
@@ -372,6 +461,20 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
             "unexpected unsupported category for {}",
             row.query_id
         );
+        assert_eq!(row.physical_root, expected_tpch_physical_root(row.query_id.as_str()));
+        assert_eq!(
+            row.native_candidate_shape.as_deref().unwrap_or("none"),
+            expected_tpch_native_candidate_shape(row.query_id.as_str()),
+            "unexpected native candidate shape for {}",
+            row.query_id
+        );
+        assert!(
+            row.physical_shape.contains(expected_tpch_physical_shape_marker(row.query_id.as_str())),
+            "unexpected physical shape for {}: {}",
+            row.query_id,
+            row.physical_shape
+        );
+        assert_tpch_join_diagnostics(row.query_id.as_str(), &row.join_diagnostics);
         assert_eq!(
             row.rejected_before_execution,
             expected.outcome == NativeFallbackPressureOutcome::Rejected,
@@ -386,7 +489,7 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     );
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=3\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=4\n"));
     assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
     assert!(text.contains("# tpch_dataset_provenance=generated_tiny\n"));
     assert!(text.contains("# tpch_dataset_generation_command=datafusion-cudf::write_tiny_tpch_parquet_dataset\n"));
@@ -394,7 +497,8 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert!(text.contains("# tpch_dataset_file_count=8\n"));
     assert!(text.contains("# tpch_dataset_total_rows=26\n"));
     assert!(text.contains(&format!("# tpch_dataset_total_bytes={}\n", metadata.total_bytes)));
-    assert!(text.contains(&format!("# tpch_dataset_fingerprint={}\n", metadata.fingerprint)));
+    assert!(text.contains(&format!("# tpch_dataset_metadata_fingerprint={}\n", metadata.metadata_fingerprint)));
+    assert!(text.contains("# tpch_dataset_content_fingerprint=not_computed\n"));
     assert!(text.contains("# tpch_dataset_table_file_counts=customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1\n"));
     assert!(text.contains("# tpch_dataset_table_row_counts=customer=3,lineitem=3,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3\n"));
     assert!(text.contains(&format!("# tpch_dataset_table_byte_sizes={}\n", metadata.table_byte_sizes())));
@@ -463,10 +567,6 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     for row in &report.rows {
         if row.query_id == "q06" {
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
-            assert_eq!(
-                row.native_candidate_shape.as_deref(),
-                Some("ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))")
-            );
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
             assert_eq!(row.post_native_plan_root, "NativeCudfExec");
@@ -479,12 +579,27 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
             assert_ne!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
         }
+        assert_eq!(row.physical_root, expected_tpch_physical_root(row.query_id.as_str()));
+        assert_eq!(
+            row.native_candidate_shape.as_deref().unwrap_or("none"),
+            expected_tpch_native_candidate_shape(row.query_id.as_str()),
+            "unexpected native candidate shape for {}",
+            row.query_id
+        );
+        assert!(
+            row.physical_shape.contains(expected_tpch_physical_shape_marker(row.query_id.as_str())),
+            "unexpected physical shape for {}: {}",
+            row.query_id,
+            row.physical_shape
+        );
+        assert_tpch_join_diagnostics(row.query_id.as_str(), &row.join_diagnostics);
     }
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=3\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=4\n"));
     assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
-    assert!(text.contains(&format!("# tpch_dataset_fingerprint={}\n", metadata.fingerprint)));
+    assert!(text.contains(&format!("# tpch_dataset_metadata_fingerprint={}\n", metadata.metadata_fingerprint)));
+    assert!(text.contains("# tpch_dataset_content_fingerprint=not_computed\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("q01\t"));
     assert!(text.contains("q06\t"));
@@ -637,6 +752,63 @@ const TPCH_FALLBACK_PRESSURE_BASELINE: &[TpchFallbackPressureBaseline] = &[
     },
 ];
 
+fn expected_tpch_physical_root(query_id: &str) -> &'static str {
+    match query_id {
+        "q02" | "q03" | "q10" | "q18" | "q21" => "SortExec(TopK)",
+        "q06" | "q14" | "q17" | "q19" => "ProjectionExec",
+        "q01" | "q04" | "q05" | "q07" | "q08" | "q09" | "q11" | "q12" | "q13" | "q15" | "q16" | "q20" | "q22" => {
+            "SortExec"
+        },
+        other => panic!("missing TPC-H physical root expectation for {other}"),
+    }
+}
+
+fn expected_tpch_native_candidate_shape(query_id: &str) -> &'static str {
+    match query_id {
+        "q03" | "q10" | "q18" | "q21" => "SortExec(fetch)(ProjectionExec(AggregateExec(LocalParquetScan)))",
+        "q06" => "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))",
+        "q14" => "ProjectionExec(AggregateExec(ProjectionExec(LocalParquetScan)))",
+        "q17" | "q19" => "ProjectionExec(AggregateExec(LocalParquetScan))",
+        "q01" | "q02" | "q04" | "q05" | "q07" | "q08" | "q09" | "q11" | "q12" | "q13" | "q15" | "q16" | "q20"
+        | "q22" => "SortExec(fetch)(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan))))",
+        other => panic!("missing TPC-H native candidate shape expectation for {other}"),
+    }
+}
+
+fn expected_tpch_physical_shape_marker(query_id: &str) -> &'static str {
+    match query_id {
+        "q01" => "AggregateExec(ProjectionExec(FilterExec(DataSourceExec)))",
+        "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q14" | "q15" | "q16"
+        | "q17" | "q18" | "q19" | "q20" | "q21" => "HashJoinExec",
+        "q06" => "ProjectionExec(AggregateExec(FilterExec(DataSourceExec)))",
+        "q11" | "q22" => "NestedLoopJoinExec",
+        other => panic!("missing TPC-H physical shape marker expectation for {other}"),
+    }
+}
+
+fn assert_tpch_join_diagnostics(query_id: &str, diagnostics: &[datafusion_cudf::NativeJoinDiagnosticSummary]) {
+    match query_id {
+        "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q14" | "q15" | "q16"
+        | "q17" | "q18" | "q19" | "q20" | "q21" => {
+            assert!(!diagnostics.is_empty(), "{query_id} should expose join diagnostics");
+            let first = &diagnostics[0];
+            assert_eq!(first.operator, "HashJoinExec");
+            assert!(first.key_count > 0, "{query_id} should expose hash join key count");
+            assert_ne!(first.key_shape, "", "{query_id} should expose hash join key shape");
+            assert_eq!(first.build_side, "left");
+            assert_eq!(first.probe_side, "right");
+        },
+        "q11" | "q22" => {
+            assert!(!diagnostics.is_empty(), "{query_id} should expose join diagnostics");
+            assert_eq!(diagnostics[0].operator, "NestedLoopJoinExec");
+            assert_eq!(diagnostics[0].key_count, 0);
+            assert_eq!(diagnostics[0].key_shape, "none");
+        },
+        "q01" | "q06" => assert!(diagnostics.is_empty(), "{query_id} should not expose join diagnostics"),
+        other => panic!("missing TPC-H join diagnostics expectation for {other}"),
+    }
+}
+
 fn report_row<'a>(
     report: &'a NativeFallbackPressureReport,
     query_id: &str,
@@ -782,6 +954,17 @@ fn write_numeric_parquet_file(path: &std::path::Path) {
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+fn copy_tiny_tpch_as_directory_layout(source: &std::path::Path, destination: &std::path::Path, file_names: &[&str]) {
+    for table in TPCH_TABLES {
+        let table_dir = destination.join(table);
+        fs::create_dir_all(&table_dir).unwrap();
+        let source_file = source.join(format!("{table}.parquet"));
+        for file_name in file_names {
+            fs::copy(&source_file, table_dir.join(file_name)).unwrap();
+        }
+    }
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

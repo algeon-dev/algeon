@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -42,10 +42,11 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, GpuFallbackPolicy, NativeCudfExec,
-    NativeCudfExecutionConfig, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+    NativeCudfExecutionConfig, TPCH_QUERIES, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
 };
+use tokio::sync::Mutex;
 
-static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::new(());
+static ARROW_HOST_OBSERVATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[tokio::test]
 async fn native_runtime_default_sql_sum_expression_matches_cpu() {
@@ -169,7 +170,7 @@ async fn native_runtime_q6_shaped_global_decimal_sum_matches_cpu() {
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 4);
 
     let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -200,7 +201,7 @@ async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
 
     assert_eq!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
@@ -240,7 +241,7 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     assert_eq!(lowering.plans.len(), 1);
 
     let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -291,7 +292,7 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
     assert_eq!(lowering.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
 
     let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -321,7 +322,7 @@ async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
 
     assert_eq!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
@@ -398,7 +399,7 @@ async fn native_runtime_phase2_scalar_expressions_match_cpu_and_collect_required
     assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
 
     let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -433,7 +434,7 @@ async fn native_runtime_phase2_nullable_scalar_expressions_match_cpu() {
     assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
 
     let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -457,6 +458,7 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
         ("substring", SQL_PHASE2_NULL_SEMANTICS_SUBSTRING_QUERY),
         ("in-list", SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY),
         ("case", SQL_PHASE2_NULL_SEMANTICS_CASE_QUERY),
+        ("case-no-else", SQL_PHASE2_NULL_SEMANTICS_CASE_NO_ELSE_QUERY),
         ("extract", SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY),
         ("interval", SQL_PHASE2_NULL_SEMANTICS_INTERVAL_QUERY),
         ("modulo", SQL_PHASE2_NULL_SEMANTICS_MODULO_QUERY),
@@ -476,7 +478,7 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
         assert_eq!(lowering.rejected_count(), 0, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
 
         let context = bounded_execution_context();
-        let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+        let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
         cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
         let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
         assert_eq!(result.metrics().boundary.host_to_device_uploads, 0, "{name}");
@@ -526,6 +528,21 @@ async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_e
 }
 
 #[tokio::test]
+async fn native_runtime_substring_max_start_length_one_is_in_contract() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-substring-max-start-boundary");
+    let path = dir.join("input.parquet");
+    write_phase2_scalar_input_parquet(&path);
+
+    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SUBSTRING_MAX_START_LENGTH_ONE_QUERY).await;
+    let lowering = lower_physical_plan_to_native(native_physical_plan);
+
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_default_sql_prunes_metadata_row_groups_for_pushed_parquet_predicate() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-row-group-pruning");
     let path = dir.join("input.parquet");
@@ -549,7 +566,7 @@ async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
 
     assert_eq!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
@@ -586,7 +603,7 @@ async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_
 
     assert_eq!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
@@ -622,7 +639,7 @@ async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
 
     assert_eq!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some());
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let native_batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default())).await.unwrap();
 
@@ -700,7 +717,7 @@ async fn assert_default_sql_native_parity(
     }
 
     let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -742,7 +759,7 @@ async fn assert_native_physical_plan_parity(
 
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let context = ExecutionContext::from_shared_runtime(runtime);
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
     let metrics = result.metrics();
@@ -816,6 +833,19 @@ async fn native_datafusion_sql_plan(
     df.create_physical_plan().await.unwrap()
 }
 
+async fn native_datafusion_lineitem_sql_plan(
+    path: &std::path::Path,
+    sql: &str,
+    native_config: NativeCudfExecutionConfig,
+) -> Arc<dyn ExecutionPlan> {
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(native_config);
+    let state = SessionStateBuilder::new_with_default_features().with_cudf_gpu_islands(config).build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("lineitem", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let df = ctx.sql(sql).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
 fn native_datafusion_config() -> NativeCudfExecutionConfig {
     NativeCudfExecutionConfig::bounded(512 * 1024 * 1024, 256 * 1024 * 1024, 1, 3, 1)
         .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
@@ -848,28 +878,25 @@ fn adapter_error(error: &DataFusionError) -> &Error {
 
 async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
     assert!(lineitem_path.exists(), "missing lineitem parquet file: {}", lineitem_path.display());
-    let cpu_batches = cpu_lineitem_sql_output(lineitem_path, SQL_TPCH_Q6_QUERY).await;
-    let native_physical_plan =
-        lineitem_sql_plan(lineitem_path, direct_friendly_sql_session_config(), SQL_TPCH_Q6_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
-    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
+    let q6 = TPCH_QUERIES.iter().find(|query| query.id == "q06").expect("TPC-H Q6 query must exist");
+    let cpu_batches = cpu_lineitem_sql_output(lineitem_path, q6.sql).await;
+    assert!(
+        cpu_batches.iter().map(|batch| batch.num_rows()).sum::<usize>() > 0,
+        "tiny TPC-H Q6 should exercise non-empty output parity"
+    );
 
-    let context = bounded_execution_context();
-    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().unwrap();
+    let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, q6.sql, native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q6 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
-
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 }
 
 const SQL_SUM_EXPRESSION_QUERY: &str = "
@@ -948,16 +975,6 @@ SELECT
 FROM bench
 WHERE l_shipdate >= DATE '1994-01-01'
   AND l_shipdate < DATE '1995-01-01'
-";
-
-const SQL_TPCH_Q6_QUERY: &str = "
-SELECT
-    SUM(l_extendedprice * l_discount) AS revenue
-FROM lineitem
-WHERE l_shipdate >= DATE '1994-01-01'
-  AND l_shipdate < DATE '1994-01-01' + INTERVAL '1' YEAR
-  AND l_discount BETWEEN 0.05 AND 0.07
-  AND l_quantity < 24
 ";
 
 const SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY: &str = "
@@ -1081,6 +1098,17 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
+const SQL_PHASE2_NULL_SEMANTICS_CASE_NO_ELSE_QUERY: &str = "
+SELECT row_id, open_code, COUNT(*) AS row_count
+FROM (
+    SELECT row_id, CASE WHEN status = 'O' THEN 1 END AS open_code
+    FROM bench
+) null_semantics
+GROUP BY row_id, open_code
+ORDER BY row_id ASC
+LIMIT 20
+";
+
 const SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY: &str = "
 SELECT row_id, ship_year, ship_month, ship_day, COUNT(*) AS row_count
 FROM (
@@ -1182,10 +1210,21 @@ ORDER BY status_prefix ASC
 LIMIT 10
 ";
 
-const SQL_INVALID_SUBSTRING_STOP_OVERFLOW_QUERY: &str = "
+const SQL_SUBSTRING_MAX_START_LENGTH_ONE_QUERY: &str = "
 SELECT status_prefix, COUNT(*) AS count_rows
 FROM (
     SELECT SUBSTRING(status FROM 2147483647 FOR 1) AS status_prefix
+    FROM bench
+) boundary_substring
+GROUP BY status_prefix
+ORDER BY status_prefix ASC
+LIMIT 10
+";
+
+const SQL_INVALID_SUBSTRING_STOP_OVERFLOW_QUERY: &str = "
+SELECT status_prefix, COUNT(*) AS count_rows
+FROM (
+    SELECT SUBSTRING(status FROM 2147483647 FOR 2) AS status_prefix
     FROM bench
 ) invalid_substring
 GROUP BY status_prefix

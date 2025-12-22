@@ -27,10 +27,11 @@ pub use native_exec::{NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfExec, Nativ
 pub use native_report::{
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionPostNativeExecutionPath, NativeFallbackPressureOutcome, NativeFallbackPressurePlanningFailure,
+    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadInput,
+    NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeFallbackPressureOutcome,
     NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadInput,
-    NativeFallbackPressureWorkloadItem, NativeSourceDiagnosticSummary,
+    NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary, NativePlanningFailure,
+    NativeSourceDiagnosticSummary,
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, NativePlanningDiagnostics,
@@ -44,9 +45,10 @@ pub use session::{
     cudf_physical_optimizer_rules_with_rule,
 };
 pub use tpch::{
-    CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES,
-    TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata, TpchQuery, TpchTableMetadata, TpchWorkloadError,
-    TpchWorkloadResult, describe_tpch_dataset, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
+    CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV,
+    CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata, TpchQuery,
+    TpchTableFileMetadata, TpchTableMetadata, TpchWorkloadError, TpchWorkloadResult, describe_tpch_dataset,
+    describe_tpch_dataset_with_content_fingerprint, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
     tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
     tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
     tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,

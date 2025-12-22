@@ -5,6 +5,7 @@ use crate::runtime::MemoryControlPolicy;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
     pub boundary: BoundaryMetrics,
+    pub operators: Vec<OperatorMetrics>,
     pub phase_c_memory_control_policy: MemoryControlPolicy,
     pub input_batches: u64,
     pub input_rows: u64,
@@ -44,6 +45,10 @@ pub struct QueryMetrics {
 }
 
 impl QueryMetrics {
+    pub fn record_operator_metrics(&mut self, metrics: OperatorMetrics) {
+        self.operators.push(metrics);
+    }
+
     pub fn record_input_batch(&mut self, rows: u64) {
         self.input_batches += 1;
         self.input_rows += rows;
@@ -112,6 +117,40 @@ impl QueryMetrics {
     pub fn record_final_merge_level(&mut self) {
         self.final_merge_levels = self.final_merge_levels.saturating_add(1);
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OperatorMetrics {
+    pub node_id: String,
+    pub operator_kind: String,
+    pub input_rows: u64,
+    pub input_bytes: u64,
+    pub output_rows: u64,
+    pub output_bytes: u64,
+    pub join: Option<JoinOperatorMetrics>,
+}
+
+impl OperatorMetrics {
+    pub fn join(node_id: impl ToString, join: JoinOperatorMetrics) -> Self {
+        Self { node_id: node_id.to_string(), operator_kind: "join".to_string(), join: Some(join), ..Default::default() }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JoinOperatorMetrics {
+    pub join_type: String,
+    pub key_count: usize,
+    pub residual_predicate: bool,
+    pub null_equality: String,
+    pub build_side: String,
+    pub probe_side: String,
+    pub build_rows: u64,
+    pub build_bytes: u64,
+    pub probe_rows: u64,
+    pub probe_bytes: u64,
+    pub hash_table_bytes: u64,
+    pub output_rows: u64,
+    pub output_bytes: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
