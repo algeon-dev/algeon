@@ -405,6 +405,131 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
 }
 
 #[test]
+fn recursive_hash_join_input_filters_lower_to_native_filters() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-recursive-input-filters");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = filtered_payload_scan(parquet_scan(&left_path), "l_payload", 10);
+    let right = filtered_payload_scan(parquet_scan(&right_path), "r_payload", 20);
+    let plan = hash_join_aggregate_sort_limit_plan_with_type(left, right, JoinType::Inner);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("filtered recursive hash-join inputs should lower to native");
+    };
+    assert_eq!(
+        candidate.shape,
+        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan))))))"
+    );
+    assert_eq!(candidate.operator_count, 9);
+
+    let filters = native_filter_exprs(&result.plans[0]);
+    assert_eq!(filters.len(), 2);
+    assert!(filters.iter().any(|filter| {
+        matches!(
+            filter,
+            Expr::Binary { left, right, .. }
+                if matches!(left.as_ref(), Expr::Column(column) if column.name() == "l_payload")
+                    && matches!(right.as_ref(), Expr::Literal(LiteralValue::Int32(10)))
+        )
+    }));
+    assert!(filters.iter().any(|filter| {
+        matches!(
+            filter,
+            Expr::Binary { left, right, .. }
+                if matches!(left.as_ref(), Expr::Column(column) if column.name() == "r_payload")
+                    && matches!(right.as_ref(), Expr::Literal(LiteralValue::Int32(20)))
+        )
+    }));
+
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].pure_filter_columns, vec!["l_payload".to_string()]);
+    assert_eq!(sources[1].pure_filter_columns, vec!["r_payload".to_string()]);
+    assert_eq!(sources[0].diagnostics.pure_filter_column_count, 1);
+    assert_eq!(sources[1].diagnostics.pure_filter_column_count, 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn post_join_filter_lowers_to_native_filter_input() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-post-join-filter");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = post_join_filter_aggregate_sort_limit_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("post-join filter should lower as a native input filter");
+    };
+    assert_eq!(
+        candidate.shape,
+        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(FilterExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))))"
+    );
+
+    let filters = native_filter_exprs(&result.plans[0]);
+    assert_eq!(filters.len(), 1);
+    assert!(matches!(
+        filters[0],
+        Expr::Binary { left, right, .. }
+            if matches!(left.as_ref(), Expr::Column(column) if column.name() == "l_m00")
+                && matches!(right.as_ref(), Expr::Column(column) if column.name() == "r_m01")
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_aggregate_inputs_lower_to_native_aggregate_inputs() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-join-aggregate-inputs");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = grouped_sum_join_input(parquet_scan(&left_path), "key", "l_m00", "l_m00");
+    let right = grouped_sum_join_input(parquet_scan(&right_path), "key", "r_m01", "r_m01");
+    let plan = hash_join_aggregate_sort_limit_plan_with_type(left, right, JoinType::Inner);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("aggregate join inputs should lower as native aggregate input nodes");
+    };
+    assert_eq!(
+        candidate.shape,
+        "LocalLimitExec(SortExec(AggregateExec(ProjectionExec(HashJoinExec(AggregateExec(LocalParquetScan),AggregateExec(LocalParquetScan))))))"
+    );
+    assert_eq!(candidate.operator_count, 9);
+
+    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    assert_eq!(aggregates.len(), 3);
+    assert_eq!(aggregates[0].spec.aggr_exprs[0].alias, "l_m00");
+    assert_eq!(aggregates[1].spec.aggr_exprs[0].alias, "r_m01");
+    assert_eq!(aggregates[2].spec.aggr_exprs[0].alias, "sum_x00");
+
+    let sources = native_local_parquet_sources(&result.plans[0]);
+    assert_eq!(sources.len(), 2);
+    assert_eq!(sources[0].read_columns, vec!["key".to_string(), "l_m00".to_string()]);
+    assert_eq!(sources[1].read_columns, vec!["key".to_string(), "r_m01".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter-in-list");
     let left_path = dir.join("left.parquet");
@@ -1536,7 +1661,7 @@ async fn direct_friendly_sql_filtered_avg_is_rejected() {
 }
 
 #[tokio::test]
-async fn direct_friendly_sql_distinct_avg_is_rejected() {
+async fn direct_friendly_sql_distinct_avg_lowers_as_explicit_aggregate_stack() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-distinct-avg");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
@@ -1544,7 +1669,12 @@ async fn direct_friendly_sql_distinct_avg_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_native_rejection(&result, FallbackReason::UnsupportedOperator);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(
+        native_aggregate_nodes(&result.plans[0]).len() >= 2,
+        "distinct AVG should be represented by DataFusion's explicit aggregate stack"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1689,7 +1819,7 @@ async fn default_sql_distributed_aggregate_filter_is_rejected() {
 }
 
 #[tokio::test]
-async fn default_sql_distributed_distinct_aggregate_is_rejected() {
+async fn default_sql_distributed_distinct_aggregate_lowers_as_explicit_aggregate_stack() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-distinct-aggregate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -1697,7 +1827,12 @@ async fn default_sql_distributed_distinct_aggregate_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::UnsupportedOperator);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(
+        native_aggregate_nodes(&result.plans[0]).len() >= 2,
+        "distinct COUNT should be represented by DataFusion's explicit aggregate stack"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2168,6 +2303,18 @@ fn parquet_scan_with_projection_indices(
         .unwrap()
         .build();
     DataSourceExec::from_data_source(file_scan)
+}
+
+fn filtered_payload_scan(scan: Arc<dyn ExecutionPlan>, payload_column: &str, minimum: i32) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col(payload_column, &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(ScalarValue::Int32(Some(minimum))),
+        &scan_schema,
+    )
+    .unwrap();
+    Arc::new(FilterExec::try_new(predicate, scan).unwrap())
 }
 
 async fn sql_benchmark_plan(path: &std::path::Path, config: SessionConfig) -> Arc<dyn ExecutionPlan> {
@@ -2819,15 +2966,19 @@ fn partition_column_group_by_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn Execu
 }
 
 fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_query_engine::LocalParquetSource {
+    native_local_parquet_sources(plan).into_iter().next().expect("native plan should contain a local parquet source")
+}
+
+fn native_local_parquet_sources(plan: &cudf_query_engine::QueryPlan) -> Vec<&cudf_query_engine::LocalParquetSource> {
     plan.nodes()
         .iter()
-        .find_map(|node| match &node.kind {
+        .filter_map(|node| match &node.kind {
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
             },
             _ => None,
         })
-        .expect("native plan should contain a local parquet source")
+        .collect()
 }
 
 fn native_aggregate_functions(plan: &cudf_query_engine::QueryPlan) -> Vec<AggregateFunction> {
@@ -2835,13 +2986,21 @@ fn native_aggregate_functions(plan: &cudf_query_engine::QueryPlan) -> Vec<Aggreg
 }
 
 fn native_aggregate_exprs(plan: &cudf_query_engine::QueryPlan) -> &[cudf_query_engine::AggregateExpr] {
+    native_aggregate_nodes(plan)
+        .into_iter()
+        .next()
+        .map(|aggregate| aggregate.spec.aggr_exprs.as_slice())
+        .expect("native plan should contain an aggregate node")
+}
+
+fn native_aggregate_nodes(plan: &cudf_query_engine::QueryPlan) -> Vec<&cudf_query_engine::AggregateNode> {
     plan.nodes()
         .iter()
-        .find_map(|node| match &node.kind {
-            PlanNode::Aggregate(aggregate) => Some(aggregate.spec.aggr_exprs.as_slice()),
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
             _ => None,
         })
-        .expect("native plan should contain an aggregate node")
+        .collect()
 }
 
 fn native_aggregate_group_exprs(plan: &cudf_query_engine::QueryPlan) -> &[Expr] {
@@ -2865,13 +3024,17 @@ fn native_projection_exprs(plan: &cudf_query_engine::QueryPlan) -> Vec<&Expr> {
 }
 
 fn native_filter_expr(plan: &cudf_query_engine::QueryPlan) -> &Expr {
+    native_filter_exprs(plan).into_iter().next().expect("native plan should contain a filter node")
+}
+
+fn native_filter_exprs(plan: &cudf_query_engine::QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
-        .find_map(|node| match &node.kind {
+        .filter_map(|node| match &node.kind {
             PlanNode::Filter(filter) => Some(&filter.predicate),
             _ => None,
         })
-        .expect("native plan should contain a filter node")
+        .collect()
 }
 
 fn rewritten_native_join(result: &NativeLoweringResult) -> &cudf_query_engine::JoinNode {
@@ -3142,6 +3305,59 @@ fn nested_loop_join_without_filter_aggregate_sort_limit_plan(
     );
 
     aggregate_sort_limit_join_plan(join)
+}
+
+fn post_join_filter_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            None,
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let join_schema = join.schema();
+    let predicate =
+        binary(col("l_m00", &join_schema).unwrap(), Operator::Gt, col("r_m01", &join_schema).unwrap(), &join_schema)
+            .unwrap();
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, join).unwrap());
+
+    aggregate_sort_limit_join_plan(filter)
+}
+
+fn grouped_sum_join_input(
+    input: Arc<dyn ExecutionPlan>,
+    group_column: &str,
+    measure_column: &str,
+    aggregate_alias: &str,
+) -> Arc<dyn ExecutionPlan> {
+    let input_schema = input.schema();
+    let group_by =
+        PhysicalGroupBy::new_single(vec![(col(group_column, &input_schema).unwrap(), group_column.to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col(measure_column, &input_schema).unwrap()])
+        .schema(Arc::clone(&input_schema))
+        .alias(aggregate_alias)
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], input, input_schema)
+            .unwrap(),
+    )
 }
 
 fn aggregate_sort_limit_join_plan(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
