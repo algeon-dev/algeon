@@ -10,7 +10,10 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{LocalParquetSource, QueryPlanBuilder, SourceNode};
+use cudf_query_engine::{
+    BoundedJoinReservationContract, ExecutionBoundaryPolicy, GpuResidentSource, LocalParquetSource, QueryPlanBuilder,
+    SourceNode,
+};
 use datafusion::{
     common::ScalarValue,
     execution::SessionStateBuilder,
@@ -38,12 +41,13 @@ use datafusion_cudf::{
     GpuCandidate, GpuFallbackPolicy, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
     NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
     NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfExec, NativeCudfExecutionConfig,
-    NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath,
-    NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome,
-    NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem, NativePlanningDiagnostics, PlanningReport,
-    TPCH_QUERY_COUNT, TPCH_TABLES, describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
+    NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
+    NativeCudfGpuProducerExec, NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem,
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
+    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+    NativePlanningDiagnostics, PlanningReport, TPCH_QUERY_COUNT, TPCH_TABLES,
+    describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
     tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_query_ids,
     tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
@@ -332,12 +336,12 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(planning_failure_row.rejected_before_execution);
 
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 5);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 6);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=5\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=6\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));
@@ -373,12 +377,15 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.output_batches, Some(1));
     assert_eq!(row.output_rows, Some(4));
     assert_eq!(row.output_bytes, Some(256));
+    assert_eq!(row.metrics.gpu_resident_input_handoffs, 1);
     assert_eq!(row.metrics.host_to_device_uploads, 0);
     assert_eq!(row.metrics.host_to_device_uploaded_rows, 0);
     assert_eq!(row.metrics.host_to_device_uploaded_bytes, 0);
     assert_eq!(row.metrics.device_to_host_materializations, 1);
     assert_eq!(row.metrics.device_to_host_materialized_rows, 4);
     assert_eq!(row.metrics.device_to_host_materialized_bytes, 256);
+    assert_eq!(row.metrics.device_to_device_copies, 2);
+    assert_eq!(row.metrics.device_to_device_copied_bytes, 512);
     assert_eq!(row.metrics.parquet_files, 1);
     assert_eq!(row.metrics.parquet_bytes_known, 1024);
     assert_eq!(row.metrics.row_groups_selected, 2);
@@ -408,14 +415,14 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 4);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 5);
     assert_eq!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
     );
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=4\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=5\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(text.contains("\taccepted_replaced\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t0\t0\t0\t1\t4\t256\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t2\t1\t3\t4\t5\t16384\t2048\t"));
+    assert!(text.contains("\taccepted_replaced\tnone\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t2\t1\t3\t4\t5\t16384\t2048\t"));
 }
 
 #[test]
@@ -433,11 +440,38 @@ fn native_datafusion_execution_report_keeps_rejected_queries_out_of_runtime() {
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
     assert_eq!(row.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
+    assert_eq!(row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(
+        row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
     assert!(row.rejected_before_execution);
     assert!(!row.native_runtime_started);
     assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);
     assert_eq!(row.output_batches, None);
     assert_eq!(row.metrics.device_to_host_materializations, 0);
+}
+
+#[test]
+fn native_datafusion_reports_classify_composed_native_roots_as_native() {
+    let composed = composed_native_exec_for_report();
+
+    let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "composed",
+        Arc::clone(&composed),
+        accepted_native_diagnostics(),
+    )]);
+    assert_eq!(planning.rows[0].post_native_plan_root, "NativeCudfComposedExec");
+    assert_eq!(planning.rows[0].post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+
+    let execution = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
+        "composed",
+        composed,
+        accepted_native_diagnostics(),
+        NativeDataFusionRuntime::NotStarted,
+    )]);
+    assert_eq!(execution.rows[0].post_native_plan_root, "NativeCudfComposedExec");
+    assert_eq!(execution.rows[0].post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
 }
 
 #[tokio::test]
@@ -674,18 +708,19 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     let report = NativeDataFusionPlanningReport::collect(items).with_tpch_dataset_metadata(metadata.clone());
 
     assert_eq!(report.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(report.accepted_count(), 2);
-    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 2);
+    assert_eq!(report.accepted_count(), 4);
+    assert_eq!(report.rejected_count(), TPCH_QUERY_COUNT - 4);
 
     let actual_ids = report.rows.iter().map(|row| row.query_id.as_str()).collect::<Vec<_>>();
     let expected_ids = tpch_query_ids().collect::<Vec<_>>();
     assert_eq!(actual_ids, expected_ids);
 
     for row in &report.rows {
-        if matches!(row.query_id.as_str(), "q01" | "q06") {
+        if matches!(row.query_id.as_str(), "q01" | "q06" | "q12" | "q14") {
             assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
             assert_eq!(row.reason_code.as_deref(), None);
             assert_eq!(row.unsupported_category.as_deref(), None);
+            assert!(row.bounded_join_reservation_facts.is_empty());
             assert_eq!(row.post_native_plan_root, "NativeCudfExec");
             assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             assert!(!row.rejected_before_execution, "{} should be replaced by native execution", row.query_id);
@@ -700,6 +735,22 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 "unexpected unsupported category for {}",
                 row.query_id
             );
+            if expected_reason == "native_bounded_join_unsupported" {
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
+                    Some(""),
+                    "missing bounded join blocker facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+                    Some(""),
+                    "missing lower-level blocker facts for {}",
+                    row.query_id
+                );
+            } else {
+                assert!(row.bounded_join_reservation_facts.is_empty());
+            }
             assert_ne!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             assert!(row.rejected_before_execution, "{} should reject before native execution", row.query_id);
         }
@@ -722,11 +773,21 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
             row.query_id,
             row.physical_shape
         );
-        assert_tpch_join_diagnostics(row.query_id.as_str(), &row.join_diagnostics);
+        if matches!(row.query_id.as_str(), "q12" | "q14")
+            && row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
+        {
+            assert!(
+                row.join_diagnostics.is_empty(),
+                "{} accepted replacement should not expose join diagnostics",
+                row.query_id
+            );
+        } else {
+            assert_tpch_join_diagnostics(row.query_id.as_str(), &row.join_diagnostics);
+        }
     }
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=5\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=6\n"));
     assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
     assert!(text.contains(&format!("# tpch_dataset_metadata_fingerprint={}\n", metadata.metadata_fingerprint)));
     assert!(text.contains("# tpch_dataset_content_fingerprint=not_computed\n"));
@@ -763,6 +824,11 @@ async fn tpch_phase5_progression_contract_pairs_fallback_pressure_and_bounded_pl
 
         match fallback_row.outcome {
             NativeFallbackPressureOutcome::Rewritten if matches!(query_id, "q01" | "q06") => {
+                assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+                assert_eq!(planning_row.reason_code, None);
+                assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+            },
+            NativeFallbackPressureOutcome::Rewritten if matches!(query_id, "q12" | "q14") => {
                 assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
                 assert_eq!(planning_row.reason_code, None);
                 assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
@@ -1028,8 +1094,9 @@ fn expected_tpch_native_candidate_shape_family(query_id: &str) -> &'static str {
 
 fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str, &'static str) {
     match query_id {
-        "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q14" | "q15" | "q18"
-        | "q20" | "q21" => ("native_bounded_join_unsupported", "operator_hashjoin"),
+        "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q13" | "q15" | "q18" | "q20" | "q21" => {
+            ("native_bounded_join_unsupported", "operator_hashjoin")
+        },
         "q11" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
         "q16" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         "q22" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
@@ -1094,6 +1161,32 @@ fn native_exec_leaf_for_report() -> Arc<dyn ExecutionPlan> {
     Arc::new(NativeCudfExec::try_new(builder.finish_with_host_sink(source), native_execution_config()).unwrap())
 }
 
+fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let mut producer_builder = QueryPlanBuilder::new();
+    let producer_source = producer_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/native-composed-report-source-not-read.parquet",
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    )));
+    let producer = Arc::new(
+        NativeCudfGpuProducerExec::try_new("fragment_input", producer_builder.finish_gpu_resident(producer_source))
+            .unwrap(),
+    );
+
+    let mut consumer_builder = QueryPlanBuilder::new();
+    let consumer_source = consumer_builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment_input", Arc::clone(&schema))));
+    Arc::new(
+        NativeCudfComposedExec::try_new(
+            consumer_builder.finish_with_host_sink(consumer_source),
+            vec![producer],
+            native_execution_config(),
+        )
+        .unwrap(),
+    )
+}
+
 fn native_execution_config() -> NativeCudfExecutionConfig {
     NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
 }
@@ -1106,6 +1199,7 @@ fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
         input_plan_shape: "SortExec(fetch)(AggregateExec(LocalParquetScan))".to_string(),
         report,
         source_diagnostics: Vec::new(),
+        bounded_join_reservation_facts: Default::default(),
     }
 }
 
@@ -1120,18 +1214,26 @@ fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
         report,
         source_diagnostics: Vec::new(),
+        bounded_join_reservation_facts: BoundedJoinReservationContract
+            .rejection_facts(ExecutionBoundaryPolicy::default())
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value))
+            .collect(),
     }
 }
 
 fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::MetricsSet {
     let metrics = ExecutionPlanMetricsSet::new();
     for (name, value) in [
+        ("gpu_resident_input_handoffs", 1),
         ("host_to_device_uploads", 0),
         ("host_to_device_uploaded_rows", 0),
         ("host_to_device_uploaded_bytes", 0),
         ("device_to_host_materializations", 1),
         ("device_to_host_materialized_rows", 4),
         ("device_to_host_materialized_bytes", 256),
+        ("device_to_device_copies", 2),
+        ("device_to_device_copied_bytes", 512),
         ("parquet_files", 1),
         ("parquet_bytes_known", 1024),
         ("row_groups_selected", 2),

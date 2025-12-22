@@ -52,6 +52,75 @@ impl QueryPlan {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::Join(_)))
     }
 
+    pub fn has_bounded_executable_root_join(&self) -> bool {
+        let Some(node) = self.node(self.sink.input()) else {
+            return false;
+        };
+        let PlanNode::Join(join) = &node.kind else {
+            return false;
+        };
+        join.is_bounded_root_hash_join_compatible()
+    }
+
+    pub fn has_bounded_executable_join_pipeline(&self) -> bool {
+        let Some(join_id) = self.bounded_executable_join_pipeline_base() else {
+            return false;
+        };
+        if self.reachable_join_count() != 1 {
+            return false;
+        }
+        let Some(node) = self.node(join_id) else {
+            return false;
+        };
+        matches!(&node.kind, PlanNode::Join(join) if join.is_bounded_root_hash_join_compatible())
+    }
+
+    fn bounded_executable_join_pipeline_base(&self) -> Option<NodeId> {
+        let mut current = self.sink.input();
+        let mut saw_aggregate = false;
+        loop {
+            let node = self.node(current)?;
+            match &node.kind {
+                PlanNode::Join(_) => return Some(current),
+                PlanNode::Filter(filter) => current = filter.input,
+                PlanNode::Projection(projection) => current = projection.input,
+                PlanNode::Aggregate(aggregate) if !saw_aggregate => {
+                    saw_aggregate = true;
+                    current = aggregate.input;
+                },
+                PlanNode::Sort(sort) => current = sort.input,
+                PlanNode::Limit(limit) => {
+                    let child = self.node(limit.input)?;
+                    if !matches!(child.kind, PlanNode::Sort(_)) {
+                        return None;
+                    }
+                    current = limit.input;
+                },
+                PlanNode::Source(_) | PlanNode::Aggregate(_) => return None,
+            }
+        }
+    }
+
+    fn reachable_join_count(&self) -> usize {
+        let mut reachable = vec![false; self.nodes.len()];
+        let mut stack = vec![self.sink.input()];
+        let mut count = 0;
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.node(id) else {
+                continue;
+            };
+            if reachable[id.index()] {
+                continue;
+            }
+            reachable[id.index()] = true;
+            if matches!(node.kind, PlanNode::Join(_)) {
+                count += 1;
+            }
+            stack.extend(node.input_ids().iter().copied());
+        }
+        count
+    }
+
     pub fn unreachable_node_ids(&self) -> Vec<NodeId> {
         let mut reachable = vec![false; self.nodes.len()];
         let mut stack = vec![self.sink.input()];
@@ -515,6 +584,22 @@ pub struct LimitNode {
 pub struct JoinNode {
     pub inputs: [NodeId; 2],
     pub spec: JoinSpec,
+}
+
+impl JoinNode {
+    /// The single source of truth for whether this join can be executed by the
+    /// bounded root reusable hash-join path. The `Left → build_side == Right`
+    /// constraint is load-bearing: `cudf-rs::DataFrameHashJoin::left_probe`
+    /// treats the probe input as the left side of the outer join, so a
+    /// `JoinType::Left` with `build_side == Left` would keep right-side rows
+    /// for unmatched build rows and produce the wrong DataFusion semantics.
+    pub fn is_bounded_root_hash_join_compatible(&self) -> bool {
+        !self.spec.keys.is_empty()
+            && self.spec.residual_predicate.is_none()
+            && !self.spec.output_projection.is_empty()
+            && matches!(self.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
+            && (self.spec.join_type != JoinType::Left || self.spec.build_side == JoinSide::Right)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

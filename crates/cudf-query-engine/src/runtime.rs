@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::error::{QueryError, Result};
 
@@ -510,29 +510,29 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
         ReservationKind::HashTable,
         "join_hash_table",
         "hash_join_pre_build_reservation_size_bytes",
-        BoundedJoinReservationStatus::BlockedByLowerLevel,
-        "unsupported_by_libcudf",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_cudf_rs_pre_build_sizing",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::ProbeSide,
         "join_probe_side",
         "query_engine_probe_side_source_reservation",
-        BoundedJoinReservationStatus::DeferredUntilPrerequisite,
-        "requires_hash_table_reservation",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_ordered_bounded_join_execution_path",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::GatherMap,
         "join_gather_map",
-        "hash_join_exact_output_size+hash_join_probe_with_output_size+join_indices_device_allocated_size_bytes",
-        BoundedJoinReservationStatus::DeferredUntilPrerequisite,
-        "requires_hash_table_reservation",
+        "hash_join_gather_map_reservation_size_bytes",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_cudf_rs_hash_join_gather_map_sizing",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::JoinOutput,
         "join_output",
-        "projected_join_output_device_bytes_after_exact_gather_map_sizing",
-        BoundedJoinReservationStatus::DeferredUntilPrerequisite,
-        "requires_hash_table_reservation",
+        "dataframe_gather_output_reservation_size_bytes",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_cudf_rs_dataframe_gather_output_sizing",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::Materialization,
@@ -556,11 +556,11 @@ impl BoundedJoinReservationContract {
     }
 
     pub const fn execution_status(self) -> &'static str {
-        "disabled"
+        "enabled_for_root_reusable_hash_join"
     }
 
     pub const fn enabled(self) -> bool {
-        false
+        true
     }
 
     pub fn reservation_kinds_csv(self) -> String {
@@ -610,6 +610,44 @@ impl BoundedJoinReservationContract {
                 requirement.detail()
             )
         }))
+    }
+
+    pub fn rejection_facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {
+        BTreeMap::from([
+            ("boundary_policy", boundary_policy.to_string()),
+            ("source_read_boundary", boundary_policy.source_read().to_string()),
+            ("build_materialization_boundary", boundary_policy.build_materialization().to_string()),
+            ("probe_execution_boundary", boundary_policy.probe_execution().to_string()),
+            ("result_materialization_boundary", boundary_policy.result_materialization().to_string()),
+            ("bounded_join_reservation_model", self.model_status().to_string()),
+            ("bounded_join_execution_status", self.execution_status().to_string()),
+            ("bounded_join_enabled", self.enabled().to_string()),
+            ("bounded_join_reservation_kinds", self.reservation_kinds_csv()),
+            ("bounded_join_reservation_statuses", self.reservation_statuses_csv()),
+            ("blocked_reservations", self.blocking_reservation_kinds_csv()),
+            ("modeled_reservations", self.modeled_reservation_kinds_csv()),
+            ("deferred_reservations", self.deferred_reservation_kinds_csv()),
+            ("bounded_join_lower_level_blockers", self.lower_level_blockers_csv()),
+            ("bounded_join_reservation_requirements", self.requirement_details_csv()),
+            ("cudf_rs_hash_table_observability", "hash_table_device_allocated_size_bytes".to_string()),
+            ("cudf_rs_gather_map_observability", "join_indices_device_allocated_size_bytes".to_string()),
+            (
+                "cudf_rs_hash_join_gather_map_reservation_contract",
+                "hash_join_gather_map_reservation_size_bytes".to_string(),
+            ),
+            ("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size".to_string()),
+            ("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size".to_string()),
+            (
+                "cudf_rs_dataframe_gather_output_reservation_contract",
+                "dataframe_gather_output_reservation_size_bytes".to_string(),
+            ),
+            (
+                "cudf_rs_hash_join_pre_build_reservation_contract",
+                "hash_join_pre_build_reservation_size_bytes".to_string(),
+            ),
+            ("cudf_rs_hash_join_pre_build_reservation_status", "available_exact_flat_hash_join_builds".to_string()),
+            ("missing_reservations", self.blocking_reservation_kinds_csv()),
+        ])
     }
 }
 

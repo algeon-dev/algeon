@@ -328,29 +328,29 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
             ReservationKind::HashTable,
             "hash_table",
             "join_hash_table",
-            BoundedJoinReservationStatus::BlockedByLowerLevel,
-            "unsupported_by_libcudf",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_cudf_rs_pre_build_sizing",
         ),
         (
             ReservationKind::ProbeSide,
             "probe_side",
             "join_probe_side",
-            BoundedJoinReservationStatus::DeferredUntilPrerequisite,
-            "requires_hash_table_reservation",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_ordered_bounded_join_execution_path",
         ),
         (
             ReservationKind::GatherMap,
             "gather_map",
             "join_gather_map",
-            BoundedJoinReservationStatus::DeferredUntilPrerequisite,
-            "requires_hash_table_reservation",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_cudf_rs_hash_join_gather_map_sizing",
         ),
         (
             ReservationKind::JoinOutput,
             "join_output",
             "join_output",
-            BoundedJoinReservationStatus::DeferredUntilPrerequisite,
-            "requires_hash_table_reservation",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_cudf_rs_dataframe_gather_output_sizing",
         ),
         (
             ReservationKind::Materialization,
@@ -363,8 +363,8 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
-    assert_eq!(contract.execution_status(), "disabled");
-    assert!(!contract.enabled());
+    assert_eq!(contract.execution_status(), "enabled_for_root_reusable_hash_join");
+    assert!(contract.enabled());
 
     for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
         requirements.iter().zip(expected)
@@ -387,10 +387,78 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
         contract.reservation_kinds_csv(),
         "build_side,hash_table,probe_side,gather_map,join_output,materialization"
     );
-    assert_eq!(contract.lower_level_blockers_csv(), "hash_join_pre_build_reservation_size_bytes");
-    assert_eq!(contract.blocking_reservation_kinds_csv(), "hash_table,probe_side,gather_map,join_output");
-    assert_eq!(contract.modeled_reservation_kinds_csv(), "build_side,materialization");
-    assert_eq!(contract.deferred_reservation_kinds_csv(), "probe_side,gather_map,join_output");
+    assert_eq!(contract.lower_level_blockers_csv(), "");
+    assert_eq!(contract.blocking_reservation_kinds_csv(), "");
+    assert_eq!(
+        contract.modeled_reservation_kinds_csv(),
+        "build_side,hash_table,probe_side,gather_map,join_output,materialization"
+    );
+    assert_eq!(contract.deferred_reservation_kinds_csv(), "");
+}
+
+#[test]
+fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
+    let contract = BoundedJoinReservationContract;
+    let facts = contract.rejection_facts(ExecutionBoundaryPolicy::default());
+
+    assert_eq!(
+        facts.get("boundary_policy").map(String::as_str),
+        Some(
+            "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
+        )
+    );
+    assert_eq!(facts.get("source_read_boundary").map(String::as_str), Some("direct_device_local_parquet"));
+    assert_eq!(facts.get("build_materialization_boundary").map(String::as_str), Some("query_scoped_gpu_hash_join"));
+    assert_eq!(facts.get("probe_execution_boundary").map(String::as_str), Some("reusable_gpu_hash_join"));
+    assert_eq!(facts.get("result_materialization_boundary").map(String::as_str), Some("explicit_sink"));
+    assert_eq!(facts.get("bounded_join_reservation_model").map(String::as_str), Some(contract.model_status()));
+    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some(contract.execution_status()));
+    assert_eq!(facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
+    assert_eq!(
+        facts.get("bounded_join_reservation_kinds").map(String::as_str),
+        Some(contract.reservation_kinds_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("bounded_join_reservation_statuses").map(String::as_str),
+        Some(contract.reservation_statuses_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("blocked_reservations").map(String::as_str),
+        Some(contract.blocking_reservation_kinds_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("modeled_reservations").map(String::as_str),
+        Some(contract.modeled_reservation_kinds_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("deferred_reservations").map(String::as_str),
+        Some(contract.deferred_reservation_kinds_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some(contract.lower_level_blockers_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("bounded_join_reservation_requirements").map(String::as_str),
+        Some(contract.requirement_details_csv().as_str())
+    );
+    assert_eq!(
+        facts.get("cudf_rs_hash_join_pre_build_reservation_contract").map(String::as_str),
+        Some("hash_join_pre_build_reservation_size_bytes")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_hash_join_pre_build_reservation_status").map(String::as_str),
+        Some("available_exact_flat_hash_join_builds")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_dataframe_gather_output_reservation_contract").map(String::as_str),
+        Some("dataframe_gather_output_reservation_size_bytes")
+    );
+    assert_eq!(
+        facts.get("missing_reservations").map(String::as_str),
+        Some(contract.blocking_reservation_kinds_csv().as_str())
+    );
+    assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
 }
 
 #[test]

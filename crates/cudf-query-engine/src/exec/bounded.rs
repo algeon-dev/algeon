@@ -9,7 +9,15 @@ pub(super) fn execute_bounded_query_plan(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    reject_bounded_join_plan(context, plan)?;
+    if plan.contains_join() {
+        if plan.has_bounded_executable_root_join() {
+            return execute_bounded_root_join_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        if plan.has_bounded_executable_join_pipeline() {
+            return execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        reject_bounded_join_plan(context, plan)?;
+    }
 
     if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
         return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
@@ -79,7 +87,15 @@ fn execute_bounded_generic_query_plan(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    reject_bounded_join_plan(context, plan)?;
+    if plan.contains_join() {
+        if plan.has_bounded_executable_root_join() {
+            return execute_bounded_root_join_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        if plan.has_bounded_executable_join_pipeline() {
+            return execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        reject_bounded_join_plan(context, plan)?;
+    }
 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
@@ -129,41 +145,617 @@ fn execute_bounded_generic_query_plan(
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
         let contract = BoundedJoinReservationContract;
-        return Err(unsupported_bounded_shape(
-            "bounded native join execution is disabled until the join reservation contract has lower-level pre-build hash-table sizing",
-            "join_memory_reservation_contract_blocked_by_lower_level",
-        )
-        .with_fact("boundary_policy", context.boundary_policy())
-        .with_fact("source_read_boundary", context.boundary_policy().source_read())
-        .with_fact("build_materialization_boundary", context.boundary_policy().build_materialization())
-        .with_fact("probe_execution_boundary", context.boundary_policy().probe_execution())
-        .with_fact("result_materialization_boundary", context.boundary_policy().result_materialization())
-        .with_fact("bounded_join_reservation_model", contract.model_status())
-        .with_fact("bounded_join_execution_status", contract.execution_status())
-        .with_fact("bounded_join_enabled", contract.enabled())
-        .with_fact("bounded_join_reservation_kinds", contract.reservation_kinds_csv())
-        .with_fact("bounded_join_reservation_statuses", contract.reservation_statuses_csv())
-        .with_fact("blocked_reservations", contract.blocking_reservation_kinds_csv())
-        .with_fact("modeled_reservations", contract.modeled_reservation_kinds_csv())
-        .with_fact("deferred_reservations", contract.deferred_reservation_kinds_csv())
-        .with_fact("bounded_join_lower_level_blockers", contract.lower_level_blockers_csv())
-        .with_fact("bounded_join_reservation_requirements", contract.requirement_details_csv())
-        .with_fact("cudf_rs_hash_table_observability", "hash_table_device_allocated_size_bytes")
-        .with_fact("cudf_rs_gather_map_observability", "join_indices_device_allocated_size_bytes")
-        .with_fact("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size")
-        .with_fact("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size")
-        .with_fact(
-            "cudf_rs_hash_join_pre_build_reservation_contract",
-            "hash_join_pre_build_reservation_size_bytes",
-        )
-        .with_fact(
-            "cudf_rs_hash_join_pre_build_reservation_status",
-            "unsupported_by_libcudf",
-        )
-        .with_fact("missing_reservations", contract.blocking_reservation_kinds_csv()));
+        let mut error = unsupported_bounded_shape(
+            "bounded native join execution currently supports only root reusable hash joins with ordered reservations",
+            "bounded_join_plan_shape_unsupported",
+        );
+        for (key, value) in contract.rejection_facts(context.boundary_policy()) {
+            error = error.with_fact(key, value);
+        }
+        return Err(error);
     }
 
     Ok(())
+}
+
+fn execute_bounded_root_join_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!("execute_bounded_root_join_query_plan is called only for bounded policies");
+    };
+    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut scratch = ExecutionScratch::new(context);
+    let join_node_id = plan.sink().input();
+    let node = plan
+        .node(join_node_id)
+        .ok_or_else(|| invalid_node_reference(join_node_id, "bounded root join plan references a missing join node"))?;
+    let PlanNode::Join(join) = &node.kind else {
+        return Err(unsupported_bounded_shape(
+            "bounded root join execution requires the sink input to be a native join",
+            "missing_root_join",
+        ));
+    };
+
+    let left = execute_node(context, plan, join.inputs[0], gpu_inputs, &mut scratch, metrics)?;
+    let right = execute_node(context, plan, join.inputs[1], gpu_inputs, &mut scratch, metrics)?;
+    let committed = execute_bounded_root_hash_join(context, node.id, join, left, right, &mut reservations, metrics)?;
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(handle))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+fn execute_bounded_join_pipeline_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let pipeline = BoundedJoinPipelinePlan::analyze(plan)?;
+    pipeline.validate_capabilities()?;
+
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!("execute_bounded_join_pipeline_query_plan is called only for bounded policies");
+    };
+    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut scratch = ExecutionScratch::new(context);
+    let left = execute_node(context, plan, pipeline.join.inputs[0], gpu_inputs, &mut scratch, metrics)?;
+    let right = execute_node(context, plan, pipeline.join.inputs[1], gpu_inputs, &mut scratch, metrics)?;
+    let mut committed = execute_bounded_root_hash_join(
+        context,
+        pipeline.join_id,
+        pipeline.join,
+        left,
+        right,
+        &mut reservations,
+        metrics,
+    )?;
+
+    for stage in &pipeline.stages {
+        committed = execute_bounded_join_pipeline_stage(context, stage, committed, &mut reservations, metrics)?;
+    }
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(handle))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+struct BoundedJoinPipelinePlan<'a> {
+    join_id: NodeId,
+    join: &'a JoinNode,
+    stages: Vec<BoundedJoinPipelineStage<'a>>,
+}
+
+enum BoundedJoinPipelineStage<'a> {
+    Filter { node_id: NodeId, node: &'a FilterNode },
+    Projection { node_id: NodeId, node: &'a ProjectionNode, output_schema: &'a arrow::datatypes::SchemaRef },
+    Aggregate { node_id: NodeId, node: &'a AggregateNode, output_schema: &'a arrow::datatypes::SchemaRef },
+    Sort { node_id: NodeId, node: &'a SortNode },
+    Limit { node_id: NodeId, node: &'a LimitNode },
+}
+
+impl<'a> BoundedJoinPipelinePlan<'a> {
+    fn analyze(plan: &'a QueryPlan) -> Result<Self> {
+        let mut current = plan.sink().input();
+        let mut stages = Vec::new();
+        let mut saw_aggregate = false;
+
+        loop {
+            let node = plan.node(current).ok_or_else(|| {
+                invalid_node_reference(current, "bounded join pipeline references a missing plan node")
+            })?;
+            match &node.kind {
+                PlanNode::Join(join) => {
+                    if !join.is_bounded_root_hash_join_compatible() {
+                        return Err(unsupported_bounded_shape(
+                            "bounded join pipeline execution currently supports reusable hash inner, left, and full equi joins",
+                            "bounded_join_plan_shape_unsupported",
+                        )
+                        .with_fact("join_type", join.spec.join_type)
+                        .with_fact("build_side", join.spec.build_side)
+                        .with_fact("key_count", join.spec.keys.len())
+                        .with_fact("residual_predicate", join.spec.residual_predicate.is_some())
+                        .with_fact("output_projection_len", join.spec.output_projection.len()));
+                    }
+                    stages.reverse();
+                    return Ok(Self { join_id: current, join, stages });
+                },
+                PlanNode::Filter(filter) => {
+                    stages.push(BoundedJoinPipelineStage::Filter { node_id: current, node: filter });
+                    current = filter.input;
+                },
+                PlanNode::Projection(projection) => {
+                    stages.push(BoundedJoinPipelineStage::Projection {
+                        node_id: current,
+                        node: projection,
+                        output_schema: &node.facts.output_schema,
+                    });
+                    current = projection.input;
+                },
+                PlanNode::Aggregate(aggregate) if !saw_aggregate => {
+                    saw_aggregate = true;
+                    stages.push(BoundedJoinPipelineStage::Aggregate {
+                        node_id: current,
+                        node: aggregate,
+                        output_schema: &node.facts.output_schema,
+                    });
+                    current = aggregate.input;
+                },
+                PlanNode::Sort(sort) => {
+                    stages.push(BoundedJoinPipelineStage::Sort { node_id: current, node: sort });
+                    current = sort.input;
+                },
+                PlanNode::Limit(limit) => {
+                    let child = plan.node(limit.input).ok_or_else(|| {
+                        invalid_node_reference(limit.input, "bounded join pipeline limit references a missing input")
+                    })?;
+                    if !matches!(child.kind, PlanNode::Sort(_)) {
+                        return Err(unsupported_bounded_shape(
+                            "bounded join pipeline execution does not support limit without a preceding global sort",
+                            "limit_without_sort",
+                        ));
+                    }
+                    stages.push(BoundedJoinPipelineStage::Limit { node_id: current, node: limit });
+                    current = limit.input;
+                },
+                PlanNode::Source(_) | PlanNode::Aggregate(_) => {
+                    return Err(unsupported_bounded_shape(
+                        "bounded join pipeline execution requires a reusable hash join below supported unary operators",
+                        "missing_root_join",
+                    ));
+                },
+            }
+        }
+    }
+
+    fn validate_capabilities(&self) -> Result<()> {
+        for stage in &self.stages {
+            match stage {
+                BoundedJoinPipelineStage::Filter { node, .. } => {
+                    lower_expr(&node.predicate)?;
+                },
+                BoundedJoinPipelineStage::Projection { node, output_schema, .. } => {
+                    validate_projection_capability(node, output_schema)?;
+                },
+                BoundedJoinPipelineStage::Aggregate { node, output_schema, .. } => {
+                    validate_aggregate_capability(node, output_schema)?;
+                },
+                BoundedJoinPipelineStage::Sort { node, .. } => {
+                    lower_sort_spec(&node.spec)?;
+                },
+                BoundedJoinPipelineStage::Limit { node, .. } => {
+                    topk_candidate_rows(node.spec)?;
+                },
+            }
+        }
+        Ok(())
+    }
+}
+
+fn execute_bounded_join_pipeline_stage(
+    context: &ExecutionContext,
+    stage: &BoundedJoinPipelineStage<'_>,
+    input: CommittedPartial,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let node_id = stage.node_id();
+    let stage_name = stage.memory_boundary();
+    let kind = stage.reservation_kind();
+    let work_request = MemoryReservationRequest::new(kind, input.reservation.bytes(), reservations.budget())
+        .with_memory_boundary(stage_name)
+        .with_node_id(node_id)
+        .with_stage(stage_name);
+    let work_reservation = reservations.try_reserve(work_request, metrics)?;
+    let result = match stage {
+        BoundedJoinPipelineStage::Filter { node, .. } => execute_filter(context, node, input.frame, metrics),
+        BoundedJoinPipelineStage::Projection { node, output_schema, .. } => {
+            execute_projection(context, node, input.frame, output_schema, metrics)
+        },
+        BoundedJoinPipelineStage::Aggregate { node, output_schema, .. } => {
+            execute_aggregate(context, node, input.frame, output_schema, metrics)
+        },
+        BoundedJoinPipelineStage::Sort { node, .. } => execute_sort(context, node, input.frame, metrics),
+        BoundedJoinPipelineStage::Limit { node, .. } => execute_limit(context, node, input.frame, metrics),
+    };
+    reservations.release(work_reservation);
+
+    let frame = match result {
+        Ok(frame) => frame,
+        Err(error) => {
+            reservations.release(input.reservation);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: stage_name,
+                stage: stage_name,
+                node_id,
+                attempt: 1,
+                max_attempts: 1,
+                resume_boundary: stage_name,
+                metrics,
+            }
+            .attach_to(error));
+        },
+    };
+
+    reservations.release(input.reservation);
+    let output_boundary = stage.output_memory_boundary();
+    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
+        RuntimeResourceFacts {
+            memory_boundary: output_boundary,
+            stage: stage_name,
+            node_id,
+            attempt: 1,
+            max_attempts: 1,
+            resume_boundary: stage_name,
+            metrics,
+        }
+        .attach_to(error)
+    })?;
+    let output_request = MemoryReservationRequest::new(kind, output_bytes, reservations.budget())
+        .with_memory_boundary(output_boundary)
+        .with_node_id(node_id)
+        .with_stage(stage_name);
+    let output_reservation = reservations.try_reserve(output_request, metrics)?;
+    Ok(CommittedPartial { frame, reservation: output_reservation })
+}
+
+impl BoundedJoinPipelineStage<'_> {
+    fn node_id(&self) -> NodeId {
+        match self {
+            Self::Filter { node_id, .. }
+            | Self::Projection { node_id, .. }
+            | Self::Aggregate { node_id, .. }
+            | Self::Sort { node_id, .. }
+            | Self::Limit { node_id, .. } => *node_id,
+        }
+    }
+
+    fn reservation_kind(&self) -> ReservationKind {
+        match self {
+            Self::Sort { .. } | Self::Limit { .. } => ReservationKind::FinalSort,
+            Self::Filter { .. } | Self::Projection { .. } | Self::Aggregate { .. } => ReservationKind::OperatorOutput,
+        }
+    }
+
+    fn memory_boundary(&self) -> &'static str {
+        match self {
+            Self::Filter { .. } => "join_pipeline_filter",
+            Self::Projection { .. } => "join_pipeline_projection",
+            Self::Aggregate { .. } => "join_pipeline_aggregate",
+            Self::Sort { .. } => "join_pipeline_sort",
+            Self::Limit { .. } => "join_pipeline_limit",
+        }
+    }
+
+    fn output_memory_boundary(&self) -> &'static str {
+        match self {
+            Self::Filter { .. } => "join_pipeline_filter_output",
+            Self::Projection { .. } => "join_pipeline_projection_output",
+            Self::Aggregate { .. } => "join_pipeline_aggregate_output",
+            Self::Sort { .. } => "join_pipeline_sort_output",
+            Self::Limit { .. } => "join_pipeline_limit_output",
+        }
+    }
+}
+
+fn execute_bounded_root_hash_join(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: GpuDataFrame,
+    right: GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    validate_executable_join_subset(node)?;
+    if !node.is_bounded_root_hash_join_compatible() {
+        return Err(unsupported_bounded_shape(
+            "bounded root join execution currently supports reusable hash inner, left, and full equi joins",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", node.spec.build_side)
+        .with_fact("key_count", node.spec.keys.len())
+        .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+        .with_fact("output_projection_len", node.spec.output_projection.len()));
+    }
+
+    let left = left.into_frame();
+    let right = right.into_frame();
+    let original_left_rows = left.num_rows() as u64;
+    let original_right_rows = right.num_rows() as u64;
+    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+    let left_columns = projected_input_columns(&left_keys, &node.spec.output_projection, [], JoinSide::Left);
+    let right_columns = projected_input_columns(&right_keys, &node.spec.output_projection, [], JoinSide::Right);
+    let left = select_join_input(left, &left_columns, "left")?;
+    let right = select_join_input(right, &right_columns, "right")?;
+    let left_bytes = observe_device_memory_bytes(&GpuDataFrame::new(left.clone()), metrics)?;
+    let right_bytes = observe_device_memory_bytes(&GpuDataFrame::new(right.clone()), metrics)?;
+
+    let (build, build_keys, probe, probe_keys, build_side, left_indices_from_probe) = match node.spec.build_side {
+        JoinSide::Left => (&left, &left_keys, &right, &right_keys, JoinSide::Left, false),
+        JoinSide::Right => (&right, &right_keys, &left, &left_keys, JoinSide::Right, true),
+    };
+    let probe_side = probe_side(build_side);
+    let build_bytes = side_metric(build_side, left_bytes, right_bytes);
+    let probe_bytes = side_metric(probe_side, left_bytes, right_bytes);
+
+    let build_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::BuildSide,
+            "join_build_side",
+            build_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let overrides = execution_overrides(context);
+    let hash_options =
+        cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
+    let hash_table_reservation_bytes = build
+        .with_execution(&overrides)
+        .hash_join_pre_build_reservation_size_bytes(build_keys, hash_options.clone())
+        .map(|bytes| bytes as u64)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.hash_table_reservation",
+                "failed to size bounded native reusable hash join build",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", build_side)
+        })?;
+    let hash_table_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::HashTable,
+            "join_hash_table",
+            hash_table_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let timer = Instant::now();
+    let hash_join = build.with_execution(&overrides).build_hash_join(build_keys, hash_options).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.build_hash_join",
+            "failed to build bounded native reusable hash join",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("key_count", node.spec.keys.len())
+        .with_fact("build_side", build_side)
+    })?;
+    let hash_join = GpuHashJoinBuildHandle::new(context, hash_join, node.spec.null_equality).map_err(|error| {
+        error
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("key_count", node.spec.keys.len())
+            .with_fact("build_side", build_side)
+    })?;
+    let hash_table_bytes = hash_join.device_allocated_size_bytes();
+    metrics.record_hash_join_build();
+    metrics.record_hash_join_hash_table_bytes(hash_table_bytes);
+
+    let probe_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::ProbeSide,
+            "join_probe_side",
+            probe_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let output_size = match node.spec.join_type {
+        JoinType::Inner => hash_join.hash_join().inner_probe_size_in(probe, probe_keys, &overrides),
+        JoinType::Left => hash_join.hash_join().left_probe_size_in(probe, probe_keys, &overrides),
+        JoinType::Full => hash_join.hash_join().full_probe_size_in(probe, probe_keys, &overrides),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
+    let gather_map_reservation_bytes =
+        hash_join.hash_join().probe_gather_map_reservation_size_bytes(output_size).map(|bytes| bytes as u64).map_err(
+            |error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.bounded.join.gather_map_reservation",
+                    "failed to size bounded native reusable hash join gather maps",
+                    error,
+                )
+                .with_fact("join_type", node.spec.join_type)
+                .with_fact("build_side", build_side)
+            },
+        )?;
+    let gather_map_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_gather_map",
+            gather_map_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let indices = match node.spec.join_type {
+        JoinType::Inner => {
+            hash_join.hash_join().inner_probe_with_output_size_in(probe, probe_keys, output_size, &overrides)
+        },
+        JoinType::Left => {
+            hash_join.hash_join().left_probe_with_output_size_in(probe, probe_keys, output_size, &overrides)
+        },
+        JoinType::Full => {
+            hash_join.hash_join().full_probe_with_output_size_in(probe, probe_keys, output_size, &overrides)
+        },
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
+    let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.gather_map_bytes",
+            "failed to observe bounded native join gather-map memory",
+            error,
+        )
+    })?;
+    let (left_indices, right_indices) = if left_indices_from_probe {
+        (indices.probe().clone(), indices.build().clone())
+    } else {
+        (indices.build().clone(), indices.probe().clone())
+    };
+    let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Right);
+    let left_output_bytes =
+        join_side_output_reservation_bytes(&left, &left_indices, &left_projection, &overrides, JoinSide::Left)?;
+    let right_output_bytes =
+        join_side_output_reservation_bytes(&right, &right_indices, &right_projection, &overrides, JoinSide::Right)?;
+    let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
+    let output_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_output",
+            output_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let output = materialize_join_output_projection(
+        &left,
+        &right,
+        &left_indices,
+        &right_indices,
+        &overrides,
+        &node.spec.output_projection,
+    )?;
+    metrics.operator_time += timer.elapsed();
+
+    let output_rows = output.num_rows() as u64;
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            key_count: node.spec.keys.len(),
+            residual_predicate: false,
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: build_side.to_string(),
+            probe_side: probe_side.to_string(),
+            build_rows: side_metric(build_side, original_left_rows, original_right_rows),
+            build_bytes,
+            probe_rows: side_metric(probe_side, original_left_rows, original_right_rows),
+            probe_bytes,
+            hash_table_bytes,
+            gather_map_bytes,
+            output_rows,
+            output_bytes,
+        },
+    ));
+
+    // `left_indices`/`right_indices` are `Series::clone`s of `indices.probe()` /
+    // `indices.build()`; the underlying columns are Arc-shared, so device memory
+    // is only released once every Arc holder drops. All three must be released
+    // before `reservations.release(gather_map_reservation)` for the budget to
+    // reflect actual residency.
+    drop(left_indices);
+    drop(right_indices);
+    drop(indices);
+    reservations.release(gather_map_reservation);
+    drop(hash_join);
+    reservations.release(hash_table_reservation);
+    drop(left);
+    drop(right);
+    reservations.release(probe_reservation);
+    reservations.release(build_reservation);
+
+    Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
+fn bounded_join_request(
+    kind: ReservationKind,
+    memory_boundary: &'static str,
+    requested_bytes: u64,
+    budget_bytes: u64,
+    node_id: NodeId,
+) -> MemoryReservationRequest {
+    MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
+        .with_memory_boundary(memory_boundary)
+        .with_node_id(node_id)
+        .with_stage("bounded_join")
+        .with_attempt(1, 1)
+}
+
+fn join_side_output_reservation_bytes(
+    frame: &DataFrame,
+    indices: &cudf::DataFrameJoinIndices,
+    columns: &[String],
+    overrides: &ExecutionOverrides<'_>,
+    side: JoinSide,
+) -> Result<u64> {
+    if columns.is_empty() {
+        return Ok(0);
+    }
+    frame
+        .with_execution(overrides)
+        .materialize_join_indices_reservation_size_bytes(indices, columns)
+        .map(|bytes| bytes as u64)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.output_reservation",
+                "failed to size bounded native join output materialization",
+                error,
+            )
+            .with_fact("side", side)
+        })
 }
 
 pub(super) fn execute_bounded_chunk_with_retry(
