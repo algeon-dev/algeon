@@ -457,6 +457,13 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(join.hash_table_bytes, 4096);
     assert_eq!(join.build_side, "right");
     assert_eq!(join.probe_side, "left");
+
+    metrics.record_hash_join_cache_miss();
+    metrics.record_hash_join_build();
+    metrics.record_hash_join_cache_hit();
+    assert_eq!(metrics.hash_join_cache_misses, 1);
+    assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(metrics.hash_join_cache_hits, 1);
 }
 
 #[test]
