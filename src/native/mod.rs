@@ -110,6 +110,7 @@ fn source_diagnostics_for_native_plan(plan: &NativeQueryPlan) -> Vec<NativeSourc
         .filter_map(|node| match &node.kind {
             NativePlanNode::Source(source) => match source.as_ref() {
                 NativeSourceNode::LocalParquet(source) => Some(source.diagnostics.clone()),
+                NativeSourceNode::GpuResident(_) => None,
             },
             _ => None,
         })

@@ -385,16 +385,24 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.read_columns, 4);
     assert_eq!(row.metrics.resident_dataframe_peak_bytes, Some(4096));
     assert_eq!(row.metrics.allocator_high_water_bytes, Some(8192));
+    assert_eq!(row.metrics.hash_join_build_count, 1);
+    assert_eq!(row.metrics.hash_join_cache_hits, 2);
+    assert_eq!(row.metrics.hash_join_cache_misses, 1);
+    assert_eq!(row.metrics.hash_join_durable_cache_hits, 3);
+    assert_eq!(row.metrics.hash_join_durable_cache_misses, 4);
+    assert_eq!(row.metrics.hash_join_durable_cache_inserts, 5);
+    assert_eq!(row.metrics.hash_join_hash_table_bytes, 16384);
+    assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 1);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 3);
     assert_eq!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_diagnostics"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\thash_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
     );
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=1\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=3\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(text.contains("\taccepted_replaced\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t0\t0\t0\t1\t4\t256\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t"));
+    assert!(text.contains("\taccepted_replaced\tnone\tnone\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t0\t0\t0\t1\t4\t256\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t1\t2\t1\t3\t4\t5\t16384\t2048\t"));
 }
 
 #[test]
@@ -1120,6 +1128,14 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         ("reservation_requested_bytes", 128),
         ("reservation_granted_bytes", 128),
         ("reservation_denied_count", 0),
+        ("hash_join_build_count", 1),
+        ("hash_join_cache_hits", 2),
+        ("hash_join_cache_misses", 1),
+        ("hash_join_durable_cache_hits", 3),
+        ("hash_join_durable_cache_misses", 4),
+        ("hash_join_durable_cache_inserts", 5),
+        ("hash_join_hash_table_bytes", 16384),
+        ("join_gather_map_bytes", 2048),
     ] {
         MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
     }

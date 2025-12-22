@@ -6,12 +6,13 @@ use super::{
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
     reject_bounded_join_plan(context, plan)?;
 
     if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
-        return execute_bounded_generic_query_plan(context, plan, metrics);
+        return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
     }
 
     let bounded = BoundedPlan::analyze(plan)?;
@@ -75,6 +76,7 @@ pub(super) fn execute_bounded_query_plan(
 fn execute_bounded_generic_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
     reject_bounded_join_plan(context, plan)?;
@@ -84,7 +86,7 @@ fn execute_bounded_generic_query_plan(
     };
     let mut reservations = ReservationTracker::new(device_budget_bytes);
     let mut scratch = ExecutionScratch::new(context);
-    let frame = execute_node(context, plan, plan.sink().input(), &mut scratch, metrics)?;
+    let frame = execute_node(context, plan, plan.sink().input(), gpu_inputs, &mut scratch, metrics)?;
     let frame_bytes = observe_device_memory_bytes(&frame, metrics)?;
     let reservation = reservations.try_reserve(
         MemoryReservationRequest::new(ReservationKind::OperatorOutput, frame_bytes, reservations.budget())
@@ -136,6 +138,7 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
         .with_fact("probe_execution_boundary", context.boundary_policy().probe_execution())
         .with_fact("result_materialization_boundary", context.boundary_policy().result_materialization())
         .with_fact("cudf_rs_hash_table_observability", "hash_table_device_allocated_size_bytes")
+        .with_fact("cudf_rs_gather_map_observability", "join_indices_device_allocated_size_bytes")
         .with_fact("bounded_join_reservation_model", "not_implemented")
         .with_fact("missing_reservations", "build_side,probe_side,hash_table,gather_map,join_output")
         .with_fact("bounded_join_enabled", false));
@@ -434,7 +437,12 @@ impl<'a> BoundedPlan<'a> {
                 "non_local_parquet_source",
             ));
         };
-        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref();
+        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref() else {
+            return Err(unsupported_bounded_shape(
+                "bounded aggregate execution currently supports only local parquet sources",
+                "non_local_parquet_source",
+            ));
+        };
 
         Ok(Self {
             source_id: current,

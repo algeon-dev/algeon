@@ -13,9 +13,9 @@ use arrow::{
 use cudf::{DataType as CudfDataType, TypeId};
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, BuildMaterializationBoundary,
-    ByteRangeDisposition, ColumnRef, DataPlacement, ExecutionBoundaryPolicy, ExecutionContext, Expr, JoinKey,
-    JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue,
-    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics,
+    ByteRangeDisposition, ColumnRef, DataPlacement, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource,
+    JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec,
+    LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics,
     PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, QueryError,
     QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
     ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition,
@@ -138,6 +138,29 @@ fn native_plan_can_represent_proven_benchmark_shape() {
     assert!(plan.to_string().contains("LocalParquetSource"));
     assert!(plan.to_string().contains("Limit input=n4 skip=0 fetch=100"));
     assert!(plan.to_string().contains("Sink id=sink input=n5 mode=host_arrow materialization=device_to_host"));
+}
+
+#[test]
+fn native_plan_can_represent_gpu_resident_fragment_input() {
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_x00", DataType::Int64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("sum_x00", DataType::Int64, true)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("q1_partial", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(source, vec![Expr::column("sum_x00")], output_schema);
+    let plan = builder.finish_with_host_sink(projection);
+
+    assert_eq!(plan.node_count(), 2);
+    assert_eq!(plan.output_schema().fields().len(), 1);
+    assert_eq!(plan.node(source).unwrap().facts.placement, DataPlacement::Device);
+    assert_eq!(plan.node(source).unwrap().facts.schema_behavior, SchemaBehavior::SourceOutput);
+    assert!(matches!(plan.node(source).unwrap().kind, PlanNode::Source(_)));
+    assert!(plan.to_string().contains("GpuResidentSource input_name=q1_partial"));
+    assert!(plan.to_string().contains("Sink id=sink input=n1 mode=host_arrow materialization=device_to_host"));
 }
 
 #[test]
@@ -311,7 +334,7 @@ fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
         ResultMaterializationBoundary::ExplicitSink,
     );
     assert_eq!(explicit, policy);
-    explicit.validate().unwrap();
+    explicit.validate(false).unwrap();
 }
 
 #[test]
@@ -332,6 +355,19 @@ fn bounded_memory_control_policy_rejects_zero_fields_before_runtime_initializati
     assert_eq!(error.fact_value("policy"), Some("bounded"));
     assert_eq!(error.fact_value("field"), Some("device_budget_bytes"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
+}
+
+#[test]
+fn durable_hash_join_boundary_requires_explicit_cache() {
+    let policy =
+        ExecutionBoundaryPolicy::default().with_build_materialization(BuildMaterializationBoundary::DurableGpuHashJoin);
+
+    let error = ExecutionContext::builder().with_boundary_policy(policy).build().unwrap_err();
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.boundary_policy.validate");
+    assert_eq!(error.fact_value("build_materialization_boundary"), Some("durable_gpu_hash_join"));
+    assert_eq!(error.fact_value("reason"), Some("missing_hash_join_build_cache"));
 }
 
 #[test]
@@ -378,12 +414,14 @@ fn retry_facts_attach_stable_resume_and_merge_context() {
 fn query_metrics_make_host_device_boundaries_explicit() {
     let mut metrics = QueryMetrics::default();
     metrics.record_parquet_source(Some(3_235_196_281), 12, 34);
+    metrics.boundary.record_gpu_resident_input_handoff();
     metrics.boundary.record_device_to_host_materialization(100, 8192);
 
     assert_eq!(metrics.parquet_files, 1);
     assert_eq!(metrics.parquet_bytes_known, 3_235_196_281);
     assert_eq!(metrics.row_groups_selected, 12);
     assert_eq!(metrics.read_columns, 34);
+    assert_eq!(metrics.boundary.gpu_resident_input_handoffs, 1);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.boundary.device_to_host_materialized_rows, 100);
@@ -486,6 +524,7 @@ fn query_metrics_have_join_operator_contract() {
             probe_rows: 20,
             probe_bytes: 2048,
             hash_table_bytes: 4096,
+            gather_map_bytes: 256,
             output_rows: 5,
             output_bytes: 512,
         },
@@ -496,15 +535,24 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(join.join_type, "inner");
     assert_eq!(join.key_count, 2);
     assert_eq!(join.hash_table_bytes, 4096);
+    assert_eq!(join.gather_map_bytes, 256);
     assert_eq!(join.build_side, "right");
     assert_eq!(join.probe_side, "left");
 
     metrics.record_hash_join_cache_miss();
     metrics.record_hash_join_build();
+    metrics.record_hash_join_hash_table_bytes(4096);
     metrics.record_hash_join_cache_hit();
+    metrics.record_hash_join_durable_cache_miss();
+    metrics.record_hash_join_durable_cache_insert();
+    metrics.record_hash_join_durable_cache_hit();
     assert_eq!(metrics.hash_join_cache_misses, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.hash_join_cache_hits, 1);
+    assert_eq!(metrics.hash_join_durable_cache_misses, 1);
+    assert_eq!(metrics.hash_join_durable_cache_inserts, 1);
+    assert_eq!(metrics.hash_join_durable_cache_hits, 1);
+    assert_eq!(metrics.hash_join_hash_table_bytes, 4096);
 }
 
 #[test]

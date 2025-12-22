@@ -10,9 +10,12 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode};
+use cudf_query_engine::{
+    GpuResidentSource, LocalParquetFile, LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
+};
 use datafusion::{
     common::{ScalarValue, config::ConfigOptions},
+    execution::context::TaskContext,
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
     parquet::arrow::ArrowWriter,
@@ -25,7 +28,7 @@ use datafusion::{
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
-        displayable,
+        collect, displayable,
         execution_plan::Boundedness,
         filter::FilterExec,
         limit::LocalLimitExec,
@@ -36,7 +39,8 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
-    GpuFallbackPolicy, NativeCudfExec, NativeCudfExecutionConfig, cudf_physical_optimizer_rules,
+    GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
+    cudf_physical_optimizer_rules,
 };
 
 #[test]
@@ -79,6 +83,48 @@ fn native_exec_accepts_unbounded_memory_control_policy() {
     let display = displayable(&exec).one_line().to_string();
     assert!(display.contains("NativeCudfExec"));
     assert!(display.contains("memory_control_policy=unbounded"));
+}
+
+#[test]
+fn native_composed_exec_hands_gpu_result_between_fragments_without_host_materialization() {
+    let dir = unique_temp_dir("datafusion-cudf-native-composed-gpu-resident");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let schema = parquet_file_schema();
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let config = NativeCudfExecutionConfig::unbounded().with_shared_runtime(Arc::clone(&runtime));
+
+    let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));
+    let producer = Arc::new(NativeCudfGpuProducerExec::try_new("fragment_input", producer_plan).unwrap());
+    let producer_child = Arc::clone(&producer) as Arc<dyn ExecutionPlan>;
+    let consumer_plan = gpu_resident_host_sink_plan("fragment_input", Arc::clone(&schema));
+    let composed = Arc::new(NativeCudfComposedExec::try_new(consumer_plan, vec![producer_child], config).unwrap());
+
+    assert_eq!(composed.name(), "NativeCudfComposedExec");
+    assert_eq!(composed.children().len(), 1);
+    let display = displayable(composed.as_ref()).one_line().to_string();
+    assert!(display.contains("input_boundary=gpu_resident"));
+    assert!(display.contains("output_boundary=device_to_host"));
+
+    let batches = futures::executor::block_on(collect(
+        Arc::clone(&composed) as Arc<dyn ExecutionPlan>,
+        Arc::new(TaskContext::default()),
+    ))
+    .unwrap();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 3);
+    assert_eq!(batches[0].num_columns(), 4);
+    assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2, 1]);
+
+    let producer_metrics = producer.metrics().unwrap();
+    assert_eq!(producer_metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 0);
+    let composed_metrics = composed.metrics().unwrap();
+    assert_eq!(composed_metrics.sum_by_name("gpu_resident_input_handoffs").unwrap().as_usize(), 1);
+    assert_eq!(composed_metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(composed_metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -224,12 +270,42 @@ fn gpu_resident_plan() -> QueryPlan {
     builder.finish_gpu_resident(source)
 }
 
+fn local_parquet_gpu_resident_plan(path: &std::path::Path, schema: Arc<Schema>) -> QueryPlan {
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        schema,
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    builder.finish_gpu_resident(source)
+}
+
+fn gpu_resident_host_sink_plan(input_name: &str, schema: Arc<Schema>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, schema)));
+    builder.finish_with_host_sink(source)
+}
+
 fn local_parquet_source() -> LocalParquetSource {
     LocalParquetSource::new("/tmp/datafusion-cudf-native-exec-test.parquet", schema(), vec!["key".to_string()])
 }
 
+fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
+    batch.column(index).as_any().downcast_ref::<Int32Array>().unwrap()
+}
+
 fn schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]))
+}
+
+fn parquet_file_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("m01", DataType::Int64, false),
+    ]))
 }
 
 fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
@@ -330,12 +406,7 @@ fn aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>, projection_operator: 
 }
 
 fn write_parquet_file(path: &std::path::Path) {
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("payload", DataType::Int32, false),
-        Field::new("m00", DataType::Int64, false),
-        Field::new("m01", DataType::Int64, false),
-    ]));
+    let schema = parquet_file_schema();
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
