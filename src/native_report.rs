@@ -28,10 +28,29 @@ use crate::{
     tpch::TpchDatasetMetadata,
 };
 
-pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 4;
-pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
-pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 4;
-pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
+pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 5;
+pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution";
+pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 5;
+pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN: &str = "unsupported_native_physical_plan";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE: &str = "sort_local_parquet_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE: &str = "sort_fetch_local_parquet_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE: &str =
+    "sort_preserving_merge_fetch_local_parquet_distributed_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE: &str =
+    "projected_global_local_parquet_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE: &str =
+    "projected_global_local_parquet_distributed_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE: &str = "sort_fetch_hash_join_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_AGGREGATE: &str = "sort_hash_join_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE: &str =
+    "projected_global_hash_join_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE: &str =
+    "sort_mixed_hash_nested_loop_join_aggregate";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_INPUT: &str = "sort_fetch_hash_join_input";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_INPUT: &str = "sort_hash_join_input";
+pub const NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT: &str =
+    "sort_mixed_hash_nested_loop_join_input";
 
 #[derive(Debug, Clone)]
 pub struct NativeFallbackPressureWorkloadItem {
@@ -111,11 +130,12 @@ impl NativeFallbackPressureReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
                 row.native_candidate_shape.as_deref().unwrap_or("none"),
+                row.native_candidate_shape_family.as_deref().unwrap_or("none"),
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
@@ -181,11 +201,12 @@ impl NativeDataFusionPlanningReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
                 row.native_candidate_shape.as_deref().unwrap_or("none"),
+                row.native_candidate_shape_family.as_deref().unwrap_or("none"),
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
@@ -247,6 +268,7 @@ pub struct NativeDataFusionPlanningRow {
     pub physical_root: String,
     pub physical_shape: String,
     pub native_candidate_shape: Option<String>,
+    pub native_candidate_shape_family: Option<String>,
     pub outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
@@ -295,6 +317,7 @@ pub struct NativeFallbackPressureRow {
     pub physical_root: String,
     pub physical_shape: String,
     pub native_candidate_shape: Option<String>,
+    pub native_candidate_shape_family: Option<String>,
     pub outcome: NativeFallbackPressureOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
@@ -376,6 +399,7 @@ fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<N
                 physical_root: physical_root.clone(),
                 physical_shape: physical_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: NativeFallbackPressureOutcome::Rewritten,
                 reason_code: None,
                 unsupported_category: None,
@@ -388,6 +412,7 @@ fn report_rows_for_plan(query_id: String, plan: Arc<dyn ExecutionPlan>) -> Vec<N
                 physical_root: physical_root.clone(),
                 physical_shape: physical_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: NativeFallbackPressureOutcome::Rejected,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(source_diagnostics_plan.as_ref(), candidate, *reason),
@@ -405,6 +430,7 @@ fn report_row_for_planning_failure(query_id: String, failure: NativePlanningFail
         physical_root: "PlanningFailure".to_string(),
         physical_shape: failure.stage,
         native_candidate_shape: None,
+        native_candidate_shape_family: None,
         outcome: NativeFallbackPressureOutcome::Rejected,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
@@ -439,6 +465,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
                 reason_code: None,
                 unsupported_category: None,
@@ -453,6 +480,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
                 outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
                 reason_code: Some(reason.code().to_string()),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *reason),
@@ -475,6 +503,7 @@ fn datafusion_planning_row_for_planning_failure(
         physical_root: "PlanningFailure".to_string(),
         physical_shape: failure.stage,
         native_candidate_shape: None,
+        native_candidate_shape_family: None,
         outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
@@ -583,6 +612,103 @@ fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
     }
     shape.push(')');
     shape
+}
+
+fn candidate_shape_family(candidate: &GpuCandidate) -> String {
+    let shape = candidate.shape.as_str();
+    if shape == "UnsupportedNativePhysicalPlan" {
+        return NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN.to_string();
+    }
+
+    let root = if shape.starts_with("SortPreservingMergeExec(fetch)") {
+        "sort_preserving_merge_fetch"
+    } else if shape.starts_with("LocalLimitExec") {
+        "local_limit_sort"
+    } else if shape.starts_with("SortExec(fetch)") {
+        "sort_fetch"
+    } else if shape.starts_with("SortExec") {
+        "sort"
+    } else if shape.starts_with("ProjectionExec(AggregateExec")
+        || shape.starts_with("ProjectionExec(FinalAggregateExec")
+    {
+        "projected_global"
+    } else if shape.starts_with("AggregateExec") {
+        "global"
+    } else {
+        "other"
+    };
+    let input = match (shape.contains("HashJoinExec"), shape.contains("NestedLoopJoinExec")) {
+        (true, true) => "mixed_hash_nested_loop_join",
+        (true, false) => "hash_join",
+        (false, true) => "nested_loop_join",
+        (false, false) => "local_parquet",
+    };
+    let distribution = if root_is_aggregate_shape(shape)
+        && (shape.contains("FinalAggregateExec") || shape.contains("PartialAggregateExec"))
+    {
+        "distributed_aggregate"
+    } else if root_is_aggregate_shape(shape) {
+        "aggregate"
+    } else {
+        "input"
+    };
+
+    match (root, input, distribution) {
+        ("sort", "local_parquet", "aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE.to_string()
+        },
+        ("sort_fetch", "local_parquet", "aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE.to_string()
+        },
+        ("sort_preserving_merge_fetch", "local_parquet", "distributed_aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE.to_string()
+        },
+        ("projected_global", "local_parquet", "aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE.to_string()
+        },
+        ("projected_global", "local_parquet", "distributed_aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE.to_string()
+        },
+        ("sort_fetch", "hash_join", "aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE.to_string()
+        },
+        ("sort", "hash_join", "aggregate") => NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_AGGREGATE.to_string(),
+        ("projected_global", "hash_join", "aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE.to_string()
+        },
+        ("sort", "mixed_hash_nested_loop_join", "aggregate") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE.to_string()
+        },
+        ("sort_fetch", "hash_join", "input") => NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_INPUT.to_string(),
+        ("sort", "hash_join", "input") => NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_INPUT.to_string(),
+        ("sort", "mixed_hash_nested_loop_join", "input") => {
+            NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT.to_string()
+        },
+        _ => format!("{root}_{input}_{distribution}"),
+    }
+}
+
+fn root_is_aggregate_shape(shape: &str) -> bool {
+    shape.starts_with("AggregateExec")
+        || shape.starts_with("FinalAggregateExec")
+        || shape.starts_with("ProjectionExec(AggregateExec")
+        || shape.starts_with("ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("SortExec(AggregateExec")
+        || shape.starts_with("SortExec(FinalAggregateExec")
+        || shape.starts_with("SortExec(ProjectionExec(AggregateExec")
+        || shape.starts_with("SortExec(ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("SortExec(fetch)(AggregateExec")
+        || shape.starts_with("SortExec(fetch)(FinalAggregateExec")
+        || shape.starts_with("SortExec(fetch)(ProjectionExec(AggregateExec")
+        || shape.starts_with("SortExec(fetch)(ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("LocalLimitExec(SortExec(AggregateExec")
+        || shape.starts_with("LocalLimitExec(SortExec(FinalAggregateExec")
+        || shape.starts_with("LocalLimitExec(SortExec(ProjectionExec(AggregateExec")
+        || shape.starts_with("LocalLimitExec(SortExec(ProjectionExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(FinalAggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(AggregateExec")
+        || shape.starts_with("SortPreservingMergeExec(fetch)(SortExec(ProjectionExec(FinalAggregateExec")
 }
 
 fn unsupported_category(plan: &dyn ExecutionPlan, candidate: &GpuCandidate, reason: FallbackReason) -> Option<String> {

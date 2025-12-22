@@ -35,8 +35,9 @@ use datafusion::{
 use super::{
     literal::{NativeLiteralContext, native_literal_value},
     normalize::{
-        NormalizedNativeAggregate, NormalizedNativeFilter, NormalizedNativeHashJoin, NormalizedNativeInput,
-        NormalizedNativeNestedLoopJoin, NormalizedNativePlan, NormalizedNativeProjection, NormalizedNativeSource,
+        NormalizedNativeAggregate, NormalizedNativeAggregateRoot, NormalizedNativeFilter, NormalizedNativeHashJoin,
+        NormalizedNativeInput, NormalizedNativeInputRoot, NormalizedNativeNestedLoopJoin, NormalizedNativePlan,
+        NormalizedNativeProjection, NormalizedNativeRoot, NormalizedNativeSource,
     },
     source::{
         local_parquet_files, local_parquet_source_diagnostics, native_source_output_schema,
@@ -52,10 +53,12 @@ use super::{
 use crate::policy::FallbackReason;
 
 pub(super) fn lower_normalized_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
-    if normalized.single_source_input().is_some() {
-        lower_slice1_plan(normalized)
-    } else {
-        lower_joined_aggregate_plan(normalized)
+    match &normalized.root {
+        NormalizedNativeRoot::Aggregate(root) if normalized.single_source_input().is_some() => {
+            lower_slice1_plan(normalized, root)
+        },
+        NormalizedNativeRoot::Aggregate(root) => lower_joined_aggregate_plan(normalized, root),
+        NormalizedNativeRoot::Input(root) => lower_input_root_plan(normalized, root),
     }
 }
 
@@ -115,13 +118,16 @@ impl CanonicalJoin {
     }
 }
 
-fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
+fn lower_slice1_plan(
+    normalized: &NormalizedNativePlan<'_>,
+    root: &NormalizedNativeAggregateRoot<'_>,
+) -> Result<NativeQueryPlan, FallbackReason> {
     let source = normalized.single_source_input().ok_or(FallbackReason::UnsupportedOperator)?;
     let source_exec = source.source_exec;
     let filter = source.filter;
-    let pre_aggregate_projection = normalized.pre_aggregate_projection;
-    let aggregate = normalized.aggregate;
-    let post_aggregate_projection = normalized.post_aggregate_projection;
+    let pre_aggregate_projection = root.pre_aggregate_projection;
+    let aggregate = root.aggregate;
+    let post_aggregate_projection = root.post_aggregate_projection;
     let sort = normalized.sort;
     let (file_scan, parquet_source) =
         source_exec.downcast_to_file_source::<ParquetSource>().ok_or(FallbackReason::UnsupportedOperator)?;
@@ -137,7 +143,7 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     };
 
     validate_schema(Arc::clone(&source_output_schema))?;
-    validate_required_operator_schemas(normalized, filter, pre_aggregate_projection, post_aggregate_projection, sort)?;
+    validate_aggregate_root_operator_schemas(root, pre_aggregate_projection, post_aggregate_projection, sort)?;
     validate_required_scalar_expressions(RequiredScalarExpressions {
         scan_projection,
         table_schema: &table_schema,
@@ -149,7 +155,7 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
         post_aggregate_projection,
     })?;
     validate_slice1_parquet_scan(file_scan, parquet_source, filter, Arc::clone(&table_schema), &column_requirements)?;
-    validate_aggregate(aggregate, pre_aggregate_projection.is_some(), normalized.aggregate_allows_partial)?;
+    validate_aggregate(aggregate, pre_aggregate_projection.is_some(), root.aggregate_allows_partial)?;
     if let Some(sort) = sort {
         validate_sort(sort)?;
     }
@@ -255,7 +261,7 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
         lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?
     };
     let aggregate_node =
-        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&normalized.aggregate_output_schema));
+        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&root.aggregate_output_schema));
     let sort_input_node = if let Some(projection) = post_aggregate_projection {
         builder.add_projection(aggregate_node, lower_projection_exprs(projection)?, projection.schema())
     } else {
@@ -276,22 +282,25 @@ fn lower_slice1_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQuer
     Ok(builder.finish_with_host_sink(output_node))
 }
 
-fn lower_joined_aggregate_plan(normalized: &NormalizedNativePlan<'_>) -> Result<NativeQueryPlan, FallbackReason> {
-    let pre_aggregate_projection = normalized.pre_aggregate_projection;
-    let aggregate = normalized.aggregate;
-    let post_aggregate_projection = normalized.post_aggregate_projection;
+fn lower_joined_aggregate_plan(
+    normalized: &NormalizedNativePlan<'_>,
+    root: &NormalizedNativeAggregateRoot<'_>,
+) -> Result<NativeQueryPlan, FallbackReason> {
+    let pre_aggregate_projection = root.pre_aggregate_projection;
+    let aggregate = root.aggregate;
+    let post_aggregate_projection = root.post_aggregate_projection;
     let sort = normalized.sort;
 
-    validate_required_operator_schemas(normalized, None, pre_aggregate_projection, post_aggregate_projection, sort)?;
-    validate_aggregate(aggregate, false, normalized.aggregate_allows_partial)?;
-    validate_joined_aggregate_scalar_expressions(normalized)?;
+    validate_aggregate_root_operator_schemas(root, pre_aggregate_projection, post_aggregate_projection, sort)?;
+    validate_aggregate(aggregate, false, root.aggregate_allows_partial)?;
+    validate_joined_aggregate_scalar_expressions(root)?;
     if let Some(sort) = sort {
         validate_sort(sort)?;
     }
 
     let required_input_columns = required_aggregate_input_columns(aggregate, pre_aggregate_projection)?;
     let mut builder = NativeQueryPlanBuilder::new();
-    let lowered_input = lower_native_input(&normalized.input, &mut builder, &required_input_columns)?;
+    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_columns)?;
     let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) = if let Some(projection) =
         pre_aggregate_projection
     {
@@ -320,7 +329,7 @@ fn lower_joined_aggregate_plan(normalized: &NormalizedNativePlan<'_>) -> Result<
     };
     let aggregate_spec = lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?;
     let aggregate_node =
-        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&normalized.aggregate_output_schema));
+        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&root.aggregate_output_schema));
     let sort_input_node = if let Some(projection) = post_aggregate_projection {
         builder.add_projection(aggregate_node, lower_projection_exprs(projection)?, projection.schema())
     } else {
@@ -341,21 +350,70 @@ fn lower_joined_aggregate_plan(normalized: &NormalizedNativePlan<'_>) -> Result<
     Ok(builder.finish_with_host_sink(output_node))
 }
 
-fn validate_joined_aggregate_scalar_expressions(normalized: &NormalizedNativePlan<'_>) -> Result<(), FallbackReason> {
-    if let Some(projection) = normalized.pre_aggregate_projection {
+fn lower_input_root_plan(
+    normalized: &NormalizedNativePlan<'_>,
+    root: &NormalizedNativeInputRoot<'_>,
+) -> Result<NativeQueryPlan, FallbackReason> {
+    if let Some(projection) = root.projection {
+        validate_schema(projection.schema())?;
         for projection_expr in projection.expr() {
             validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
         }
     }
-    for aggregate_expr in normalized.aggregate.aggr_expr() {
-        for expr in aggregate_expr.expressions() {
-            validate_physical_expr(&expr, &normalized.aggregate.input().schema())?;
+    if let Some(sort) = normalized.sort {
+        validate_schema(sort.schema())?;
+        validate_sort(sort)?;
+    }
+
+    let mut builder = NativeQueryPlanBuilder::new();
+    let required_input_columns =
+        root.projection.map(required_root_projection_input_columns).transpose()?.unwrap_or_default();
+    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_columns)?;
+    let projected_node = if let Some(projection) = root.projection {
+        builder.add_projection(lowered_input.node, lower_projection_exprs(projection)?, projection.schema())
+    } else {
+        lowered_input.node
+    };
+    let sorted_or_projected_node = if let Some(sort) = normalized.sort {
+        builder.add_sort(projected_node, lower_sort_spec(sort)?, sort.schema())
+    } else {
+        projected_node
+    };
+    let output_node = if let Some(limit_fetch) = normalized.limit_fetch {
+        let output_schema = normalized.sort.expect("native limit requires preceding sort").schema();
+        builder.add_limit(sorted_or_projected_node, NativeLimitSpec::fetch(limit_fetch), output_schema)
+    } else {
+        sorted_or_projected_node
+    };
+
+    Ok(builder.finish_with_host_sink(output_node))
+}
+
+fn required_root_projection_input_columns(projection: &ProjectionExec) -> Result<Vec<String>, FallbackReason> {
+    let mut required = BTreeSet::new();
+    for projection_expr in projection.expr() {
+        collect_required_columns(&projection_expr.expr, &projection.input().schema(), &mut required)?;
+    }
+    Ok(required.into_iter().collect())
+}
+
+fn validate_joined_aggregate_scalar_expressions(
+    root: &NormalizedNativeAggregateRoot<'_>,
+) -> Result<(), FallbackReason> {
+    if let Some(projection) = root.pre_aggregate_projection {
+        for projection_expr in projection.expr() {
+            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
         }
     }
-    for (group_expr, _alias) in normalized.aggregate.group_expr().expr() {
-        validate_physical_expr(group_expr, &normalized.aggregate.input().schema())?;
+    for aggregate_expr in root.aggregate.aggr_expr() {
+        for expr in aggregate_expr.expressions() {
+            validate_physical_expr(&expr, &root.aggregate.input().schema())?;
+        }
     }
-    if let Some(projection) = normalized.post_aggregate_projection {
+    for (group_expr, _alias) in root.aggregate.group_expr().expr() {
+        validate_physical_expr(group_expr, &root.aggregate.input().schema())?;
+    }
+    if let Some(projection) = root.post_aggregate_projection {
         for projection_expr in projection.expr() {
             validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
         }
@@ -1101,9 +1159,8 @@ fn lower_join_null_equality(null_equality: NullEquality) -> NativeJoinNullEquali
     }
 }
 
-fn validate_required_operator_schemas(
-    normalized: &NormalizedNativePlan<'_>,
-    _filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+fn validate_aggregate_root_operator_schemas(
+    root: &NormalizedNativeAggregateRoot<'_>,
     pre_aggregate_projection: Option<&ProjectionExec>,
     post_aggregate_projection: Option<&ProjectionExec>,
     sort: Option<&SortExec>,
@@ -1111,8 +1168,8 @@ fn validate_required_operator_schemas(
     if let Some(projection) = pre_aggregate_projection {
         validate_schema(projection.schema())?;
     }
-    validate_schema(normalized.aggregate.schema())?;
-    validate_schema(Arc::clone(&normalized.aggregate_output_schema))?;
+    validate_schema(root.aggregate.schema())?;
+    validate_schema(Arc::clone(&root.aggregate_output_schema))?;
     if let Some(projection) = post_aggregate_projection {
         validate_schema(projection.schema())?;
     }

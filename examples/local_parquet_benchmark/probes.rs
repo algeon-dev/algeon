@@ -40,7 +40,7 @@ pub(super) async fn run_expected_planning_rejection_probe(
 }
 
 pub(super) fn rejected_benchmark_sql() -> &'static str {
-    "SELECT AVG(m00) AS avg_m00 FROM bench"
+    "SELECT key, SUM(m00) FILTER (WHERE payload >= 10) AS sum_m00 FROM bench GROUP BY key ORDER BY sum_m00 DESC, key ASC LIMIT 2"
 }
 
 pub(super) async fn run_expected_resource_failure_probe(

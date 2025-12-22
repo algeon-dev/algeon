@@ -31,7 +31,7 @@ pub(super) fn source_diagnostics_for_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
 ) -> Vec<NativeSourceDiagnostics> {
     let mut diagnostics = Vec::new();
-    collect_source_diagnostics_for_input(&normalized.input, normalized, &mut diagnostics);
+    collect_source_diagnostics_for_input(normalized.root_input(), normalized, &mut diagnostics);
     diagnostics
 }
 
@@ -72,24 +72,29 @@ fn source_diagnostics_for_source(
 ) -> Option<NativeSourceDiagnostics> {
     let (file_scan, parquet_source) = source.source_exec.downcast_to_file_source::<ParquetSource>()?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
-    let column_requirements = required_parquet_column_requirements(
-        file_scan,
-        source.filter,
-        normalized.single_source_input().and(normalized.pre_aggregate_projection),
-        normalized.aggregate,
-    )
-    .ok();
+    let aggregate_root = normalized.aggregate_root();
+    let column_requirements = aggregate_root.and_then(|root| {
+        required_parquet_column_requirements(
+            file_scan,
+            source.filter,
+            normalized.single_source_input().and(root.pre_aggregate_projection),
+            root.aggregate,
+        )
+        .ok()
+    });
     Some(local_parquet_source_diagnostics(
         file_scan,
         parquet_source,
         source.filter,
         table_schema,
         column_requirements.as_ref(),
-        native_zero_column_count_source_is_safe(
-            source.filter,
-            normalized.single_source_input().and(normalized.pre_aggregate_projection),
-            normalized.aggregate,
-        ),
+        aggregate_root.is_some_and(|root| {
+            native_zero_column_count_source_is_safe(
+                source.filter,
+                normalized.single_source_input().and(root.pre_aggregate_projection),
+                root.aggregate,
+            )
+        }),
     ))
 }
 
