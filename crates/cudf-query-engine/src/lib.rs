@@ -4,6 +4,7 @@
 //! matching, fallback reporting, and adapter wrappers belong in
 //! `datafusion-cudf`.
 
+pub(crate) mod bounded_support;
 pub mod chunk;
 pub mod datatypes;
 pub mod error;
