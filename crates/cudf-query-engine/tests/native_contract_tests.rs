@@ -12,14 +12,15 @@ use arrow::{
 };
 use cudf::{DataType as CudfDataType, TypeId};
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, ByteRangeDisposition, ColumnRef,
-    DataPlacement, ExecutionContext, Expr, JoinKey, JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide,
-    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemoryReservationRequest, OperatorMetrics, PartitionColumn, PartitionColumnDisposition, PlanNode,
-    PredicateDisposition, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder,
-    RejectedSourceFeature, ReservationKind, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr,
-    SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
-    ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, BuildMaterializationBoundary,
+    ByteRangeDisposition, ColumnRef, DataPlacement, ExecutionBoundaryPolicy, ExecutionContext, Expr, JoinKey,
+    JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics,
+    PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, QueryError,
+    QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
+    ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition,
+    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary,
+    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
     is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
     plan_local_parquet_source_chunks, validate_local_parquet_source,
@@ -284,6 +285,33 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     let chunk_policy = SourceChunkPlanningPolicy::from(bounded);
     assert_eq!(chunk_policy.max_source_chunk_bytes, Some(512 * 1024 * 1024));
     assert_eq!(chunk_policy.max_row_groups_per_chunk, 2);
+}
+
+#[test]
+fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
+    let policy = ExecutionBoundaryPolicy::default();
+
+    assert_eq!(policy.source_read(), SourceReadBoundary::DirectDeviceLocalParquet);
+    assert_eq!(policy.source_read().as_str(), "direct_device_local_parquet");
+    assert_eq!(policy.build_materialization(), BuildMaterializationBoundary::QueryScopedGpuHashJoin);
+    assert_eq!(policy.build_materialization().as_str(), "query_scoped_gpu_hash_join");
+    assert_eq!(policy.probe_execution(), ProbeExecutionBoundary::ReusableGpuHashJoin);
+    assert_eq!(policy.probe_execution().as_str(), "reusable_gpu_hash_join");
+    assert_eq!(policy.result_materialization(), ResultMaterializationBoundary::ExplicitSink);
+    assert_eq!(policy.result_materialization().as_str(), "explicit_sink");
+    assert_eq!(
+        policy.to_string(),
+        "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
+    );
+
+    let explicit = ExecutionBoundaryPolicy::new(
+        SourceReadBoundary::DirectDeviceLocalParquet,
+        BuildMaterializationBoundary::QueryScopedGpuHashJoin,
+        ProbeExecutionBoundary::ReusableGpuHashJoin,
+        ResultMaterializationBoundary::ExplicitSink,
+    );
+    assert_eq!(explicit, policy);
+    explicit.validate().unwrap();
 }
 
 #[test]

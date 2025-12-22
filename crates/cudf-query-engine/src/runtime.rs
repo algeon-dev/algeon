@@ -7,6 +7,7 @@ pub struct ExecutionContext {
     runtime: Arc<cudf::Runtime>,
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
+    boundary_policy: ExecutionBoundaryPolicy,
 }
 
 impl ExecutionContext {
@@ -23,6 +24,7 @@ impl ExecutionContext {
             runtime,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
+            boundary_policy: ExecutionBoundaryPolicy::default(),
         }
     }
 
@@ -53,6 +55,10 @@ impl ExecutionContext {
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
     }
+
+    pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
+        self.boundary_policy
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,6 +67,7 @@ pub struct ExecutionContextBuilder {
     device_ordinal: Option<usize>,
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
+    boundary_policy: ExecutionBoundaryPolicy,
 }
 
 impl ExecutionContextBuilder {
@@ -95,14 +102,21 @@ impl ExecutionContextBuilder {
         self
     }
 
+    pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
+        self.boundary_policy = boundary_policy;
+        self
+    }
+
     pub fn build(self) -> Result<ExecutionContext> {
         self.memory_control_policy.validate()?;
+        self.boundary_policy.validate()?;
 
         if let Some(runtime) = self.runtime {
             return Ok(ExecutionContext {
                 runtime,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
+                boundary_policy: self.boundary_policy,
             });
         }
 
@@ -133,6 +147,7 @@ impl ExecutionContextBuilder {
             runtime: Arc::new(runtime),
             memory_policy,
             memory_control_policy: self.memory_control_policy,
+            boundary_policy: self.boundary_policy,
         })
     }
 }
@@ -200,6 +215,148 @@ impl MemoryControlPolicy {
 }
 
 impl std::fmt::Display for MemoryControlPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExecutionBoundaryPolicy {
+    source_read: SourceReadBoundary,
+    build_materialization: BuildMaterializationBoundary,
+    probe_execution: ProbeExecutionBoundary,
+    result_materialization: ResultMaterializationBoundary,
+}
+
+impl Default for ExecutionBoundaryPolicy {
+    fn default() -> Self {
+        Self {
+            source_read: SourceReadBoundary::DirectDeviceLocalParquet,
+            build_materialization: BuildMaterializationBoundary::QueryScopedGpuHashJoin,
+            probe_execution: ProbeExecutionBoundary::ReusableGpuHashJoin,
+            result_materialization: ResultMaterializationBoundary::ExplicitSink,
+        }
+    }
+}
+
+impl ExecutionBoundaryPolicy {
+    pub const fn new(
+        source_read: SourceReadBoundary,
+        build_materialization: BuildMaterializationBoundary,
+        probe_execution: ProbeExecutionBoundary,
+        result_materialization: ResultMaterializationBoundary,
+    ) -> Self {
+        Self { source_read, build_materialization, probe_execution, result_materialization }
+    }
+
+    pub const fn source_read(self) -> SourceReadBoundary {
+        self.source_read
+    }
+
+    pub const fn build_materialization(self) -> BuildMaterializationBoundary {
+        self.build_materialization
+    }
+
+    pub const fn probe_execution(self) -> ProbeExecutionBoundary {
+        self.probe_execution
+    }
+
+    pub const fn result_materialization(self) -> ResultMaterializationBoundary {
+        self.result_materialization
+    }
+
+    pub fn validate(self) -> Result<()> {
+        match self.build_materialization {
+            BuildMaterializationBoundary::QueryScopedGpuHashJoin => {},
+        }
+        match self.probe_execution {
+            ProbeExecutionBoundary::ReusableGpuHashJoin => {},
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for ExecutionBoundaryPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "source_read={},build_materialization={},probe_execution={},result_materialization={}",
+            self.source_read, self.build_materialization, self.probe_execution, self.result_materialization
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceReadBoundary {
+    DirectDeviceLocalParquet,
+}
+
+impl SourceReadBoundary {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectDeviceLocalParquet => "direct_device_local_parquet",
+        }
+    }
+}
+
+impl std::fmt::Display for SourceReadBoundary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BuildMaterializationBoundary {
+    QueryScopedGpuHashJoin,
+}
+
+impl BuildMaterializationBoundary {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::QueryScopedGpuHashJoin => "query_scoped_gpu_hash_join",
+        }
+    }
+}
+
+impl std::fmt::Display for BuildMaterializationBoundary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProbeExecutionBoundary {
+    ReusableGpuHashJoin,
+}
+
+impl ProbeExecutionBoundary {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ReusableGpuHashJoin => "reusable_gpu_hash_join",
+        }
+    }
+}
+
+impl std::fmt::Display for ProbeExecutionBoundary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ResultMaterializationBoundary {
+    ExplicitSink,
+}
+
+impl ResultMaterializationBoundary {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExplicitSink => "explicit_sink",
+        }
+    }
+}
+
+impl std::fmt::Display for ResultMaterializationBoundary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }

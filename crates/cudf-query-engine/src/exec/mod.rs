@@ -25,7 +25,7 @@ mod util;
 mod validate;
 
 pub use source::{read_local_parquet_source, validate_local_parquet_source};
-pub use types::{ExecutionMode, GpuDataFrame, QueryExecutionResult, QueryOutput};
+pub use types::{ExecutionMode, GpuDataFrame, GpuResultHandle, QueryExecutionResult, QueryOutput};
 
 use self::{
     bounded::*,
@@ -62,16 +62,53 @@ use crate::{
 /// `execute_query_plan` returns; there is intentionally no intra-query eviction
 /// policy yet.
 ///
-/// `hash_join_cache` memoizes reusable cuDF hash-join artifacts for repeated
+/// `hash_join_builds` memoizes reusable cuDF hash-join artifacts for repeated
 /// probes against the same build node, build keys, and null-equality contract.
-/// The cache is scoped to this scratch object and is released at query end. It
-/// is deliberately absent from bounded join execution until cudf-rs exposes
-/// honest hash-table byte observability and the engine can reserve build,
-/// probe, gather, and output memory before constructing join artifacts.
-#[derive(Default)]
+/// The repository retains the query runtime and device placement that produced
+/// the artifacts, and is released with this scratch object at query end. It is
+/// deliberately absent from bounded join execution until cudf-rs exposes honest
+/// hash-table byte observability and the engine can reserve build, probe,
+/// gather, and output memory before constructing join artifacts.
 pub(super) struct ExecutionScratch {
     node_results: HashMap<NodeId, GpuDataFrame>,
-    hash_join_cache: HashMap<HashJoinCacheKey, DataFrameHashJoin>,
+    hash_join_builds: HashJoinBuildRepository,
+}
+
+impl ExecutionScratch {
+    pub(super) fn new(context: &ExecutionContext) -> Self {
+        Self {
+            node_results: HashMap::new(),
+            hash_join_builds: HashJoinBuildRepository::new(context.shared_runtime(), context.device_placement()),
+        }
+    }
+}
+
+pub(super) struct HashJoinBuildRepository {
+    runtime: Arc<cudf::Runtime>,
+    device_placement: crate::runtime::DevicePlacement,
+    cache: HashMap<HashJoinCacheKey, DataFrameHashJoin>,
+}
+
+impl HashJoinBuildRepository {
+    fn new(runtime: Arc<cudf::Runtime>, device_placement: crate::runtime::DevicePlacement) -> Self {
+        Self { runtime, device_placement, cache: HashMap::new() }
+    }
+
+    pub(super) fn get(&self, key: &HashJoinCacheKey) -> Option<&DataFrameHashJoin> {
+        debug_assert_eq!(
+            self.device_placement,
+            crate::runtime::DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
+        );
+        self.cache.get(key)
+    }
+
+    pub(super) fn insert(&mut self, key: HashJoinCacheKey, hash_join: DataFrameHashJoin) {
+        debug_assert_eq!(
+            self.device_placement,
+            crate::runtime::DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
+        );
+        self.cache.insert(key, hash_join);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -89,21 +126,31 @@ impl HashJoinCacheKey {
 
 pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<ExecutionResult> {
     validate_query_plan(plan)?;
-    let mut metrics =
-        QueryMetrics { phase_c_memory_control_policy: context.memory_control_policy(), ..Default::default() };
+    let mut metrics = QueryMetrics {
+        phase_c_memory_control_policy: context.memory_control_policy(),
+        execution_boundary_policy: context.boundary_policy(),
+        ..Default::default()
+    };
     let output = if context.memory_control_policy().is_bounded() {
         execute_bounded_query_plan(context, plan, &mut metrics)?
     } else {
-        let mut scratch = ExecutionScratch::default();
+        let mut scratch = ExecutionScratch::new(context);
         let frame = execute_node(context, plan, plan.sink().input(), &mut scratch, &mut metrics)?;
+        let handle = gpu_result_handle(context, plan, frame)?;
         match plan.sink() {
-            ResultSink::GpuResident { .. } => Output::GpuResident(frame),
-            ResultSink::HostArrow { schema, .. } => {
-                Output::HostArrow(materialize_to_host(frame, schema, &mut metrics)?)
-            },
+            ResultSink::GpuResident { .. } => Output::GpuResident(handle),
+            ResultSink::HostArrow { .. } => Output::HostArrow(materialize_to_host(handle, &mut metrics)?),
         }
     };
     Ok(ExecutionResult::new(output, metrics))
+}
+
+pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
+    materialize_to_host(handle, metrics)
+}
+
+fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDataFrame) -> Result<GpuResultHandle> {
+    GpuResultHandle::new(context, frame, Arc::clone(plan.output_schema()))
 }
 
 fn execute_node(

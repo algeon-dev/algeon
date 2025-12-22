@@ -2,8 +2,8 @@ use std::{any::Any, sync::Arc};
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use cudf_query_engine::{
-    ExecutionContext, MemoryControlPolicy, MemoryResourcePolicy, QueryMetrics, QueryOutput, QueryPlan,
-    execute_query_plan,
+    ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy, MemoryResourcePolicy, QueryMetrics, QueryOutput,
+    QueryPlan, execute_query_plan,
 };
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
@@ -33,6 +33,10 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "device_to_host_materialized_bytes",
     "device_to_device_copies",
     "device_to_device_copied_bytes",
+    "source_read_boundary_direct_device",
+    "build_materialization_boundary_query_scoped",
+    "probe_execution_boundary_reusable",
+    "result_materialization_boundary_explicit",
     "reservation_requested_bytes",
     "reservation_granted_bytes",
     "reservation_denied_count",
@@ -56,6 +60,9 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "retry_count",
     "retry_resource_exhausted_count",
     "retry_reservation_failure_count",
+    "hash_join_build_count",
+    "hash_join_cache_hits",
+    "hash_join_cache_misses",
     "parquet_read_time",
     "source_read_time",
     "operator_time",
@@ -71,6 +78,7 @@ pub struct NativeCudfExecutionConfig {
     device_ordinal: Option<usize>,
     memory_resource_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
+    boundary_policy: ExecutionBoundaryPolicy,
 }
 
 impl NativeCudfExecutionConfig {
@@ -80,6 +88,7 @@ impl NativeCudfExecutionConfig {
             device_ordinal: None,
             memory_resource_policy: MemoryResourcePolicy::DefaultCuda,
             memory_control_policy: MemoryControlPolicy::Unbounded,
+            boundary_policy: ExecutionBoundaryPolicy::default(),
         }
     }
 
@@ -101,6 +110,7 @@ impl NativeCudfExecutionConfig {
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
             },
+            boundary_policy: ExecutionBoundaryPolicy::default(),
         }
     }
 
@@ -129,14 +139,24 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    pub fn with_boundary_policy(mut self, boundary_policy: ExecutionBoundaryPolicy) -> Self {
+        self.boundary_policy = boundary_policy;
+        self
+    }
+
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
+    }
+
+    pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
+        self.boundary_policy
     }
 
     fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
         let mut builder = ExecutionContext::builder()
             .with_memory_policy(self.memory_resource_policy)
-            .with_memory_control_policy(self.memory_control_policy);
+            .with_memory_control_policy(self.memory_control_policy)
+            .with_boundary_policy(self.boundary_policy);
         if let Some(runtime) = &self.runtime {
             builder = builder.with_shared_runtime(Arc::clone(runtime));
         }
@@ -190,14 +210,16 @@ impl DisplayAs for NativeCudfExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfExec: native_nodes={}, sink=host_arrow, memory_control_policy={}, output_boundary=device_to_host",
+                "NativeCudfExec: native_nodes={}, sink=host_arrow, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host",
                 self.plan.node_count(),
                 self.execution_config.memory_control_policy(),
+                self.execution_config.boundary_policy(),
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
                 writeln!(f, "sink=host_arrow")?;
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
+                writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "output_boundary=device_to_host")
             },
         }
@@ -321,6 +343,10 @@ struct NativeCudfMetrics {
     device_to_host_materialized_bytes: Count,
     device_to_device_copies: Count,
     device_to_device_copied_bytes: Count,
+    source_read_boundary_direct_device: Count,
+    build_materialization_boundary_query_scoped: Count,
+    probe_execution_boundary_reusable: Count,
+    result_materialization_boundary_explicit: Count,
     reservation_requested_bytes: Count,
     reservation_granted_bytes: Count,
     reservation_denied_count: Count,
@@ -344,6 +370,9 @@ struct NativeCudfMetrics {
     retry_count: Count,
     retry_resource_exhausted_count: Count,
     retry_reservation_failure_count: Count,
+    hash_join_build_count: Count,
+    hash_join_cache_hits: Count,
+    hash_join_cache_misses: Count,
     parquet_read_time: Time,
     source_read_time: Time,
     operator_time: Time,
@@ -367,6 +396,22 @@ impl NativeCudfMetrics {
             device_to_host_materialized_bytes: summary_counter(metrics, "device_to_host_materialized_bytes", partition),
             device_to_device_copies: summary_counter(metrics, "device_to_device_copies", partition),
             device_to_device_copied_bytes: summary_counter(metrics, "device_to_device_copied_bytes", partition),
+            source_read_boundary_direct_device: summary_counter(
+                metrics,
+                "source_read_boundary_direct_device",
+                partition,
+            ),
+            build_materialization_boundary_query_scoped: summary_counter(
+                metrics,
+                "build_materialization_boundary_query_scoped",
+                partition,
+            ),
+            probe_execution_boundary_reusable: summary_counter(metrics, "probe_execution_boundary_reusable", partition),
+            result_materialization_boundary_explicit: summary_counter(
+                metrics,
+                "result_materialization_boundary_explicit",
+                partition,
+            ),
             reservation_requested_bytes: summary_counter(metrics, "reservation_requested_bytes", partition),
             reservation_granted_bytes: summary_counter(metrics, "reservation_granted_bytes", partition),
             reservation_denied_count: summary_counter(metrics, "reservation_denied_count", partition),
@@ -390,6 +435,9 @@ impl NativeCudfMetrics {
             retry_count: summary_counter(metrics, "retry_count", partition),
             retry_resource_exhausted_count: summary_counter(metrics, "retry_resource_exhausted_count", partition),
             retry_reservation_failure_count: summary_counter(metrics, "retry_reservation_failure_count", partition),
+            hash_join_build_count: summary_counter(metrics, "hash_join_build_count", partition),
+            hash_join_cache_hits: summary_counter(metrics, "hash_join_cache_hits", partition),
+            hash_join_cache_misses: summary_counter(metrics, "hash_join_cache_misses", partition),
             parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             source_read_time: summary_timer(metrics, "source_read_time", partition),
             operator_time: summary_timer(metrics, "operator_time", partition),
@@ -411,6 +459,7 @@ impl NativeCudfMetrics {
         self.device_to_host_materialized_bytes.add(count(metrics.boundary.device_to_host_materialized_bytes));
         self.device_to_device_copies.add(count(metrics.boundary.device_to_device_copies));
         self.device_to_device_copied_bytes.add(count(metrics.boundary.device_to_device_copied_bytes));
+        self.record_boundary_policy(metrics.execution_boundary_policy);
         self.reservation_requested_bytes.add(count(metrics.reservation_requested_bytes));
         self.reservation_granted_bytes.add(count(metrics.reservation_granted_bytes));
         self.reservation_denied_count.add(count(metrics.reservation_denied_count));
@@ -434,6 +483,9 @@ impl NativeCudfMetrics {
         self.retry_count.add(count(metrics.retry_count));
         self.retry_resource_exhausted_count.add(count(metrics.retry_resource_exhausted_count));
         self.retry_reservation_failure_count.add(count(metrics.retry_reservation_failure_count));
+        self.hash_join_build_count.add(count(metrics.hash_join_build_count));
+        self.hash_join_cache_hits.add(count(metrics.hash_join_cache_hits));
+        self.hash_join_cache_misses.add(count(metrics.hash_join_cache_misses));
         self.parquet_read_time.add_duration(metrics.parquet_read_time);
         self.source_read_time.add_duration(metrics.source_read_time);
         self.operator_time.add_duration(metrics.operator_time);
@@ -441,6 +493,24 @@ impl NativeCudfMetrics {
         self.final_merge_time.add_duration(metrics.final_merge_time);
         self.final_sort_time.add_duration(metrics.final_sort_time);
         self.materialization_time.add_duration(metrics.materialization_time);
+    }
+
+    fn record_boundary_policy(&self, policy: ExecutionBoundaryPolicy) {
+        if matches!(policy.source_read(), cudf_query_engine::SourceReadBoundary::DirectDeviceLocalParquet) {
+            self.source_read_boundary_direct_device.add(1);
+        }
+        if matches!(
+            policy.build_materialization(),
+            cudf_query_engine::BuildMaterializationBoundary::QueryScopedGpuHashJoin
+        ) {
+            self.build_materialization_boundary_query_scoped.add(1);
+        }
+        if matches!(policy.probe_execution(), cudf_query_engine::ProbeExecutionBoundary::ReusableGpuHashJoin) {
+            self.probe_execution_boundary_reusable.add(1);
+        }
+        if matches!(policy.result_materialization(), cudf_query_engine::ResultMaterializationBoundary::ExplicitSink) {
+            self.result_materialization_boundary_explicit.add(1);
+        }
     }
 }
 

@@ -436,7 +436,7 @@ fn build_hash_join(
         JoinSide::Right => node.inputs[1],
     };
     let cache_key = HashJoinCacheKey::new(build_node, build_keys.to_vec(), node.spec.null_equality);
-    if let Some(hash_join) = scratch.hash_join_cache.get(&cache_key) {
+    if let Some(hash_join) = scratch.hash_join_builds.get(&cache_key) {
         metrics.record_hash_join_cache_hit();
         return Ok(hash_join.clone());
     }
@@ -460,7 +460,7 @@ fn build_hash_join(
             .with_fact("build_side", node.spec.build_side)
         })?;
     metrics.record_hash_join_build();
-    scratch.hash_join_cache.insert(cache_key, hash_join.clone());
+    scratch.hash_join_builds.insert(cache_key, hash_join.clone());
     Ok(hash_join)
 }
 

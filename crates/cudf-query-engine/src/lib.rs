@@ -21,8 +21,8 @@ pub use datatypes::{
 };
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
 pub use exec::{
-    ExecutionMode, GpuDataFrame, QueryExecutionResult, QueryOutput, execute_query_plan, read_local_parquet_source,
-    validate_local_parquet_source,
+    ExecutionMode, GpuDataFrame, GpuResultHandle, QueryExecutionResult, QueryOutput, execute_query_plan,
+    materialize_gpu_result_to_host, read_local_parquet_source, validate_local_parquet_source,
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
@@ -35,8 +35,9 @@ pub use plan::{
     ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{
-    DevicePlacement, ExecutionContext, ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest,
-    MemoryResourcePolicy, ReservationKind, RetryFacts,
+    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder,
+    MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, ProbeExecutionBoundary, ReservationKind,
+    ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
 };
 pub use source::{
     ByteRangeDisposition, LocalParquetFile, LocalParquetSource, PartitionColumn, PartitionColumnDisposition,

@@ -15,11 +15,11 @@ use arrow::{
 };
 use cudf::DataFrame;
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionContext, Expr, JoinKey, JoinNullEquality,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryOutput, QueryPlanBuilder, SortExpr, SortSpec,
-    SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    plan_local_parquet_source_chunks,
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ExecutionBoundaryPolicy, ExecutionContext, Expr,
+    JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn, QueryErrorCode, QueryMetrics,
+    QueryOutput, QueryPlanBuilder, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
+    execute_query_plan, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -83,6 +83,45 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[404, 303]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_execution_boundary_policy_reports_direct_source_and_explicit_host_materialization() {
+    let dir = unique_temp_dir("cudf-query-engine-native-boundary-policy-source-host");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &path);
+    let policy = ExecutionBoundaryPolicy::default();
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_boundary_policy(policy)
+        .build()
+        .unwrap();
+
+    assert_eq!(context.boundary_policy(), policy);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.execution_boundary_policy, policy);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.boundary.device_to_host_materialized_rows, 4);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("explicit host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1083,10 +1122,16 @@ fn native_query_reuses_build_side_hash_join_for_repeated_broadcast_probe() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(sort);
+    let policy = ExecutionBoundaryPolicy::default();
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_boundary_policy(policy)
+        .build()
+        .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
+    assert_eq!(metrics.execution_boundary_policy, policy);
     assert_eq!(metrics.parquet_files, 2);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.hash_join_cache_misses, 1);
@@ -1597,7 +1642,7 @@ fn native_query_rejects_unsupported_residual_expression_families_before_source_r
 }
 
 #[test]
-fn native_host_materialization_rejects_sink_schema_name_order_mismatch() {
+fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_materialization() {
     let dir = unique_temp_dir("cudf-query-engine-native-execution-schema-mismatch");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -1621,16 +1666,13 @@ fn native_host_materialization_rejects_sink_schema_name_order_mismatch() {
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("host materialization should reject sink schema name/order mismatches"),
+        Ok(_) => panic!("GPU result handle should reject sink schema name/order mismatches"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "cudf_query_engine.host_arrow.schema");
-    assert_eq!(error.fact_value("mismatch_index"), Some("0"));
-    assert_eq!(error.fact_value("actual_column"), Some("key"));
-    assert_eq!(error.fact_value("expected_column"), Some("payload"));
-    assert_eq!(error.fact_value("actual_column_names"), Some("key,payload,m00,m01"));
-    assert_eq!(error.fact_value("expected_column_names"), Some("payload,key,m00,m01"));
+    assert_eq!(error.code(), QueryErrorCode::CudfInvalidInput);
+    assert_eq!(error.operation(), "cudf_query_engine.gpu_result_handle");
+    assert_eq!(error.fact_value("cudf_operation"), Some("dataframe::GpuRecordBatch::new"));
+    assert_eq!(error.fact_value("cudf_status"), Some("permanent"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2436,6 +2478,20 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
     };
     assert_eq!(frame.num_columns(), expected_names.len());
     assert_eq!(frame.frame().column_names(), expected_names);
+    assert_eq!(frame.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(), expected_names);
+    assert_eq!(frame.device_placement(), context.device_placement());
+    assert_eq!(frame.runtime().device().ordinal(), runtime.device().ordinal());
+    assert_eq!(gpu_result.metrics().boundary.device_to_host_materializations, 0);
+
+    let mut materialization_metrics = QueryMetrics::default();
+    let materialized = materialize_gpu_result_to_host(frame.clone(), &mut materialization_metrics).unwrap();
+    assert_eq!(materialization_metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(materialization_metrics.boundary.device_to_host_materialized_rows, 1);
+    assert_eq!(
+        materialized.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        expected_names
+    );
+    assert_eq!(int64_array(&materialized, 0).values().as_ref(), &[1500]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3791,6 +3847,62 @@ fn bounded_native_query_rejects_unsupported_expression_before_source_read() {
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.operation(), "cudf_query_engine.plan.validate_expr");
     assert!(error.fact_value("path").is_none());
+}
+
+#[test]
+fn bounded_native_query_join_rejection_facts_name_missing_hash_table_byte_observability() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-join-left-does-not-need-to-exist.parquet",
+        Arc::clone(&left_schema),
+        vec!["id".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-join-right-does-not-need-to-exist.parquet",
+        Arc::clone(&right_schema),
+        vec!["id".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "id", "left_id"),
+                cudf_query_engine::ColumnRef::input(1, "id", "right_id"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "id", "id"), "id")])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("bounded execution should reject joins before reading either source"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.operation(), "cudf_query_engine.bounded.plan");
+    assert_eq!(error.fact_value("reason"), Some("join_memory_reservations_not_implemented"));
+    assert_eq!(error.fact_value("missing_cudf_rs_observability"), Some("hash_table_device_allocated_size_bytes"));
 }
 
 fn join_left_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {

@@ -2,20 +2,11 @@ use arrow::{array::ArrayRef, compute::cast, datatypes::SchemaRef};
 
 use super::*;
 
-pub(super) fn materialize_to_host(
-    input: GpuDataFrame,
-    output_schema: &SchemaRef,
-    metrics: &mut QueryMetrics,
-) -> Result<RecordBatch> {
+pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
     let timer = Instant::now();
-    let output = input.into_frame().to_record_batch().map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.host_arrow.materialize",
-            "failed to materialize native cudf output to host Arrow",
-            error,
-        )
-    })?;
-    let output = coerce_record_batch_to_schema(output, output_schema)?;
+    let output_schema = Arc::clone(input.schema());
+    let output = input.to_host_record_batch()?;
+    let output = coerce_record_batch_to_schema(output, &output_schema)?;
     metrics.materialization_time += timer.elapsed();
     metrics
         .boundary
@@ -24,6 +15,7 @@ pub(super) fn materialize_to_host(
 }
 
 pub(super) fn materialize_bounded_to_host(
+    context: &ExecutionContext,
     input: CommittedPartial,
     final_node_id: NodeId,
     output_schema: &SchemaRef,
@@ -47,7 +39,15 @@ pub(super) fn materialize_bounded_to_host(
         },
     };
 
-    let result = materialize_to_host(input.frame, output_schema, metrics).map_err(|error| {
+    let handle = match GpuResultHandle::new(context, input.frame, Arc::clone(output_schema)) {
+        Ok(handle) => handle,
+        Err(error) => {
+            reservations.release(materialization_reservation);
+            reservations.release(input.reservation);
+            return Err(host_materialization_failure_facts(metrics).attach_to_error(error));
+        },
+    };
+    let result = materialize_to_host(handle, metrics).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "host_materialization",
             stage: "materialization",
