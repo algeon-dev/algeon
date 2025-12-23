@@ -1,4 +1,5 @@
 use super::*;
+use crate::bounded_support::BoundedConditionalJoinType;
 
 pub(super) fn execute_bounded_root_join_query_plan(
     context: &ExecutionContext,
@@ -24,7 +25,7 @@ pub(super) fn execute_bounded_root_join_query_plan(
 
     let left = execute_node(context, plan, join.inputs[0], gpu_inputs, &mut scratch, metrics)?;
     let right = execute_node(context, plan, join.inputs[1], gpu_inputs, &mut scratch, metrics)?;
-    let committed = execute_bounded_root_hash_join(context, node.id, join, left, right, &mut reservations, metrics)?;
+    let committed = execute_bounded_root_join(context, node.id, join, left, right, &mut reservations, metrics)?;
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
@@ -51,6 +52,32 @@ pub(super) fn execute_bounded_root_join_query_plan(
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
+    }
+}
+
+pub(super) fn execute_bounded_root_join(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: GpuDataFrame,
+    right: GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    if node.is_bounded_root_hash_join_compatible() {
+        execute_bounded_root_hash_join(context, node_id, node, left, right, reservations, metrics)
+    } else if node.is_bounded_root_conditional_join_compatible() {
+        execute_bounded_root_conditional_join(context, node_id, node, left, right, reservations, metrics)
+    } else {
+        Err(unsupported_bounded_shape(
+            "bounded root join execution currently supports reusable hash equi joins and keyless conditional joins",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", node.spec.build_side)
+        .with_fact("key_count", node.spec.keys.len())
+        .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+        .with_fact("output_projection_len", node.spec.output_projection.len()))
     }
 }
 
@@ -251,6 +278,7 @@ pub(super) fn execute_bounded_root_hash_join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_reusable_hash_join".to_string(),
             key_count: node.spec.keys.len(),
             residual_predicate: false,
             null_equality: node.spec.null_equality.to_string(),
@@ -284,6 +312,313 @@ pub(super) fn execute_bounded_root_hash_join(
     reservations.release(build_reservation);
 
     Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
+fn execute_bounded_root_conditional_join(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: GpuDataFrame,
+    right: GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    validate_executable_join_subset(node)?;
+    debug_assert!(node.is_bounded_root_conditional_join_compatible());
+    let join_type = BoundedConditionalJoinType::try_from_join(node)
+        .expect("bounded conditional join executor is reached only through the compatible dispatcher");
+
+    let residual_columns = residual_input_columns(node)?;
+    let left_columns = projected_input_columns(
+        &[],
+        &node.spec.output_projection,
+        residual_columns.names(JoinSide::Left).iter().map(String::as_str),
+        JoinSide::Left,
+    );
+    let right_columns = projected_input_columns(
+        &[],
+        &node.spec.output_projection,
+        residual_columns.names(JoinSide::Right).iter().map(String::as_str),
+        JoinSide::Right,
+    );
+
+    let left = select_join_input(left.into_frame(), &left_columns, "left")?;
+    let right = select_join_input(right.into_frame(), &right_columns, "right")?;
+    let left_rows = left.num_rows() as u64;
+    let right_rows = right.num_rows() as u64;
+    let left_bytes = observe_device_memory_bytes(&GpuDataFrame::new(left.clone()), metrics)?;
+    let right_bytes = observe_device_memory_bytes(&GpuDataFrame::new(right.clone()), metrics)?;
+
+    let left_reservation = reservations.try_reserve(
+        bounded_join_request(ReservationKind::BuildSide, "join_left_side", left_bytes, reservations.budget(), node_id),
+        metrics,
+    )?;
+    let right_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::ProbeSide,
+            "join_right_side",
+            right_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+
+    let overrides = execution_overrides(context);
+    let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
+    let options = dataframe_predicate_join_options(&residual_columns);
+    let timer = Instant::now();
+    let output_size =
+        conditional_join_output_size(join_type, &left, &right, &predicate, options.clone(), &overrides, node)?;
+    let gather_map_reservation_bytes =
+        conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
+    let gather_map_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_gather_map",
+            gather_map_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let indices = conditional_join_indices_with_output_size(
+        join_type,
+        &left,
+        &right,
+        &predicate,
+        options,
+        output_size,
+        &overrides,
+        node,
+    )?;
+    let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
+
+    let output_reservation_bytes =
+        indices.output_reservation_size_bytes(&left, &right, &overrides, &node.spec.output_projection)?;
+    let output_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_output",
+            output_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let output = indices.materialize_output(&left, &right, &overrides, &node.spec.output_projection)?;
+    metrics.operator_time += timer.elapsed();
+
+    let output_rows = output.num_rows() as u64;
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_keyless_conditional_join".to_string(),
+            key_count: 0,
+            residual_predicate: true,
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: node.spec.build_side.to_string(),
+            probe_side: probe_side(node.spec.build_side).to_string(),
+            build_rows: side_metric(node.spec.build_side, left_rows, right_rows),
+            build_bytes: side_metric(node.spec.build_side, left_bytes, right_bytes),
+            probe_rows: side_metric(probe_side(node.spec.build_side), left_rows, right_rows),
+            probe_bytes: side_metric(probe_side(node.spec.build_side), left_bytes, right_bytes),
+            hash_table_bytes: 0,
+            gather_map_bytes,
+            output_rows,
+            output_bytes,
+        },
+    ));
+
+    drop(indices);
+    reservations.release(gather_map_reservation);
+    drop(right);
+    reservations.release(right_reservation);
+    drop(left);
+    reservations.release(left_reservation);
+
+    Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
+enum BoundedConditionalJoinIndices {
+    Pair { left: cudf::DataFrameJoinIndices, right: cudf::DataFrameJoinIndices },
+    LeftOnly(cudf::DataFrameJoinIndices),
+}
+
+impl BoundedConditionalJoinIndices {
+    fn device_allocated_size_bytes(&self, node: &JoinNode) -> Result<u64> {
+        match self {
+            Self::Pair { left, right } => {
+                let left_bytes = left.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.bounded.join.gather_map_bytes",
+                        "failed to observe bounded native conditional join left gather-map memory",
+                        error,
+                    )
+                    .with_fact("join_type", node.spec.join_type)
+                })?;
+                let right_bytes = right.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.bounded.join.gather_map_bytes",
+                        "failed to observe bounded native conditional join right gather-map memory",
+                        error,
+                    )
+                    .with_fact("join_type", node.spec.join_type)
+                })?;
+                Ok(left_bytes.saturating_add(right_bytes))
+            },
+            Self::LeftOnly(indices) => {
+                indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.bounded.join.gather_map_bytes",
+                        "failed to observe bounded native conditional join gather-map memory",
+                        error,
+                    )
+                    .with_fact("join_type", node.spec.join_type)
+                })
+            },
+        }
+    }
+
+    fn output_reservation_size_bytes(
+        &self,
+        left: &DataFrame,
+        right: &DataFrame,
+        overrides: &ExecutionOverrides<'_>,
+        projection: &[JoinOutputColumn],
+    ) -> Result<u64> {
+        match self {
+            Self::Pair { left: left_indices, right: right_indices } => {
+                let left_projection = projected_output_columns(projection, JoinSide::Left);
+                let right_projection = projected_output_columns(projection, JoinSide::Right);
+                let left_bytes = join_side_output_reservation_bytes(
+                    left,
+                    left_indices,
+                    &left_projection,
+                    overrides,
+                    JoinSide::Left,
+                )?;
+                let right_bytes = join_side_output_reservation_bytes(
+                    right,
+                    right_indices,
+                    &right_projection,
+                    overrides,
+                    JoinSide::Right,
+                )?;
+                Ok(left_bytes.saturating_add(right_bytes))
+            },
+            Self::LeftOnly(indices) => {
+                let left_projection = projected_output_columns(projection, JoinSide::Left);
+                join_side_output_reservation_bytes(left, indices, &left_projection, overrides, JoinSide::Left)
+            },
+        }
+    }
+
+    fn materialize_output(
+        &self,
+        left: &DataFrame,
+        right: &DataFrame,
+        overrides: &ExecutionOverrides<'_>,
+        projection: &[JoinOutputColumn],
+    ) -> Result<DataFrame> {
+        match self {
+            Self::Pair { left: left_indices, right: right_indices } => {
+                materialize_join_output_projection(left, right, left_indices, right_indices, overrides, projection)
+            },
+            Self::LeftOnly(indices) => {
+                materialize_left_only_join_output_projection(left, indices, overrides, projection)
+            },
+        }
+    }
+}
+
+fn conditional_join_output_size(
+    join_type: BoundedConditionalJoinType,
+    left: &DataFrame,
+    right: &DataFrame,
+    predicate: &cudf::ops::ast::AstExpression,
+    options: cudf::DataFramePredicateJoinOptions,
+    overrides: &ExecutionOverrides<'_>,
+    node: &JoinNode,
+) -> Result<usize> {
+    let result = match join_type {
+        BoundedConditionalJoinType::Inner => {
+            left.with_execution(overrides).conditional_inner_join_size(right, predicate, options)
+        },
+        BoundedConditionalJoinType::Left => {
+            left.with_execution(overrides).conditional_left_join_size(right, predicate, options)
+        },
+        BoundedConditionalJoinType::LeftSemi => {
+            left.with_execution(overrides).conditional_left_semi_join_size(right, predicate, options)
+        },
+        BoundedConditionalJoinType::LeftAnti => {
+            left.with_execution(overrides).conditional_left_anti_join_size(right, predicate, options)
+        },
+    };
+    result.map_err(|error| join_index_error(error, node))
+}
+
+fn conditional_join_gather_map_reservation_size_bytes(
+    join_type: BoundedConditionalJoinType,
+    node: &JoinNode,
+    output_size: usize,
+) -> Result<u64> {
+    let result = match join_type {
+        BoundedConditionalJoinType::Inner | BoundedConditionalJoinType::Left => {
+            cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size)
+        },
+        BoundedConditionalJoinType::LeftSemi | BoundedConditionalJoinType::LeftAnti => {
+            cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(output_size)
+        },
+    };
+    result.map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.gather_map_reservation",
+            "failed to size bounded native conditional join gather maps",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })
+}
+
+fn conditional_join_indices_with_output_size(
+    join_type: BoundedConditionalJoinType,
+    left: &DataFrame,
+    right: &DataFrame,
+    predicate: &cudf::ops::ast::AstExpression,
+    options: cudf::DataFramePredicateJoinOptions,
+    output_size: usize,
+    overrides: &ExecutionOverrides<'_>,
+    node: &JoinNode,
+) -> Result<BoundedConditionalJoinIndices> {
+    match join_type {
+        BoundedConditionalJoinType::Inner => {
+            let indices = left
+                .with_execution(overrides)
+                .conditional_inner_join_indices_with_output_size(right, predicate, options, output_size)
+                .map_err(|error| join_index_error(error, node))?;
+            Ok(BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() })
+        },
+        BoundedConditionalJoinType::Left => {
+            let indices = left
+                .with_execution(overrides)
+                .conditional_left_join_indices_with_output_size(right, predicate, options, output_size)
+                .map_err(|error| join_index_error(error, node))?;
+            Ok(BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() })
+        },
+        BoundedConditionalJoinType::LeftSemi => left
+            .with_execution(overrides)
+            .conditional_left_semi_join_indices_with_output_size(right, predicate, options, output_size)
+            .map(BoundedConditionalJoinIndices::LeftOnly)
+            .map_err(|error| join_index_error(error, node)),
+        BoundedConditionalJoinType::LeftAnti => left
+            .with_execution(overrides)
+            .conditional_left_anti_join_indices_with_output_size(right, predicate, options, output_size)
+            .map(BoundedConditionalJoinIndices::LeftOnly)
+            .map_err(|error| join_index_error(error, node)),
+    }
 }
 
 fn bounded_join_request(

@@ -47,8 +47,8 @@ use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
     metrics::QueryMetrics,
     plan::{
-        AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinSide, JoinType, LimitNode, NodeId, PlanNode,
-        ProjectionNode, QueryPlan, ResultSink, SortNode,
+        AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
+        PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode,
     },
     runtime::{
         BoundedJoinReservationContract, ExecutionContext, MemoryControlPolicy, MemoryReservationRequest,

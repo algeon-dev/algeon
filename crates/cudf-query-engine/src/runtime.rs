@@ -543,6 +543,24 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
     ),
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BoundedJoinExecutionFamily {
+    RootReusableHashJoin,
+    KeylessConditionalJoin,
+}
+
+impl BoundedJoinExecutionFamily {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RootReusableHashJoin => "root_reusable_hash_join",
+            Self::KeylessConditionalJoin => "keyless_conditional_join",
+        }
+    }
+}
+
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 2] =
+    [BoundedJoinExecutionFamily::RootReusableHashJoin, BoundedJoinExecutionFamily::KeylessConditionalJoin];
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub struct BoundedJoinReservationContract;
 
@@ -556,11 +574,19 @@ impl BoundedJoinReservationContract {
     }
 
     pub const fn execution_status(self) -> &'static str {
-        "enabled_for_root_reusable_hash_join"
+        "enabled"
     }
 
     pub const fn enabled(self) -> bool {
         true
+    }
+
+    pub const fn execution_families(self) -> &'static [BoundedJoinExecutionFamily] {
+        &BOUNDED_JOIN_EXECUTION_FAMILIES
+    }
+
+    pub fn execution_families_csv(self) -> String {
+        csv_join(self.execution_families().iter().map(|family| family.as_str()))
     }
 
     pub fn reservation_kinds_csv(self) -> String {
@@ -621,6 +647,7 @@ impl BoundedJoinReservationContract {
             ("result_materialization_boundary", boundary_policy.result_materialization().to_string()),
             ("bounded_join_reservation_model", self.model_status().to_string()),
             ("bounded_join_execution_status", self.execution_status().to_string()),
+            ("bounded_join_execution_families", self.execution_families_csv()),
             ("bounded_join_enabled", self.enabled().to_string()),
             ("bounded_join_reservation_kinds", self.reservation_kinds_csv()),
             ("bounded_join_reservation_statuses", self.reservation_statuses_csv()),
@@ -637,6 +664,8 @@ impl BoundedJoinReservationContract {
             ),
             ("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size".to_string()),
             ("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size".to_string()),
+            ("cudf_rs_conditional_join_output_size_observability", "conditional_join_exact_output_size".to_string()),
+            ("cudf_rs_conditional_join_output_size_hint", "conditional_join_indices_with_output_size".to_string()),
             (
                 "cudf_rs_dataframe_gather_output_reservation_contract",
                 "dataframe_gather_output_reservation_size_bytes".to_string(),

@@ -11,6 +11,33 @@ pub(crate) enum BoundedJoinPlanSupport {
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BoundedConditionalJoinType {
+    Inner,
+    Left,
+    LeftSemi,
+    LeftAnti,
+}
+
+impl BoundedConditionalJoinType {
+    pub(crate) fn try_from_join(join: &JoinNode) -> Option<Self> {
+        if !join.spec.keys.is_empty()
+            || join.spec.residual_predicate.is_none()
+            || join.spec.output_projection.is_empty()
+        {
+            return None;
+        }
+
+        match join.spec.join_type {
+            JoinType::Inner => Some(Self::Inner),
+            JoinType::Left if join.spec.build_side == JoinSide::Right => Some(Self::Left),
+            JoinType::LeftSemi => Some(Self::LeftSemi),
+            JoinType::LeftAnti => Some(Self::LeftAnti),
+            JoinType::Left | JoinType::Full | JoinType::Cross => None,
+        }
+    }
+}
+
 pub(crate) struct BoundedJoinPipelineShape<'a> {
     pub(crate) join_id: NodeId,
     pub(crate) join: &'a JoinNode,
@@ -36,7 +63,7 @@ pub(crate) enum BoundedJoinPipelineRejection<'a> {
 pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoinPlanSupport {
     if let Some(node) = plan.node(plan.sink().input())
         && let PlanNode::Join(join) = &node.kind
-        && bounded_root_hash_join_compatible(join)
+        && bounded_root_join_compatible(join)
     {
         return BoundedJoinPlanSupport::Root;
     }
@@ -61,7 +88,7 @@ pub(crate) fn analyze_bounded_join_pipeline(
         })?;
         match &node.kind {
             PlanNode::Join(join) => {
-                if !bounded_root_hash_join_compatible(join) {
+                if !bounded_root_join_compatible(join) {
                     return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join });
                 }
                 if reachable_join_count(plan) != 1 {
@@ -117,6 +144,14 @@ pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
         && !join.spec.output_projection.is_empty()
         && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
+}
+
+pub(crate) fn bounded_root_conditional_join_compatible(join: &JoinNode) -> bool {
+    BoundedConditionalJoinType::try_from_join(join).is_some()
+}
+
+pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
+    bounded_root_hash_join_compatible(join) || bounded_root_conditional_join_compatible(join)
 }
 
 fn reachable_join_count(plan: &QueryPlan) -> usize {

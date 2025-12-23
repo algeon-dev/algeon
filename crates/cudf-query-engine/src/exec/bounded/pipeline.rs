@@ -17,15 +17,8 @@ pub(super) fn execute_bounded_join_pipeline_query_plan(
     let mut scratch = ExecutionScratch::new(context);
     let left = execute_node(context, plan, pipeline.join.inputs[0], gpu_inputs, &mut scratch, metrics)?;
     let right = execute_node(context, plan, pipeline.join.inputs[1], gpu_inputs, &mut scratch, metrics)?;
-    let mut committed = execute_bounded_root_hash_join(
-        context,
-        pipeline.join_id,
-        pipeline.join,
-        left,
-        right,
-        &mut reservations,
-        metrics,
-    )?;
+    let mut committed =
+        execute_bounded_root_join(context, pipeline.join_id, pipeline.join, left, right, &mut reservations, metrics)?;
 
     for stage in &pipeline.stages {
         committed = execute_bounded_join_pipeline_stage(context, stage, committed, &mut reservations, metrics)?;
@@ -190,7 +183,7 @@ fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipelineRejection
     match rejection {
         BoundedJoinPipelineRejection::MissingNode { node_id, message } => invalid_node_reference(node_id, message),
         BoundedJoinPipelineRejection::UnsupportedJoin { join } => unsupported_bounded_shape(
-            "bounded join pipeline execution currently supports reusable hash inner, left, and full equi joins",
+            "bounded join pipeline execution currently supports reusable hash equi joins and keyless conditional joins",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("join_type", join.spec.join_type)
@@ -203,7 +196,7 @@ fn bounded_join_pipeline_rejection_error(rejection: BoundedJoinPipelineRejection
             "limit_without_sort",
         ),
         BoundedJoinPipelineRejection::MissingRootJoin => unsupported_bounded_shape(
-            "bounded join pipeline execution requires a reusable hash join below supported unary operators",
+            "bounded join pipeline execution requires a reusable hash join or keyless conditional join below supported unary operators",
             "missing_root_join",
         ),
         BoundedJoinPipelineRejection::MultipleReachableJoins => unsupported_bounded_shape(
