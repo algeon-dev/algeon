@@ -229,6 +229,7 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             },
             NativeOptimizerPhase::Final => optimize_final_native_plan(Arc::clone(&plan), native_execution_config)?,
         };
+        let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &self.config)?;
         *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
         *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
             optimized.source_diagnostics.clone();
@@ -251,6 +252,44 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
     fn schema_check(&self) -> bool {
         true
     }
+}
+
+fn apply_native_fallback_policy(
+    original_plan: Arc<dyn ExecutionPlan>,
+    attempt: NativeOptimizationAttempt,
+    config: &CudfOptimizerConfig,
+) -> DataFusionResult<NativeOptimizationAttempt> {
+    match config.fallback_policy {
+        GpuFallbackPolicy::GpuPreferred => Ok(attempt),
+        GpuFallbackPolicy::CpuOnly => Ok(NativeOptimizationAttempt {
+            plan: original_plan,
+            report: native_cpu_only_report(&attempt.report),
+            source_diagnostics: attempt.source_diagnostics,
+            bounded_join_reservation_facts: BTreeMap::new(),
+            rewritten: false,
+        }),
+        GpuFallbackPolicy::GpuOnly => {
+            if let Some((candidate, reason)) = first_native_rejection(&attempt.report) {
+                return Err(candidate_rejected_error(candidate, reason, config).into());
+            }
+            Ok(attempt)
+        },
+    }
+}
+
+fn native_cpu_only_report(report: &PlanningReport) -> PlanningReport {
+    PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
+        CandidateOutcome::Rewritten { candidate } | CandidateOutcome::Rejected { candidate, .. } => {
+            CandidateOutcome::Rejected { candidate: candidate.clone(), reason: FallbackReason::ExplicitCpuPolicy }
+        },
+    }))
+}
+
+fn first_native_rejection(report: &PlanningReport) -> Option<(&GpuCandidate, FallbackReason)> {
+    report.outcomes().iter().find_map(|outcome| match outcome {
+        CandidateOutcome::Rejected { candidate, reason } => Some((candidate, *reason)),
+        CandidateOutcome::Rewritten { .. } => None,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -407,6 +446,7 @@ fn native_execution_boundary_rejection_facts(
         && plan.contains_join()
         && !plan.has_bounded_executable_root_join()
         && !plan.has_bounded_executable_join_pipeline()
+        && !plan.has_bounded_executable_multi_join_pipeline()
     {
         let mut facts: BTreeMap<String, String> = cudf_query_engine::BoundedJoinReservationContract
             .rejection_facts(execution_config.boundary_policy())

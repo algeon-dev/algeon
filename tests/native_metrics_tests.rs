@@ -93,6 +93,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "hash_join_durable_cache_inserts",
         "hash_join_hash_table_bytes",
         "filtered_join_hash_table_bytes",
+        "filtered_join_probe_state_bytes",
         "join_gather_map_bytes",
         "parquet_read_time",
         "operator_time",

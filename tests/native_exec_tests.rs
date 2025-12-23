@@ -171,6 +171,53 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
 }
 
 #[test]
+fn native_optimizer_rule_obeys_cpu_only_policy_for_supported_plan() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-cpu-only");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::CpuOnly).with_native_execution_config(bounded_config());
+    let rule = CudfNativePhysicalOptimizerRule::new(config);
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(optimized.as_any().downcast_ref::<LocalLimitExec>().is_some());
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), 1);
+    assert!(matches!(
+        report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::ExplicitCpuPolicy, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-gpu-only-rejected");
+    let path = dir.join("input.parquet");
+    write_parquet_file(&path);
+    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::BitwiseAnd);
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config());
+    let rule = CudfNativePhysicalOptimizerRule::new(config);
+
+    let error = rule
+        .optimize(plan, &ConfigOptions::default())
+        .expect_err("GpuOnly native optimizer must fail when a native candidate is rejected");
+    let DataFusionError::External(source) = &error else {
+        panic!("GpuOnly native rejection should preserve the typed adapter error");
+    };
+    let adapter_error = source.downcast_ref::<datafusion_cudf::Error>().expect("expected datafusion-cudf Error");
+
+    assert_eq!(adapter_error.code(), ErrorCode::GpuCandidateRejected);
+    assert_eq!(adapter_error.fact_value("fallback_reason"), Some("unsupported_expression"));
+    assert!(error.to_string().contains("unsupported_expression"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-partial-host-arrow-boundary");
     let path = dir.join("input.parquet");
@@ -362,7 +409,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(adapter_error.fact_value("blocked_reservations"), Some(""));
     assert_eq!(
         adapter_error.fact_value("modeled_reservations"),
-        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+        Some("build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization")
     );
     assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
     assert_eq!(
@@ -375,11 +422,19 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     );
     assert_eq!(
         adapter_error.fact_value("cudf_rs_filtered_join_output_size_observability"),
-        Some("filtered_join_exact_output_size")
+        Some("filtered_join_probe_state_output_size")
     );
     assert_eq!(
-        adapter_error.fact_value("cudf_rs_filtered_join_probe_output_size_hint"),
-        Some("filtered_join_indices_with_output_size_validation")
+        adapter_error.fact_value("cudf_rs_filtered_join_probe_state_contract"),
+        Some("filtered_join_retained_probe_state")
+    );
+    assert_eq!(
+        adapter_error.fact_value("cudf_rs_filtered_join_probe_state_observability"),
+        Some("filtered_join_probe_device_allocated_size_bytes")
+    );
+    assert_eq!(
+        adapter_error.fact_value("cudf_rs_filtered_join_probe_materialization_contract"),
+        Some("filtered_join_probe_state_materialize_indices")
     );
     assert_eq!(
         adapter_error.fact_value("cudf_rs_conditional_join_output_size_observability"),
@@ -423,7 +478,7 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     );
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
-        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+        Some("build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization")
     );
     assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
 
@@ -439,13 +494,15 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("enabled"));
     assert_eq!(
         runtime_error.fact_value("bounded_join_execution_families"),
-        Some("root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join")
+        Some(
+            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline"
+        )
     );
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
     assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), None);
     assert_eq!(
         runtime_error.fact_value("modeled_reservations"),
-        Some("build_side,hash_table,probe_side,gather_map,join_output,materialization")
+        Some("build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization")
     );
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
 

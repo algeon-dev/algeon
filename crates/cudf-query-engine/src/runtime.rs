@@ -401,6 +401,7 @@ pub enum ReservationKind {
     BuildSide,
     ProbeSide,
     HashTable,
+    FilteredProbeState,
     GatherMap,
     JoinOutput,
     PartialState,
@@ -418,6 +419,7 @@ impl ReservationKind {
             Self::BuildSide => "build_side",
             Self::ProbeSide => "probe_side",
             Self::HashTable => "hash_table",
+            Self::FilteredProbeState => "filtered_probe_state",
             Self::GatherMap => "gather_map",
             Self::JoinOutput => "join_output",
             Self::PartialState => "partial_state",
@@ -498,7 +500,7 @@ impl BoundedJoinReservationRequirement {
     }
 }
 
-pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 6] = [
+pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirement; 7] = [
     BoundedJoinReservationRequirement::new(
         ReservationKind::BuildSide,
         "join_build_side",
@@ -521,11 +523,18 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
         "modeled_by_ordered_bounded_join_execution_path",
     ),
     BoundedJoinReservationRequirement::new(
+        ReservationKind::FilteredProbeState,
+        "join_filtered_probe_state",
+        "filtered_join_retained_probe_state",
+        BoundedJoinReservationStatus::Modeled,
+        "modeled_by_cudf_rs_filtered_probe_state_observability",
+    ),
+    BoundedJoinReservationRequirement::new(
         ReservationKind::GatherMap,
         "join_gather_map",
-        "hash_join_gather_map_reservation_size_bytes",
+        "join_gather_map_reservation_size_bytes",
         BoundedJoinReservationStatus::Modeled,
-        "modeled_by_cudf_rs_hash_join_gather_map_sizing",
+        "modeled_by_cudf_rs_join_gather_map_sizing",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::JoinOutput,
@@ -548,6 +557,7 @@ pub enum BoundedJoinExecutionFamily {
     RootReusableHashJoin,
     RootFilteredSemiAntiJoin,
     KeylessConditionalJoin,
+    MultiJoinReusableHashPipeline,
 }
 
 impl BoundedJoinExecutionFamily {
@@ -556,14 +566,16 @@ impl BoundedJoinExecutionFamily {
             Self::RootReusableHashJoin => "root_reusable_hash_join",
             Self::RootFilteredSemiAntiJoin => "root_filtered_semi_anti_join",
             Self::KeylessConditionalJoin => "keyless_conditional_join",
+            Self::MultiJoinReusableHashPipeline => "multi_join_reusable_hash_pipeline",
         }
     }
 }
 
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 3] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 4] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
+    BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -670,13 +682,32 @@ impl BoundedJoinReservationContract {
             ("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size".to_string()),
             ("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size".to_string()),
             ("cudf_rs_filtered_join_hash_table_observability", "filtered_join_device_allocated_size_bytes".to_string()),
-            ("cudf_rs_filtered_join_output_size_observability", "filtered_join_exact_output_size".to_string()),
+            ("cudf_rs_filtered_join_probe_state_contract", "filtered_join_retained_probe_state".to_string()),
             (
-                "cudf_rs_filtered_join_probe_output_size_hint",
-                "filtered_join_indices_with_output_size_validation".to_string(),
+                "cudf_rs_filtered_join_probe_state_observability",
+                "filtered_join_probe_device_allocated_size_bytes".to_string(),
+            ),
+            ("cudf_rs_filtered_join_output_size_observability", "filtered_join_probe_state_output_size".to_string()),
+            (
+                "cudf_rs_filtered_join_probe_materialization_contract",
+                "filtered_join_probe_state_materialize_indices".to_string(),
             ),
             ("cudf_rs_conditional_join_output_size_observability", "conditional_join_exact_output_size".to_string()),
             ("cudf_rs_conditional_join_output_size_hint", "conditional_join_indices_with_output_size".to_string()),
+            ("cudf_rs_mixed_join_output_size_observability", "mixed_inner_left_join_size_data_output_size".to_string()),
+            ("cudf_rs_mixed_join_output_size_hint", "mixed_inner_left_join_size_data_materialize_indices".to_string()),
+            (
+                "cudf_rs_mixed_join_remaining_blockers",
+                "blocked_until_mixed_full_semi_anti_retained_size_data_and_projected_output_reservation".to_string(),
+            ),
+            (
+                "cudf_rs_projected_cross_join_reservation_contract",
+                "blocked_until_projected_cross_join_reservation_size_bytes".to_string(),
+            ),
+            (
+                "cudf_rs_conditional_full_join_output_size_observability",
+                "blocked_until_conditional_full_join_exact_output_size".to_string(),
+            ),
             (
                 "cudf_rs_dataframe_gather_output_reservation_contract",
                 "dataframe_gather_output_reservation_size_bytes".to_string(),

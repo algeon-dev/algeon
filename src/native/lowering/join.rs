@@ -173,10 +173,11 @@ pub(super) fn lower_hash_join_input(
         (left, right)
     };
     let (native_left, native_right) = canonical.order_inputs(left, right);
+    let build_side = native_join_build_side(canonical, keys.len(), residual.is_some());
     let mut spec = NativeJoinSpec::new(canonical.join_type, keys)
         .with_output_projection(output_columns.projection)
         .with_null_equality(lower_join_null_equality(join.join.null_equality()))
-        .with_build_side(canonical.build_side());
+        .with_build_side(build_side);
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
@@ -229,14 +230,26 @@ pub(super) fn lower_nested_loop_join_input(
         (left, right)
     };
     let (native_left, native_right) = canonical.order_inputs(left, right);
+    let build_side = native_join_build_side(canonical, 0, residual.is_some());
     let mut spec = NativeJoinSpec::new(canonical.join_type, Vec::new())
         .with_output_projection(output_columns.projection)
-        .with_build_side(canonical.build_side());
+        .with_build_side(build_side);
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
     let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
     Ok(LoweredNativeInput { node, schema: output_columns.schema })
+}
+
+fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residual: bool) -> NativeJoinSide {
+    if key_count == 0
+        && has_residual
+        && matches!(canonical.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti)
+    {
+        NativeJoinSide::Left
+    } else {
+        canonical.build_side()
+    }
 }
 
 fn lower_nested_loop_join_contract(

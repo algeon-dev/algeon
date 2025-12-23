@@ -291,6 +291,7 @@ pub(super) fn execute_bounded_root_hash_join(
             probe_rows: side_metric(probe_side, original_left_rows, original_right_rows),
             probe_bytes,
             hash_table_bytes,
+            filtered_probe_state_bytes: 0,
             gather_map_bytes,
             output_rows,
             output_bytes,
@@ -408,17 +409,34 @@ fn execute_bounded_root_filtered_join(
         bounded_join_request(ReservationKind::ProbeSide, "join_probe_side", left_bytes, reservations.budget(), node_id),
         metrics,
     )?;
-    let output_size = match node.spec.join_type {
-        JoinType::LeftSemi => filtered_join.filtered_join().left_semi_probe_size_in(&left, &left_keys, &overrides),
-        JoinType::LeftAnti => filtered_join.filtered_join().left_anti_probe_size_in(&left, &left_keys, &overrides),
+    let probe_state = match node.spec.join_type {
+        JoinType::LeftSemi => filtered_join.filtered_join().begin_left_semi_probe_in(&left, &left_keys, &overrides),
+        JoinType::LeftAnti => filtered_join.filtered_join().begin_left_anti_probe_in(&left, &left_keys, &overrides),
         JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::Cross => unreachable!("validated above"),
     }
     .map_err(|error| join_index_error(error, node))?;
-    let gather_map_reservation_bytes = filtered_join
-        .filtered_join()
-        .probe_gather_map_reservation_size_bytes(output_size)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
+    let probe_state_bytes = probe_state.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.filtered_probe_state_bytes",
+            "failed to observe bounded native filtered join probe-state memory",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", build_side)
+    })?;
+    let probe_state_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::FilteredProbeState,
+            "join_filtered_probe_state",
+            probe_state_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    metrics.record_filtered_join_probe_state_bytes(probe_state_bytes);
+    let gather_map_reservation_bytes =
+        probe_state.probe_gather_map_reservation_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
             QueryError::from_cudf(
                 "cudf_query_engine.bounded.join.filtered_gather_map_reservation",
                 "failed to size bounded native reusable filtered join gather map",
@@ -437,22 +455,8 @@ fn execute_bounded_root_filtered_join(
         ),
         metrics,
     )?;
-    let indices = match node.spec.join_type {
-        JoinType::LeftSemi => filtered_join.filtered_join().left_semi_probe_with_output_size_in(
-            &left,
-            &left_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::LeftAnti => filtered_join.filtered_join().left_anti_probe_with_output_size_in(
-            &left,
-            &left_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::Cross => unreachable!("validated above"),
-    }
-    .map_err(|error| join_index_error(error, node))?;
+    let indices = probe_state.materialize_indices_in(&overrides).map_err(|error| join_index_error(error, node))?;
+    reservations.release(probe_state_reservation);
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.bounded.join.filtered_gather_map_bytes",
@@ -494,6 +498,7 @@ fn execute_bounded_root_filtered_join(
             probe_rows: left_rows,
             probe_bytes: left_bytes,
             hash_table_bytes,
+            filtered_probe_state_bytes: probe_state_bytes,
             gather_map_bytes,
             output_rows,
             output_bytes,
@@ -617,13 +622,14 @@ fn execute_bounded_root_conditional_join(
             key_count: 0,
             residual_predicate: true,
             null_equality: node.spec.null_equality.to_string(),
-            build_side: node.spec.build_side.to_string(),
-            probe_side: probe_side(node.spec.build_side).to_string(),
-            build_rows: side_metric(node.spec.build_side, left_rows, right_rows),
-            build_bytes: side_metric(node.spec.build_side, left_bytes, right_bytes),
-            probe_rows: side_metric(probe_side(node.spec.build_side), left_rows, right_rows),
-            probe_bytes: side_metric(probe_side(node.spec.build_side), left_bytes, right_bytes),
+            build_side: JoinSide::Left.to_string(),
+            probe_side: JoinSide::Right.to_string(),
+            build_rows: left_rows,
+            build_bytes: left_bytes,
+            probe_rows: right_rows,
+            probe_bytes: right_bytes,
             hash_table_bytes: 0,
+            filtered_probe_state_bytes: 0,
             gather_map_bytes,
             output_rows,
             output_bytes,

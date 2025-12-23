@@ -56,12 +56,12 @@ impl ReservationTracker {
     ) -> Result<ActiveReservation> {
         let remaining = self.budget_bytes.saturating_sub(self.reserved_bytes());
         if request.requested_bytes > remaining {
-            metrics.record_reservation_denied(request.requested_bytes);
+            metrics.record_reservation_denied_event(&request, remaining);
             return Err(request.denied_error(remaining));
         }
 
         self.reserved_bytes.set(self.reserved_bytes().saturating_add(request.requested_bytes));
-        metrics.record_reservation_granted(request.requested_bytes, request.requested_bytes);
+        metrics.record_reservation_granted_event(&request, request.requested_bytes);
         Ok(ActiveReservation::new(Rc::clone(&self.reserved_bytes), request.requested_bytes))
     }
 

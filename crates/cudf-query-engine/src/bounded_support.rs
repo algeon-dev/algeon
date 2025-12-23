@@ -8,6 +8,7 @@ use crate::plan::{
 pub(crate) enum BoundedJoinPlanSupport {
     Root,
     UnaryPipeline,
+    MultiJoinPipeline,
     Unsupported,
 }
 
@@ -55,27 +56,83 @@ pub(crate) enum BoundedJoinPipelineStage<'a> {
 pub(crate) enum BoundedJoinPipelineRejection<'a> {
     MissingNode { node_id: NodeId, message: &'static str },
     UnsupportedJoin { join: &'a JoinNode },
+    UnsupportedLeaf { node_id: NodeId, node_kind: &'static str },
     LimitWithoutSort,
     MissingRootJoin,
     MultipleReachableJoins,
+    SingleReachableJoin,
 }
 
 pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoinPlanSupport {
     if let Some(node) = plan.node(plan.sink().input())
         && let PlanNode::Join(join) = &node.kind
         && bounded_root_join_compatible(join)
+        && reachable_join_count(plan) == 1
     {
         return BoundedJoinPlanSupport::Root;
     }
 
     match analyze_bounded_join_pipeline(plan) {
         Ok(_) => BoundedJoinPlanSupport::UnaryPipeline,
-        Err(_) => BoundedJoinPlanSupport::Unsupported,
+        Err(_) => match analyze_bounded_multi_join_pipeline(plan) {
+            Ok(_) => BoundedJoinPlanSupport::MultiJoinPipeline,
+            Err(_) => BoundedJoinPlanSupport::Unsupported,
+        },
     }
 }
 
 pub(crate) fn analyze_bounded_join_pipeline(
     plan: &QueryPlan,
+) -> std::result::Result<BoundedJoinPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
+    analyze_bounded_join_pipeline_shape(plan, true)
+}
+
+pub(crate) fn analyze_bounded_multi_join_pipeline(
+    plan: &QueryPlan,
+) -> std::result::Result<BoundedJoinPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
+    let shape = analyze_bounded_join_pipeline_shape(plan, false)?;
+    let join_count = bounded_join_subtree_join_count(plan, shape.join_id)?;
+    if join_count <= 1 {
+        return Err(BoundedJoinPipelineRejection::SingleReachableJoin);
+    }
+    validate_bounded_multi_join_subtree(plan, shape.join_id)?;
+    Ok(shape)
+}
+
+pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
+        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
+}
+
+pub(crate) fn bounded_root_filtered_join_compatible(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        && join.spec.build_side == JoinSide::Right
+        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+}
+
+pub(crate) fn bounded_root_conditional_join_compatible(join: &JoinNode) -> bool {
+    BoundedConditionalJoinType::try_from_join(join).is_some()
+}
+
+pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
+    bounded_root_hash_join_compatible(join)
+        || bounded_root_filtered_join_compatible(join)
+        || bounded_root_conditional_join_compatible(join)
+}
+
+pub(crate) fn bounded_multi_join_compatible(join: &JoinNode) -> bool {
+    bounded_root_hash_join_compatible(join) || bounded_root_filtered_join_compatible(join)
+}
+
+fn analyze_bounded_join_pipeline_shape(
+    plan: &QueryPlan,
+    require_single_reachable_join: bool,
 ) -> std::result::Result<BoundedJoinPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
     let mut current = plan.sink().input();
     let mut stages = Vec::new();
@@ -91,7 +148,7 @@ pub(crate) fn analyze_bounded_join_pipeline(
                 if !bounded_root_join_compatible(join) {
                     return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join });
                 }
-                if reachable_join_count(plan) != 1 {
+                if require_single_reachable_join && reachable_join_count(plan) != 1 {
                     return Err(BoundedJoinPipelineRejection::MultipleReachableJoins);
                 }
                 stages.reverse();
@@ -138,31 +195,47 @@ pub(crate) fn analyze_bounded_join_pipeline(
     }
 }
 
-pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-        && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
+fn validate_bounded_multi_join_subtree(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded multi-join pipeline references a missing plan node",
+    })?;
+    match &node.kind {
+        PlanNode::Join(join) => {
+            if !bounded_multi_join_compatible(join) {
+                return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join });
+            }
+            validate_bounded_multi_join_subtree(plan, join.inputs[0])?;
+            validate_bounded_multi_join_subtree(plan, join.inputs[1])?;
+            Ok(())
+        },
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => validate_bounded_multi_join_subtree(plan, filter.input),
+        PlanNode::Projection(projection) => validate_bounded_multi_join_subtree(plan, projection.input),
+        PlanNode::Aggregate(_) => {
+            Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "aggregate" })
+        },
+        PlanNode::Sort(_) => Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "sort" }),
+        PlanNode::Limit(_) => Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "limit" }),
+    }
 }
 
-pub(crate) fn bounded_root_filtered_join_compatible(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
-        && join.spec.build_side == JoinSide::Right
-        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
-}
-
-pub(crate) fn bounded_root_conditional_join_compatible(join: &JoinNode) -> bool {
-    BoundedConditionalJoinType::try_from_join(join).is_some()
-}
-
-pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
-    bounded_root_hash_join_compatible(join)
-        || bounded_root_filtered_join_compatible(join)
-        || bounded_root_conditional_join_compatible(join)
+fn bounded_join_subtree_join_count(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<usize, BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded multi-join pipeline references a missing plan node",
+    })?;
+    let mut count = usize::from(matches!(node.kind, PlanNode::Join(_)));
+    for input in node.input_ids() {
+        count += bounded_join_subtree_join_count(plan, *input)?;
+    }
+    Ok(count)
 }
 
 fn reachable_join_count(plan: &QueryPlan) -> usize {

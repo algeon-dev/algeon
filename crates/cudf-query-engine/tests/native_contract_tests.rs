@@ -303,6 +303,7 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(ReservationKind::BuildSide.as_str(), "build_side");
     assert_eq!(ReservationKind::ProbeSide.as_str(), "probe_side");
     assert_eq!(ReservationKind::HashTable.as_str(), "hash_table");
+    assert_eq!(ReservationKind::FilteredProbeState.as_str(), "filtered_probe_state");
     assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
     assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
     assert_eq!(ReservationKind::Materialization.as_str(), "materialization");
@@ -339,11 +340,18 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
             "modeled_by_ordered_bounded_join_execution_path",
         ),
         (
+            ReservationKind::FilteredProbeState,
+            "filtered_probe_state",
+            "join_filtered_probe_state",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_cudf_rs_filtered_probe_state_observability",
+        ),
+        (
             ReservationKind::GatherMap,
             "gather_map",
             "join_gather_map",
             BoundedJoinReservationStatus::Modeled,
-            "modeled_by_cudf_rs_hash_join_gather_map_sizing",
+            "modeled_by_cudf_rs_join_gather_map_sizing",
         ),
         (
             ReservationKind::JoinOutput,
@@ -364,10 +372,10 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.execution_families().len(), 3);
+    assert_eq!(contract.execution_families().len(), 4);
     assert_eq!(
         contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join"
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline"
     );
     assert!(contract.enabled());
 
@@ -390,13 +398,13 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 
     assert_eq!(
         contract.reservation_kinds_csv(),
-        "build_side,hash_table,probe_side,gather_map,join_output,materialization"
+        "build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization"
     );
     assert_eq!(contract.lower_level_blockers_csv(), "");
     assert_eq!(contract.blocking_reservation_kinds_csv(), "");
     assert_eq!(
         contract.modeled_reservation_kinds_csv(),
-        "build_side,hash_table,probe_side,gather_map,join_output,materialization"
+        "build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization"
     );
     assert_eq!(contract.deferred_reservation_kinds_csv(), "");
 }
@@ -465,11 +473,19 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     );
     assert_eq!(
         facts.get("cudf_rs_filtered_join_output_size_observability").map(String::as_str),
-        Some("filtered_join_exact_output_size")
+        Some("filtered_join_probe_state_output_size")
     );
     assert_eq!(
-        facts.get("cudf_rs_filtered_join_probe_output_size_hint").map(String::as_str),
-        Some("filtered_join_indices_with_output_size_validation")
+        facts.get("cudf_rs_filtered_join_probe_state_contract").map(String::as_str),
+        Some("filtered_join_retained_probe_state")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_filtered_join_probe_state_observability").map(String::as_str),
+        Some("filtered_join_probe_device_allocated_size_bytes")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_filtered_join_probe_materialization_contract").map(String::as_str),
+        Some("filtered_join_probe_state_materialize_indices")
     );
     assert_eq!(
         facts.get("cudf_rs_dataframe_gather_output_reservation_contract").map(String::as_str),
@@ -482,6 +498,26 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         facts.get("cudf_rs_conditional_join_output_size_hint").map(String::as_str),
         Some("conditional_join_indices_with_output_size")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_mixed_join_output_size_observability").map(String::as_str),
+        Some("mixed_inner_left_join_size_data_output_size")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_mixed_join_output_size_hint").map(String::as_str),
+        Some("mixed_inner_left_join_size_data_materialize_indices")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_mixed_join_remaining_blockers").map(String::as_str),
+        Some("blocked_until_mixed_full_semi_anti_retained_size_data_and_projected_output_reservation")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_projected_cross_join_reservation_contract").map(String::as_str),
+        Some("blocked_until_projected_cross_join_reservation_size_bytes")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_conditional_full_join_output_size_observability").map(String::as_str),
+        Some("blocked_until_conditional_full_join_exact_output_size")
     );
     assert_eq!(
         facts.get("missing_reservations").map(String::as_str),
@@ -749,6 +785,7 @@ fn query_metrics_have_join_operator_contract() {
             probe_rows: 20,
             probe_bytes: 2048,
             hash_table_bytes: 4096,
+            filtered_probe_state_bytes: 0,
             gather_map_bytes: 256,
             output_rows: 5,
             output_bytes: 512,
@@ -761,6 +798,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(join.execution_strategy, "hash_join");
     assert_eq!(join.key_count, 2);
     assert_eq!(join.hash_table_bytes, 4096);
+    assert_eq!(join.filtered_probe_state_bytes, 0);
     assert_eq!(join.gather_map_bytes, 256);
     assert_eq!(join.build_side, "right");
     assert_eq!(join.probe_side, "left");
@@ -770,6 +808,7 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_hash_join_hash_table_bytes(4096);
     metrics.record_filtered_join_build();
     metrics.record_filtered_join_hash_table_bytes(2048);
+    metrics.record_filtered_join_probe_state_bytes(1024);
     metrics.record_hash_join_cache_hit();
     metrics.record_hash_join_durable_cache_miss();
     metrics.record_hash_join_durable_cache_insert();
@@ -783,6 +822,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(metrics.hash_join_durable_cache_hits, 1);
     assert_eq!(metrics.hash_join_hash_table_bytes, 4096);
     assert_eq!(metrics.filtered_join_hash_table_bytes, 2048);
+    assert_eq!(metrics.filtered_join_probe_state_bytes, 1024);
 }
 
 #[test]
