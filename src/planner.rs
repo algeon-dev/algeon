@@ -405,6 +405,7 @@ fn native_execution_boundary_rejection_facts(
 ) -> Option<BTreeMap<String, String>> {
     if execution_config.memory_control_policy().is_bounded()
         && plan.contains_join()
+        && !plan.has_bounded_executable_root_join()
         && !plan.has_bounded_executable_join_pipeline()
     {
         let mut facts: BTreeMap<String, String> = cudf_query_engine::BoundedJoinReservationContract
@@ -415,7 +416,7 @@ fn native_execution_boundary_rejection_facts(
         facts.insert("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string());
         facts.insert(
             "bounded_join_unsupported_shape".to_string(),
-            "requires_root_reusable_hash_or_keyless_conditional_join".to_string(),
+            "requires_root_reusable_hash_filtered_or_keyless_conditional_join".to_string(),
         );
         Some(facts)
     } else {

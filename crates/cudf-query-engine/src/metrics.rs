@@ -34,6 +34,8 @@ pub struct QueryMetrics {
     pub retry_reservation_failure_count: u64,
     /// Number of reusable cuDF hash-join artifacts built during this query.
     pub hash_join_build_count: u64,
+    /// Number of reusable cuDF filtered-join artifacts built during this query.
+    pub filtered_join_build_count: u64,
     /// Query-scoped reusable hash-join cache hits.
     pub hash_join_cache_hits: u64,
     /// Query-scoped reusable hash-join cache misses.
@@ -48,6 +50,10 @@ pub struct QueryMetrics {
     ///
     /// This is recorded when an artifact is constructed, not when it is reused.
     pub hash_join_hash_table_bytes: u64,
+    /// Unique device bytes retained by reusable cuDF filtered-join build artifacts.
+    ///
+    /// This is recorded when an artifact is constructed, not when it is reused.
+    pub filtered_join_hash_table_bytes: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -146,8 +152,16 @@ impl QueryMetrics {
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(1);
     }
 
+    pub fn record_filtered_join_build(&mut self) {
+        self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(1);
+    }
+
     pub fn record_hash_join_hash_table_bytes(&mut self, bytes: u64) {
         self.hash_join_hash_table_bytes = self.hash_join_hash_table_bytes.saturating_add(bytes);
+    }
+
+    pub fn record_filtered_join_hash_table_bytes(&mut self, bytes: u64) {
+        self.filtered_join_hash_table_bytes = self.filtered_join_hash_table_bytes.saturating_add(bytes);
     }
 
     pub fn record_partial_aggregate(&mut self, rows: u64) {
@@ -201,10 +215,11 @@ pub struct JoinOperatorMetrics {
     pub build_bytes: u64,
     pub probe_rows: u64,
     pub probe_bytes: u64,
-    /// Device bytes retained by the reusable cuDF hash-join build artifact.
+    /// Device bytes retained by the reusable cuDF join build artifact.
     ///
-    /// This is a direct cudf-rs observation. It remains `0` for join paths that
-    /// do not build a reusable hash table.
+    /// This is a direct cudf-rs observation. For hash joins it is the retained
+    /// hash table; for filtered joins it is the retained filtered-join build
+    /// artifact. It remains `0` for join paths without a reusable build artifact.
     pub hash_table_bytes: u64,
     /// Device bytes retained by join gather maps produced for this join.
     ///

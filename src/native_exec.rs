@@ -64,12 +64,14 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "retry_resource_exhausted_count",
     "retry_reservation_failure_count",
     "hash_join_build_count",
+    "filtered_join_build_count",
     "hash_join_cache_hits",
     "hash_join_cache_misses",
     "hash_join_durable_cache_hits",
     "hash_join_durable_cache_misses",
     "hash_join_durable_cache_inserts",
     "hash_join_hash_table_bytes",
+    "filtered_join_hash_table_bytes",
     "join_gather_map_bytes",
     "parquet_read_time",
     "source_read_time",
@@ -770,12 +772,14 @@ struct NativeCudfMetrics {
     retry_resource_exhausted_count: Count,
     retry_reservation_failure_count: Count,
     hash_join_build_count: Count,
+    filtered_join_build_count: Count,
     hash_join_cache_hits: Count,
     hash_join_cache_misses: Count,
     hash_join_durable_cache_hits: Count,
     hash_join_durable_cache_misses: Count,
     hash_join_durable_cache_inserts: Count,
     hash_join_hash_table_bytes: Count,
+    filtered_join_hash_table_bytes: Count,
     join_gather_map_bytes: Count,
     parquet_read_time: Time,
     source_read_time: Time,
@@ -846,12 +850,14 @@ impl NativeCudfMetrics {
             retry_resource_exhausted_count: summary_counter(metrics, "retry_resource_exhausted_count", partition),
             retry_reservation_failure_count: summary_counter(metrics, "retry_reservation_failure_count", partition),
             hash_join_build_count: summary_counter(metrics, "hash_join_build_count", partition),
+            filtered_join_build_count: summary_counter(metrics, "filtered_join_build_count", partition),
             hash_join_cache_hits: summary_counter(metrics, "hash_join_cache_hits", partition),
             hash_join_cache_misses: summary_counter(metrics, "hash_join_cache_misses", partition),
             hash_join_durable_cache_hits: summary_counter(metrics, "hash_join_durable_cache_hits", partition),
             hash_join_durable_cache_misses: summary_counter(metrics, "hash_join_durable_cache_misses", partition),
             hash_join_durable_cache_inserts: summary_counter(metrics, "hash_join_durable_cache_inserts", partition),
             hash_join_hash_table_bytes: summary_counter(metrics, "hash_join_hash_table_bytes", partition),
+            filtered_join_hash_table_bytes: summary_counter(metrics, "filtered_join_hash_table_bytes", partition),
             join_gather_map_bytes: summary_counter(metrics, "join_gather_map_bytes", partition),
             parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             source_read_time: summary_timer(metrics, "source_read_time", partition),
@@ -900,12 +906,14 @@ impl NativeCudfMetrics {
         self.retry_resource_exhausted_count.add(count(metrics.retry_resource_exhausted_count));
         self.retry_reservation_failure_count.add(count(metrics.retry_reservation_failure_count));
         self.hash_join_build_count.add(count(metrics.hash_join_build_count));
+        self.filtered_join_build_count.add(count(metrics.filtered_join_build_count));
         self.hash_join_cache_hits.add(count(metrics.hash_join_cache_hits));
         self.hash_join_cache_misses.add(count(metrics.hash_join_cache_misses));
         self.hash_join_durable_cache_hits.add(count(metrics.hash_join_durable_cache_hits));
         self.hash_join_durable_cache_misses.add(count(metrics.hash_join_durable_cache_misses));
         self.hash_join_durable_cache_inserts.add(count(metrics.hash_join_durable_cache_inserts));
         self.hash_join_hash_table_bytes.add(count(metrics.hash_join_hash_table_bytes));
+        self.filtered_join_hash_table_bytes.add(count(metrics.filtered_join_hash_table_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
         self.parquet_read_time.add_duration(metrics.parquet_read_time);
         self.source_read_time.add_duration(metrics.source_read_time);

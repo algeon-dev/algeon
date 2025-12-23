@@ -26,8 +26,8 @@ mod validate;
 
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
 pub use types::{
-    ExecutionMode, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
-    QueryExecutionResult, QueryOutput,
+    ExecutionMode, GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
+    GpuResidentInputMap, GpuResultHandle, QueryExecutionResult, QueryOutput,
 };
 
 use self::{

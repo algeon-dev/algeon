@@ -146,12 +146,23 @@ pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
+pub(crate) fn bounded_root_filtered_join_compatible(join: &JoinNode) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        && join.spec.build_side == JoinSide::Right
+        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+}
+
 pub(crate) fn bounded_root_conditional_join_compatible(join: &JoinNode) -> bool {
     BoundedConditionalJoinType::try_from_join(join).is_some()
 }
 
 pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
-    bounded_root_hash_join_compatible(join) || bounded_root_conditional_join_compatible(join)
+    bounded_root_hash_join_compatible(join)
+        || bounded_root_filtered_join_compatible(join)
+        || bounded_root_conditional_join_compatible(join)
 }
 
 fn reachable_join_count(plan: &QueryPlan) -> usize {
