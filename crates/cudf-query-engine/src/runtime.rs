@@ -606,6 +606,10 @@ impl BoundedJoinReservationContract {
         csv_join(self.execution_families().iter().map(|family| family.as_str()))
     }
 
+    pub fn supported_shape_requirement(self) -> String {
+        format!("requires_one_of({})", self.execution_families_csv())
+    }
+
     pub fn reservation_kinds_csv(self) -> String {
         csv_join(self.requirements().iter().map(|requirement| requirement.reservation_kind().as_str()))
     }
@@ -655,7 +659,7 @@ impl BoundedJoinReservationContract {
         }))
     }
 
-    pub fn rejection_facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {
+    pub fn facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {
         BTreeMap::from([
             ("boundary_policy", boundary_policy.to_string()),
             ("source_read_boundary", boundary_policy.source_read().to_string()),
@@ -719,6 +723,10 @@ impl BoundedJoinReservationContract {
             ("cudf_rs_hash_join_pre_build_reservation_status", "available_exact_flat_hash_join_builds".to_string()),
             ("missing_reservations", self.blocking_reservation_kinds_csv()),
         ])
+    }
+
+    pub fn rejection_facts(self, boundary_policy: ExecutionBoundaryPolicy) -> BTreeMap<&'static str, String> {
+        self.facts(boundary_policy)
     }
 }
 

@@ -38,14 +38,22 @@ pub(super) fn fingerprint_batches(batches: &[RecordBatch]) -> DataFusionResult<S
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("datafusion-cudf-tpch-output-v1");
     if let Some(batch) = batches.first() {
-        for field in batch.schema().fields() {
+        let schema = batch.schema();
+        for later_batch in &batches[1..] {
+            if later_batch.schema().as_ref() != schema.as_ref() {
+                return Err(DataFusionError::Plan(
+                    "TPC-H output fingerprint requires a stable schema across output batches".to_string(),
+                ));
+            }
+        }
+        for field in schema.fields() {
             hasher.update_field(field.name());
             hasher.update_field(&field.data_type().to_string());
         }
     }
+    hasher.update_field(&batches.iter().map(RecordBatch::num_rows).sum::<usize>().to_string());
+    hasher.update_field(&batches.first().map_or(0, RecordBatch::num_columns).to_string());
     for batch in batches {
-        hasher.update_field(&batch.num_rows().to_string());
-        hasher.update_field(&batch.num_columns().to_string());
         for row in 0..batch.num_rows() {
             for column in 0..batch.num_columns() {
                 hasher.update_field(&array_value_to_string(batch.column(column).as_ref(), row)?);

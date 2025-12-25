@@ -33,8 +33,15 @@ impl NativeTpchBenchmarkConfig {
     }
 
     pub(super) fn selected_queries(&self) -> Vec<&'static TpchQuery> {
-        let selected = self.query_ids.iter().map(String::as_str).collect::<BTreeSet<_>>();
-        TPCH_QUERIES.iter().filter(|query| selected.contains(query.id)).collect()
+        self.query_ids
+            .iter()
+            .map(|query_id| {
+                TPCH_QUERIES
+                    .iter()
+                    .find(|query| query.id == query_id)
+                    .expect("validated benchmark config references only known TPC-H query ids")
+            })
+            .collect()
     }
 
     pub(super) fn native_execution_config(&self) -> NativeCudfExecutionConfig {
@@ -172,9 +179,13 @@ fn query_ids_from_env(name: &'static str) -> DataFusionResult<Vec<String>> {
 
 fn validate_query_ids(query_ids: &[String]) -> DataFusionResult<()> {
     let known = TPCH_QUERIES.iter().map(|query| query.id).collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
     for query_id in query_ids {
         if !known.contains(query_id.as_str()) {
             return Err(plan_error(format!("unknown TPC-H query id {query_id}")));
+        }
+        if !seen.insert(query_id.as_str()) {
+            return Err(plan_error(format!("duplicate TPC-H query id {query_id}")));
         }
     }
     Ok(())
