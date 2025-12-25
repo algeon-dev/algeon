@@ -409,7 +409,9 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(adapter_error.fact_value("blocked_reservations"), Some(""));
     assert_eq!(
         adapter_error.fact_value("modeled_reservations"),
-        Some("build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization")
+        Some(
+            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+        )
     );
     assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
     assert_eq!(
@@ -451,14 +453,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
 }
 
 #[test]
-fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
-    // The planner path (`native_execution_boundary_rejection_facts`) and the
-    // runtime path (`reject_bounded_join_plan`) intentionally emit different
-    // values for `bounded_join_execution_status` for the same logical
-    // condition (an unsupported bounded-join shape). This test pins the
-    // documented split so future drift in either side is immediately visible.
-
-    // --- Planner path ---
+fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
     let dir = unique_temp_dir("datafusion-cudf-bounded-join-rejection-split");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -479,7 +474,9 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     );
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
-        Some("build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization")
+        Some(
+            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+        )
     );
     assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
 
@@ -492,30 +489,30 @@ fn bounded_join_rejection_split_between_planner_and_runtime_paths_is_pinned() {
     let runtime_error = adapter_error(&error);
 
     assert_eq!(runtime_error.fact_value("bounded_join_enabled"), Some("true"));
-    assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("enabled"));
+    assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("unsupported_plan_shape"));
+    assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), Some(expected_unsupported_shape.as_str()));
     assert_eq!(
         runtime_error.fact_value("bounded_join_execution_families"),
         Some(
-            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline"
+            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline"
         )
     );
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-    assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), None);
     assert_eq!(
         runtime_error.fact_value("modeled_reservations"),
-        Some("build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization")
+        Some(
+            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+        )
     );
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
 
-    // --- The split itself ---
-    // Both paths advertise that the contract is enabled and the same reservation
-    // kinds are modeled, but the planner downgrades `execution_status` to
-    // `unsupported_plan_shape` and adds `bounded_join_unsupported_shape`, while
-    // the runtime keeps the executable bounded root-join status and surfaces a
-    // `reason` instead.
-    assert_ne!(
+    assert_eq!(
         planner_facts.get("bounded_join_execution_status").map(String::as_str),
         runtime_error.fact_value("bounded_join_execution_status")
+    );
+    assert_eq!(
+        planner_facts.get("bounded_join_unsupported_shape").map(String::as_str),
+        runtime_error.fact_value("bounded_join_unsupported_shape")
     );
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),

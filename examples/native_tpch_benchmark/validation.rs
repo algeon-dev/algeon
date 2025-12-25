@@ -36,7 +36,7 @@ pub(super) fn parity_status(
 
 pub(super) fn fingerprint_batches(batches: &[RecordBatch]) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpch-output-v1");
+    hasher.update_field("datafusion-cudf-tpch-output-v2");
     if let Some(batch) = batches.first() {
         let schema = batch.schema();
         for later_batch in &batches[1..] {
@@ -46,9 +46,14 @@ pub(super) fn fingerprint_batches(batches: &[RecordBatch]) -> DataFusionResult<S
                 ));
             }
         }
+        hasher.update_field("schema_metadata");
+        update_metadata(&mut hasher, schema.metadata());
         for field in schema.fields() {
+            hasher.update_field("field");
             hasher.update_field(field.name());
             hasher.update_field(&field.data_type().to_string());
+            hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
+            update_metadata(&mut hasher, field.metadata());
         }
     }
     hasher.update_field(&batches.iter().map(RecordBatch::num_rows).sum::<usize>().to_string());
@@ -61,6 +66,16 @@ pub(super) fn fingerprint_batches(batches: &[RecordBatch]) -> DataFusionResult<S
         }
     }
     Ok(format!("output-fnv1a64:{:016x}", hasher.finish()))
+}
+
+fn update_metadata(hasher: &mut StableFnv1a64, metadata: &std::collections::HashMap<String, String>) {
+    hasher.update_field(&metadata.len().to_string());
+    let mut keys = metadata.keys().collect::<Vec<_>>();
+    keys.sort();
+    for key in keys {
+        hasher.update_field(key);
+        hasher.update_field(metadata.get(key).expect("metadata key collected from map must exist"));
+    }
 }
 
 #[derive(Debug, Clone)]

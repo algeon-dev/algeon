@@ -108,7 +108,10 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
             bounded_join_unsupported_message(contract),
             "bounded_join_plan_shape_unsupported",
         );
-        for (key, value) in contract.rejection_facts(context.boundary_policy()) {
+        let facts = plan
+            .bounded_join_unsupported_shape_facts(context.boundary_policy())
+            .unwrap_or_else(|| contract.unsupported_shape_facts(context.boundary_policy()));
+        for (key, value) in facts {
             error = error.with_fact(key, value);
         }
         return Err(error);

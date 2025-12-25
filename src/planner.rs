@@ -450,16 +450,12 @@ fn native_execution_boundary_rejection_facts(
         && !plan.has_bounded_executable_join_pipeline()
         && !plan.has_bounded_executable_multi_join_pipeline()
     {
-        let mut facts: BTreeMap<String, String> = cudf_query_engine::BoundedJoinReservationContract
-            .rejection_facts(execution_config.boundary_policy())
+        let facts: BTreeMap<String, String> = plan
+            .bounded_join_unsupported_shape_facts(execution_config.boundary_policy())
+            .expect("bounded join unsupported precondition must produce facts")
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect();
-        facts.insert("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string());
-        facts.insert(
-            "bounded_join_unsupported_shape".to_string(),
-            cudf_query_engine::BoundedJoinReservationContract.supported_shape_requirement(),
-        );
         Some(facts)
     } else {
         None

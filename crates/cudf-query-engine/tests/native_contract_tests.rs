@@ -304,6 +304,7 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(ReservationKind::ProbeSide.as_str(), "probe_side");
     assert_eq!(ReservationKind::HashTable.as_str(), "hash_table");
     assert_eq!(ReservationKind::FilteredProbeState.as_str(), "filtered_probe_state");
+    assert_eq!(ReservationKind::MixedSizeData.as_str(), "mixed_size_data");
     assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
     assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
     assert_eq!(ReservationKind::Materialization.as_str(), "materialization");
@@ -347,6 +348,13 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
             "modeled_by_cudf_rs_filtered_probe_state_observability",
         ),
         (
+            ReservationKind::MixedSizeData,
+            "mixed_size_data",
+            "join_mixed_size_data",
+            BoundedJoinReservationStatus::Modeled,
+            "modeled_by_cudf_rs_mixed_join_size_data_observability",
+        ),
+        (
             ReservationKind::GatherMap,
             "gather_map",
             "join_gather_map",
@@ -372,14 +380,14 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.execution_families().len(), 4);
+    assert_eq!(contract.execution_families().len(), 5);
     assert_eq!(
         contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline"
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline"
     );
     assert_eq!(
         contract.supported_shape_requirement(),
-        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,multi_join_reusable_hash_pipeline)"
+        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline)"
     );
     assert!(contract.enabled());
 
@@ -402,13 +410,13 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 
     assert_eq!(
         contract.reservation_kinds_csv(),
-        "build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization"
+        "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
     );
     assert_eq!(contract.lower_level_blockers_csv(), "");
     assert_eq!(contract.blocking_reservation_kinds_csv(), "");
     assert_eq!(
         contract.modeled_reservation_kinds_csv(),
-        "build_side,hash_table,probe_side,filtered_probe_state,gather_map,join_output,materialization"
+        "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
     );
     assert_eq!(contract.deferred_reservation_kinds_csv(), "");
 }
@@ -417,6 +425,7 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     let contract = BoundedJoinReservationContract;
     let facts = contract.rejection_facts(ExecutionBoundaryPolicy::default());
+    let unsupported_shape_facts = contract.unsupported_shape_facts(ExecutionBoundaryPolicy::default());
 
     assert_eq!(
         facts.get("boundary_policy").map(String::as_str),
@@ -428,6 +437,20 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(facts.get("build_materialization_boundary").map(String::as_str), Some("query_scoped_gpu_hash_join"));
     assert_eq!(facts.get("probe_execution_boundary").map(String::as_str), Some("reusable_gpu_hash_join"));
     assert_eq!(facts.get("result_materialization_boundary").map(String::as_str), Some("explicit_sink"));
+    assert_eq!(
+        unsupported_shape_facts.get("bounded_join_execution_status").map(String::as_str),
+        Some("unsupported_plan_shape")
+    );
+    assert_eq!(
+        unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
+        Some(
+            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline)"
+        )
+    );
+    assert_eq!(
+        unsupported_shape_facts.get("bounded_join_execution_families").map(String::as_str),
+        facts.get("bounded_join_execution_families").map(String::as_str)
+    );
     assert_eq!(facts.get("bounded_join_reservation_model").map(String::as_str), Some(contract.model_status()));
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some(contract.execution_status()));
     assert_eq!(
@@ -508,12 +531,20 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         Some("mixed_inner_left_join_size_data_output_size")
     );
     assert_eq!(
+        facts.get("cudf_rs_mixed_join_size_data_observability").map(String::as_str),
+        Some("mixed_inner_left_join_size_data_device_allocated_size_bytes")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_mixed_join_gather_map_reservation_contract").map(String::as_str),
+        Some("mixed_inner_left_join_size_data_gather_map_reservation_size_bytes")
+    );
+    assert_eq!(
         facts.get("cudf_rs_mixed_join_output_size_hint").map(String::as_str),
         Some("mixed_inner_left_join_size_data_materialize_indices")
     );
     assert_eq!(
         facts.get("cudf_rs_mixed_join_remaining_blockers").map(String::as_str),
-        Some("blocked_until_mixed_full_semi_anti_retained_size_data_and_projected_output_reservation")
+        Some("blocked_until_mixed_full_semi_anti_retained_size_data")
     );
     assert_eq!(
         facts.get("cudf_rs_projected_cross_join_reservation_contract").map(String::as_str),
@@ -528,6 +559,77 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         Some(contract.blocking_reservation_kinds_csv().as_str())
     );
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
+}
+
+#[test]
+fn bounded_mixed_residual_semi_anti_rejection_has_precise_lower_level_blocker() {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("left_payload", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("right_payload", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("left_payload", DataType::Int32, false)]));
+    let left_source = LocalParquetSource::new(
+        "/tmp/left.parquet",
+        Arc::clone(&left_schema),
+        vec!["id".into(), "left_payload".into()],
+    );
+    let right_source = LocalParquetSource::new(
+        "/tmp/right.parquet",
+        Arc::clone(&right_schema),
+        vec!["id".into(), "right_payload".into()],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left_source));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_payload", "left_payload"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_payload", "right_payload"),
+        ))
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "left_payload", "left_payload"),
+            "left_payload",
+        )])
+        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+
+    assert!(!plan.has_bounded_executable_root_join());
+    let facts = plan
+        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        .expect("mixed residual semi join should produce bounded unsupported facts");
+
+    assert_eq!(
+        facts.get("bounded_join_specific_blocker").map(String::as_str),
+        Some("mixed_keyed_residual_semi_anti_join_unsupported")
+    );
+    assert_eq!(
+        facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        Some("mixed_keyed_residual_left_semi_left_anti")
+    );
+    assert_eq!(
+        facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
+        Some("mixed_left_semi_left_anti_retained_size_data_and_projected_output_reservation")
+    );
+    assert_eq!(
+        facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("mixed_semi_anti_retained_size_data,projected_output_reservation")
+    );
+    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
 }
 
 #[test]
@@ -790,6 +892,7 @@ fn query_metrics_have_join_operator_contract() {
             probe_bytes: 2048,
             hash_table_bytes: 4096,
             filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
             gather_map_bytes: 256,
             output_rows: 5,
             output_bytes: 512,
@@ -803,6 +906,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(join.key_count, 2);
     assert_eq!(join.hash_table_bytes, 4096);
     assert_eq!(join.filtered_probe_state_bytes, 0);
+    assert_eq!(join.mixed_size_data_bytes, 0);
     assert_eq!(join.gather_map_bytes, 256);
     assert_eq!(join.build_side, "right");
     assert_eq!(join.probe_side, "left");
@@ -813,6 +917,7 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_filtered_join_build();
     metrics.record_filtered_join_hash_table_bytes(2048);
     metrics.record_filtered_join_probe_state_bytes(1024);
+    metrics.record_mixed_join_size_data_bytes(512);
     metrics.record_hash_join_cache_hit();
     metrics.record_hash_join_durable_cache_miss();
     metrics.record_hash_join_durable_cache_insert();
@@ -827,6 +932,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(metrics.hash_join_hash_table_bytes, 4096);
     assert_eq!(metrics.filtered_join_hash_table_bytes, 2048);
     assert_eq!(metrics.filtered_join_probe_state_bytes, 1024);
+    assert_eq!(metrics.mixed_join_size_data_bytes, 512);
 }
 
 #[test]

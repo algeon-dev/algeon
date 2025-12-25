@@ -111,6 +111,8 @@ pub struct QueryMetrics {
     pub filtered_join_hash_table_bytes: u64,
     /// Unique device bytes retained by filtered-join probe states.
     pub filtered_join_probe_state_bytes: u64,
+    /// Unique device bytes retained by mixed inner/left join size-data states.
+    pub mixed_join_size_data_bytes: u64,
     pub parquet_files: u64,
     pub parquet_bytes_known: u64,
     pub row_groups_selected: u64,
@@ -235,6 +237,10 @@ impl QueryMetrics {
         self.filtered_join_probe_state_bytes = self.filtered_join_probe_state_bytes.saturating_add(bytes);
     }
 
+    pub fn record_mixed_join_size_data_bytes(&mut self, bytes: u64) {
+        self.mixed_join_size_data_bytes = self.mixed_join_size_data_bytes.saturating_add(bytes);
+    }
+
     pub fn record_partial_aggregate(&mut self, rows: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
@@ -294,6 +300,8 @@ pub struct JoinOperatorMetrics {
     pub hash_table_bytes: u64,
     /// Device bytes retained by a filtered-join probe state.
     pub filtered_probe_state_bytes: u64,
+    /// Device bytes retained by a mixed join retained size-data state.
+    pub mixed_size_data_bytes: u64,
     /// Device bytes retained by join gather maps produced for this join.
     ///
     /// This is a direct cudf-rs observation over the returned device index

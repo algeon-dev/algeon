@@ -52,8 +52,9 @@ use datafusion_cudf::{
     tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
 
-const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &["q01", "q03", "q04", "q05", "q06", "q08", "q09", "q10", "q12", "q14"];
-const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &["q03", "q04", "q05", "q08", "q09", "q10", "q12", "q14"];
+const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] =
+    &["q01", "q03", "q04", "q05", "q06", "q08", "q09", "q10", "q12", "q14", "q19"];
+const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &["q03", "q04", "q05", "q08", "q09", "q10", "q12", "q14", "q19"];
 
 #[tokio::test]
 async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
@@ -423,18 +424,19 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.hash_join_hash_table_bytes, 16384);
     assert_eq!(row.metrics.filtered_join_hash_table_bytes, 8192);
     assert_eq!(row.metrics.filtered_join_probe_state_bytes, 1024);
+    assert_eq!(row.metrics.mixed_join_size_data_bytes, 512);
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 7);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 8);
     assert_eq!(
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\tplanning_outcome\treason_code\tunsupported_category\tbounded_join_reservation_facts\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution\tnative_runtime_started\truntime_outcome\truntime_failure\toutput_batches\toutput_rows\toutput_bytes\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tjoin_gather_map_bytes\tsource_diagnostics"
     );
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=7\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=8\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("bounded_join_execution_status=enabled"));
-    assert!(text.contains("\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t6\t2\t1\t3\t4\t5\t16384\t8192\t1024\t2048\t"));
+    assert!(text.contains("\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t6\t2\t1\t3\t4\t5\t16384\t8192\t1024\t512\t2048\t"));
 }
 
 #[test]
@@ -875,7 +877,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                 );
                 assert_eq!(
                     row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-                    Some(""),
+                    Some(expected_tpch_bounded_join_lower_level_blockers(row.query_id.as_str())),
                     "missing lower-level blocker facts for {}",
                     row.query_id
                 );
@@ -885,6 +887,18 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     "missing supported bounded join family fact for {}",
                     row.query_id
                 );
+                if row.query_id == "q21" {
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_specific_blocker").map(String::as_str),
+                        Some("mixed_keyed_residual_semi_anti_join_unsupported")
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts
+                            .get("bounded_join_required_lower_level_contract")
+                            .map(String::as_str),
+                        Some("mixed_left_semi_left_anti_retained_size_data_and_projected_output_reservation")
+                    );
+                }
             } else {
                 assert!(row.bounded_join_reservation_facts.is_empty());
             }
@@ -1238,8 +1252,14 @@ fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str,
         "q16" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         "q22" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
         "q17" => ("native_bounded_join_unsupported", "operator_hashjoin"),
-        "q19" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         _ => ("unsupported_operator", expected_tpch_operator_unsupported_category(query_id)),
+    }
+}
+
+fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
+    match query_id {
+        "q21" => "mixed_semi_anti_retained_size_data,projected_output_reservation",
+        _ => "",
     }
 }
 
@@ -1426,6 +1446,7 @@ fn native_execution_metrics_set() -> datafusion::physical_plan::metrics::Metrics
         ("hash_join_hash_table_bytes", 16384),
         ("filtered_join_hash_table_bytes", 8192),
         ("filtered_join_probe_state_bytes", 1024),
+        ("mixed_join_size_data_bytes", 512),
         ("join_gather_map_bytes", 2048),
     ] {
         MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
