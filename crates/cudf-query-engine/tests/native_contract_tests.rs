@@ -563,9 +563,18 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         facts.get("cudf_rs_mixed_join_output_size_hint").map(String::as_str),
         Some("mixed_inner_left_join_size_data_materialize_indices")
     );
+    assert_eq!(facts.get("cudf_rs_mixed_join_remaining_blockers").map(String::as_str), Some(""));
     assert_eq!(
-        facts.get("cudf_rs_mixed_join_remaining_blockers").map(String::as_str),
-        Some("blocked_until_mixed_full_semi_anti_retained_size_data")
+        facts.get("bounded_join_mixed_keyed_residual_capability").map(String::as_str),
+        Some("root_mixed_inner_left_join_extended_to_full_left_semi_left_anti")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_mixed_join_pair_materialization_contract").map(String::as_str),
+        Some("mixed_join_retained_size_data_materialize_indices")
+    );
+    assert_eq!(
+        facts.get("cudf_rs_mixed_join_single_side_materialization_contract").map(String::as_str),
+        Some("mixed_join_retained_size_data_materialize_single_indices")
     );
     assert_eq!(
         facts.get("cudf_rs_projected_cross_join_reservation_contract").map(String::as_str),
@@ -583,7 +592,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
 }
 
 #[test]
-fn bounded_mixed_residual_semi_anti_rejection_has_precise_lower_level_blocker() {
+fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_orientation() {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -593,64 +602,60 @@ fn bounded_mixed_residual_semi_anti_rejection_has_precise_lower_level_blocker() 
         Field::new("right_payload", DataType::Int32, false),
     ]));
     let output_schema = Arc::new(Schema::new(vec![Field::new("left_payload", DataType::Int32, false)]));
-    let left_source = LocalParquetSource::new(
-        "/tmp/left.parquet",
+    let plan = mixed_residual_join_plan(
         Arc::clone(&left_schema),
-        vec!["id".into(), "left_payload".into()],
-    );
-    let right_source = LocalParquetSource::new(
-        "/tmp/right.parquet",
         Arc::clone(&right_schema),
-        vec!["id".into(), "right_payload".into()],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(left_source));
-    let right = builder.add_source(SourceNode::LocalParquet(right_source));
-    let join = builder.add_join(
-        left,
-        right,
-        JoinSpec::new(
-            JoinType::LeftSemi,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
-        )
-        .with_residual_predicate(Expr::binary(
-            Expr::input_column(0, "left_payload", "left_payload"),
-            BinaryOp::Gt,
-            Expr::input_column(1, "right_payload", "right_payload"),
-        ))
-        .with_output_projection(vec![JoinOutputColumn::left(
-            ColumnRef::input(0, "left_payload", "left_payload"),
-            "left_payload",
-        )])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
         Arc::clone(&output_schema),
+        JoinType::LeftSemi,
+        JoinSide::Right,
+        vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
-    let plan = builder.finish_with_host_sink(join);
 
+    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+
+    let right_projection_schema = Arc::new(Schema::new(vec![Field::new("right_payload", DataType::Int32, false)]));
+    let plan = mixed_residual_join_plan(
+        Arc::clone(&left_schema),
+        Arc::clone(&right_schema),
+        right_projection_schema,
+        JoinType::LeftSemi,
+        JoinSide::Right,
+        vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
+    );
     assert!(!plan.has_bounded_executable_root_join());
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-        .expect("mixed residual semi join should produce bounded unsupported facts");
-
+        .expect("unsupported mixed semi root shape should produce facts");
+    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(
         facts.get("bounded_join_specific_blocker").map(String::as_str),
-        Some("mixed_keyed_residual_semi_anti_join_unsupported")
+        Some("root_mixed_keyed_residual_semi_anti_requires_left_only_projection")
     );
     assert_eq!(
-        facts.get("bounded_join_blocked_join_family").map(String::as_str),
-        Some("mixed_keyed_residual_left_semi_left_anti")
+        facts.get("bounded_join_required_shape_contract").map(String::as_str),
+        Some("root_mixed_keyed_residual_left_only_join_requires_right_build_left_projection")
     );
+    assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
+
+    let plan = mixed_residual_join_plan(
+        left_schema,
+        right_schema,
+        output_schema,
+        JoinType::LeftAnti,
+        JoinSide::Left,
+        vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
+    );
+    assert!(!plan.has_bounded_executable_root_join());
+    let facts = plan
+        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+        .expect("unsupported mixed anti root shape should produce facts");
+    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(
-        facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
-        Some("mixed_left_semi_left_anti_retained_size_data_and_projected_output_reservation")
+        facts.get("bounded_join_specific_blocker").map(String::as_str),
+        Some("root_mixed_keyed_residual_semi_anti_requires_right_build_side")
     );
-    assert_eq!(
-        facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("mixed_semi_anti_retained_size_data,projected_output_reservation")
-    );
-    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
+    assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
 }
 
 #[test]
@@ -678,7 +683,7 @@ fn bounded_keyless_conditional_left_only_joins_require_left_reservation_orientat
 }
 
 #[test]
-fn bounded_mixed_residual_full_rejection_has_precise_lower_level_blocker() {
+fn bounded_mixed_residual_full_root_supports_pair_projection() {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -691,16 +696,34 @@ fn bounded_mixed_residual_full_rejection_has_precise_lower_level_blocker() {
         Field::new("left_payload", DataType::Int32, true),
         Field::new("right_payload", DataType::Int32, true),
     ]));
-    let left_source = LocalParquetSource::new(
-        "/tmp/left.parquet",
-        Arc::clone(&left_schema),
-        vec!["id".into(), "left_payload".into()],
+    let plan = mixed_residual_join_plan(
+        left_schema,
+        right_schema,
+        output_schema,
+        JoinType::Full,
+        JoinSide::Right,
+        vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
+        ],
     );
-    let right_source = LocalParquetSource::new(
-        "/tmp/right.parquet",
-        Arc::clone(&right_schema),
-        vec!["id".into(), "right_payload".into()],
-    );
+
+    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+}
+
+fn mixed_residual_join_plan(
+    left_schema: Arc<Schema>,
+    right_schema: Arc<Schema>,
+    output_schema: Arc<Schema>,
+    join_type: JoinType,
+    build_side: JoinSide,
+    output_projection: Vec<JoinOutputColumn>,
+) -> cudf_query_engine::QueryPlan {
+    let left_source =
+        LocalParquetSource::new("/tmp/left.parquet", left_schema, vec!["id".into(), "left_payload".into()]);
+    let right_source =
+        LocalParquetSource::new("/tmp/right.parquet", right_schema, vec!["id".into(), "right_payload".into()]);
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(left_source));
@@ -708,44 +731,18 @@ fn bounded_mixed_residual_full_rejection_has_precise_lower_level_blocker() {
     let join = builder.add_join(
         left,
         right,
-        JoinSpec::new(
-            JoinType::Full,
-            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
-        )
-        .with_residual_predicate(Expr::binary(
-            Expr::input_column(0, "left_payload", "left_payload"),
-            BinaryOp::Gt,
-            Expr::input_column(1, "right_payload", "right_payload"),
-        ))
-        .with_output_projection(vec![
-            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
-            JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
-        ])
-        .with_null_equality(JoinNullEquality::NullsDoNotMatch)
-        .with_build_side(JoinSide::Right),
+        JoinSpec::new(join_type, vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))])
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "left_payload", "left_payload"),
+                BinaryOp::Gt,
+                Expr::input_column(1, "right_payload", "right_payload"),
+            ))
+            .with_output_projection(output_projection)
+            .with_null_equality(JoinNullEquality::NullsDoNotMatch)
+            .with_build_side(build_side),
         Arc::clone(&output_schema),
     );
-    let plan = builder.finish_with_host_sink(join);
-
-    assert!(!plan.has_bounded_executable_root_join());
-    let facts = plan
-        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-        .expect("mixed residual full join should produce bounded unsupported facts");
-
-    assert_eq!(
-        facts.get("bounded_join_specific_blocker").map(String::as_str),
-        Some("mixed_keyed_residual_full_join_unsupported")
-    );
-    assert_eq!(facts.get("bounded_join_blocked_join_family").map(String::as_str), Some("mixed_keyed_residual_full"));
-    assert_eq!(
-        facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
-        Some("mixed_full_retained_size_data_and_projected_output_reservation")
-    );
-    assert_eq!(
-        facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("mixed_full_retained_size_data,projected_output_reservation")
-    );
-    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
+    builder.finish_with_host_sink(join)
 }
 
 fn keyless_conditional_left_semi_plan(
