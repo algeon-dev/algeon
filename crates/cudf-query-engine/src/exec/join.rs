@@ -242,16 +242,13 @@ fn execute_cross_join(
         .with_fact("key_count", node.spec.keys.len()));
     }
 
-    let left_projection = join_side_projection(&node.spec.output_projection, JoinSide::Left);
-    let right_projection = join_side_projection(&node.spec.output_projection, JoinSide::Right);
-    let options = DataFrameCrossJoinOptions::new()
-        .left_projection(left_projection.iter().map(|column| (column.column.name(), column.output_name.as_str())))
-        .right_projection(right_projection.iter().map(|column| (column.column.name(), column.output_name.as_str())));
+    let options = dataframe_cross_join_options(&node.spec.output_projection);
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let output = left.with_execution(&overrides).cross_join_projected(&right, options).map_err(|error| {
         QueryError::from_cudf("cudf_query_engine.join.cross", "failed to execute native cudf cross join", error)
     })?;
+    let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
     metrics.operator_time += timer.elapsed();
 
     let output_rows = output.num_rows() as u64;
@@ -1172,8 +1169,28 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
     })
 }
 
-fn join_side_projection(projection: &[JoinOutputColumn], side: JoinSide) -> Vec<JoinOutputColumn> {
-    projection.iter().filter(|column| column.side == side).cloned().collect()
+pub(super) fn dataframe_cross_join_options(projection: &[JoinOutputColumn]) -> DataFrameCrossJoinOptions {
+    let left_projection = projection.iter().filter_map(|column| {
+        (column.side == JoinSide::Left).then_some((column.column.name(), column.output_name.as_str()))
+    });
+    let right_projection = projection.iter().filter_map(|column| {
+        (column.side == JoinSide::Right).then_some((column.column.name(), column.output_name.as_str()))
+    });
+    DataFrameCrossJoinOptions::new().left_projection(left_projection).right_projection(right_projection)
+}
+
+pub(super) fn reorder_projected_cross_join_output(
+    output: DataFrame,
+    projection: &[JoinOutputColumn],
+) -> Result<DataFrame> {
+    let output_order = projection.iter().map(|column| column.output_name.as_str()).collect::<Vec<_>>();
+    output.select(output_order).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.join.projected_cross_output_order",
+            "failed to reorder native projected cross join output",
+            error,
+        )
+    })
 }
 
 pub(super) fn projected_input_columns<'a>(

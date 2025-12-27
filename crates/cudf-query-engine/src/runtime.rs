@@ -548,9 +548,9 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
     BoundedJoinReservationRequirement::new(
         ReservationKind::MixedSizeData,
         "join_mixed_size_data",
-        "mixed_inner_left_join_retained_size_data",
+        "mixed_keyed_residual_or_conditional_full_retained_size_data",
         BoundedJoinReservationStatus::Modeled,
-        "modeled_by_cudf_rs_mixed_join_size_data_observability",
+        "modeled_by_cudf_rs_retained_join_size_data_observability",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::GatherMap,
@@ -562,9 +562,9 @@ pub const BOUNDED_JOIN_RESERVATION_REQUIREMENTS: [BoundedJoinReservationRequirem
     BoundedJoinReservationRequirement::new(
         ReservationKind::JoinOutput,
         "join_output",
-        "dataframe_gather_output_reservation_size_bytes",
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
         BoundedJoinReservationStatus::Modeled,
-        "modeled_by_cudf_rs_dataframe_gather_output_sizing",
+        "modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing",
     ),
     BoundedJoinReservationRequirement::new(
         ReservationKind::FinalSort,
@@ -587,8 +587,10 @@ pub enum BoundedJoinExecutionFamily {
     RootReusableHashJoin,
     RootFilteredSemiAntiJoin,
     KeylessConditionalJoin,
+    RootProjectedCrossJoin,
     RootMixedInnerLeftJoin,
     MultiJoinReusableHashPipeline,
+    MultiJoinMixedKeyedResidualInnerPipeline,
 }
 
 impl BoundedJoinExecutionFamily {
@@ -597,18 +599,22 @@ impl BoundedJoinExecutionFamily {
             Self::RootReusableHashJoin => "root_reusable_hash_join",
             Self::RootFilteredSemiAntiJoin => "root_filtered_semi_anti_join",
             Self::KeylessConditionalJoin => "keyless_conditional_join",
+            Self::RootProjectedCrossJoin => "root_projected_cross_join",
             Self::RootMixedInnerLeftJoin => "root_mixed_inner_left_join",
             Self::MultiJoinReusableHashPipeline => "multi_join_reusable_hash_pipeline",
+            Self::MultiJoinMixedKeyedResidualInnerPipeline => "multi_join_mixed_keyed_residual_inner_pipeline",
         }
     }
 }
 
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 5] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 7] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
+    BoundedJoinExecutionFamily::RootProjectedCrossJoin,
     BoundedJoinExecutionFamily::RootMixedInnerLeftJoin,
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
+    BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerPipeline,
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -710,6 +716,10 @@ impl BoundedJoinReservationContract {
             ("deferred_reservations", self.deferred_reservation_kinds_csv()),
             ("bounded_join_lower_level_blockers", self.lower_level_blockers_csv()),
             ("bounded_join_reservation_requirements", self.requirement_details_csv()),
+            (
+                "bounded_join_execution_family_alias_compatibility",
+                "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins".to_string(),
+            ),
             ("cudf_rs_hash_table_observability", "hash_table_device_allocated_size_bytes".to_string()),
             ("cudf_rs_gather_map_observability", "join_indices_device_allocated_size_bytes".to_string()),
             (
@@ -741,10 +751,26 @@ impl BoundedJoinReservationContract {
                 "mixed_inner_left_join_size_data_gather_map_reservation_size_bytes".to_string(),
             ),
             ("cudf_rs_mixed_join_output_size_hint", "mixed_inner_left_join_size_data_materialize_indices".to_string()),
+            (
+                "cudf_rs_mixed_join_size_data_alias_compatibility",
+                "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data".to_string(),
+            ),
             ("cudf_rs_mixed_join_remaining_blockers", "".to_string()),
             (
                 "bounded_join_mixed_keyed_residual_capability",
                 "root_mixed_inner_left_join_extended_to_full_left_semi_left_anti".to_string(),
+            ),
+            (
+                "bounded_join_mixed_keyed_residual_capability_detail",
+                "mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti".to_string(),
+            ),
+            (
+                "bounded_join_mixed_keyed_residual_multi_join_capability",
+                "multi_join_mixed_keyed_residual_inner_pipeline".to_string(),
+            ),
+            (
+                "bounded_join_mixed_keyed_residual_multi_join_capability_detail",
+                "mixed_keyed_residual_multi_join_types=inner".to_string(),
             ),
             (
                 "cudf_rs_mixed_join_pair_materialization_contract",
@@ -756,11 +782,23 @@ impl BoundedJoinReservationContract {
             ),
             (
                 "cudf_rs_projected_cross_join_reservation_contract",
-                "blocked_until_projected_cross_join_reservation_size_bytes".to_string(),
+                "projected_cross_join_reservation_size_bytes".to_string(),
             ),
             (
                 "cudf_rs_conditional_full_join_output_size_observability",
-                "blocked_until_conditional_full_join_exact_output_size".to_string(),
+                "conditional_full_join_retained_size_data_output_size".to_string(),
+            ),
+            (
+                "cudf_rs_conditional_full_join_size_data_contract",
+                "conditional_full_join_retained_size_data".to_string(),
+            ),
+            (
+                "cudf_rs_conditional_full_join_gather_map_reservation_contract",
+                "conditional_full_join_size_data_gather_map_reservation_size_bytes".to_string(),
+            ),
+            (
+                "cudf_rs_conditional_full_join_materialization_contract",
+                "conditional_full_join_retained_size_data_materialize_indices".to_string(),
             ),
             (
                 "cudf_rs_dataframe_gather_output_reservation_contract",

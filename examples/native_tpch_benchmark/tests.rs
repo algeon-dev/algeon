@@ -284,6 +284,53 @@ fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() 
 }
 
 #[test]
+fn benchmark_report_q07_accepted_join_rows_preserve_bounded_join_facts() {
+    let config =
+        NativeTpchBenchmarkConfig { query_ids: vec!["q07".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut planning = accepted_planning_row("q07");
+    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
+    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
+        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect();
+    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
+    let row = NativeTpchBenchmarkRow::accepted(
+        "q07",
+        planning,
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000007")),
+        Ok(timed_native_run("output-fnv1a64:0000000000000007")),
+    );
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+
+    let text = report.to_tsv();
+    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
+    let header = lines.next().expect("benchmark report should contain a TSV header");
+    let header_fields = header.split('\t').collect::<Vec<_>>();
+    let row = lines.next().expect("benchmark report should contain the q07 row");
+    assert!(lines.next().is_none(), "benchmark report should contain only the q07 row");
+    let fields = row.split('\t').collect::<Vec<_>>();
+    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
+
+    let bounded_status_index = header_index(&header_fields, "bounded_status");
+    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
+    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
+    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
+    let native_started_index = header_index(&header_fields, "native_runtime_started");
+    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
+
+    assert_eq!(fields[0], "q07");
+    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
+    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_lower_level_blockers="));
+    assert_eq!(fields[shape_family_index], "sort_hash_join_aggregate");
+    assert_eq!(fields[execution_path_index], "native");
+    assert_eq!(fields[native_started_index], "true");
+    assert_eq!(fields[runtime_outcome_index], "succeeded");
+}
+
+#[test]
 fn accepted_row_preserves_native_not_started_failure_status() {
     let row = NativeTpchBenchmarkRow::accepted(
         "q01",
@@ -911,4 +958,20 @@ fn string_batch(values: &[Option<&str>]) -> RecordBatch {
 
 fn header_index(header: &[&str], name: &str) -> usize {
     header.iter().position(|field| *field == name).unwrap_or_else(|| panic!("missing TSV field {name}"))
+}
+
+fn expected_key_value_facts(facts: &BTreeMap<String, String>) -> String {
+    if facts.is_empty() {
+        return "none".to_string();
+    }
+
+    facts
+        .iter()
+        .map(|(key, value)| format!("{}={}", expected_stable_tsv_field(key), expected_stable_tsv_field(value)))
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
+fn expected_stable_tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
 }

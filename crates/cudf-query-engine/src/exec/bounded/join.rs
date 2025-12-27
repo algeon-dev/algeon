@@ -371,11 +371,13 @@ pub(super) fn execute_bounded_root_join(
         execute_bounded_root_filtered_join(context, node_id, node, left, right, reservations, metrics)
     } else if node.is_bounded_root_conditional_join_compatible() {
         execute_bounded_root_conditional_join(context, node_id, node, left, right, reservations, metrics)
+    } else if node.is_bounded_root_projected_cross_join_compatible() {
+        execute_bounded_root_projected_cross_join(context, node_id, node, left, right, reservations, metrics)
     } else if node.is_bounded_root_mixed_join_compatible() {
         execute_bounded_root_mixed_join(context, node_id, node, left, right, reservations, metrics)
     } else {
         Err(unsupported_bounded_shape(
-            "bounded root join execution currently supports reusable hash equi joins, filtered equality semi/anti joins, keyless conditional joins, and mixed keyed residual joins",
+            "bounded root join execution currently supports reusable hash equi joins, filtered equality semi/anti joins, keyless conditional joins, projected cross joins, and mixed keyed residual joins",
             "bounded_join_plan_shape_unsupported",
         )
         .with_fact("join_type", node.spec.join_type)
@@ -829,6 +831,154 @@ fn execute_bounded_root_filtered_join(
     Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
 }
 
+fn execute_bounded_root_projected_cross_join(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: ResidentGpuFrame,
+    right: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    validate_executable_join_subset(node)?;
+    if !node.is_bounded_root_projected_cross_join_compatible() {
+        return Err(unsupported_bounded_shape(
+            "bounded root projected cross join execution requires a keyless cross join with an explicit output projection",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("key_count", node.spec.keys.len())
+        .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+        .with_fact("output_projection_len", node.spec.output_projection.len()));
+    }
+
+    let left_columns = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+    let right_columns = projected_output_columns(&node.spec.output_projection, JoinSide::Right);
+    let build_side = node.spec.build_side;
+    let probe_side = probe_side(build_side);
+    let (left, right) = match build_side {
+        JoinSide::Left => {
+            let left = prepare_bounded_join_side_input(
+                left,
+                &left_columns,
+                JoinSide::Left,
+                node_id,
+                build_side,
+                reservations,
+                metrics,
+            )?;
+            let right = prepare_bounded_join_side_input(
+                right,
+                &right_columns,
+                JoinSide::Right,
+                node_id,
+                build_side,
+                reservations,
+                metrics,
+            )?;
+            (left, right)
+        },
+        JoinSide::Right => {
+            let right = prepare_bounded_join_side_input(
+                right,
+                &right_columns,
+                JoinSide::Right,
+                node_id,
+                build_side,
+                reservations,
+                metrics,
+            )?;
+            let left = prepare_bounded_join_side_input(
+                left,
+                &left_columns,
+                JoinSide::Left,
+                node_id,
+                build_side,
+                reservations,
+                metrics,
+            )?;
+            (left, right)
+        },
+    };
+    let left_rows = left.rows;
+    let right_rows = right.rows;
+    let left_bytes = left.bytes;
+    let right_bytes = right.bytes;
+
+    let options = dataframe_cross_join_options(&node.spec.output_projection);
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let plan = left.frame.projected_cross_join_plan(&right.frame, options).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.projected_cross_plan",
+            "failed to create bounded native projected cross join plan",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })?;
+    let expected_output_rows = plan.output_rows() as u64;
+    let output_reservation_bytes =
+        plan.reservation_size_bytes_in(&overrides).map(|bytes| bytes as u64).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.projected_cross_output_reservation",
+                "failed to size bounded native projected cross join output",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+        })?;
+    let output_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_output",
+            output_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let output = plan.materialize_in(&overrides).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.projected_cross_materialize",
+            "failed to materialize bounded native projected cross join output",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })?;
+    let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
+    metrics.operator_time += timer.elapsed();
+
+    let output_rows = output.num_rows() as u64;
+    debug_assert_eq!(output_rows, expected_output_rows);
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_projected_cross_join".to_string(),
+            key_count: 0,
+            residual_predicate: false,
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: build_side.to_string(),
+            probe_side: probe_side.to_string(),
+            build_rows: side_metric(build_side, left_rows, right_rows),
+            build_bytes: side_metric(build_side, left_bytes, right_bytes),
+            probe_rows: side_metric(probe_side, left_rows, right_rows),
+            probe_bytes: side_metric(probe_side, left_bytes, right_bytes),
+            hash_table_bytes: 0,
+            filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
+            gather_map_bytes: 0,
+            output_rows,
+            output_bytes,
+        },
+    ));
+
+    drop(left);
+    drop(right);
+
+    Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
+}
+
 fn execute_bounded_root_mixed_join(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1226,17 +1376,53 @@ fn execute_bounded_root_conditional_join(
     let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
     let options = dataframe_predicate_join_options(&residual_columns);
     let timer = Instant::now();
-    let output_size = conditional_join_output_size(
-        join_type,
-        &left.frame,
-        &right.frame,
-        &predicate,
-        options.clone(),
-        &overrides,
-        node,
-    )?;
-    let gather_map_reservation_bytes =
-        conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
+    let (size_data_bytes, expected_output_rows, gather_map_reservation_bytes, work) =
+        if join_type == BoundedConditionalJoinType::Full {
+            let size_data = left
+                .frame
+                .with_execution(&overrides)
+                .conditional_full_join_size_data(&right.frame, &predicate, options)
+                .map_err(|error| join_index_error(error, node))?;
+            let expected_output_rows = size_data.output_size() as u64;
+            let size_data_bytes = conditional_full_join_size_data_device_allocated_size_bytes(&size_data, node)?;
+            let size_data_reservation = reservations.try_reserve(
+                bounded_join_request(
+                    ReservationKind::MixedSizeData,
+                    "join_mixed_size_data",
+                    size_data_bytes,
+                    reservations.budget(),
+                    node_id,
+                ),
+                metrics,
+            )?;
+            metrics.record_mixed_join_size_data_bytes(size_data_bytes);
+            let gather_map_reservation_bytes =
+                conditional_full_join_size_data_gather_map_reservation_size_bytes(&size_data, node)?;
+            (
+                size_data_bytes,
+                expected_output_rows,
+                gather_map_reservation_bytes,
+                BoundedConditionalJoinWork::Full { size_data, size_data_reservation },
+            )
+        } else {
+            let output_size = conditional_join_output_size(
+                join_type,
+                &left.frame,
+                &right.frame,
+                &predicate,
+                options.clone(),
+                &overrides,
+                node,
+            )?;
+            let gather_map_reservation_bytes =
+                conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
+            (
+                0,
+                output_size as u64,
+                gather_map_reservation_bytes,
+                BoundedConditionalJoinWork::Sized { output_size, options },
+            )
+        };
     let gather_map_reservation = reservations.try_reserve(
         bounded_join_request(
             ReservationKind::GatherMap,
@@ -1247,16 +1433,24 @@ fn execute_bounded_root_conditional_join(
         ),
         metrics,
     )?;
-    let indices = conditional_join_indices_with_output_size(
-        join_type,
-        &left.frame,
-        &right.frame,
-        &predicate,
-        options,
-        output_size,
-        &overrides,
-        node,
-    )?;
+    let indices = match work {
+        BoundedConditionalJoinWork::Full { size_data, size_data_reservation } => {
+            let indices = size_data.materialize_indices_in(&overrides);
+            reservations.release(size_data_reservation);
+            let indices = indices.map_err(|error| join_index_error(error, node))?;
+            BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
+        },
+        BoundedConditionalJoinWork::Sized { output_size, options } => conditional_join_indices_with_output_size(
+            join_type,
+            &left.frame,
+            &right.frame,
+            &predicate,
+            options,
+            output_size,
+            &overrides,
+            node,
+        )?,
+    };
     let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
 
     let output_reservation_bytes =
@@ -1275,6 +1469,7 @@ fn execute_bounded_root_conditional_join(
     metrics.operator_time += timer.elapsed();
 
     let output_rows = output.num_rows() as u64;
+    debug_assert_eq!(output_rows, expected_output_rows);
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
@@ -1292,7 +1487,7 @@ fn execute_bounded_root_conditional_join(
             probe_bytes: right_bytes,
             hash_table_bytes: 0,
             filtered_probe_state_bytes: 0,
-            mixed_size_data_bytes: 0,
+            mixed_size_data_bytes: size_data_bytes,
             gather_map_bytes,
             output_rows,
             output_bytes,
@@ -1310,6 +1505,11 @@ fn execute_bounded_root_conditional_join(
 enum BoundedConditionalJoinIndices {
     Pair { left: cudf::DataFrameJoinIndices, right: cudf::DataFrameJoinIndices },
     LeftOnly(cudf::DataFrameJoinIndices),
+}
+
+enum BoundedConditionalJoinWork<'a> {
+    Full { size_data: cudf::DataFrameConditionalFullJoinSizeData<'a>, size_data_reservation: ActiveReservation },
+    Sized { output_size: usize, options: cudf::DataFramePredicateJoinOptions },
 }
 
 impl BoundedConditionalJoinIndices {
@@ -1415,6 +1615,9 @@ fn conditional_join_output_size(
         BoundedConditionalJoinType::Left => {
             left.with_execution(overrides).conditional_left_join_size(right, predicate, options)
         },
+        BoundedConditionalJoinType::Full => {
+            unreachable!("conditional full joins use retained size data for output-size observation")
+        },
         BoundedConditionalJoinType::LeftSemi => {
             left.with_execution(overrides).conditional_left_semi_join_size(right, predicate, options)
         },
@@ -1433,6 +1636,9 @@ fn conditional_join_gather_map_reservation_size_bytes(
     let result = match join_type {
         BoundedConditionalJoinType::Inner | BoundedConditionalJoinType::Left => {
             cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size)
+        },
+        BoundedConditionalJoinType::Full => {
+            unreachable!("conditional full joins use retained size data for gather-map reservation")
         },
         BoundedConditionalJoinType::LeftSemi | BoundedConditionalJoinType::LeftAnti => {
             cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(output_size)
@@ -1473,6 +1679,9 @@ fn conditional_join_indices_with_output_size(
                 .map_err(|error| join_index_error(error, node))?;
             Ok(BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() })
         },
+        BoundedConditionalJoinType::Full => {
+            unreachable!("conditional full joins use retained size data for materialization")
+        },
         BoundedConditionalJoinType::LeftSemi => left
             .with_execution(overrides)
             .conditional_left_semi_join_indices_with_output_size(right, predicate, options, output_size)
@@ -1484,6 +1693,34 @@ fn conditional_join_indices_with_output_size(
             .map(BoundedConditionalJoinIndices::LeftOnly)
             .map_err(|error| join_index_error(error, node)),
     }
+}
+
+fn conditional_full_join_size_data_device_allocated_size_bytes(
+    size_data: &cudf::DataFrameConditionalFullJoinSizeData<'_>,
+    node: &JoinNode,
+) -> Result<u64> {
+    size_data.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.conditional_full_size_data_bytes",
+            "failed to observe bounded native conditional full join size-data memory",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })
+}
+
+fn conditional_full_join_size_data_gather_map_reservation_size_bytes(
+    size_data: &cudf::DataFrameConditionalFullJoinSizeData<'_>,
+    node: &JoinNode,
+) -> Result<u64> {
+    size_data.gather_map_reservation_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.conditional_full_gather_map_reservation",
+            "failed to size bounded native conditional full join gather maps",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })
 }
 
 fn bounded_join_request(

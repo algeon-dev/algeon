@@ -862,6 +862,38 @@ fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
 }
 
 #[test]
+fn phase5_full_nested_loop_join_filter_lowers_to_native_conditional_full_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-full-nlj-filter");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = nested_loop_join_filter_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Full,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = result.plans[0]
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
+            _ => None,
+        })
+        .expect("native plan should contain a join node");
+    assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Full));
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_some());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-nlj-cross");
     let left_path = dir.join("left.parquet");
