@@ -520,12 +520,8 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
     assert_eq!(runtime_error.fact_value("bounded_join_enabled"), Some("true"));
     assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("unsupported_plan_shape"));
     assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), Some(expected_unsupported_shape.as_str()));
-    assert_eq!(
-        runtime_error.fact_value("bounded_join_execution_families"),
-        Some(
-            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,root_projected_cross_join,root_mixed_inner_left_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
-        )
-    );
+    let expected_execution_families = cudf_query_engine::BoundedJoinReservationContract.execution_families_csv();
+    assert_eq!(runtime_error.fact_value("bounded_join_execution_families"), Some(expected_execution_families.as_str()));
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
     assert_eq!(
         runtime_error.fact_value("modeled_reservations"),
