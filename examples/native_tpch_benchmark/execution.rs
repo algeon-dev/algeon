@@ -57,7 +57,7 @@ pub(super) struct TimedNativeQueryRun {
     pub(super) samples: Vec<Duration>,
     pub(super) final_measurement: QueryMeasurement,
     pub(super) metrics: NativeDataFusionExecutionMetrics,
-    pub(super) raw_metrics: MetricsSet,
+    pub(super) timing_metrics: NativeTpchTimingMetrics,
 }
 
 #[derive(Debug, Clone)]
@@ -102,7 +102,16 @@ pub(super) fn select_benchmark_planning_row(
 ) -> DataFusionResult<NativeDataFusionPlanningRow> {
     match rows.len() {
         0 => Err(plan_error(format!("native planning report was empty for {query_id}"))),
-        1 => Ok(rows.into_iter().next().expect("single planning row must exist")),
+        1 => {
+            let row = rows.into_iter().next().expect("single planning row must exist");
+            if row.query_id != query_id {
+                return Err(plan_error(format!(
+                    "native TPC-H benchmark planning row query_id mismatch; requested {query_id}, observed {}",
+                    row.query_id
+                )));
+            }
+            Ok(row)
+        },
         count => Err(plan_error(format!(
             "native TPC-H benchmark requires exactly one native planning row per query; {query_id} produced {count}"
         ))),
@@ -119,6 +128,53 @@ pub(super) fn validate_decision_grade_native_planning_row(
         return Err(plan_error(format!(
             "native TPC-H benchmark requires post_native_execution_path=native for accepted query {query_id}; observed {}",
             row.post_native_execution_path.as_str()
+        )));
+    }
+    if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
+        if row.rejected_before_execution {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark accepted planning row for {query_id} must not set rejected_before_execution=true"
+            )));
+        }
+        if row.reason_code.as_deref().is_some_and(|reason_code| !reason_code.is_empty()) {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark accepted planning row for {query_id} must not include a rejection reason_code"
+            )));
+        }
+        if row.unsupported_category.as_deref().is_some_and(|unsupported_category| !unsupported_category.is_empty()) {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark accepted planning row for {query_id} must not include an unsupported_category"
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_decision_grade_native_rejection_row(
+    query_id: &str,
+    row: &NativeDataFusionPlanningRow,
+) -> DataFusionResult<()> {
+    if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced {
+        return Ok(());
+    }
+    if !row.rejected_before_execution {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark rejected planning row for {query_id} must set rejected_before_execution=true"
+        )));
+    }
+    if row.reason_code.as_deref().is_none_or(str::is_empty) {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark rejected planning row for {query_id} must include a stable reason_code"
+        )));
+    }
+    if row.unsupported_category.as_deref().is_none_or(str::is_empty) {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark rejected planning row for {query_id} must include a stable unsupported_category"
+        )));
+    }
+    if row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+        return Err(plan_error(format!(
+            "native TPC-H benchmark rejected planning row for {query_id} must not report post_native_execution_path=native"
         )));
     }
     Ok(())
@@ -152,10 +208,11 @@ pub(super) async fn run_cpu_query_iterations(
     let mut final_measurement = None;
     for _ in 0..config.iterations {
         let planned = plan_cpu_query(metadata, query).await?;
+        let schema = planned.plan.schema();
         let started = Instant::now();
         let batches = collect_cpu_plan_once(planned).await?;
         samples.push(started.elapsed());
-        final_measurement = Some(measure_output(&batches).map_err(cpu_started)?);
+        final_measurement = Some(measure_output(&schema, &batches).map_err(cpu_started)?);
     }
     Ok(TimedQueryRun {
         samples,
@@ -186,7 +243,7 @@ pub(super) async fn run_native_query_iterations(
 
     let mut samples = Vec::with_capacity(config.iterations);
     let mut final_measurement = None;
-    let mut final_metrics = None;
+    let mut measured_metrics = Vec::with_capacity(config.iterations);
     for _ in 0..config.iterations {
         let planned = plan_native_query(metadata, query, config).await.map_err(native_not_started)?;
         if planned.planning_row.outcome != NativeDataFusionPlanningOutcome::AcceptedReplaced {
@@ -198,20 +255,109 @@ pub(super) async fn run_native_query_iterations(
         }
         validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
             .map_err(native_not_started)?;
+        let schema = planned.plan.schema();
         let started = Instant::now();
         let (batches, metrics) = collect_native_plan_once(Arc::clone(&planned.plan)).await.map_err(native_started)?;
         samples.push(started.elapsed());
-        final_measurement = Some(measure_output(&batches).map_err(native_started)?);
-        final_metrics = Some(metrics);
+        final_measurement = Some(measure_output(&schema, &batches).map_err(native_started)?);
+        measured_metrics.push(metrics);
     }
-    let raw_metrics = final_metrics.expect("validated benchmark config requires iterations");
-    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&raw_metrics);
+    let metrics = aggregate_native_execution_metrics(&measured_metrics);
+    let timing_metrics = NativeTpchTimingMetrics::mean_from_metrics(&measured_metrics);
     Ok(TimedNativeQueryRun {
         samples,
         final_measurement: final_measurement.expect("validated benchmark config requires iterations"),
         metrics,
-        raw_metrics,
+        timing_metrics,
     })
+}
+
+fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusionExecutionMetrics {
+    let mut aggregate = NativeDataFusionExecutionMetrics::default();
+    for metrics in metrics {
+        let current = NativeDataFusionExecutionMetrics::from_metrics(metrics);
+        aggregate.gpu_resident_input_handoffs =
+            aggregate.gpu_resident_input_handoffs.saturating_add(current.gpu_resident_input_handoffs);
+        aggregate.host_to_device_uploads =
+            aggregate.host_to_device_uploads.saturating_add(current.host_to_device_uploads);
+        aggregate.host_to_device_uploaded_rows =
+            aggregate.host_to_device_uploaded_rows.saturating_add(current.host_to_device_uploaded_rows);
+        aggregate.host_to_device_uploaded_bytes =
+            aggregate.host_to_device_uploaded_bytes.saturating_add(current.host_to_device_uploaded_bytes);
+        aggregate.device_to_host_materializations =
+            aggregate.device_to_host_materializations.saturating_add(current.device_to_host_materializations);
+        aggregate.device_to_host_materialized_rows =
+            aggregate.device_to_host_materialized_rows.saturating_add(current.device_to_host_materialized_rows);
+        aggregate.device_to_host_materialized_bytes =
+            aggregate.device_to_host_materialized_bytes.saturating_add(current.device_to_host_materialized_bytes);
+        aggregate.device_to_device_copies =
+            aggregate.device_to_device_copies.saturating_add(current.device_to_device_copies);
+        aggregate.device_to_device_copied_bytes =
+            aggregate.device_to_device_copied_bytes.saturating_add(current.device_to_device_copied_bytes);
+        aggregate.parquet_files = aggregate.parquet_files.saturating_add(current.parquet_files);
+        aggregate.parquet_bytes_known = aggregate.parquet_bytes_known.saturating_add(current.parquet_bytes_known);
+        aggregate.row_groups_selected = aggregate.row_groups_selected.saturating_add(current.row_groups_selected);
+        aggregate.read_columns = aggregate.read_columns.saturating_add(current.read_columns);
+        aggregate.resident_dataframe_peak_bytes =
+            max_optional_metric(aggregate.resident_dataframe_peak_bytes, current.resident_dataframe_peak_bytes);
+        aggregate.allocator_high_water_bytes =
+            max_optional_metric(aggregate.allocator_high_water_bytes, current.allocator_high_water_bytes);
+        aggregate.reservation_requested_bytes =
+            aggregate.reservation_requested_bytes.saturating_add(current.reservation_requested_bytes);
+        aggregate.reservation_granted_bytes =
+            aggregate.reservation_granted_bytes.saturating_add(current.reservation_granted_bytes);
+        aggregate.reservation_denied_count =
+            aggregate.reservation_denied_count.saturating_add(current.reservation_denied_count);
+        aggregate.source_chunks_planned = aggregate.source_chunks_planned.saturating_add(current.source_chunks_planned);
+        aggregate.source_chunks_attempted =
+            aggregate.source_chunks_attempted.saturating_add(current.source_chunks_attempted);
+        aggregate.source_chunks_committed =
+            aggregate.source_chunks_committed.saturating_add(current.source_chunks_committed);
+        aggregate.source_chunks_retried = aggregate.source_chunks_retried.saturating_add(current.source_chunks_retried);
+        aggregate.row_groups_planned = aggregate.row_groups_planned.saturating_add(current.row_groups_planned);
+        aggregate.row_groups_committed = aggregate.row_groups_committed.saturating_add(current.row_groups_committed);
+        aggregate.partial_aggregate_count =
+            aggregate.partial_aggregate_count.saturating_add(current.partial_aggregate_count);
+        aggregate.partial_aggregate_rows =
+            aggregate.partial_aggregate_rows.saturating_add(current.partial_aggregate_rows);
+        aggregate.final_merge_attempts = aggregate.final_merge_attempts.saturating_add(current.final_merge_attempts);
+        aggregate.final_merge_levels = aggregate.final_merge_levels.saturating_add(current.final_merge_levels);
+        aggregate.retry_count = aggregate.retry_count.saturating_add(current.retry_count);
+        aggregate.retry_resource_exhausted_count =
+            aggregate.retry_resource_exhausted_count.saturating_add(current.retry_resource_exhausted_count);
+        aggregate.retry_reservation_failure_count =
+            aggregate.retry_reservation_failure_count.saturating_add(current.retry_reservation_failure_count);
+        aggregate.hash_join_build_count = aggregate.hash_join_build_count.saturating_add(current.hash_join_build_count);
+        aggregate.filtered_join_build_count =
+            aggregate.filtered_join_build_count.saturating_add(current.filtered_join_build_count);
+        aggregate.hash_join_cache_hits = aggregate.hash_join_cache_hits.saturating_add(current.hash_join_cache_hits);
+        aggregate.hash_join_cache_misses =
+            aggregate.hash_join_cache_misses.saturating_add(current.hash_join_cache_misses);
+        aggregate.hash_join_durable_cache_hits =
+            aggregate.hash_join_durable_cache_hits.saturating_add(current.hash_join_durable_cache_hits);
+        aggregate.hash_join_durable_cache_misses =
+            aggregate.hash_join_durable_cache_misses.saturating_add(current.hash_join_durable_cache_misses);
+        aggregate.hash_join_durable_cache_inserts =
+            aggregate.hash_join_durable_cache_inserts.saturating_add(current.hash_join_durable_cache_inserts);
+        aggregate.hash_join_hash_table_bytes =
+            aggregate.hash_join_hash_table_bytes.saturating_add(current.hash_join_hash_table_bytes);
+        aggregate.filtered_join_hash_table_bytes =
+            aggregate.filtered_join_hash_table_bytes.saturating_add(current.filtered_join_hash_table_bytes);
+        aggregate.filtered_join_probe_state_bytes =
+            aggregate.filtered_join_probe_state_bytes.saturating_add(current.filtered_join_probe_state_bytes);
+        aggregate.mixed_join_size_data_bytes =
+            aggregate.mixed_join_size_data_bytes.saturating_add(current.mixed_join_size_data_bytes);
+        aggregate.join_gather_map_bytes = aggregate.join_gather_map_bytes.saturating_add(current.join_gather_map_bytes);
+    }
+    aggregate
+}
+
+fn max_optional_metric(left: Option<usize>, right: Option<usize>) -> Option<usize> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
 }
 
 fn native_started(error: DataFusionError) -> NativeRunFailure {
@@ -247,12 +393,12 @@ fn cpu_session_config() -> SessionConfig {
     tpch_report_session_config()
 }
 
-fn measure_output(batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement> {
+fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement> {
     Ok(QueryMeasurement {
         output_batches: batches.len(),
         output_rows: batches.iter().map(RecordBatch::num_rows).sum(),
         output_bytes: batches.iter().map(get_record_batch_memory_size).sum(),
-        output_fingerprint: validation::fingerprint_batches(batches)?,
+        output_fingerprint: validation::fingerprint_batches(schema, batches)?,
     })
 }
 

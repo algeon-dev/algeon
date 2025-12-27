@@ -311,7 +311,10 @@ impl LocalParquetFile {
     }
 
     pub fn selected_row_group_count(&self) -> usize {
-        self.row_groups.as_ref().map_or(0, Vec::len)
+        self.row_groups.as_ref().map_or_else(
+            || self.row_group_bytes.as_ref().or(self.row_group_rows.as_ref()).map_or(0, Vec::len),
+            Vec::len,
+        )
     }
 }
 

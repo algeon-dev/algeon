@@ -54,16 +54,22 @@ impl EquiJoinIndices {
 struct JoinIndexResult {
     indices: EquiJoinIndices,
     hash_table_bytes: u64,
+    mixed_size_data_bytes: u64,
     gather_map_bytes: u64,
 }
 
 impl JoinIndexResult {
     fn without_hash_table(indices: EquiJoinIndices) -> Self {
-        Self { indices, hash_table_bytes: 0, gather_map_bytes: 0 }
+        Self { indices, hash_table_bytes: 0, mixed_size_data_bytes: 0, gather_map_bytes: 0 }
     }
 
     fn with_hash_table(indices: EquiJoinIndices, hash_table_bytes: u64) -> Self {
-        Self { indices, hash_table_bytes, gather_map_bytes: 0 }
+        Self { indices, hash_table_bytes, mixed_size_data_bytes: 0, gather_map_bytes: 0 }
+    }
+
+    fn with_mixed_size_data(mut self, mixed_size_data_bytes: u64) -> Self {
+        self.mixed_size_data_bytes = mixed_size_data_bytes;
+        self
     }
 
     fn with_observed_gather_maps(mut self) -> Result<Self> {
@@ -169,7 +175,7 @@ pub(super) fn execute_join(
             probe_bytes: side_metric(probe_side(node.spec.build_side), stats.left_bytes, stats.right_bytes),
             hash_table_bytes: indices.hash_table_bytes,
             filtered_probe_state_bytes: 0,
-            mixed_size_data_bytes: 0,
+            mixed_size_data_bytes: indices.mixed_size_data_bytes,
             gather_map_bytes: indices.gather_map_bytes,
             output_rows,
             output_bytes,
@@ -442,7 +448,7 @@ fn execute_mixed_join_indices(
     input: &JoinIndexInput<'_, '_>,
     node: &JoinNode,
     _scratch: &mut ExecutionScratch,
-    _metrics: &mut QueryMetrics,
+    metrics: &mut QueryMetrics,
 ) -> Result<JoinIndexResult> {
     match node.spec.join_type {
         JoinType::Inner | JoinType::Left => {
@@ -469,12 +475,23 @@ fn execute_mixed_join_indices(
                 },
             }
             .map_err(|error| join_index_error(error, node))?;
+            let size_data_bytes =
+                size_data.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.join.mixed_size_data_bytes",
+                        "failed to observe native mixed join size-data memory",
+                        error,
+                    )
+                    .with_fact("join_type", node.spec.join_type)
+                })?;
+            metrics.record_mixed_join_size_data_bytes(size_data_bytes);
             let pairs =
                 size_data.materialize_indices_in(input.overrides).map_err(|error| join_index_error(error, node))?;
             Ok(JoinIndexResult::without_hash_table(EquiJoinIndices::Pair {
                 left: pairs.left().clone(),
                 right: pairs.right().clone(),
-            }))
+            })
+            .with_mixed_size_data(size_data_bytes))
         },
         JoinType::Full => {
             let predicate = lower_join_match_predicate(input.context, node, input.residual_columns)?;

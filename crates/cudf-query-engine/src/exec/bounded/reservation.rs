@@ -74,3 +74,5 @@ pub(in crate::exec) struct CommittedPartial {
     pub(in crate::exec) frame: GpuDataFrame,
     pub(in crate::exec) reservation: ActiveReservation,
 }
+
+pub(in crate::exec) type ResidentGpuFrame = CommittedPartial;

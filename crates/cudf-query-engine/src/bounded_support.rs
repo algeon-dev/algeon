@@ -37,9 +37,10 @@ impl BoundedConditionalJoinType {
         match join.spec.join_type {
             JoinType::Inner => Some(Self::Inner),
             JoinType::Left if join.spec.build_side == JoinSide::Right => Some(Self::Left),
-            JoinType::LeftSemi => Some(Self::LeftSemi),
-            JoinType::LeftAnti => Some(Self::LeftAnti),
+            JoinType::LeftSemi if join.spec.build_side == JoinSide::Left => Some(Self::LeftSemi),
+            JoinType::LeftAnti if join.spec.build_side == JoinSide::Left => Some(Self::LeftAnti),
             JoinType::Left | JoinType::Full | JoinType::Cross => None,
+            JoinType::LeftSemi | JoinType::LeftAnti => None,
         }
     }
 }
@@ -73,6 +74,7 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
         && let PlanNode::Join(join) = &node.kind
         && bounded_root_join_compatible(join)
         && reachable_join_count(plan) == 1
+        && bounded_join_source_leaf_inputs_compatible(plan, join)
     {
         return BoundedJoinPlanSupport::Root;
     }
@@ -101,6 +103,17 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
         facts.insert(
             "bounded_join_lower_level_blockers",
             "mixed_semi_anti_retained_size_data,projected_output_reservation".to_string(),
+        );
+    } else if contains_keyed_residual_full_join(plan) {
+        facts.insert("bounded_join_specific_blocker", "mixed_keyed_residual_full_join_unsupported".to_string());
+        facts.insert("bounded_join_blocked_join_family", "mixed_keyed_residual_full".to_string());
+        facts.insert(
+            "bounded_join_required_lower_level_contract",
+            "mixed_full_retained_size_data_and_projected_output_reservation".to_string(),
+        );
+        facts.insert(
+            "bounded_join_lower_level_blockers",
+            "mixed_full_retained_size_data,projected_output_reservation".to_string(),
         );
     }
     facts
@@ -185,6 +198,9 @@ fn analyze_bounded_join_pipeline_shape(
                 if require_single_reachable_join && reachable_join_count(plan) != 1 {
                     return Err(BoundedJoinPipelineRejection::MultipleReachableJoins);
                 }
+                if require_single_reachable_join {
+                    validate_bounded_join_source_leaf_inputs(plan, join)?;
+                }
                 stages.reverse();
                 return Ok(BoundedJoinPipelineShape { join_id: current, join, stages });
             },
@@ -226,6 +242,39 @@ fn analyze_bounded_join_pipeline_shape(
             },
             PlanNode::Source(_) | PlanNode::Aggregate(_) => return Err(BoundedJoinPipelineRejection::MissingRootJoin),
         }
+    }
+}
+
+fn bounded_join_source_leaf_inputs_compatible(plan: &QueryPlan, join: &JoinNode) -> bool {
+    validate_bounded_join_source_leaf_inputs(plan, join).is_ok()
+}
+
+fn validate_bounded_join_source_leaf_inputs<'a>(
+    plan: &'a QueryPlan,
+    join: &'a JoinNode,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    validate_bounded_join_source_leaf_input(plan, join.inputs[0])?;
+    validate_bounded_join_source_leaf_input(plan, join.inputs[1])
+}
+
+fn validate_bounded_join_source_leaf_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded join input references a missing plan node",
+    })?;
+    match &node.kind {
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => validate_bounded_join_source_leaf_input(plan, filter.input),
+        PlanNode::Projection(projection) => validate_bounded_join_source_leaf_input(plan, projection.input),
+        PlanNode::Join(_) => Err(BoundedJoinPipelineRejection::MultipleReachableJoins),
+        PlanNode::Aggregate(_) => {
+            Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "aggregate" })
+        },
+        PlanNode::Sort(_) => Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "sort" }),
+        PlanNode::Limit(_) => Err(BoundedJoinPipelineRejection::UnsupportedLeaf { node_id, node_kind: "limit" }),
     }
 }
 
@@ -280,6 +329,15 @@ fn contains_keyed_residual_semi_anti_join(plan: &QueryPlan) -> bool {
         !join.spec.keys.is_empty()
             && join.spec.residual_predicate.is_some()
             && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+    })
+}
+
+fn contains_keyed_residual_full_join(plan: &QueryPlan) -> bool {
+    plan.nodes().iter().any(|node| {
+        let PlanNode::Join(join) = &node.kind else {
+            return false;
+        };
+        !join.spec.keys.is_empty() && join.spec.residual_predicate.is_some() && join.spec.join_type == JoinType::Full
     })
 }
 

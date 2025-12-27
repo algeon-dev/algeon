@@ -21,6 +21,13 @@ impl NativeTpchBenchmarkReport {
         push_line(&mut output, format_args!("# tpch_benchmark_query_ids={}", self.config.query_ids.join(",")));
         push_line(&mut output, format_args!("# tpch_benchmark_warmups={}", self.config.warmup_iterations));
         push_line(&mut output, format_args!("# tpch_benchmark_iterations={}", self.config.iterations));
+        push_line(&mut output, format_args!("# tpch_benchmark_wall_time_fields=per_measured_iteration_mean"));
+        push_line(&mut output, format_args!("# tpch_benchmark_native_counter_fields=measured_iteration_totals"));
+        push_line(
+            &mut output,
+            format_args!("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations"),
+        );
+        push_line(&mut output, format_args!("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean"));
         push_line(&mut output, format_args!("# tpch_benchmark_dataset_mode={}", self.config.dataset_mode.as_str()));
         push_line(
             &mut output,
@@ -177,8 +184,7 @@ impl NativeTpchBenchmarkRow {
             }
         });
         let metrics = native.as_ref().map(|run| run.metrics.clone()).unwrap_or_default();
-        let timing_metrics =
-            native.as_ref().map(|run| NativeTpchTimingMetrics::from_metrics(&run.raw_metrics)).unwrap_or_default();
+        let timing_metrics = native.as_ref().map(|run| run.timing_metrics.clone()).unwrap_or_default();
         Self {
             query_id: query_id.to_string(),
             planning_outcome: planning_row.outcome,
@@ -332,6 +338,19 @@ impl NativeTpchTimingMetrics {
             final_merge_time_ms: metric_duration_ms(metrics, "final_merge_time"),
             final_sort_time_ms: metric_duration_ms(metrics, "final_sort_time"),
             materialization_time_ms: metric_duration_ms(metrics, "materialization_time"),
+        }
+    }
+
+    pub(super) fn mean_from_metrics(metrics: &[MetricsSet]) -> Self {
+        let values = metrics.iter().map(Self::from_metrics).collect::<Vec<_>>();
+        Self {
+            parquet_read_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.parquet_read_time_ms)),
+            source_read_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.source_read_time_ms)),
+            operator_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.operator_time_ms)),
+            chunk_operator_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.chunk_operator_time_ms)),
+            final_merge_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.final_merge_time_ms)),
+            final_sort_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.final_sort_time_ms)),
+            materialization_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.materialization_time_ms)),
         }
     }
 }
@@ -488,6 +507,16 @@ fn optional_usize_text_none(value: Option<usize>) -> String {
 
 fn optional_text(value: Option<&str>, missing: &str) -> String {
     value.map_or_else(|| missing.to_string(), stable_tsv_field)
+}
+
+fn mean_optional_f64(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0_u64;
+    for value in values.into_iter().flatten() {
+        sum += value;
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f64)
 }
 
 fn metadata_value(value: &str) -> String {

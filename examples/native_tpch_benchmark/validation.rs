@@ -34,34 +34,40 @@ pub(super) fn parity_status(
     }
 }
 
-pub(super) fn fingerprint_batches(batches: &[RecordBatch]) -> DataFusionResult<String> {
+pub(super) fn fingerprint_batches(
+    schema: &arrow::datatypes::SchemaRef,
+    batches: &[RecordBatch],
+) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpch-output-v2");
-    if let Some(batch) = batches.first() {
-        let schema = batch.schema();
-        for later_batch in &batches[1..] {
-            if later_batch.schema().as_ref() != schema.as_ref() {
-                return Err(DataFusionError::Plan(
-                    "TPC-H output fingerprint requires a stable schema across output batches".to_string(),
-                ));
-            }
-        }
-        hasher.update_field("schema_metadata");
-        update_metadata(&mut hasher, schema.metadata());
-        for field in schema.fields() {
-            hasher.update_field("field");
-            hasher.update_field(field.name());
-            hasher.update_field(&field.data_type().to_string());
-            hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
-            update_metadata(&mut hasher, field.metadata());
+    hasher.update_field("datafusion-cudf-tpch-output-v3");
+    for batch in batches {
+        if batch.schema().as_ref() != schema.as_ref() {
+            return Err(DataFusionError::Plan(
+                "TPC-H output fingerprint requires collected batches to match the planned output schema".to_string(),
+            ));
         }
     }
+    hasher.update_field("schema_metadata");
+    update_metadata(&mut hasher, schema.metadata());
+    for field in schema.fields() {
+        hasher.update_field("field");
+        hasher.update_field(field.name());
+        hasher.update_field(&field.data_type().to_string());
+        hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
+        update_metadata(&mut hasher, field.metadata());
+    }
     hasher.update_field(&batches.iter().map(RecordBatch::num_rows).sum::<usize>().to_string());
-    hasher.update_field(&batches.first().map_or(0, RecordBatch::num_columns).to_string());
+    hasher.update_field(&schema.fields().len().to_string());
     for batch in batches {
         for row in 0..batch.num_rows() {
             for column in 0..batch.num_columns() {
-                hasher.update_field(&array_value_to_string(batch.column(column).as_ref(), row)?);
+                let array = batch.column(column);
+                if array.is_null(row) {
+                    hasher.update_field("null");
+                } else {
+                    hasher.update_field("value");
+                    hasher.update_field(&array_value_to_string(array.as_ref(), row)?);
+                }
             }
         }
     }

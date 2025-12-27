@@ -410,7 +410,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
     assert_eq!(
         adapter_error.fact_value("modeled_reservations"),
         Some(
-            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization"
         )
     );
     assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
@@ -475,7 +475,7 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
     assert_eq!(
         planner_facts.get("modeled_reservations").map(String::as_str),
         Some(
-            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization"
         )
     );
     assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
@@ -501,7 +501,7 @@ fn bounded_join_rejection_facts_match_between_planner_and_runtime_paths() {
     assert_eq!(
         runtime_error.fact_value("modeled_reservations"),
         Some(
-            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization"
         )
     );
     assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
