@@ -63,7 +63,11 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{CandidateOutcome, FallbackReason, NativeLoweringResult, lower_physical_plan_to_native};
+use datafusion_cudf::{
+    CandidateOutcome, FallbackReason, NativeFallbackPressureWorkloadInput, NativeLoweringResult,
+    lower_physical_plan_to_native, tpch_fallback_pressure_workload_items, tpch_report_session_config,
+    write_tiny_tpch_parquet_dataset,
+};
 
 #[test]
 fn benchmark_shape_lowers_to_one_native_query_plan() {
@@ -819,6 +823,116 @@ fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
         NativeJoinSide::Right,
         &[(NativeJoinSide::Left, "input0.key", "key"), (NativeJoinSide::Left, "input0.r_m01", "r_m01")],
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q21");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q21 = items.into_iter().find(|item| item.query_id == "q21").expect("TPC-H workload should include q21");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q21.input else {
+        panic!("q21 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let joins = native_joins(&result.plans[0]);
+    assert!(
+        joins.iter().any(|join| q21_left_only_mixed_residual_join_matches(join, NativeJoinType::LeftSemi)),
+        "q21 should lower its EXISTS branch to a right-build native left-semi residual join"
+    );
+    assert!(
+        joins.iter().any(|join| q21_left_only_mixed_residual_join_matches(join, NativeJoinType::LeftAnti)),
+        "q21 should lower its NOT EXISTS branch to a right-build native left-anti residual join"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+fn q21_left_only_mixed_residual_join_matches(
+    join: &cudf_query_engine::JoinNode,
+    expected_join_type: NativeJoinType,
+) -> bool {
+    join.spec.join_type == expected_join_type
+        && join.spec.build_side == NativeJoinSide::Right
+        && !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_some()
+        && !join.spec.output_projection.is_empty()
+        && join.spec.output_projection.iter().all(|column| column.side == NativeJoinSide::Left)
+}
+
+#[tokio::test]
+async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q13");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q13 = items.into_iter().find(|item| item.query_id == "q13").expect("TPC-H workload should include q13");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q13.input else {
+        panic!("q13 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let plan = &result.plans[0];
+    let joins = native_joins(plan);
+    assert_eq!(joins.len(), 1, "q13 should lower to exactly one native join");
+    let join = joins[0];
+    assert_eq!(join.spec.join_type, NativeJoinType::Left);
+    assert_eq!(join.spec.build_side, NativeJoinSide::Right);
+    assert_eq!(join.spec.keys.len(), 1);
+    assert_eq!(join.spec.keys[0].left.to_string(), "input0.c_custkey");
+    assert_eq!(join.spec.keys[0].right.to_string(), "input1.o_custkey");
+    assert!(
+        join.spec.residual_predicate.is_none(),
+        "q13 orders-side NOT LIKE should lower as a pre-join filter, not a join residual"
+    );
+
+    let right_input = plan.node(join.inputs[1]).expect("q13 join right input should exist");
+    let PlanNode::Projection(right_projection) = &right_input.kind else {
+        panic!("q13 join right input should be the filtered orders projection");
+    };
+    let filter_input = plan.node(right_projection.input).expect("q13 orders filter should exist");
+    let PlanNode::Filter(filter) = &filter_input.kind else {
+        panic!("q13 orders-side NOT LIKE should be a Filter node before the join");
+    };
+    assert!(matches!(
+        &filter.predicate,
+        Expr::Like { expr, pattern, escape, negated }
+            if *negated
+                && pattern == "%special%requests%"
+                && escape.as_deref() == Some("\\")
+                && matches!(expr.as_ref(), Expr::Column(column) if column.to_string() == "o_comment")
+    ));
+
+    let aggregates = plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) => Some(aggregate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(aggregates.len(), 2, "q13 should lower both GROUP BY levels");
+    assert_eq!(aggregates[0].spec.group_exprs.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 1);
+    assert_eq!(aggregates[1].spec.group_exprs.len(), 1);
+    assert_eq!(aggregates[1].spec.aggr_exprs.len(), 1);
+
+    let PlanNode::Sort(sort) = &plan.root_node().kind else {
+        panic!("q13 native root should be the final ORDER BY sort");
+    };
+    assert_eq!(sort.spec.expressions.len(), 2);
+    assert_eq!(sort.spec.expressions[0].expr.to_string(), "custdist");
+    assert!(sort.spec.expressions[0].descending);
+    assert_eq!(sort.spec.expressions[1].expr.to_string(), "c_count");
+    assert!(sort.spec.expressions[1].descending);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3336,6 +3450,16 @@ fn native_filter_exprs(plan: &cudf_query_engine::QueryPlan) -> Vec<&Expr> {
         .iter()
         .filter_map(|node| match &node.kind {
             PlanNode::Filter(filter) => Some(&filter.predicate),
+            _ => None,
+        })
+        .collect()
+}
+
+fn native_joins(plan: &cudf_query_engine::QueryPlan) -> Vec<&cudf_query_engine::JoinNode> {
+    plan.nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Join(join) => Some(join),
             _ => None,
         })
         .collect()

@@ -53,9 +53,9 @@ use datafusion_cudf::{
 };
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] =
-    &["q01", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q12", "q14", "q19"];
+    &["q01", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q12", "q13", "q14", "q19", "q21"];
 const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] =
-    &["q03", "q04", "q05", "q07", "q08", "q09", "q10", "q12", "q14", "q19"];
+    &["q03", "q04", "q05", "q07", "q08", "q09", "q10", "q12", "q13", "q14", "q19", "q21"];
 
 #[tokio::test]
 async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
@@ -834,8 +834,8 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     let expected_supported_shape = contract.supported_shape_requirement();
     let expected_mixed_alias_compatibility = "root_mixed_inner_left_join_is_legacy_alias_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_root_joins";
     let expected_mixed_capability_detail = "mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti";
-    let expected_mixed_multi_join_capability = "multi_join_mixed_keyed_residual_inner_pipeline";
-    let expected_mixed_multi_join_capability_detail = "mixed_keyed_residual_multi_join_types=inner";
+    let expected_mixed_multi_join_capability = "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline";
+    let expected_mixed_multi_join_capability_detail = "mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti";
     let expected_mixed_size_data_alias_compatibility = "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data";
     for row in &report.rows {
         if EXPECTED_BOUNDED_TPCH_ACCEPTED.contains(&row.query_id.as_str()) {
@@ -995,26 +995,6 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     "missing mixed size-data alias compatibility fact for {}",
                     row.query_id
                 );
-                if row.query_id == "q21" {
-                    assert_eq!(
-                        row.bounded_join_reservation_facts.get("bounded_join_specific_blocker").map(String::as_str),
-                        Some("bounded_multi_join_mixed_keyed_residual_semi_anti_topology_unsupported")
-                    );
-                    assert_eq!(
-                        row.bounded_join_reservation_facts
-                            .get("bounded_join_required_shape_contract")
-                            .map(String::as_str),
-                        Some(
-                            "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_joins"
-                        )
-                    );
-                    assert_eq!(
-                        row.bounded_join_reservation_facts
-                            .get("bounded_join_required_lower_level_contract")
-                            .map(String::as_str),
-                        None
-                    );
-                }
             } else {
                 assert!(row.bounded_join_reservation_facts.is_empty());
             }
@@ -1062,30 +1042,65 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
         Some("enabled")
     );
     assert!(
-        q07.bounded_join_reservation_facts
-            .get("bounded_join_execution_families")
-            .is_some_and(|families| families.contains("multi_join_mixed_keyed_residual_inner_pipeline")),
-        "q07 accepted facts must name the mixed keyed-residual inner multi-join family"
+        q07.bounded_join_reservation_facts.get("bounded_join_execution_families").is_some_and(|families| {
+            families.contains("multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline")
+        }),
+        "q07 accepted facts must name the expanded mixed keyed-residual multi-join family"
     );
     assert_eq!(
         q07.bounded_join_reservation_facts
             .get("bounded_join_mixed_keyed_residual_multi_join_capability_detail")
             .map(String::as_str),
-        Some("mixed_keyed_residual_multi_join_types=inner")
+        Some("mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti")
     );
 
-    for query_id in ["q13", "q21"] {
-        let row = planning_row(&report, query_id);
-        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-        assert_eq!(row.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
-        assert_eq!(row.unsupported_category.as_deref(), Some("operator_hashjoin"));
-        assert_eq!(
-            row.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
-            Some("unsupported_plan_shape"),
-            "{query_id} should remain a bounded join admission rejection"
-        );
-        assert!(row.rejected_before_execution, "{query_id} should stay rejected before native execution");
-    }
+    let q21 = planning_row(&report, "q21");
+    assert_eq!(q21.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q21.reason_code, None);
+    assert_eq!(q21.unsupported_category, None);
+    assert_eq!(q21.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q21.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(
+        q21.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
+        Some("enabled")
+    );
+    assert!(
+        q21.bounded_join_reservation_facts.get("bounded_join_execution_families").is_some_and(|families| {
+            families.contains("multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline")
+        }),
+        "q21 accepted facts must name the expanded mixed keyed-residual multi-join family"
+    );
+    assert_eq!(
+        q21.bounded_join_reservation_facts
+            .get("bounded_join_mixed_keyed_residual_multi_join_capability_detail")
+            .map(String::as_str),
+        Some("mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti")
+    );
+    assert!(!q21.rejected_before_execution, "q21 should be replaced by native execution");
+
+    let q13 = planning_row(&report, "q13");
+    assert_eq!(q13.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q13.reason_code, None);
+    assert_eq!(q13.unsupported_category, None);
+    assert_eq!(q13.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q13.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(
+        q13.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
+        Some("enabled")
+    );
+    assert_eq!(
+        q13.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
+    assert!(!q13.rejected_before_execution, "q13 should be replaced by native execution");
+
+    let rejected_query_ids = report
+        .rows
+        .iter()
+        .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
+        .map(|row| row.query_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(rejected_query_ids, vec!["q02", "q11", "q15", "q16", "q17", "q18", "q20", "q22"]);
 
     let text = report.to_tsv();
     assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=6\n"));
@@ -1395,7 +1410,7 @@ fn expected_tpch_native_candidate_shape_family(query_id: &str) -> &'static str {
 
 fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str, &'static str) {
     match query_id {
-        "q02" | "q13" | "q15" | "q18" | "q20" | "q21" => ("native_bounded_join_unsupported", "operator_hashjoin"),
+        "q02" | "q15" | "q18" | "q20" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         "q11" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
         "q16" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         "q22" => ("native_bounded_join_unsupported", "operator_nestedloopjoin"),
@@ -1410,9 +1425,9 @@ fn expected_tpch_bounded_join_lower_level_blockers(_query_id: &str) -> &'static 
 
 fn expected_tpch_operator_unsupported_category(query_id: &str) -> &'static str {
     match query_id {
-        "q02" | "q10" | "q18" | "q21" => "operator_sort_topk",
+        "q02" | "q10" | "q18" => "operator_sort_topk",
         "q11" | "q22" => "operator_nestedloopjoin",
-        "q04" | "q05" | "q08" | "q09" | "q12" | "q13" | "q15" | "q16" | "q17" | "q20" => "operator_hashjoin",
+        "q04" | "q05" | "q08" | "q09" | "q12" | "q15" | "q16" | "q17" | "q20" => "operator_hashjoin",
         "q01" => "operator_shape",
         other => panic!("missing TPC-H operator unsupported category expectation for {other}"),
     }

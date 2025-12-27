@@ -590,7 +590,7 @@ pub enum BoundedJoinExecutionFamily {
     RootProjectedCrossJoin,
     RootMixedInnerLeftJoin,
     MultiJoinReusableHashPipeline,
-    MultiJoinMixedKeyedResidualInnerPipeline,
+    MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
 }
 
 impl BoundedJoinExecutionFamily {
@@ -602,7 +602,9 @@ impl BoundedJoinExecutionFamily {
             Self::RootProjectedCrossJoin => "root_projected_cross_join",
             Self::RootMixedInnerLeftJoin => "root_mixed_inner_left_join",
             Self::MultiJoinReusableHashPipeline => "multi_join_reusable_hash_pipeline",
-            Self::MultiJoinMixedKeyedResidualInnerPipeline => "multi_join_mixed_keyed_residual_inner_pipeline",
+            Self::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline => {
+                "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
+            },
         }
     }
 }
@@ -614,7 +616,7 @@ pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 7] = [
     BoundedJoinExecutionFamily::RootProjectedCrossJoin,
     BoundedJoinExecutionFamily::RootMixedInnerLeftJoin,
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
-    BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerPipeline,
+    BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -766,11 +768,11 @@ impl BoundedJoinReservationContract {
             ),
             (
                 "bounded_join_mixed_keyed_residual_multi_join_capability",
-                "multi_join_mixed_keyed_residual_inner_pipeline".to_string(),
+                "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline".to_string(),
             ),
             (
                 "bounded_join_mixed_keyed_residual_multi_join_capability_detail",
-                "mixed_keyed_residual_multi_join_types=inner".to_string(),
+                "mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti".to_string(),
             ),
             (
                 "cudf_rs_mixed_join_pair_materialization_contract",
