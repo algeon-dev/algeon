@@ -1002,6 +1002,31 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_reports_lower_level_blocker
         facts.get("bounded_join_lower_level_blockers").map(String::as_str),
         Some("source_contract,aggregate_contract,final_sort_contract")
     );
+    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some("source_read,operator_output,final_sort"));
+    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
+        value.contains("source_read:blocked_by_lower_level")
+            && value.contains("operator_output:blocked_by_lower_level")
+            && value.contains("final_sort:blocked_by_lower_level")
+    }));
+    let reservation_requirements = facts
+        .get("bounded_join_reservation_requirements")
+        .expect("q15-like blocked family should report overridden reservation requirements");
+    assert!(reservation_requirements.contains("source_read:source_contract:blocked_by_lower_level"));
+    assert!(reservation_requirements.contains("operator_output:aggregate_contract:blocked_by_lower_level"));
+    assert!(reservation_requirements.contains("final_sort:final_sort_contract:blocked_by_lower_level"));
+    assert!(
+        !reservation_requirements
+            .contains("source_read:query_engine_source_read_reservation:modeled_before_source_handoff")
+    );
+    assert!(
+        !reservation_requirements.contains(
+            "operator_output:query_engine_unary_output_reservation:modeled_by_bounded_resident_frame_ownership"
+        )
+    );
+    assert!(
+        !reservation_requirements
+            .contains("final_sort:query_engine_final_sort_reservation:modeled_by_bounded_resident_frame_ownership")
+    );
     assert_eq!(
         facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
         Some("source_contract,aggregate_contract,final_sort_contract")
@@ -1018,6 +1043,8 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_recognizer_stays_narrow() {
     for variant in [
         KeyedHashJoinResidentSubplanPipelineVariant::ResidualRootJoin,
         KeyedHashJoinResidentSubplanPipelineVariant::SortBelowRoot,
+        KeyedHashJoinResidentSubplanPipelineVariant::ScalarAggregateNotMax,
+        KeyedHashJoinResidentSubplanPipelineVariant::GroupedAggregateNotSum,
     ] {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
@@ -1174,6 +1201,8 @@ enum KeyedHashJoinResidentSubplanPipelineVariant {
     BlockedFamily,
     ResidualRootJoin,
     SortBelowRoot,
+    ScalarAggregateNotMax,
+    GroupedAggregateNotSum,
 }
 
 fn keyed_hash_join_resident_subplan_pipeline_plan(
@@ -1202,6 +1231,18 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
         Field::new("total_revenue", DataType::Int64, true),
     ]));
     let max_revenue_schema = Arc::new(Schema::new(vec![Field::new("max_revenue", DataType::Int64, true)]));
+    let grouped_revenue_function =
+        if matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::GroupedAggregateNotSum) {
+            AggregateFunction::Count
+        } else {
+            AggregateFunction::Sum
+        };
+    let scalar_revenue_function =
+        if matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::ScalarAggregateNotMax) {
+            AggregateFunction::Sum
+        } else {
+            AggregateFunction::Max
+        };
 
     let mut builder = QueryPlanBuilder::new();
     let supplier = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
@@ -1216,6 +1257,7 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
         Arc::clone(&lineitem_schema),
         Arc::clone(&revenue_projection_schema),
         Arc::clone(&revenue_schema),
+        grouped_revenue_function,
     );
     let supplier_revenue = builder.add_join(
         supplier,
@@ -1248,6 +1290,7 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
         lineitem_schema,
         revenue_projection_schema,
         Arc::clone(&revenue_schema),
+        grouped_revenue_function,
     );
     let revenue_for_max =
         builder.add_projection(revenue_for_max, vec![Expr::column("total_revenue")], Arc::clone(&revenue_schema));
@@ -1255,7 +1298,7 @@ fn keyed_hash_join_resident_subplan_pipeline_plan(
         revenue_for_max,
         AggregateSpec::new(
             Vec::new(),
-            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("total_revenue"), "max_revenue")],
+            vec![AggregateExpr::new(scalar_revenue_function, Expr::column("total_revenue"), "max_revenue")],
         ),
         Arc::clone(&max_revenue_schema),
     );
@@ -1296,6 +1339,7 @@ fn build_resident_subplan_revenue_branch(
     lineitem_schema: Arc<Schema>,
     revenue_projection_schema: Arc<Schema>,
     revenue_schema: Arc<Schema>,
+    aggregate_function: AggregateFunction,
 ) -> cudf_query_engine::NodeId {
     let aggregate = build_resident_subplan_revenue_aggregate(
         builder,
@@ -1304,6 +1348,7 @@ fn build_resident_subplan_revenue_branch(
         lineitem_schema,
         revenue_projection_schema,
         Arc::clone(&revenue_schema),
+        aggregate_function,
     );
     builder.add_projection(aggregate, vec![Expr::column("supplier_no"), Expr::column("total_revenue")], revenue_schema)
 }
@@ -1315,6 +1360,7 @@ fn build_resident_subplan_revenue_aggregate(
     lineitem_schema: Arc<Schema>,
     revenue_projection_schema: Arc<Schema>,
     revenue_schema: Arc<Schema>,
+    aggregate_function: AggregateFunction,
 ) -> cudf_query_engine::NodeId {
     let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
         format!("/tmp/resident-subplan-{label}-lineitem.parquet"),
@@ -1344,7 +1390,7 @@ fn build_resident_subplan_revenue_aggregate(
         aggregate_input,
         AggregateSpec::new(
             vec![Expr::column("supplier_no")],
-            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("revenue"), "total_revenue")],
+            vec![AggregateExpr::new(aggregate_function, Expr::column("revenue"), "total_revenue")],
         ),
         revenue_schema,
     )
@@ -2883,6 +2929,34 @@ fn local_parquet_source_rejects_invalid_partition_column_contracts() {
     let error = validate_local_parquet_source(&wrong_type).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("partition_value_type_mismatch"));
     assert_eq!(error.fact_value("partition_column"), Some("part"));
+}
+
+#[test]
+fn local_parquet_source_rejects_null_partition_value_for_non_nullable_column() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("part", DataType::Int32, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/phase4.parquet")
+                .with_partition_values(vec![LiteralValue::Null(DataType::Int32)]),
+        ],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_partition_columns(vec![PartitionColumn::new("part", DataType::Int32, false)]);
+
+    let error = validate_local_parquet_source(&source).unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.local_parquet_source.validate");
+    assert_eq!(error.fact_value("reason"), Some("non_nullable_partition_value_null"));
+    assert_eq!(error.fact_value("file_index"), Some("0"));
+    assert_eq!(error.fact_value("partition_index"), Some("0"));
+    assert_eq!(error.fact_value("partition_column"), Some("part"));
+    assert_eq!(error.fact_value("partition_type"), Some("Int32"));
+    assert_eq!(error.fact_value("partition_nullable"), Some("false"));
+    assert_eq!(error.fact_value("partition_value"), Some("NULL::Int32"));
 }
 
 #[test]

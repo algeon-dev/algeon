@@ -76,11 +76,11 @@ pub struct GpuResultHandle {
 
 impl GpuResultHandle {
     pub fn new(context: &ExecutionContext, frame: GpuDataFrame, schema: SchemaRef) -> Result<Self> {
-        if frame.placement() != context.runtime().placement() {
+        if frame.placement().device != context.runtime().device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.gpu_result_handle",
-                "native GPU result frame placement does not match the execution context",
+                "native GPU result frame device does not match the execution context",
             )
             .with_fact("frame_device", frame.placement().device.ordinal())
             .with_fact("runtime_device", context.runtime().device().ordinal()));
@@ -165,11 +165,11 @@ impl GpuFilteredJoinBuildHandle {
         filtered_join: DataFrameFilteredJoin,
         null_equality: JoinNullEquality,
     ) -> Result<Self> {
-        if filtered_join.build().placement() != context.runtime().placement() {
+        if filtered_join.build().placement().device != context.runtime().device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.gpu_filtered_join_build_handle",
-                "native GPU filtered-join build artifact placement does not match the execution context",
+                "native GPU filtered-join build artifact device does not match the execution context",
             )
             .with_fact("build_device", filtered_join.build().placement().device.ordinal())
             .with_fact("runtime_device", context.runtime().device().ordinal()));
@@ -229,11 +229,11 @@ impl GpuHashJoinBuildHandle {
         hash_join: DataFrameHashJoin,
         null_equality: JoinNullEquality,
     ) -> Result<Self> {
-        if hash_join.build().placement() != context.runtime().placement() {
+        if hash_join.build().placement().device != context.runtime().device() {
             return Err(QueryError::new(
                 crate::error::QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.gpu_hash_join_build_handle",
-                "native GPU hash-join build artifact placement does not match the execution context",
+                "native GPU hash-join build artifact device does not match the execution context",
             )
             .with_fact("build_device", hash_join.build().placement().device.ordinal())
             .with_fact("runtime_device", context.runtime().device().ordinal()));

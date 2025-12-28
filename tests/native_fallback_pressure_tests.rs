@@ -959,7 +959,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
             if expected_reason == "native_bounded_join_unsupported" {
                 assert_eq!(
                     row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
-                    Some(""),
+                    Some(expected_tpch_bounded_join_blocked_reservations(row.query_id.as_str())),
                     "missing bounded join blocker facts for {}",
                     row.query_id
                 );
@@ -1243,6 +1243,10 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
     assert_eq!(
         q15.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
         Some("source_contract,aggregate_contract,final_sort_contract")
+    );
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
+        Some("source_read,operator_output,final_sort")
     );
     assert_eq!(
         q15.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
@@ -1573,6 +1577,13 @@ fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str,
 fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
     match query_id {
         "q15" => "source_contract,aggregate_contract,final_sort_contract",
+        _ => "",
+    }
+}
+
+fn expected_tpch_bounded_join_blocked_reservations(query_id: &str) -> &'static str {
+    match query_id {
+        "q15" => "source_read,operator_output,final_sort",
         _ => "",
     }
 }

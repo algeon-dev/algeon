@@ -1,3 +1,5 @@
+use cudf::{ExecutionBudgetReport, ExecutionBudgetRequest};
+
 use super::*;
 
 pub(super) fn execute_final_sort_limit_with_retry(
@@ -92,33 +94,145 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         input: &CommittedPartial,
         attempt: usize,
     ) -> Result<CommittedPartial> {
-        let sort_request = MemoryReservationRequest::new(
-            ReservationKind::FinalSort,
-            input.reservation.bytes(),
-            self.reservations.budget(),
-        )
-        .with_memory_boundary("final_sort")
-        .with_node_id(self.bounded.aggregate_id)
-        .with_stage("final_sort")
-        .with_attempt(attempt, self.max_attempts);
-        let sort_reservation = self.reservations.try_reserve(sort_request, self.metrics)?;
+        let sort = lower_sort_spec(&self.sort.spec)?;
+        let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
+        let prepare_token = self.final_sort_budget_token("final_sort", attempt)?;
+        let timer = Instant::now();
+        let prepared = input
+            .frame
+            .frame()
+            .clone()
+            .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, &prepare_token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.final_sort.prepare",
+                    "failed to prepare bounded native final sort order",
+                    error,
+                )
+            })
+            .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
+        self.metrics.operator_time += timer.elapsed();
 
-        let result = execute_sort_on_frame(self.context, self.sort, input.frame.frame().clone(), self.metrics)
-            .and_then(|frame| execute_optional_limit(self.context, limit, frame, self.metrics));
-        self.reservations.release(sort_reservation);
-        let frame = result.map_err(|error| {
-            RuntimeResourceFacts {
-                memory_boundary: "final_sort",
-                stage: "final_sort",
-                node_id: self.bounded.aggregate_id,
-                attempt,
-                max_attempts: self.max_attempts,
-                resume_boundary: "final_sort",
-                metrics: self.metrics,
+        let (prepared_sort, prepare_report) = prepared.into_parts();
+        let sorted_order_bytes = final_sort_retained_bytes(&prepare_report)
+            .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
+        let sorted_order_request =
+            MemoryReservationRequest::new(ReservationKind::FinalSort, sorted_order_bytes, self.reservations.budget())
+                .with_memory_boundary("final_sort")
+                .with_node_id(self.bounded.aggregate_id)
+                .with_stage("final_sort")
+                .with_attempt(attempt, self.max_attempts);
+        let sorted_order_reservation = self.reservations.try_reserve(sorted_order_request, self.metrics)?;
+
+        let timer = Instant::now();
+        let materialize_overrides = execution_overrides(self.context);
+        let materialized_output_bytes = prepared_sort
+            .materialized_output_reservation_size_bytes_in(&materialize_overrides)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.final_sort.materialize_size",
+                    "failed to size bounded native final sort output",
+                    error,
+                )
+            })
+            .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
+        let materialized_output_bytes = u64::try_from(materialized_output_bytes).unwrap_or(u64::MAX);
+        let materialized_reservation =
+            self.reserve_full_sort_materialized_output(materialized_output_bytes, attempt)?;
+        let materialized_frame = match prepared_sort
+            .materialize_in(&materialize_overrides)
+            .map(GpuDataFrame::new)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.final_sort.materialize",
+                    "failed to materialize bounded native final sort output",
+                    error,
+                )
+            })
+            .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
+        {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.reservations.release(materialized_reservation);
+                return Err(error);
+            },
+        };
+        self.metrics.operator_time += timer.elapsed();
+        self.metrics.record_device_memory_observation(materialized_output_bytes);
+
+        drop(prepared_sort);
+        self.reservations.release(sorted_order_reservation);
+
+        if let Some(limit) = limit {
+            if limit_keeps_all_rows(materialized_frame.num_rows(), limit.spec)? {
+                return Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation });
             }
-            .attach_to(error)
-        })?;
-        reserve_final_sort_output(self.bounded, frame, attempt, self.max_attempts, self.reservations, self.metrics)
+
+            let frame = match execute_optional_limit(self.context, Some(limit), materialized_frame, self.metrics)
+                .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
+            {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.reservations.release(materialized_reservation);
+                    return Err(error);
+                },
+            };
+            self.reservations.release(materialized_reservation);
+            let output = reserve_final_sort_output(
+                self.bounded,
+                frame,
+                attempt,
+                self.max_attempts,
+                self.reservations,
+                self.metrics,
+            );
+            output
+        } else {
+            Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation })
+        }
+    }
+
+    fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
+        let remaining = self.reservations.budget().saturating_sub(self.reservations.reserved_bytes());
+        let budget = usize::try_from(remaining).unwrap_or(usize::MAX);
+        self.context
+            .runtime()
+            .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(boundary))
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.final_sort.budget_token",
+                    "failed to create bounded native final sort budget token",
+                    error,
+                )
+            })
+            .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
+    }
+
+    fn reserve_full_sort_materialized_output(
+        &mut self,
+        output_bytes: u64,
+        attempt: usize,
+    ) -> Result<ActiveReservation> {
+        let output_request =
+            MemoryReservationRequest::new(ReservationKind::FinalSort, output_bytes, self.reservations.budget())
+                .with_memory_boundary("final_sort")
+                .with_node_id(self.bounded.aggregate_id)
+                .with_stage("final_sort")
+                .with_attempt(attempt, self.max_attempts);
+        self.reservations.try_reserve(output_request, self.metrics)
+    }
+
+    fn attach_final_sort_resource_facts(&self, error: QueryError, attempt: usize) -> QueryError {
+        if error.code() != QueryErrorCode::CudfResourceExhausted {
+            return error;
+        }
+
+        error
+            .with_fact("memory_boundary", "final_sort")
+            .with_fact("stage", "final_sort")
+            .with_fact("node_id", self.bounded.aggregate_id)
+            .with_fact("attempt", attempt)
+            .with_fact("max_attempts", self.max_attempts)
     }
 
     fn hierarchical_topk(&mut self, limit: &LimitNode, input: CommittedPartial) -> Result<CommittedPartial> {
@@ -377,6 +491,21 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
             self.metrics,
         )
     }
+}
+
+fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Result<u64> {
+    let bytes = report.retained_bytes().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "cudf_query_engine.final_sort.prepare",
+            "prepared final sort budget report did not include retained sorted-order bytes",
+        )
+        .with_fact("budget_boundary", report.request().boundary())
+        .with_fact("budget_bytes", report.request().budget_bytes())
+        .with_fact("budget_enforcement", report.enforcement().as_str())
+        .with_fact("budget_status", report.status().as_str())
+    })?;
+    Ok(bytes as u64)
 }
 
 pub(super) fn execute_topk_candidate(

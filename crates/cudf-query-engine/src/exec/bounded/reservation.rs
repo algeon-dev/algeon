@@ -22,6 +22,15 @@ impl ActiveReservation {
         self.reserved_bytes.set(self.reserved_bytes.get().saturating_sub(self.bytes));
         self.released = true;
     }
+
+    fn grow(&mut self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        debug_assert!(!self.released, "cannot grow a released reservation");
+        self.reserved_bytes.set(self.reserved_bytes.get().saturating_add(bytes));
+        self.bytes = self.bytes.saturating_add(bytes);
+    }
 }
 
 impl Drop for ActiveReservation {
@@ -49,12 +58,20 @@ impl ReservationTracker {
         self.reserved_bytes.get()
     }
 
+    pub(in crate::exec) fn remaining_bytes(&self) -> u64 {
+        self.budget_bytes.saturating_sub(self.reserved_bytes())
+    }
+
+    pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
+        reservation.bytes().saturating_add(self.remaining_bytes())
+    }
+
     pub(in crate::exec) fn try_reserve(
         &mut self,
         request: MemoryReservationRequest,
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
-        let remaining = self.budget_bytes.saturating_sub(self.reserved_bytes());
+        let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             metrics.record_reservation_denied_event(&request, remaining);
             return Err(request.denied_error(remaining));
@@ -67,6 +84,23 @@ impl ReservationTracker {
 
     pub(in crate::exec) fn release(&mut self, mut reservation: ActiveReservation) {
         reservation.release();
+    }
+
+    pub(in crate::exec) fn try_grow(
+        &mut self,
+        reservation: &mut ActiveReservation,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> Result<()> {
+        let remaining = self.remaining_bytes();
+        if request.requested_bytes > remaining {
+            metrics.record_reservation_denied_event(&request, remaining);
+            return Err(request.denied_error(remaining));
+        }
+
+        reservation.grow(request.requested_bytes);
+        metrics.record_reservation_granted_event(&request, request.requested_bytes);
+        Ok(())
     }
 }
 
