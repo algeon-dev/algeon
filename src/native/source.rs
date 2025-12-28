@@ -27,6 +27,10 @@ use super::{
 };
 use crate::policy::FallbackReason;
 
+/// Collects native source diagnostics for every source in a normalized plan.
+///
+/// The diagnostics are produced from DataFusion scan metadata but use native IR
+/// enums and counters so they can be reported without exposing DataFusion types.
 pub(super) fn source_diagnostics_for_normalized_plan(
     normalized: &NormalizedNativePlan<'_>,
 ) -> Vec<NativeSourceDiagnostics> {
@@ -128,6 +132,10 @@ pub(super) fn validate_slice1_parquet_scan(
     Ok(())
 }
 
+/// Builds native diagnostics for a DataFusion local Parquet scan.
+///
+/// This mirrors the validation path but records dispositions and rejection
+/// feature codes instead of returning the first fallback reason.
 pub(super) fn local_parquet_source_diagnostics(
     file_scan: &FileScanConfig,
     parquet_source: &ParquetSource,
@@ -252,6 +260,11 @@ pub(super) fn local_parquet_source_diagnostics(
     }
 }
 
+/// Converts DataFusion `PartitionedFile` entries into native local Parquet files.
+///
+/// The bridge carries over stable file identity, filesystem paths, selected row
+/// groups, and required partition values while rejecting scan metadata that the
+/// native source contract cannot represent.
 pub(super) fn local_parquet_files(
     file_scan: &FileScanConfig,
     parquet_source: &ParquetSource,
@@ -292,19 +305,62 @@ pub(super) fn local_parquet_files(
     Ok(native_files)
 }
 
+/// Column-role bridge from a DataFusion Parquet scan to native source metadata.
+///
+/// DataFusion exposes columns through multiple coordinate systems: table schema,
+/// file schema, pushed scan projection, filter projection, and partition values.
+/// The native engine needs a frontend-neutral description instead: which
+/// physical file columns the source must read and emit, which partition columns
+/// it must synthesize, which emitted source columns are expected to remain after
+/// source-adjacent native filtering/projection, and which emitted columns exist
+/// only to evaluate filters. This struct keeps those roles separate so lowering
+/// can remove filter-only columns after filters while still emitting them from
+/// the source when needed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct NativeParquetColumnRequirements {
+    /// Physical Parquet columns that the native source must read and emit.
+    ///
+    /// This excludes partition columns because they are supplied from
+    /// DataFusion `PartitionedFile` metadata, not from file pages. Columns used
+    /// only by native filters are included so those filters can consume them.
     pub(super) read_columns: Vec<String>,
+    /// File-schema indices for `read_columns`.
     pub(super) read_column_file_indices: Vec<usize>,
+    /// Source columns expected to remain after source-adjacent native projection.
+    ///
+    /// These may include file columns and synthetic partition columns. This is
+    /// role/diagnostic metadata and does not define the source node's emitted
+    /// schema; `native_source_output_schema` emits all `read_columns` plus all
+    /// represented partition columns.
     pub(super) projected_output_columns: Vec<String>,
+    /// File or partition source references for `projected_output_columns`.
     pub(super) projected_output_column_source_refs: Vec<NativeSourceColumnRef>,
+    /// Source columns emitted only so source-adjacent predicates can evaluate.
+    ///
+    /// These should be removed by a later native projection when they are not
+    /// needed downstream.
     pub(super) pure_filter_columns: Vec<String>,
+    /// File or partition source references for `pure_filter_columns`.
     pub(super) pure_filter_column_source_refs: Vec<NativeSourceColumnRef>,
+    /// Required partition columns represented as synthetic native source columns.
     pub(super) partition_columns: Vec<NativePartitionColumn>,
+    /// DataFusion table partition-column indices required by this source.
     pub(super) partition_column_indices: Vec<usize>,
+    /// DataFusion scan-output column names consumed by the lowered subtree.
+    ///
+    /// This preserves the adapter-side view of the scan projection so later
+    /// lowering can connect DataFusion expressions to native source columns.
     pub(super) scan_output_columns: Vec<String>,
 }
 
+/// Computes source column roles for aggregate-root native lowering.
+///
+/// Required/projected roles are derived from the aggregate, optional
+/// pre-aggregate projection, and optional source filter. Filter-only columns are
+/// read and emitted by the native source so filters can evaluate them, then
+/// omitted from the columns expected to survive the source-adjacent native
+/// projection. When the aggregate can be answered as a zero-column count, no
+/// file or partition columns are required.
 pub(super) fn required_parquet_column_requirements(
     file_scan: &FileScanConfig,
     filter: Option<&FilterExec>,
@@ -401,6 +457,14 @@ pub(super) fn required_parquet_column_requirements(
     })
 }
 
+/// Computes source column roles when lowering starts from required scan-output columns.
+///
+/// This path is used by native shapes that already know which DataFusion scan
+/// output columns are needed. The function maps those names back through any
+/// scan projection to physical file columns or synthetic partition columns.
+/// File columns used only by source-adjacent filters remain part of the emitted
+/// source schema and are tracked as `pure_filter_columns` so later native
+/// projection can remove them.
 pub(super) fn required_parquet_column_requirements_for_scan_columns(
     file_scan: &FileScanConfig,
     filter: Option<&FilterExec>,
@@ -505,6 +569,14 @@ fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Ve
         .collect()
 }
 
+/// Builds the native source node's emitted schema from file and partition columns.
+///
+/// The schema follows all read file columns first, then synthetic partition
+/// columns, so native expressions can address both kinds of source data
+/// uniformly. `projected_output_columns` is role/diagnostic metadata about what
+/// should remain after source-adjacent native filtering/projection; it does not
+/// define this schema. Pure filter columns are still emitted here and should be
+/// removed by a later native projection when they are not needed downstream.
 pub(super) fn native_source_output_schema(
     file_scan: &FileScanConfig,
     requirements: &NativeParquetColumnRequirements,
@@ -525,6 +597,11 @@ pub(super) fn native_source_output_schema(
     Ok(Arc::new(Schema::new(fields)))
 }
 
+/// Returns partition columns required by native expressions.
+///
+/// DataFusion keeps partition values on each `PartitionedFile`. The native IR
+/// models required partition fields as synthetic source columns with per-file
+/// literal values, making the metadata reusable outside the DataFusion adapter.
 fn native_required_partition_columns(
     file_scan: &FileScanConfig,
     required_columns: &BTreeSet<String>,
@@ -543,6 +620,7 @@ fn native_required_partition_columns(
     Ok((columns, indices))
 }
 
+/// Resolves logical source column names to file-schema or partition-column refs.
 fn column_source_refs(
     file_schema: &SchemaRef,
     partition_columns: &[NativePartitionColumn],

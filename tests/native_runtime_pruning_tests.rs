@@ -433,7 +433,7 @@ async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() 
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q11_tiny_bounded_joined_aggregate_subplan_matches_cpu() {
+async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-bounded");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
@@ -478,7 +478,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservati
     assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
     assert_eq!(
         adapter_error.fact_value("bounded_join_execution_family"),
-        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
     );
     for fact in [
         "memory_boundary",

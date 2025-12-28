@@ -1,5 +1,5 @@
 use super::*;
-use crate::bounded_support::BoundedConditionalJoinType;
+use crate::bounded_support::BoundedKeylessConditionalJoinType;
 
 struct BoundedJoinSideFrame {
     frame: DataFrame,
@@ -369,8 +369,8 @@ pub(super) fn execute_bounded_root_join(
         execute_bounded_root_hash_join(context, node_id, node, left, right, reservations, metrics)
     } else if node.is_bounded_root_filtered_join_compatible() {
         execute_bounded_root_filtered_join(context, node_id, node, left, right, reservations, metrics)
-    } else if node.is_bounded_root_conditional_join_compatible() {
-        execute_bounded_root_conditional_join(context, node_id, node, left, right, reservations, metrics)
+    } else if node.is_bounded_root_keyless_conditional_join_compatible() {
+        execute_bounded_root_keyless_conditional_join(context, node_id, node, left, right, reservations, metrics)
     } else if node.is_bounded_root_projected_cross_join_compatible() {
         execute_bounded_root_projected_cross_join(context, node_id, node, left, right, reservations, metrics)
     } else if node.is_bounded_root_mixed_join_compatible() {
@@ -1321,7 +1321,7 @@ impl BoundedMixedJoinIndices {
     }
 }
 
-fn execute_bounded_root_conditional_join(
+fn execute_bounded_root_keyless_conditional_join(
     context: &ExecutionContext,
     node_id: NodeId,
     node: &JoinNode,
@@ -1331,8 +1331,8 @@ fn execute_bounded_root_conditional_join(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     validate_executable_join_subset(node)?;
-    debug_assert!(node.is_bounded_root_conditional_join_compatible());
-    let join_type = BoundedConditionalJoinType::try_from_join(node)
+    debug_assert!(node.is_bounded_root_keyless_conditional_join_compatible());
+    let join_type = BoundedKeylessConditionalJoinType::try_from_join(node)
         .expect("bounded conditional join executor is reached only through the compatible dispatcher");
 
     let residual_columns = residual_input_columns(node)?;
@@ -1377,7 +1377,7 @@ fn execute_bounded_root_conditional_join(
     let options = dataframe_predicate_join_options(&residual_columns);
     let timer = Instant::now();
     let (size_data_bytes, expected_output_rows, gather_map_reservation_bytes, work) =
-        if join_type == BoundedConditionalJoinType::Full {
+        if join_type == BoundedKeylessConditionalJoinType::Full {
             let size_data = left
                 .frame
                 .with_execution(&overrides)
@@ -1402,10 +1402,10 @@ fn execute_bounded_root_conditional_join(
                 size_data_bytes,
                 expected_output_rows,
                 gather_map_reservation_bytes,
-                BoundedConditionalJoinWork::Full { size_data, size_data_reservation },
+                BoundedKeylessConditionalJoinWork::Full { size_data, size_data_reservation },
             )
         } else {
-            let output_size = conditional_join_output_size(
+            let output_size = keyless_conditional_join_output_size(
                 join_type,
                 &left.frame,
                 &right.frame,
@@ -1415,12 +1415,12 @@ fn execute_bounded_root_conditional_join(
                 node,
             )?;
             let gather_map_reservation_bytes =
-                conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
+                keyless_conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
             (
                 0,
                 output_size as u64,
                 gather_map_reservation_bytes,
-                BoundedConditionalJoinWork::Sized { output_size, options },
+                BoundedKeylessConditionalJoinWork::Sized { output_size, options },
             )
         };
     let gather_map_reservation = reservations.try_reserve(
@@ -1434,22 +1434,24 @@ fn execute_bounded_root_conditional_join(
         metrics,
     )?;
     let indices = match work {
-        BoundedConditionalJoinWork::Full { size_data, size_data_reservation } => {
+        BoundedKeylessConditionalJoinWork::Full { size_data, size_data_reservation } => {
             let indices = size_data.materialize_indices_in(&overrides);
             reservations.release(size_data_reservation);
             let indices = indices.map_err(|error| join_index_error(error, node))?;
-            BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
+            BoundedKeylessConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
         },
-        BoundedConditionalJoinWork::Sized { output_size, options } => conditional_join_indices_with_output_size(
-            join_type,
-            &left.frame,
-            &right.frame,
-            &predicate,
-            options,
-            output_size,
-            &overrides,
-            node,
-        )?,
+        BoundedKeylessConditionalJoinWork::Sized { output_size, options } => {
+            keyless_conditional_join_indices_with_output_size(
+                join_type,
+                &left.frame,
+                &right.frame,
+                &predicate,
+                options,
+                output_size,
+                &overrides,
+                node,
+            )?
+        },
     };
     let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
 
@@ -1502,17 +1504,17 @@ fn execute_bounded_root_conditional_join(
     Ok(CommittedPartial { frame: GpuDataFrame::new(output), reservation: output_reservation })
 }
 
-enum BoundedConditionalJoinIndices {
+enum BoundedKeylessConditionalJoinIndices {
     Pair { left: cudf::DataFrameJoinIndices, right: cudf::DataFrameJoinIndices },
     LeftOnly(cudf::DataFrameJoinIndices),
 }
 
-enum BoundedConditionalJoinWork<'a> {
+enum BoundedKeylessConditionalJoinWork<'a> {
     Full { size_data: cudf::DataFrameConditionalFullJoinSizeData<'a>, size_data_reservation: ActiveReservation },
     Sized { output_size: usize, options: cudf::DataFramePredicateJoinOptions },
 }
 
-impl BoundedConditionalJoinIndices {
+impl BoundedKeylessConditionalJoinIndices {
     fn device_allocated_size_bytes(&self, node: &JoinNode) -> Result<u64> {
         match self {
             Self::Pair { left, right } => {
@@ -1599,8 +1601,8 @@ impl BoundedConditionalJoinIndices {
     }
 }
 
-fn conditional_join_output_size(
-    join_type: BoundedConditionalJoinType,
+fn keyless_conditional_join_output_size(
+    join_type: BoundedKeylessConditionalJoinType,
     left: &DataFrame,
     right: &DataFrame,
     predicate: &cudf::ops::ast::AstExpression,
@@ -1609,38 +1611,38 @@ fn conditional_join_output_size(
     node: &JoinNode,
 ) -> Result<usize> {
     let result = match join_type {
-        BoundedConditionalJoinType::Inner => {
+        BoundedKeylessConditionalJoinType::Inner => {
             left.with_execution(overrides).conditional_inner_join_size(right, predicate, options)
         },
-        BoundedConditionalJoinType::Left => {
+        BoundedKeylessConditionalJoinType::Left => {
             left.with_execution(overrides).conditional_left_join_size(right, predicate, options)
         },
-        BoundedConditionalJoinType::Full => {
+        BoundedKeylessConditionalJoinType::Full => {
             unreachable!("conditional full joins use retained size data for output-size observation")
         },
-        BoundedConditionalJoinType::LeftSemi => {
+        BoundedKeylessConditionalJoinType::LeftSemi => {
             left.with_execution(overrides).conditional_left_semi_join_size(right, predicate, options)
         },
-        BoundedConditionalJoinType::LeftAnti => {
+        BoundedKeylessConditionalJoinType::LeftAnti => {
             left.with_execution(overrides).conditional_left_anti_join_size(right, predicate, options)
         },
     };
     result.map_err(|error| join_index_error(error, node))
 }
 
-fn conditional_join_gather_map_reservation_size_bytes(
-    join_type: BoundedConditionalJoinType,
+fn keyless_conditional_join_gather_map_reservation_size_bytes(
+    join_type: BoundedKeylessConditionalJoinType,
     node: &JoinNode,
     output_size: usize,
 ) -> Result<u64> {
     let result = match join_type {
-        BoundedConditionalJoinType::Inner | BoundedConditionalJoinType::Left => {
+        BoundedKeylessConditionalJoinType::Inner | BoundedKeylessConditionalJoinType::Left => {
             cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size)
         },
-        BoundedConditionalJoinType::Full => {
+        BoundedKeylessConditionalJoinType::Full => {
             unreachable!("conditional full joins use retained size data for gather-map reservation")
         },
-        BoundedConditionalJoinType::LeftSemi | BoundedConditionalJoinType::LeftAnti => {
+        BoundedKeylessConditionalJoinType::LeftSemi | BoundedKeylessConditionalJoinType::LeftAnti => {
             cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(output_size)
         },
     };
@@ -1654,8 +1656,8 @@ fn conditional_join_gather_map_reservation_size_bytes(
     })
 }
 
-fn conditional_join_indices_with_output_size(
-    join_type: BoundedConditionalJoinType,
+fn keyless_conditional_join_indices_with_output_size(
+    join_type: BoundedKeylessConditionalJoinType,
     left: &DataFrame,
     right: &DataFrame,
     predicate: &cudf::ops::ast::AstExpression,
@@ -1663,34 +1665,40 @@ fn conditional_join_indices_with_output_size(
     output_size: usize,
     overrides: &ExecutionOverrides<'_>,
     node: &JoinNode,
-) -> Result<BoundedConditionalJoinIndices> {
+) -> Result<BoundedKeylessConditionalJoinIndices> {
     match join_type {
-        BoundedConditionalJoinType::Inner => {
+        BoundedKeylessConditionalJoinType::Inner => {
             let indices = left
                 .with_execution(overrides)
                 .conditional_inner_join_indices_with_output_size(right, predicate, options, output_size)
                 .map_err(|error| join_index_error(error, node))?;
-            Ok(BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() })
+            Ok(BoundedKeylessConditionalJoinIndices::Pair {
+                left: indices.left().clone(),
+                right: indices.right().clone(),
+            })
         },
-        BoundedConditionalJoinType::Left => {
+        BoundedKeylessConditionalJoinType::Left => {
             let indices = left
                 .with_execution(overrides)
                 .conditional_left_join_indices_with_output_size(right, predicate, options, output_size)
                 .map_err(|error| join_index_error(error, node))?;
-            Ok(BoundedConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() })
+            Ok(BoundedKeylessConditionalJoinIndices::Pair {
+                left: indices.left().clone(),
+                right: indices.right().clone(),
+            })
         },
-        BoundedConditionalJoinType::Full => {
+        BoundedKeylessConditionalJoinType::Full => {
             unreachable!("conditional full joins use retained size data for materialization")
         },
-        BoundedConditionalJoinType::LeftSemi => left
+        BoundedKeylessConditionalJoinType::LeftSemi => left
             .with_execution(overrides)
             .conditional_left_semi_join_indices_with_output_size(right, predicate, options, output_size)
-            .map(BoundedConditionalJoinIndices::LeftOnly)
+            .map(BoundedKeylessConditionalJoinIndices::LeftOnly)
             .map_err(|error| join_index_error(error, node)),
-        BoundedConditionalJoinType::LeftAnti => left
+        BoundedKeylessConditionalJoinType::LeftAnti => left
             .with_execution(overrides)
             .conditional_left_anti_join_indices_with_output_size(right, predicate, options, output_size)
-            .map(BoundedConditionalJoinIndices::LeftOnly)
+            .map(BoundedKeylessConditionalJoinIndices::LeftOnly)
             .map_err(|error| join_index_error(error, node)),
     }
 }

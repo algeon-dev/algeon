@@ -1066,7 +1066,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let plan = &result.plans[0];
-    assert!(plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline());
+    assert!(plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(cudf_query_engine::ExecutionBoundaryPolicy::default()).is_none());
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);

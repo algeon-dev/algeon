@@ -33,13 +33,13 @@ pub(super) fn execute_bounded_query_plan(
         if plan.has_bounded_executable_join_pipeline() {
             return execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
-        if plan.has_bounded_executable_conditional_join_input_subplan_pipeline() {
-            return execute_bounded_conditional_join_input_subplan_pipeline_query_plan(
+        if plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline() {
+            return execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
             );
         }
-        if plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline() {
-            return execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_query_plan(
+        if plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline() {
+            return execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
             );
         }
@@ -150,13 +150,13 @@ fn execute_bounded_generic_query_plan(
         if plan.has_bounded_executable_join_pipeline() {
             return execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
-        if plan.has_bounded_executable_conditional_join_input_subplan_pipeline() {
-            return execute_bounded_conditional_join_input_subplan_pipeline_query_plan(
+        if plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline() {
+            return execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
             );
         }
-        if plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline() {
-            return execute_bounded_conditional_join_joined_aggregate_input_subplan_pipeline_query_plan(
+        if plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline() {
+            return execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
             );
         }
