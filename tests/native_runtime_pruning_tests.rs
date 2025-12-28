@@ -433,6 +433,70 @@ async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() 
 }
 
 #[tokio::test]
+async fn native_runtime_tpch_q11_tiny_bounded_joined_aggregate_subplan_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-bounded");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
+    assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q11 CPU output should be non-empty");
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q11 should be replaced by NativeCudfExec");
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservation_facts() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-budget-failure");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, constrained_native_datafusion_config()).await;
+    assert_native_cudf_exec(
+        &native_plan,
+        "bounded TPC-H Q11 should be admitted before the constrained runtime budget fails",
+    );
+
+    let error = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap_err();
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
+    assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
+    assert_eq!(
+        adapter_error.fact_value("bounded_join_execution_family"),
+        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+    );
+    for fact in [
+        "memory_boundary",
+        "reservation_kind",
+        "requested_bytes",
+        "granted_bytes",
+        "budget_bytes",
+        "node_id",
+        "stage",
+        "attempt",
+        "max_attempts",
+    ] {
+        assert!(adapter_error.fact_value(fact).is_some(), "missing Q11 reservation failure fact {fact}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_runtime_tpch_q17_tiny_decimal_residual_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q17-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
@@ -1128,6 +1192,15 @@ fn adapter_error(error: &DataFusionError) -> &Error {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
     };
     source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_cudf::Error")
+}
+
+fn assert_native_cudf_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {
+    assert_eq!(plan.name(), "NativeCudfExec", "{context}");
+    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some(), "{context}");
+}
+
+fn record_batch_row_count(batches: &[RecordBatch]) -> usize {
+    batches.iter().map(RecordBatch::num_rows).sum()
 }
 
 async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {

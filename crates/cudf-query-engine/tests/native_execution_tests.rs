@@ -6227,6 +6227,90 @@ fn bounded_native_query_executes_mixed_inner_multi_join_pipeline_with_ordered_re
 }
 
 #[test]
+fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let region_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, false)]));
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let second_join_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-multi-join-invalid-residual-left-does-not-need-to-exist.parquet",
+        Arc::clone(&left_schema),
+        vec!["order_id".into(), "qty".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-multi-join-invalid-residual-orders-does-not-need-to-exist.parquet",
+        Arc::clone(&orders_schema),
+        vec!["order_id".into(), "category".into()],
+    )));
+    let regions = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/bounded-multi-join-invalid-residual-regions-does-not-need-to-exist.parquet",
+        Arc::clone(&region_schema),
+        vec!["order_id".into()],
+    )));
+    let first_join = builder.add_join(
+        lineitem,
+        orders,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        first_join_schema,
+    );
+    let second_join = builder.add_join(
+        first_join,
+        regions,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_residual_predicate(Expr::like(Expr::input_column(0, "category", "category"), "t%"))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        second_join_schema,
+    );
+    let plan = builder.finish_with_host_sink(second_join);
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(plan.has_bounded_executable_multi_join_pipeline());
+
+    let context = bounded_join_execution_context(&runtime);
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("unsupported bounded multi-join residual should fail before source reads"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+    assert_eq!(error.operation(), "cudf_query_engine.join.validate_residual");
+    assert!(
+        error.fact_value("expression").is_some_and(|expression| expression.contains("LIKE")),
+        "LIKE residual should be visible in expression fact: {:?}",
+        error.fact_value("expression")
+    );
+    assert_eq!(error.fact_value("path"), None);
+    assert_eq!(error.fact_value("memory_boundary"), None);
+}
+
+#[test]
 fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_with_ordered_reservations() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-mixed-semi-anti-multi-join");
@@ -6497,6 +6581,140 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
         error.fact_value("bounded_join_execution_family"),
         Some("keyless_conditional_join_input_subplan_pipeline")
     );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_joined_aggregate_input_subplans() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-q11-joined-aggregate-input-subplans");
+    let grouped_fact_path = dir.join("grouped_partsupp.parquet");
+    let scalar_fact_path = dir.join("scalar_partsupp.parquet");
+    let supplier_path = dir.join("supplier.parquet");
+    let grouped_fact_schema = write_q11_partsupp_parquet(
+        &runtime,
+        &grouped_fact_path,
+        &[1, 1, 2, 3, 4],
+        &[10, 20, 10, 30, 99],
+        &[10, 5, 25, 3, 100],
+    );
+    let scalar_fact_schema = write_q11_partsupp_parquet(&runtime, &scalar_fact_path, &[8, 9], &[10, 20], &[7, 5]);
+    let supplier_schema = write_q11_supplier_parquet(&runtime, &supplier_path);
+    let plan = q11_like_keyless_conditional_joined_aggregate_input_subplan_plan(
+        &grouped_fact_path,
+        &scalar_fact_path,
+        &supplier_path,
+        &grouped_fact_schema,
+        &scalar_fact_schema,
+        &supplier_schema,
+    );
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.has_bounded_executable_conditional_join_input_subplan_pipeline());
+    assert!(plan.has_bounded_executable_conditional_join_joined_aggregate_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+
+    let context = bounded_join_execution_context(&runtime);
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
+    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.hash_join_build_count, 2);
+    assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 3);
+    let join_metrics = metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).collect::<Vec<_>>();
+    assert_eq!(join_metrics[0].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[0].join_type, "inner");
+    assert_eq!(join_metrics[1].execution_strategy, "bounded_reusable_hash_join");
+    assert_eq!(join_metrics[1].join_type, "inner");
+    assert_eq!(join_metrics[2].execution_strategy, "bounded_keyless_conditional_join");
+    assert_eq!(join_metrics[2].join_type, "inner");
+    assert_eq!(join_metrics[2].key_count, 0);
+    assert!(join_metrics[2].residual_predicate);
+    assert_eq!(join_metrics[2].output_rows, 2);
+    assert_granted_reservation_trace(
+        metrics,
+        &[
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_grouped_aggregate"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_grouped_aggregate_output"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_projection"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_projection_output"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::SourceRead, "join_source_read"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::HashTable, "join_hash_table"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_global_aggregate"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_global_aggregate_output"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_projection"),
+            (ReservationKind::OperatorOutput, "join_input_subplan_projection_output"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::BuildSide, "join_build_side"),
+            (ReservationKind::OperatorOutput, "join_input_projection"),
+            (ReservationKind::ProbeSide, "join_probe_side"),
+            (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::JoinOutput, "join_output"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
+            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
+            (ReservationKind::FinalSort, "join_pipeline_sort"),
+            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::Materialization, "host_materialization"),
+        ],
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 1]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[25, 15]);
+
+    let constrained_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let error = match execute_query_plan(&constrained_context, &plan) {
+        Ok(_) => panic!("constrained Q11 joined-aggregate input-subplan pipeline should fail reservation"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(
+        error.fact_value("bounded_join_execution_family"),
+        Some("keyless_conditional_join_joined_aggregate_input_subplan_pipeline")
+    );
+    assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert!(error.fact_value("requested_bytes").is_some());
+    assert_eq!(error.fact_value("granted_bytes"), Some("1"));
+    assert_eq!(error.fact_value("budget_bytes"), Some("1"));
+    assert!(error.fact_value("node_id").is_some());
+    assert_eq!(error.fact_value("stage"), Some("join_source_read"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -6957,6 +7175,146 @@ fn q22_like_keyless_conditional_input_subplan_plan(
     if gpu_sink { builder.finish_gpu_resident(sort) } else { builder.finish_with_host_sink(sort) }
 }
 
+fn q11_like_keyless_conditional_joined_aggregate_input_subplan_plan(
+    grouped_fact_path: &Path,
+    scalar_fact_path: &Path,
+    supplier_path: &Path,
+    grouped_fact_schema: &Arc<Schema>,
+    scalar_fact_schema: &Arc<Schema>,
+    supplier_schema: &Arc<Schema>,
+) -> cudf_query_engine::QueryPlan {
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("qty", DataType::Int64, false),
+    ]));
+    let scalar_join_schema = Arc::new(Schema::new(vec![Field::new("qty", DataType::Int64, false)]));
+    let grouped_aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("value", DataType::Int64, true),
+    ]));
+    let scalar_aggregate_schema = Arc::new(Schema::new(vec![Field::new("threshold", DataType::Int64, true)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("value", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let grouped_partsupp =
+        builder.add_source(SourceNode::LocalParquet(q11_partsupp_source(grouped_fact_path, grouped_fact_schema)));
+    let grouped_supplier =
+        builder.add_source(SourceNode::LocalParquet(q11_supplier_source(supplier_path, supplier_schema)));
+    let grouped_join = builder.add_join(
+        grouped_partsupp,
+        grouped_supplier,
+        JoinSpec::new(JoinType::Inner, vec![q11_suppkey_join_key("ps_suppkey", "s_suppkey")])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(
+                    cudf_query_engine::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    "ps_partkey",
+                ),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let grouped_aggregate = builder.add_aggregate(
+        grouped_join,
+        AggregateSpec::new(
+            vec![Expr::column("ps_partkey")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "value")],
+        ),
+        Arc::clone(&grouped_aggregate_schema),
+    );
+    let grouped_projection = builder.add_projection(
+        grouped_aggregate,
+        vec![Expr::column("ps_partkey"), Expr::column("value")],
+        Arc::clone(&grouped_aggregate_schema),
+    );
+
+    let scalar_partsupp =
+        builder.add_source(SourceNode::LocalParquet(q11_partsupp_source(scalar_fact_path, scalar_fact_schema)));
+    let scalar_supplier =
+        builder.add_source(SourceNode::LocalParquet(q11_supplier_source(supplier_path, supplier_schema)));
+    let scalar_join = builder.add_join(
+        scalar_partsupp,
+        scalar_supplier,
+        JoinSpec::new(JoinType::Inner, vec![q11_suppkey_join_key("ps_suppkey", "s_suppkey")])
+            .with_output_projection(vec![JoinOutputColumn::left(
+                cudf_query_engine::ColumnRef::input(0, "qty", "qty"),
+                "qty",
+            )])
+            .with_build_side(JoinSide::Right),
+        scalar_join_schema,
+    );
+    let scalar_aggregate = builder.add_aggregate(
+        scalar_join,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("qty"), "threshold")],
+        ),
+        Arc::clone(&scalar_aggregate_schema),
+    );
+    let scalar_projection =
+        builder.add_projection(scalar_aggregate, vec![Expr::column("threshold")], scalar_aggregate_schema);
+
+    let root = builder.add_join(
+        grouped_projection,
+        scalar_projection,
+        JoinSpec::new(JoinType::Inner, Vec::new())
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "value", "value"),
+                BinaryOp::Gt,
+                Expr::input_column(1, "threshold", "threshold"),
+            ))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(
+                    cudf_query_engine::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
+                    "ps_partkey",
+                ),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "value", "value"), "value"),
+            ])
+            .with_build_side(JoinSide::Left),
+        Arc::clone(&output_schema),
+    );
+    let final_projection = builder.add_projection(
+        root,
+        vec![Expr::column("ps_partkey"), Expr::column("value")],
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        final_projection,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("value"), true, false),
+            SortExpr::new(Expr::column("ps_partkey"), false, false),
+        ]),
+        output_schema,
+    );
+    builder.finish_with_host_sink(sort)
+}
+
+fn q11_partsupp_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+    LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        Arc::clone(schema),
+        vec!["ps_partkey".to_string(), "ps_suppkey".to_string(), "qty".to_string()],
+    )
+}
+
+fn q11_supplier_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+    LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
+        Arc::clone(schema),
+        vec!["s_suppkey".to_string()],
+    )
+}
+
+fn q11_suppkey_join_key(left_name: &str, right_name: &str) -> JoinKey {
+    JoinKey::new(
+        cudf_query_engine::ColumnRef::input(0, left_name, left_name),
+        cudf_query_engine::ColumnRef::input(1, right_name, right_name),
+    )
+}
+
 fn assert_empty_bounded_filtered_join_result(result: &cudf_query_engine::QueryExecutionResult, join_type: &str) {
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("empty bounded filtered join should return host output");
@@ -7213,6 +7571,38 @@ fn write_join_left_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> A
         vec![Arc::new(Int32Array::from(vec![1, 2, 2, 3])), Arc::new(Int32Array::from(vec![10, 20, 25, 30]))],
     )
     .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_q11_partsupp_parquet(
+    runtime: &cudf::Runtime,
+    path: &std::path::Path,
+    partkeys: &[i32],
+    suppkeys: &[i32],
+    qtys: &[i64],
+) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ps_partkey", DataType::Int32, false),
+        Field::new("ps_suppkey", DataType::Int32, false),
+        Field::new("qty", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(partkeys.to_vec())),
+            Arc::new(Int32Array::from(suppkeys.to_vec())),
+            Arc::new(Int64Array::from(qtys.to_vec())),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_q11_supplier_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("s_suppkey", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![10, 20, 30]))]).unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
     schema
 }

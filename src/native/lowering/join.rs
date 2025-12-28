@@ -190,7 +190,8 @@ pub(super) fn lower_nested_loop_join_input(
     builder: &mut NativeQueryPlanBuilder,
     required_output_columns: &[String],
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let (canonical, residual) = lower_nested_loop_join_contract(join.join)?;
+    let canonical = nested_loop_join_canonical(join, required_output_columns)?;
+    let residual = nested_loop_join_residual(join.join, canonical)?;
     let output_columns = nested_loop_join_output_columns(join, required_output_columns, canonical)?;
     let mut left_required = BTreeSet::new();
     let mut right_required = BTreeSet::new();
@@ -252,18 +253,59 @@ fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residu
     }
 }
 
-fn lower_nested_loop_join_contract(
+fn nested_loop_join_canonical(
+    join: &NormalizedNativeNestedLoopJoin<'_>,
+    required_output_columns: &[String],
+) -> Result<CanonicalJoin, FallbackReason> {
+    if join.join.filter().is_none() && matches!(join.join.join_type(), JoinType::Inner) {
+        return Ok(CanonicalJoin::new(NativeJoinType::Cross, false));
+    }
+    let canonical = canonical_join(join.join.join_type())?;
+    if matches!(join.join.join_type(), JoinType::Inner)
+        && nested_loop_join_required_outputs_are_right_only(join, required_output_columns)?
+    {
+        Ok(CanonicalJoin::new(NativeJoinType::Inner, true))
+    } else {
+        Ok(canonical)
+    }
+}
+
+fn nested_loop_join_residual(
     join: &NestedLoopJoinExec,
-) -> Result<(CanonicalJoin, Option<LoweredJoinResidual>), FallbackReason> {
-    let canonical = canonical_join(join.join_type())?;
+    canonical: CanonicalJoin,
+) -> Result<Option<LoweredJoinResidual>, FallbackReason> {
     if let Some(filter) = join.filter() {
         let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema(), canonical)?;
-        return Ok((canonical, Some(residual)));
+        return Ok(Some(residual));
     }
     if matches!(join.join_type(), JoinType::Inner) {
-        return Ok((CanonicalJoin::new(NativeJoinType::Cross, false), None));
+        return Ok(None);
     }
     Err(FallbackReason::UnsupportedOperator)
+}
+
+fn nested_loop_join_required_outputs_are_right_only(
+    join: &NormalizedNativeNestedLoopJoin<'_>,
+    required_output_columns: &[String],
+) -> Result<bool, FallbackReason> {
+    let required = required_output_columns.iter().collect::<BTreeSet<_>>();
+    let mut saw_output = false;
+    for (output_index, field) in join.join.schema().fields().iter().enumerate() {
+        if !required.is_empty() && !required.contains(field.name()) {
+            continue;
+        }
+        saw_output = true;
+        let join_schema_index = match join.join.projection().as_deref() {
+            Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
+            None => output_index,
+        };
+        let (datafusion_side, _) =
+            datafusion_join_output_side(join.join.join_type(), join_schema_index, &join.join.left().schema())?;
+        if datafusion_side != DataFusionJoinSide::Right {
+            return Ok(false);
+        }
+    }
+    Ok(saw_output)
 }
 
 struct JoinOutputColumns {
