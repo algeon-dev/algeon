@@ -1232,6 +1232,24 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
         .collect::<Vec<_>>();
     assert_eq!(rejected_query_ids, vec!["q02", "q15", "q17", "q18", "q20"]);
 
+    let q15 = planning_row(&report, "q15");
+    assert_eq!(q15.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+    assert_eq!(q15.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
+    assert_eq!(q15.unsupported_category.as_deref(), Some("operator_hashjoin"));
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        Some("keyed_hash_join_resident_subplan_pipeline")
+    );
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("source_contract,aggregate_contract,final_sort_contract")
+    );
+    assert_eq!(
+        q15.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
+        Some("source_contract,aggregate_contract,final_sort_contract")
+    );
+    assert!(q15.rejected_before_execution, "q15 should remain rejected before native execution");
+
     let text = report.to_tsv();
     assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=6\n"));
     assert!(text.contains("# tpch_dataset_scale_factor=tiny\n"));
@@ -1552,8 +1570,11 @@ fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str,
     }
 }
 
-fn expected_tpch_bounded_join_lower_level_blockers(_query_id: &str) -> &'static str {
-    ""
+fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
+    match query_id {
+        "q15" => "source_contract,aggregate_contract,final_sort_contract",
+        _ => "",
+    }
 }
 
 fn expected_tpch_operator_unsupported_category(query_id: &str) -> &'static str {
