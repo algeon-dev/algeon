@@ -239,11 +239,53 @@ pub(super) fn execute_post_aggregate_projection(
             .with_node_id(bounded.aggregate_id)
             .with_stage("post_aggregate_projection");
     let work_reservation = reservations.try_reserve(request, metrics)?;
-    let result = execute_projection(context, projection, input.frame, output_schema, metrics);
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
+            .with_memory_boundary("post_aggregate_projection_output")
+            .with_node_id(bounded.aggregate_id)
+            .with_stage("post_aggregate_projection");
+    let mut output_reservation = match reservations.try_reserve(output_request, metrics) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(error);
+        },
+    };
+    // Input remains live while cuDF evaluates the projection. The token may spend only the explicit
+    // work/output reservations plus truly unreserved bytes, so it does not borrow from live input.
+    let token_budget = reservations.available_bytes_including(&work_reservation);
+    let token_budget = token_budget.saturating_add(output_reservation.bytes());
+    let token = match execution_budget_token_for_boundary(
+        context,
+        token_budget,
+        "post_aggregate_projection",
+        "cudf_query_engine.post_aggregate_projection.budget_token",
+        "failed to create bounded native post-aggregate projection budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(output_reservation);
+            reservations.release(work_reservation);
+            reservations.release(input.reservation);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: "post_aggregate_projection",
+                stage: "post_aggregate_projection",
+                node_id: bounded.aggregate_id,
+                attempt: 1,
+                max_attempts: 1,
+                resume_boundary: "post_aggregate_projection",
+                metrics,
+            }
+            .attach_to(error));
+        },
+    };
+    let result = execute_projection_with_budget(context, projection, input.frame, output_schema, &token, metrics);
     reservations.release(work_reservation);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
+            reservations.release(output_reservation);
             reservations.release(input.reservation);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "post_aggregate_projection",
@@ -271,12 +313,23 @@ pub(super) fn execute_post_aggregate_projection(
         }
         .attach_to(error)
     })?;
-    let output_request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
-            .with_memory_boundary("post_aggregate_projection_output")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage("post_aggregate_projection");
-    let output_reservation = reservations.try_reserve(output_request, metrics)?;
+    if output_bytes > output_reservation.bytes() {
+        let grow_request = MemoryReservationRequest::new(
+            ReservationKind::FinalMerge,
+            output_bytes.saturating_sub(output_reservation.bytes()),
+            reservations.budget(),
+        )
+        .with_memory_boundary("post_aggregate_projection_output")
+        .with_node_id(bounded.aggregate_id)
+        .with_stage("post_aggregate_projection");
+        if let Err(error) = reservations.try_grow(&mut output_reservation, grow_request, metrics) {
+            drop(frame);
+            reservations.release(output_reservation);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed(&mut output_reservation, output_bytes);
+    }
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
@@ -300,7 +353,38 @@ pub(super) fn execute_final_aggregate_projection(
     let expected_output_names =
         bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     let result = if aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
-        finalize_avg_output_columns(context, input.frame.into_frame(), &bounded.aggregate.0.spec, bounded.aggregate.1)
+        let token_budget = reservations.available_bytes_including(&work_reservation);
+        let token = match execution_budget_token_for_boundary(
+            context,
+            token_budget,
+            "final_aggregate_projection",
+            "cudf_query_engine.final_projection.budget_token",
+            "failed to create bounded native final aggregate projection budget token",
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                reservations.release(work_reservation);
+                reservations.release(input.reservation);
+                return Err(RuntimeResourceFacts {
+                    memory_boundary: "final_aggregate_projection",
+                    stage: "final_projection",
+                    node_id: bounded.aggregate_id,
+                    attempt: 1,
+                    max_attempts: 1,
+                    resume_boundary: "final_projection",
+                    metrics,
+                }
+                .attach_to(error));
+            },
+        };
+        finalize_avg_output_columns_with_budget(
+            context,
+            input.frame.into_frame(),
+            &bounded.aggregate.0.spec,
+            bounded.aggregate.1,
+            &token,
+            metrics,
+        )
     } else {
         Ok(input.frame.into_frame())
     }
@@ -403,10 +487,43 @@ pub(super) fn execute_final_merge_group_attempt(
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_merge")
             .with_attempt(attempt, max_attempts);
-    let merge_reservation = reservations.try_reserve(merge_request, metrics)?;
+    let mut merge_reservation = reservations.try_reserve(merge_request, metrics)?;
+    let merge_token_budget = reservations.available_bytes_including(&merge_reservation);
+    let merge_token = match execution_budget_token_for_boundary(
+        context,
+        merge_token_budget,
+        "final_aggregate_merge",
+        "cudf_query_engine.final_merge.budget_token",
+        "failed to create bounded native final aggregate merge budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(merge_reservation);
+            return Err(RuntimeResourceFacts {
+                memory_boundary: "final_aggregate_merge",
+                stage: "final_merge",
+                node_id: bounded.aggregate_id,
+                attempt,
+                max_attempts,
+                resume_boundary: "final_merge",
+                metrics,
+            }
+            .attach_to(error));
+        },
+    };
 
     let timer = Instant::now();
-    let result = merge_final_aggregate_partials(context, bounded, partials, metrics);
+    let result = merge_final_aggregate_partials(
+        context,
+        bounded,
+        partials,
+        &merge_token,
+        &mut merge_reservation,
+        reservations,
+        attempt,
+        max_attempts,
+        metrics,
+    );
     let merge_elapsed = timer.elapsed();
     reservations.release(merge_reservation);
     let frame = match result {
@@ -453,23 +570,45 @@ pub(super) fn merge_final_aggregate_partials(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     partials: &[CommittedPartial],
+    token: &ExecutionBudgetToken,
+    merge_reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    attempt: usize,
+    max_attempts: usize,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let partial_count = partials.len();
     let first_frame = partials[0].frame.frame().clone();
     let other_frames = partials[1..].iter().map(|partial| partial.frame.frame().clone()).collect::<Vec<_>>();
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let overrides = execution_overrides(context);
+    let overrides = token.execution_overrides();
     let concatenated = first_frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.final_merge.concat_partials",
-            "failed to concatenate bounded native aggregate partials",
-            error,
+        attach_budget_token_failure_facts(
+            QueryError::from_cudf(
+                "cudf_query_engine.final_merge.concat_partials",
+                "failed to concatenate bounded native aggregate partials",
+                error,
+            )
+            .with_fact("partial_aggregate_count", partial_count),
+            token,
         )
-        .with_fact("partial_aggregate_count", partial_count)
     })?;
+    let concatenated = GpuDataFrame::new(concatenated);
+    let concatenated_bytes = observe_device_memory_bytes(&concatenated, metrics)?;
+    if concatenated_bytes > merge_reservation.bytes() {
+        let grow_request = MemoryReservationRequest::new(
+            ReservationKind::FinalMerge,
+            concatenated_bytes.saturating_sub(merge_reservation.bytes()),
+            reservations.budget(),
+        )
+        .with_memory_boundary("final_aggregate_merge")
+        .with_node_id(bounded.aggregate_id)
+        .with_stage("final_merge")
+        .with_attempt(attempt, max_attempts);
+        reservations.try_grow(merge_reservation, grow_request, metrics)?;
+    }
 
-    execute_final_aggregate(context, bounded, GpuDataFrame::new(concatenated), metrics)
+    execute_final_aggregate(context, bounded, concatenated, token, metrics)
 }
 
 pub(super) enum MergeLevelItem {
@@ -546,6 +685,7 @@ pub(super) fn execute_final_aggregate(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     if bounded.aggregate.0.spec.group_exprs.is_empty() {
@@ -559,7 +699,7 @@ pub(super) fn execute_final_aggregate(
         } else {
             Arc::clone(bounded.aggregate.1)
         };
-        return execute_global_aggregate(context, &final_spec, input, &output_schema, metrics);
+        return execute_global_aggregate_with_budget(context, &final_spec, input, &output_schema, token, metrics);
     }
 
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
@@ -579,19 +719,17 @@ pub(super) fn execute_final_aggregate(
 
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
-    let mut output = frame
-        .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
-        .options(GroupByOptions::builder().include_null_keys(true).build())
-        .with_execution(&overrides)
-        .agg(&aggregate.aggregations)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.final_merge.aggregate",
-                "failed to execute bounded native final aggregate merge",
-                error,
-            )
-        })?;
-    output = cast_count_output_columns(output, &bounded.aggregate.0.spec, bounded.aggregate.1)?;
+    let mut output = execute_groupby_aggregate_with_budget(
+        &overrides,
+        frame,
+        &aggregate,
+        token,
+        metrics,
+        "cudf_query_engine.final_merge.aggregate",
+        "failed to execute bounded native final aggregate merge",
+    )?;
+    output =
+        cast_count_output_columns_with_budget(output, &bounded.aggregate.0.spec, bounded.aggregate.1, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.final_merge.select",

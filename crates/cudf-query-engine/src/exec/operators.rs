@@ -97,6 +97,42 @@ pub(super) fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Resu
     }
 }
 
+pub(super) fn execution_budget_token_for_boundary(
+    context: &ExecutionContext,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<ExecutionBudgetToken> {
+    let budget = usize::try_from(budget_bytes).map_err(|_error| {
+        QueryError::new(QueryErrorCode::InvalidPlan, operation, message)
+            .with_fact("budget_boundary", budget_boundary)
+            .with_fact("budget_bytes", budget_bytes)
+    })?;
+    context
+        .runtime()
+        .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(budget_boundary))
+        .map_err(|error| {
+            QueryError::from_cudf_with_budget_details(operation, message, error)
+                .with_fact_if_absent("budget_boundary", budget_boundary)
+                .with_fact_if_absent("budget_bytes", budget_bytes)
+        })
+}
+
+pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &ExecutionBudgetToken) -> QueryError {
+    error
+        .with_fact_if_absent("budget_boundary", token.request().boundary())
+        .with_fact_if_absent("budget_bytes", token.request().budget_bytes())
+        .with_fact_if_absent("budget_enforcement", ExecutionBudgetEnforcement::HardMemoryResourceLimit.as_str())
+        .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected")
+}
+
+fn budgeted_value<T>(outcome: BudgetedExecutionOutcome<T>, metrics: &mut QueryMetrics, operation: &'static str) -> T {
+    let (value, report) = outcome.into_parts();
+    metrics.record_budgeted_execution(operation, &report);
+    value
+}
+
 pub(super) fn validate_aggregate_output_names(
     aggregate: &LoweredAggregate,
     output_schema: &arrow::datatypes::SchemaRef,
@@ -125,6 +161,27 @@ pub(super) fn execute_filter(
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
         QueryError::from_cudf("cudf_query_engine.filter.execute", "failed to execute native cudf filter", error)
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+pub(super) fn execute_filter_with_budget(
+    _context: &ExecutionContext,
+    node: &FilterNode,
+    input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let predicate = lower_expr(&node.predicate)?;
+    let frame = input.into_frame();
+    let overrides = token.execution_overrides();
+    let timer = Instant::now();
+    let output = frame.with_execution(&overrides).filter_expr(predicate).map_err(|error| {
+        attach_budget_token_failure_facts(
+            QueryError::from_cudf("cudf_query_engine.filter.execute", "failed to execute native cudf filter", error),
+            token,
+        )
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
@@ -172,6 +229,57 @@ pub(super) fn execute_projection(
     Ok(GpuDataFrame::new(output))
 }
 
+pub(super) fn execute_projection_with_budget(
+    _context: &ExecutionContext,
+    node: &ProjectionNode,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let output_field_count = output_schema.fields().len();
+    if node.expressions.len() != output_field_count {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.projection.validate",
+            "projection expression count must match output schema field count",
+        )
+        .with_fact("expression_count", node.expressions.len())
+        .with_fact("output_field_count", output_field_count));
+    }
+
+    let frame = input.into_frame();
+    let output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+    let exprs = output_names
+        .iter()
+        .zip(&node.expressions)
+        .map(|(name, expr)| lower_expr(expr).map(|expr| (name.as_str(), expr)))
+        .collect::<Result<Vec<_>>>()?;
+    let output_columns = output_names.iter().map(String::as_str).collect::<Vec<_>>();
+    let timer = Instant::now();
+    let output = budgeted_value(
+        frame.with_columns_with_budget(exprs, token).map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                "cudf_query_engine.projection.execute",
+                "failed to execute bounded native cudf projection",
+                error,
+            )
+        })?,
+        metrics,
+        "cudf_query_engine.projection.execute",
+    )
+    .select(output_columns)
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.projection.execute",
+            "failed to select bounded native cudf projection columns",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
 pub(super) fn execute_aggregate(
     context: &ExecutionContext,
     node: &AggregateNode,
@@ -209,18 +317,65 @@ pub(super) fn execute_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
-pub(super) fn execute_partial_aggregate(
+pub(super) fn execute_aggregate_with_budget(
+    context: &ExecutionContext,
+    node: &AggregateNode,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if node.spec.group_exprs.is_empty() {
+        return execute_global_aggregate_with_budget(context, &node.spec, input, output_schema, token, metrics);
+    }
+
+    let aggregate = lower_aggregate_spec(&node.spec)?;
+    validate_aggregate_output_names(
+        &aggregate,
+        output_schema,
+        "cudf_query_engine.aggregate.validate",
+        "aggregate output names must match output schema fields",
+    )?;
+    let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
+
+    let frame = input.into_frame();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let mut output = execute_groupby_aggregate_with_budget(
+        &overrides,
+        frame,
+        &aggregate,
+        token,
+        metrics,
+        "cudf_query_engine.aggregate.execute",
+        "failed to execute bounded native cudf aggregate",
+    )?;
+    output = cast_count_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
+    output = cast_avg_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
+    output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.select",
+            "failed to select native cudf aggregate output columns",
+            error,
+        )
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+pub(super) fn execute_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node: &AggregateNode,
     input_schema: &arrow::datatypes::SchemaRef,
     aggregate_output_schema: &arrow::datatypes::SchemaRef,
     input: GpuDataFrame,
+    token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     if node.spec.group_exprs.is_empty() {
         let partial_spec = partial_global_aggregate_spec(&node.spec);
         let output_schema = partial_global_aggregate_output_schema(&node.spec, input_schema, aggregate_output_schema)?;
-        return execute_global_aggregate(context, &partial_spec, input, &output_schema, metrics);
+        return execute_global_aggregate_with_budget(context, &partial_spec, input, &output_schema, token, metrics);
     }
 
     let aggregate = lower_partial_aggregate_spec(&node.spec)?;
@@ -228,9 +383,16 @@ pub(super) fn execute_partial_aggregate(
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let mut output =
-        execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute_partial")?;
-    output = cast_count_output_columns(output, &node.spec, aggregate_output_schema)?;
+    let mut output = execute_groupby_aggregate_with_budget(
+        &overrides,
+        frame,
+        &aggregate,
+        token,
+        metrics,
+        "cudf_query_engine.aggregate.execute_partial",
+        "failed to execute bounded native partial cudf aggregate",
+    )?;
+    output = cast_count_output_columns_with_budget(output, &node.spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select_partial",
@@ -258,6 +420,41 @@ pub(super) fn execute_groupby_aggregate(
         .with_execution(overrides)
         .agg(&aggregate.aggregations)
         .map_err(|error| QueryError::from_cudf(operation, "failed to execute native cudf aggregate", error))?;
+    rename_groupby_key_columns(&mut output, aggregate, "cudf_query_engine.aggregate.rename_keys")?;
+    Ok(output)
+}
+
+pub(super) fn execute_groupby_aggregate_with_budget(
+    overrides: &ExecutionOverrides<'_>,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<DataFrame> {
+    if aggregate.aggregations.is_empty() {
+        return execute_groupby_distinct_with_budget(overrides, frame, aggregate, token, operation, message);
+    }
+
+    let mut output = budgeted_value(
+        frame
+            .groupby(aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>())
+            .options(GroupByOptions::builder().include_null_keys(true).build())
+            .agg_with_budget(&aggregate.aggregations, token)
+            .map_err(|error| QueryError::from_cudf_with_budget_details(operation, message, error))?,
+        metrics,
+        operation,
+    );
+    rename_groupby_key_columns(&mut output, aggregate, "cudf_query_engine.aggregate.rename_keys")?;
+    Ok(output)
+}
+
+fn rename_groupby_key_columns(
+    output: &mut DataFrame,
+    aggregate: &LoweredAggregate,
+    operation: &'static str,
+) -> Result<()> {
     let key_renames = aggregate
         .key_columns
         .iter()
@@ -266,15 +463,11 @@ pub(super) fn execute_groupby_aggregate(
         .map(|(input, output)| (input.as_str(), output.as_str()))
         .collect::<Vec<_>>();
     if !key_renames.is_empty() {
-        output = output.rename_columns(key_renames).map_err(|error| {
-            QueryError::from_cudf(
-                "cudf_query_engine.aggregate.rename_keys",
-                "failed to rename native cudf aggregate keys",
-                error,
-            )
-        })?;
+        *output = output
+            .rename_columns(key_renames)
+            .map_err(|error| QueryError::from_cudf(operation, "failed to rename native cudf aggregate keys", error))?;
     }
-    Ok(output)
+    Ok(())
 }
 
 fn execute_groupby_distinct(
@@ -317,11 +510,74 @@ fn execute_groupby_distinct(
     })
 }
 
+fn execute_groupby_distinct_with_budget(
+    _overrides: &ExecutionOverrides<'_>,
+    frame: DataFrame,
+    aggregate: &LoweredAggregate,
+    token: &ExecutionBudgetToken,
+    operation: &'static str,
+    message: &'static str,
+) -> Result<DataFrame> {
+    let key_columns = aggregate.key_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let budget_overrides = token.execution_overrides();
+    let mut output = frame
+        .with_execution(&budget_overrides)
+        .drop_duplicates(
+            DropDuplicatesOptions::builder().subset(key_columns.as_slice()).keep(DuplicateKeepOption::KeepAny).build(),
+        )
+        .map_err(|error| attach_budget_token_failure_facts(QueryError::from_cudf(operation, message, error), token))?;
+    let key_renames = aggregate
+        .key_columns
+        .iter()
+        .zip(&aggregate.output_key_names)
+        .filter(|(input, output)| input != output)
+        .map(|(input, output)| (input.as_str(), output.as_str()))
+        .collect::<Vec<_>>();
+    if !key_renames.is_empty() {
+        output = output.rename_columns(key_renames).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.rename_group_only_keys",
+                "failed to rename native group-only aggregate keys",
+                error,
+            )
+        })?;
+    }
+    output.select(aggregate.output_key_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.aggregate.select_group_only_keys",
+            "failed to select native group-only aggregate keys",
+            error,
+        )
+    })
+}
+
 pub(super) fn execute_global_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
     input: GpuDataFrame,
     output_schema: &arrow::datatypes::SchemaRef,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    execute_global_aggregate_impl(context, spec, input, output_schema, None, metrics)
+}
+
+pub(super) fn execute_global_aggregate_with_budget(
+    context: &ExecutionContext,
+    spec: &AggregateSpec,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    execute_global_aggregate_impl(context, spec, input, output_schema, Some(token), metrics)
+}
+
+fn execute_global_aggregate_impl(
+    context: &ExecutionContext,
+    spec: &AggregateSpec,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     validate_global_aggregate_capability(spec, output_schema)?;
@@ -345,30 +601,42 @@ pub(super) fn execute_global_aggregate(
                 let sum_state_type = avg_sum_state_data_type(&input_type, field.data_type())?;
                 columns.push((
                     state.sum().to_string(),
-                    reduce_global_aggregate_column(
+                    reduce_global_aggregate_column_impl(
                         context,
                         &frame,
                         &overrides,
                         expr,
                         AggregateFunction::Sum,
                         Some(&sum_state_type),
+                        token,
+                        metrics,
                     )?,
                 ));
-                columns.push((state.count().to_string(), global_count_series(context, &frame, expr)?));
+                let count = match token {
+                    Some(token) => global_count_series_with_budget(context, &frame, expr, token, metrics)?,
+                    None => global_count_series(context, &frame, expr)?,
+                };
+                columns.push((state.count().to_string(), count));
             },
             AggregateFunction::Count => {
-                columns.push((expr.alias.clone(), global_count_series(context, &frame, expr)?));
+                let count = match token {
+                    Some(token) => global_count_series_with_budget(context, &frame, expr, token, metrics)?,
+                    None => global_count_series(context, &frame, expr)?,
+                };
+                columns.push((expr.alias.clone(), count));
             },
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
                 columns.push((
                     expr.alias.clone(),
-                    reduce_global_aggregate_column(
+                    reduce_global_aggregate_column_impl(
                         context,
                         &frame,
                         &overrides,
                         expr,
                         expr.function,
                         output_schema.field_with_name(expr.alias.as_str()).ok().map(|field| field.data_type()),
+                        token,
+                        metrics,
                     )?,
                 ));
             },
@@ -382,9 +650,18 @@ pub(super) fn execute_global_aggregate(
                 error,
             )
         })?;
-    output = cast_global_reduction_output_columns(output, spec, output_schema)?;
-    output = finalize_avg_output_columns(context, output, spec, output_schema)?;
-    output = cast_count_output_columns(output, spec, output_schema)?;
+    output = match token {
+        Some(token) => cast_global_reduction_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
+        None => cast_global_reduction_output_columns(output, spec, output_schema)?,
+    };
+    output = match token {
+        Some(token) => finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?,
+        None => finalize_avg_output_columns(context, output, spec, output_schema)?,
+    };
+    output = match token {
+        Some(token) => cast_count_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
+        None => cast_count_output_columns(output, spec, output_schema)?,
+    };
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
@@ -397,13 +674,15 @@ pub(super) fn execute_global_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
-pub(super) fn reduce_global_aggregate_column(
+fn reduce_global_aggregate_column_impl(
     context: &ExecutionContext,
     frame: &DataFrame,
     overrides: &ExecutionOverrides<'_>,
     expr: &AggregateExpr,
     function: AggregateFunction,
     output_type: Option<&ArrowDataType>,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
 ) -> Result<cudf::Series> {
     let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.lower_expr")?;
     let series = frame.series(input_column.as_str()).map_err(|error| {
@@ -418,7 +697,12 @@ pub(super) fn reduce_global_aggregate_column(
         && series.len() == series.null_count()
         && let Some(output_type) = output_type
     {
-        return global_null_output_series(context, output_type, expr.alias.as_str());
+        return match token {
+            Some(token) => {
+                global_null_output_series_with_budget(context, output_type, expr.alias.as_str(), token, metrics)
+            },
+            None => global_null_output_series(context, output_type, expr.alias.as_str()),
+        };
     }
     let series = if matches!(function, AggregateFunction::Sum)
         && let Some(output_type) = output_type
@@ -432,16 +716,32 @@ pub(super) fn reduce_global_aggregate_column(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{output_type:?}"))
         })?;
-        let casted = frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
-            QueryError::from_cudf(
+        let casted = match token {
+            Some(token) => budgeted_value(
+                frame.cast_column_with_budget(input_column.as_str(), target_type, token).map_err(|error| {
+                    QueryError::from_cudf_with_budget_details(
+                        "cudf_query_engine.global_aggregate.cast_input",
+                        "failed to cast bounded native global aggregate input column before reduction",
+                        error,
+                    )
+                    .with_fact("column", input_column.as_str())
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("data_type", format!("{output_type:?}"))
+                })?,
+                metrics,
                 "cudf_query_engine.global_aggregate.cast_input",
-                "failed to cast native global aggregate input column before reduction",
-                error,
-            )
-            .with_fact("column", input_column.as_str())
-            .with_fact("alias", expr.alias.as_str())
-            .with_fact("data_type", format!("{output_type:?}"))
-        })?;
+            ),
+            None => frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.global_aggregate.cast_input",
+                    "failed to cast native global aggregate input column before reduction",
+                    error,
+                )
+                .with_fact("column", input_column.as_str())
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact("data_type", format!("{output_type:?}"))
+            })?,
+        };
         casted.series(input_column.as_str()).map_err(|error| {
             QueryError::from_cudf(
                 "cudf_query_engine.global_aggregate.cast_input",
@@ -454,7 +754,42 @@ pub(super) fn reduce_global_aggregate_column(
     } else {
         series
     };
-    let scalar = match function {
+    let scalar = match token {
+        Some(token) => execute_scalar_reduction_with_budget(&series, function, token, input_column.as_str(), metrics)?,
+        None => execute_scalar_reduction(&series, overrides, function, input_column.as_str())?,
+    };
+    match token {
+        Some(token) => context
+            .runtime()
+            .series_from_scalar_with_budget(&scalar, 1, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.global_aggregate.output",
+                    "failed to construct bounded native global aggregate output column",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact_if_absent("budget_operation", "runtime::series_from_scalar_with_budget")
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, "cudf_query_engine.global_aggregate.output")),
+        None => context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.output",
+                "failed to construct native global aggregate output column",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+        }),
+    }
+}
+
+fn execute_scalar_reduction(
+    series: &cudf::Series,
+    overrides: &ExecutionOverrides<'_>,
+    function: AggregateFunction,
+    input_column: &str,
+) -> Result<CudfScalar> {
+    match function {
         AggregateFunction::Sum => series.sum_in(overrides),
         AggregateFunction::Min => series.min_in(overrides),
         AggregateFunction::Max => series.max_in(overrides),
@@ -467,23 +802,71 @@ pub(super) fn reduce_global_aggregate_column(
             "failed to execute native global aggregate reduction",
             error,
         )
-        .with_fact("column", input_column.as_str())
+        .with_fact("column", input_column)
         .with_fact("function", format!("{function:?}"))
-    })?;
-    context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+    })
+}
+
+fn execute_scalar_reduction_with_budget(
+    series: &cudf::Series,
+    function: AggregateFunction,
+    token: &ExecutionBudgetToken,
+    input_column: &str,
+    metrics: &mut QueryMetrics,
+) -> Result<CudfScalar> {
+    let reduce_agg = match function {
+        AggregateFunction::Sum => ReduceAgg::Sum,
+        AggregateFunction::Min => ReduceAgg::Min,
+        AggregateFunction::Max => ReduceAgg::Max,
+        AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
+        AggregateFunction::Count => unreachable!("global COUNT is not a scalar reduction"),
+    };
+    let prepared = series.prepare_scalar_reduction(reduce_agg).map_err(|error| {
         QueryError::from_cudf(
-            "cudf_query_engine.global_aggregate.output",
-            "failed to construct native global aggregate output column",
+            "cudf_query_engine.global_aggregate.prepare_reduce",
+            "failed to prepare native global aggregate reduction",
             error,
         )
-        .with_fact("alias", expr.alias.as_str())
-    })
+        .with_fact("column", input_column)
+        .with_fact("function", format!("{function:?}"))
+    })?;
+    prepared
+        .execute_with_budget(token)
+        .map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                "cudf_query_engine.global_aggregate.reduce",
+                "failed to execute bounded native global aggregate reduction",
+                error,
+            )
+            .with_fact("column", input_column)
+            .with_fact("function", format!("{function:?}"))
+        })
+        .map(|outcome| budgeted_value(outcome, metrics, "cudf_query_engine.global_aggregate.reduce").into_scalar())
 }
 
 fn global_null_output_series(
     context: &ExecutionContext,
     output_type: &ArrowDataType,
     alias: &str,
+) -> Result<cudf::Series> {
+    global_null_output_series_impl(context, output_type, alias, None)
+}
+
+fn global_null_output_series_with_budget(
+    context: &ExecutionContext,
+    output_type: &ArrowDataType,
+    alias: &str,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<cudf::Series> {
+    global_null_output_series_impl(context, output_type, alias, Some((token, metrics)))
+}
+
+fn global_null_output_series_impl(
+    context: &ExecutionContext,
+    output_type: &ArrowDataType,
+    alias: &str,
+    token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<cudf::Series> {
     let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
         QueryError::new(
@@ -494,15 +877,31 @@ fn global_null_output_series(
         .with_fact("alias", alias)
         .with_fact("data_type", format!("{output_type:?}"))
     })?;
-    context.runtime().nulls(dtype, 1).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.global_aggregate.null_output",
-            "failed to construct native global aggregate null output column",
-            error,
-        )
-        .with_fact("alias", alias)
-        .with_fact("data_type", format!("{output_type:?}"))
-    })
+    match token {
+        Some((token, metrics)) => context
+            .runtime()
+            .nulls_with_budget(dtype, 1, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.global_aggregate.null_output",
+                    "failed to construct bounded native global aggregate null output column",
+                    error,
+                )
+                .with_fact("alias", alias)
+                .with_fact("data_type", format!("{output_type:?}"))
+                .with_fact_if_absent("budget_operation", "runtime::nulls_with_budget")
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, "cudf_query_engine.global_aggregate.null_output")),
+        None => context.runtime().nulls(dtype, 1).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.global_aggregate.null_output",
+                "failed to construct native global aggregate null output column",
+                error,
+            )
+            .with_fact("alias", alias)
+            .with_fact("data_type", format!("{output_type:?}"))
+        }),
+    }
 }
 
 fn global_aggregate_frame_input_data_type(frame: &DataFrame, expr: &Expr) -> Result<ArrowDataType> {
@@ -528,6 +927,25 @@ pub(super) fn global_count_series(
     frame: &DataFrame,
     expr: &AggregateExpr,
 ) -> Result<cudf::Series> {
+    global_count_series_impl(context, frame, expr, None)
+}
+
+pub(super) fn global_count_series_with_budget(
+    context: &ExecutionContext,
+    frame: &DataFrame,
+    expr: &AggregateExpr,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<cudf::Series> {
+    global_count_series_impl(context, frame, expr, Some((token, metrics)))
+}
+
+fn global_count_series_impl(
+    context: &ExecutionContext,
+    frame: &DataFrame,
+    expr: &AggregateExpr,
+    token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+) -> Result<cudf::Series> {
     let count = if global_count_star_expr(&expr.expr) {
         frame.num_rows()
     } else {
@@ -551,22 +969,39 @@ pub(super) fn global_count_series(
         .with_fact("alias", expr.alias.as_str())
         .with_fact("count", count)
     })?;
-    let scalar = context.runtime().scalar(count).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.global_aggregate.count",
-            "failed to construct native global count scalar",
-            error,
-        )
-        .with_fact("alias", expr.alias.as_str())
-    })?;
-    context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.global_aggregate.count_output",
-            "failed to construct native global count output column",
-            error,
-        )
-        .with_fact("alias", expr.alias.as_str())
-    })
+    match token {
+        Some((token, metrics)) => context
+            .runtime()
+            .series_from_value_with_budget(count, 1, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.global_aggregate.count_output",
+                    "failed to construct bounded native global count output column",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact_if_absent("budget_operation", "runtime::series_from_value_with_budget")
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, "cudf_query_engine.global_aggregate.count_output")),
+        None => {
+            let scalar = context.runtime().scalar(count).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.global_aggregate.count",
+                    "failed to construct native global count scalar",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+            })?;
+            context.runtime().series_from_scalar(&scalar, 1).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.global_aggregate.count_output",
+                    "failed to construct native global count output column",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+            })
+        },
+    }
 }
 
 pub(super) fn global_count_star_expr(expr: &Expr) -> bool {
@@ -690,9 +1125,28 @@ fn global_aggregate_output_field(alias: &str, output_schema: &arrow::datatypes::
 }
 
 pub(super) fn cast_count_output_columns(
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    cast_count_output_columns_impl(frame, spec, output_schema, None)
+}
+
+pub(super) fn cast_count_output_columns_with_budget(
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    cast_count_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
+}
+
+fn cast_count_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
+    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Count) {
         let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
@@ -712,23 +1166,57 @@ pub(super) fn cast_count_output_columns(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
-        frame = frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
-            QueryError::from_cudf(
+        frame = match token.as_mut() {
+            Some((token, metrics)) => budgeted_value(
+                frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
+                    QueryError::from_cudf_with_budget_details(
+                        "cudf_query_engine.aggregate.cast_count",
+                        "failed to cast bounded native count aggregate output column",
+                        error,
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                })?,
+                *metrics,
                 "cudf_query_engine.aggregate.cast_count",
-                "failed to cast native count aggregate output column",
-                error,
-            )
-            .with_fact("alias", expr.alias.as_str())
-            .with_fact("data_type", format!("{:?}", field.data_type()))
-        })?;
+            ),
+            None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.aggregate.cast_count",
+                    "failed to cast native count aggregate output column",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+            })?,
+        };
     }
     Ok(frame)
 }
 
 pub(super) fn cast_avg_output_columns(
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    cast_avg_output_columns_impl(frame, spec, output_schema, None)
+}
+
+pub(super) fn cast_avg_output_columns_with_budget(
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    cast_avg_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
+}
+
+fn cast_avg_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
+    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg) {
         let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
@@ -748,23 +1236,57 @@ pub(super) fn cast_avg_output_columns(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
-        frame = frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
-            QueryError::from_cudf(
+        frame = match token.as_mut() {
+            Some((token, metrics)) => budgeted_value(
+                frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
+                    QueryError::from_cudf_with_budget_details(
+                        "cudf_query_engine.aggregate.cast_avg",
+                        "failed to cast bounded native avg aggregate output column",
+                        error,
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                })?,
+                *metrics,
                 "cudf_query_engine.aggregate.cast_avg",
-                "failed to cast native avg aggregate output column",
-                error,
-            )
-            .with_fact("alias", expr.alias.as_str())
-            .with_fact("data_type", format!("{:?}", field.data_type()))
-        })?;
+            ),
+            None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.aggregate.cast_avg",
+                    "failed to cast native avg aggregate output column",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+            })?,
+        };
     }
     Ok(frame)
 }
 
 pub(super) fn cast_global_reduction_output_columns(
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    cast_global_reduction_output_columns_impl(frame, spec, output_schema, None)
+}
+
+pub(super) fn cast_global_reduction_output_columns_with_budget(
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    cast_global_reduction_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
+}
+
+fn cast_global_reduction_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
+    mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     for expr in spec.aggr_exprs.iter().filter(|expr| {
         matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
@@ -786,15 +1308,30 @@ pub(super) fn cast_global_reduction_output_columns(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
-        frame = frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
-            QueryError::from_cudf(
+        frame = match token.as_mut() {
+            Some((token, metrics)) => budgeted_value(
+                frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
+                    QueryError::from_cudf_with_budget_details(
+                        "cudf_query_engine.aggregate.cast_reduction",
+                        "failed to cast bounded native global reduction output column",
+                        error,
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                })?,
+                *metrics,
                 "cudf_query_engine.aggregate.cast_reduction",
-                "failed to cast native global reduction output column",
-                error,
-            )
-            .with_fact("alias", expr.alias.as_str())
-            .with_fact("data_type", format!("{:?}", field.data_type()))
-        })?;
+            ),
+            None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.aggregate.cast_reduction",
+                    "failed to cast native global reduction output column",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+            })?,
+        };
     }
     Ok(frame)
 }
@@ -804,6 +1341,27 @@ pub(super) fn finalize_avg_output_columns(
     frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
+) -> Result<DataFrame> {
+    finalize_avg_output_columns_impl(context, frame, spec, output_schema, None)
+}
+
+pub(super) fn finalize_avg_output_columns_with_budget(
+    context: &ExecutionContext,
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    finalize_avg_output_columns_impl(context, frame, spec, output_schema, Some((token, metrics)))
+}
+
+fn finalize_avg_output_columns_impl(
+    context: &ExecutionContext,
+    frame: DataFrame,
+    spec: &AggregateSpec,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
     if !aggregate_spec_has_avg(spec) {
         return Ok(frame);
@@ -843,14 +1401,28 @@ pub(super) fn finalize_avg_output_columns(
             lower_expr(&nullable_value).map(|lowered| (alias, lowered))
         })
         .collect::<Result<Vec<_>>>()?;
-    let overrides = execution_overrides(context);
-    frame.with_execution(&overrides).with_columns(avg_exprs).map_err(|error| {
-        QueryError::from_cudf(
-            "cudf_query_engine.aggregate.finalize_avg",
-            "failed to finalize native avg aggregate output columns",
-            error,
-        )
-    })
+    match token {
+        Some((token, metrics)) => frame
+            .with_columns_with_budget(avg_exprs, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.aggregate.finalize_avg",
+                    "failed to finalize bounded native avg aggregate output columns",
+                    error,
+                )
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, "cudf_query_engine.aggregate.finalize_avg")),
+        None => {
+            let overrides = execution_overrides(context);
+            frame.with_execution(&overrides).with_columns(avg_exprs).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.aggregate.finalize_avg",
+                    "failed to finalize native avg aggregate output columns",
+                    error,
+                )
+            })
+        },
+    }
 }
 
 pub(super) fn global_valid_count_state_alias(alias: &str) -> String {
@@ -1038,32 +1610,6 @@ pub(super) fn execute_limit(
     }
 
     execute_limit_on_frame(context, node, input.into_frame(), metrics)
-}
-
-pub(super) fn execute_optional_limit(
-    context: &ExecutionContext,
-    node: Option<&LimitNode>,
-    input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
-) -> Result<GpuDataFrame> {
-    match node {
-        Some(node) => execute_limit(context, node, input, metrics),
-        None => Ok(input),
-    }
-}
-
-pub(super) fn execute_limit_spec(
-    context: &ExecutionContext,
-    spec: LimitSpec,
-    input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
-) -> Result<GpuDataFrame> {
-    let row_count = input.num_rows();
-    if limit_keeps_all_rows(row_count, spec)? {
-        return Ok(input);
-    }
-
-    execute_limit_spec_on_frame(context, spec, input.into_frame(), row_count, metrics)
 }
 
 pub(super) fn execute_limit_on_frame(

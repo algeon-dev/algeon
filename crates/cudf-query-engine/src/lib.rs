@@ -30,7 +30,7 @@ pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
     LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
-pub use metrics::{BoundaryMetrics, JoinOperatorMetrics, OperatorMetrics, QueryMetrics};
+pub use metrics::{BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, OperatorMetrics, QueryMetrics};
 pub use plan::{
     AggregateNode, DataPlacement, FilterNode, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality,
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, QueryNode,

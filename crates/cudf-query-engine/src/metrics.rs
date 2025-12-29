@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use cudf::ExecutionBudgetReport;
+
 use crate::runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, ReservationKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +76,11 @@ pub struct QueryMetrics {
     pub reservation_granted_bytes: u64,
     pub reservation_denied_count: u64,
     pub reservation_events: Vec<MemoryReservationEvent>,
+    /// Successful lower-level cuDF calls that returned an execution-budget report.
+    ///
+    /// Token-routed operations without a report-returning cuDF API may still attach budget failure
+    /// facts on errors, but they do not synthesize success events here.
+    pub budgeted_execution_events: Vec<BudgetedExecutionEvent>,
     pub source_chunks_planned: u64,
     pub source_chunks_attempted: u64,
     pub source_chunks_committed: u64,
@@ -169,6 +176,10 @@ impl QueryMetrics {
         self.reservation_events.push(MemoryReservationEvent::denied(request, granted_bytes));
     }
 
+    pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
+        self.budgeted_execution_events.push(BudgetedExecutionEvent::new(operation, report));
+    }
+
     pub fn record_source_chunk_planned(&mut self, row_groups: u64) {
         self.source_chunks_planned = self.source_chunks_planned.saturating_add(1);
         self.row_groups_planned = self.row_groups_planned.saturating_add(row_groups);
@@ -252,6 +263,35 @@ impl QueryMetrics {
 
     pub fn record_final_merge_level(&mut self) {
         self.final_merge_levels = self.final_merge_levels.saturating_add(1);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BudgetedExecutionEvent {
+    pub operation: String,
+    pub boundary: String,
+    pub budget_bytes: u64,
+    pub enforcement: String,
+    pub status: String,
+    pub retained_bytes: Option<u64>,
+    pub output_bytes: Option<u64>,
+    pub output_rows: Option<u64>,
+    pub unresolved_contract: Option<String>,
+}
+
+impl BudgetedExecutionEvent {
+    fn new(operation: impl Into<String>, report: &ExecutionBudgetReport) -> Self {
+        Self {
+            operation: operation.into(),
+            boundary: report.request().boundary().to_string(),
+            budget_bytes: report.request().budget_bytes() as u64,
+            enforcement: report.enforcement().as_str().to_string(),
+            status: report.status().as_str().to_string(),
+            retained_bytes: report.retained_bytes().map(|bytes| bytes as u64),
+            output_bytes: report.output_bytes().map(|bytes| bytes as u64),
+            output_rows: report.output_rows().map(|rows| rows as u64),
+            unresolved_contract: report.unresolved_contract().map(str::to_string),
+        }
     }
 }
 
