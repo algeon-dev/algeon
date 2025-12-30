@@ -39,10 +39,10 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
             PlanNode::Projection(projection) => {
                 let input = input_node(plan, projection.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, projection.input)?;
-                for expr in &projection.expressions {
+                for expr in projection.expressions() {
                     validate_expr(expr, input.output_schema(), input_available)?;
                 }
-                validate_projection_capability(projection, node.output_schema())?;
+                validate_projection_capability(projection, &node.facts.output_schema)?;
                 schema_column_names(node.output_schema())
             },
             PlanNode::Aggregate(aggregate) => {

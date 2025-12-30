@@ -45,7 +45,7 @@ use self::{
 };
 use crate::{
     chunk::{SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
-    datatypes::{cudf_dtype_from_arrow_type, timestamp_unit_to_cudf_resolution},
+    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
     metrics::QueryMetrics,
@@ -208,7 +208,7 @@ fn execute_node(
         },
         PlanNode::Projection(projection) => {
             let input = execute_node(context, plan, projection.input, gpu_inputs, scratch, metrics)?;
-            execute_projection(context, projection, input, &node.facts.output_schema, metrics)
+            execute_projection(context, projection, input, metrics)
         },
         PlanNode::Aggregate(aggregate) => {
             let input = execute_node(context, plan, aggregate.input, gpu_inputs, scratch, metrics)?;

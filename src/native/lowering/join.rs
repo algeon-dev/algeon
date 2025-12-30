@@ -16,7 +16,7 @@ use datafusion::{
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     join_residual::{JoinResidualMaterialization, LoweredJoinResidual, lower_join_filter},
-    lower_native_input,
+    lower_native_input, projection_outputs,
 };
 use crate::{
     native::normalize::{NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
@@ -103,7 +103,7 @@ fn add_join_residual_materializations(
         });
     }
     let schema = Arc::new(Schema::new(fields));
-    let node = builder.add_projection(input.node, expressions, Arc::clone(&schema));
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 

@@ -17,14 +17,23 @@ use arrow::{
 use cudf::DataFrame;
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract, BudgetedExecutionEvent,
-    BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuHashJoinBuildCache,
-    GpuResidentInputMap, GpuResidentSource, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
-    LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, PartitionColumn,
-    QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind, SortExpr, SortSpec,
-    SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
+    BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
+    GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide,
+    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
+    PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
+    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
     execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+
+fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {
+    assert_eq!(expressions.len(), schema.fields().len(), "projection outputs must match schema");
+    expressions
+        .into_iter()
+        .zip(schema.fields().iter())
+        .map(|(expr, field)| ProjectionOutput::new(expr, field.as_ref().clone()))
+        .collect()
+}
 
 #[test]
 fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
@@ -66,7 +75,7 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
@@ -256,7 +265,7 @@ fn native_query_executes_multi_file_direct_parquet_source() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
@@ -1901,8 +1910,10 @@ fn native_query_rejects_duplicate_join_output_names_before_runtime_materializati
     );
     let projection = builder.add_projection(
         join,
-        vec![Expr::column("n_name").alias("supp_nation"), Expr::column("n_name").alias("cust_nation")],
-        projected_schema,
+        projection_outputs(
+            vec![Expr::column("n_name").alias("supp_nation"), Expr::column("n_name").alias("cust_nation")],
+            projected_schema,
+        ),
     );
     let plan = builder.finish_with_host_sink(projection);
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
@@ -1939,8 +1950,10 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
     let projection = builder.add_projection(
         source,
-        vec![Expr::column("key").alias("dup"), Expr::column("payload").alias("dup")],
-        duplicate_projection_schema,
+        projection_outputs(
+            vec![Expr::column("key").alias("dup"), Expr::column("payload").alias("dup")],
+            duplicate_projection_schema,
+        ),
     );
     let plan = builder.finish_with_host_sink(projection);
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
@@ -2242,7 +2255,7 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
@@ -2271,6 +2284,213 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
     for index in 9..13 {
         assert!(batch.column(index).is_null(0), "projection column {index} should be a typed null");
     }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_projection_coerces_decimal_output_to_declared_scale() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("amount", DataType::Decimal128(20, 0), false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("mkt_share", DataType::Decimal128(20, -1), false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![Arc::new(Decimal128Array::from_iter_values([120, 340]).with_precision_and_scale(20, 0).unwrap())],
+    )
+    .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("decimal_input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),
+    );
+    let plan = builder.finish_gpu_resident(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "decimal_input".to_string(),
+        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("GPU-resident sink should keep projection output on device");
+    };
+    assert_eq!(handle.schema().as_ref(), output_schema.as_ref());
+
+    let mut materialization_metrics = QueryMetrics::default();
+    let batch = materialize_gpu_result_to_host(handle.clone(), &mut materialization_metrics).unwrap();
+    assert_eq!(batch.schema().as_ref(), output_schema.as_ref());
+    let mkt_share = decimal128_array(&batch, 0);
+    assert_eq!(mkt_share.data_type(), &DataType::Decimal128(20, -1));
+    assert_eq!(mkt_share.values().as_ref(), &[12, 34]);
+}
+
+#[test]
+fn bounded_native_projection_coerces_decimal_output_to_declared_scale() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-projection-decimal-schema-coerce");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_decimal_scale0_grouped_parquet(&path);
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Decimal128(20, 0), true),
+    ]));
+    let projection_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("mkt_share", DataType::Decimal128(20, -1), true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "amount".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema);
+    let projection = builder.add_projection(
+        aggregate,
+        projection_outputs(
+            vec![Expr::column("key"), Expr::column("sum_amount").alias("mkt_share")],
+            Arc::clone(&projection_schema),
+        ),
+    );
+    let plan = builder.finish_gpu_resident(projection);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
+        event.operation == "cudf_query_engine.projection.schema_coerce" && event.boundary == "post_aggregate_projection"
+    }));
+    let QueryOutput::GpuResident(handle) = result.output() else {
+        panic!("GPU-resident sink should keep bounded projection output on device");
+    };
+    assert_eq!(handle.schema().as_ref(), projection_schema.as_ref());
+
+    let mut materialization_metrics = QueryMetrics::default();
+    let batch = materialize_gpu_result_to_host(handle.clone(), &mut materialization_metrics).unwrap();
+    assert_eq!(batch.schema().as_ref(), projection_schema.as_ref());
+    let mkt_share = decimal128_array(&batch, 1);
+    assert_eq!(mkt_share.data_type(), &DataType::Decimal128(20, -1));
+    let mut values = mkt_share.values().iter().copied().collect::<Vec<_>>();
+    values.sort_unstable();
+    assert_eq!(values, vec![46, 50]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("int_input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
+    );
+    let plan = builder.finish_gpu_resident(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "int_input".to_string(),
+        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+    );
+
+    let error = match execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs) {
+        Ok(_) => panic!("projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.projection.schema_coerce");
+    assert_eq!(error.fact_value("reason"), Some("projection_output_schema_mismatch"));
+    assert_eq!(error.fact_value("reason_detail"), Some("implicit_cast_not_supported"));
+    assert_eq!(error.fact_value("field_name"), Some("bad_key"));
+    assert_eq!(error.fact_value("field_index"), Some("0"));
+    assert_eq!(error.fact_value("actual_type"), Some("Int32"));
+    assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
+}
+
+#[test]
+fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_with_budget_facts() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-projection-schema-coerce-reject");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+    let projection_schema = Arc::new(Schema::new(vec![Field::new("bad_key", DataType::Utf8, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string()],
+    );
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregate_schema);
+    let projection = builder.add_projection(
+        aggregate,
+        projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&projection_schema)),
+    );
+    let plan = builder.finish_gpu_resident(projection);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("bounded projection schema coercion should reject unsupported Int32 to Utf8 mismatch"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+    assert_eq!(error.operation(), "cudf_query_engine.projection.schema_coerce");
+    assert_eq!(error.fact_value("reason"), Some("projection_output_schema_mismatch"));
+    assert_eq!(error.fact_value("reason_detail"), Some("implicit_cast_not_supported"));
+    assert_eq!(error.fact_value("field_name"), Some("bad_key"));
+    assert_eq!(error.fact_value("field_index"), Some("0"));
+    assert_eq!(error.fact_value("actual_type"), Some("Int32"));
+    assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
+    assert_eq!(error.fact_value("budget_boundary"), Some("post_aggregate_projection"));
+    assert!(error.fact_value("budget_bytes").is_some());
+    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2346,7 +2566,7 @@ fn native_query_executes_phase2_scalar_expression_families() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
@@ -2399,8 +2619,7 @@ fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(
         source,
-        vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")],
-        output_schema,
+        projection_outputs(vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")], output_schema),
     );
     let plan = builder.finish_with_host_sink(projection);
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
@@ -2433,11 +2652,13 @@ fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution(
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(
         source,
-        vec![
-            Expr::binary(Expr::column("amount"), BinaryOp::Add, Expr::literal(LiteralValue::Float64(1.0)))
-                .alias("bad_amount"),
-        ],
-        output_schema,
+        projection_outputs(
+            vec![
+                Expr::binary(Expr::column("amount"), BinaryOp::Add, Expr::literal(LiteralValue::Float64(1.0)))
+                    .alias("bad_amount"),
+            ],
+            output_schema,
+        ),
     );
     let plan = builder.finish_with_host_sink(projection);
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
@@ -2493,7 +2714,7 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
         );
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let projection = builder.add_projection(source, projection, output_schema);
+        let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
         let plan = builder.finish_with_host_sink(projection);
         let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
 
@@ -2551,7 +2772,7 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
 
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LocalParquet(source));
-        let projection = builder.add_projection(source, vec![expr], output_schema);
+        let projection = builder.add_projection(source, projection_outputs(vec![expr], output_schema));
         let plan = builder.finish_with_host_sink(projection);
         let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
 
@@ -2589,7 +2810,7 @@ fn native_query_rejects_unread_source_column_in_nested_phase2_scalar_before_cudf
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
-    let projection = builder.add_projection(source, vec![label], output_schema);
+    let projection = builder.add_projection(source, projection_outputs(vec![label], output_schema));
     let plan = builder.finish_with_host_sink(projection);
     let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
 
@@ -2809,7 +3030,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
@@ -3151,7 +3372,8 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
         "q_global_partial",
         Arc::clone(&aggregated_schema),
     )));
-    let projection = builder.add_projection(source, vec![Expr::column("sum_m00")], Arc::clone(&output_schema));
+    let projection =
+        builder.add_projection(source, projection_outputs(vec![Expr::column("sum_m00")], Arc::clone(&output_schema)));
     let consumer_plan = builder.finish_with_host_sink(projection);
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert("q_global_partial".to_string(), frame.clone());
@@ -3541,7 +3763,7 @@ fn bounded_native_query_executes_q6_shaped_decimal_global_sum() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
 
@@ -4009,7 +4231,8 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
     let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
-    let projection = builder.add_projection(aggregate, projection, Arc::clone(&post_projection_schema));
+    let projection =
+        builder.add_projection(aggregate, projection_outputs(projection, Arc::clone(&post_projection_schema)));
     let sort = builder.add_sort(projection, sort, Arc::clone(&post_projection_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), post_projection_schema);
     let plan = builder.finish_with_host_sink(limit);
@@ -4411,8 +4634,10 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let projection =
-        builder.add_projection(aggregate, wide_final_sort_projection(32), Arc::clone(&materialized_schema));
+    let projection = builder.add_projection(
+        aggregate,
+        projection_outputs(wide_final_sort_projection(32), Arc::clone(&materialized_schema)),
+    );
     let plan = builder.finish_with_host_sink(projection);
 
     let baseline_context = ExecutionContext::builder()
@@ -4523,7 +4748,7 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
     let filter = builder.add_filter(source_id, filter, Arc::clone(&input_schema));
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(3), aggregated_schema);
@@ -4795,7 +5020,8 @@ fn bounded_native_query_retries_final_sort_with_hierarchical_topk() {
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let projection = builder.add_projection(aggregate, wide_final_sort_projection(16), Arc::clone(&final_sort_schema));
+    let projection = builder
+        .add_projection(aggregate, projection_outputs(wide_final_sort_projection(16), Arc::clone(&final_sort_schema)));
     let sort = builder.add_sort(projection, sort, Arc::clone(&final_sort_schema));
     let limit = builder.add_limit(sort, limit, Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
@@ -4943,7 +5169,8 @@ fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_outp
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let projection = builder.add_projection(aggregate, wide_final_sort_projection(16), Arc::clone(&final_sort_schema));
+    let projection = builder
+        .add_projection(aggregate, projection_outputs(wide_final_sort_projection(16), Arc::clone(&final_sort_schema)));
     let sort = builder.add_sort(projection, sort, Arc::clone(&final_sort_schema));
     let limit = builder.add_limit(sort, LimitSpec::fetch(4095), Arc::clone(&final_sort_schema));
     let plan = builder.finish_with_host_sink(limit);
@@ -5059,7 +5286,8 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
     let mut builder = QueryPlanBuilder::new();
     let source_id = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source_id, aggregate, Arc::clone(&aggregated_schema));
-    let projection = builder.add_projection(aggregate, wide_final_sort_projection(16), Arc::clone(&final_sort_schema));
+    let projection = builder
+        .add_projection(aggregate, projection_outputs(wide_final_sort_projection(16), Arc::clone(&final_sort_schema)));
     let sort = builder.add_sort(projection, sort, final_sort_schema);
     let plan = builder.finish_with_host_sink(sort);
 
@@ -6817,8 +7045,7 @@ fn bounded_native_query_executes_q13_like_serial_aggregate_join_spine() {
     );
     let projection = builder.add_projection(
         join,
-        vec![Expr::column("c_custkey"), Expr::column("o_orderkey")],
-        Arc::clone(&join_schema),
+        projection_outputs(vec![Expr::column("c_custkey"), Expr::column("o_orderkey")], Arc::clone(&join_schema)),
     );
     let customer_counts = builder.add_aggregate(
         projection,
@@ -6828,7 +7055,8 @@ fn bounded_native_query_executes_q13_like_serial_aggregate_join_spine() {
         ),
         customer_count_schema,
     );
-    let count_projection = builder.add_projection(customer_counts, vec![Expr::column("c_count")], c_count_schema);
+    let count_projection =
+        builder.add_projection(customer_counts, projection_outputs(vec![Expr::column("c_count")], c_count_schema));
     let distribution = builder.add_aggregate(
         count_projection,
         AggregateSpec::new(
@@ -7023,8 +7251,10 @@ fn bounded_native_query_executes_q16_like_multi_join_distinct_count_spine() {
     );
     let projection = builder.add_projection(
         supplier_counts,
-        vec![Expr::column("supplier_cnt"), Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
-        Arc::clone(&projected_schema),
+        projection_outputs(
+            vec![Expr::column("supplier_cnt"), Expr::column("p_brand"), Expr::column("p_type"), Expr::column("p_size")],
+            Arc::clone(&projected_schema),
+        ),
     );
     let sort = builder.add_sort(
         projection,
@@ -8297,8 +8527,7 @@ fn q22_like_keyless_conditional_join_input_subplan_plan(
     );
     let anti_projection = builder.add_projection(
         anti_join,
-        vec![Expr::column("order_id"), Expr::column("qty")],
-        Arc::clone(&left_subplan_schema),
+        projection_outputs(vec![Expr::column("order_id"), Expr::column("qty")], Arc::clone(&left_subplan_schema)),
     );
     let threshold = builder.add_aggregate(
         threshold_source,
@@ -8388,8 +8617,10 @@ fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     );
     let grouped_projection = builder.add_projection(
         grouped_aggregate,
-        vec![Expr::column("ps_partkey"), Expr::column("value")],
-        Arc::clone(&grouped_aggregate_schema),
+        projection_outputs(
+            vec![Expr::column("ps_partkey"), Expr::column("value")],
+            Arc::clone(&grouped_aggregate_schema),
+        ),
     );
 
     let scalar_partsupp =
@@ -8415,8 +8646,8 @@ fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         ),
         Arc::clone(&scalar_aggregate_schema),
     );
-    let scalar_projection =
-        builder.add_projection(scalar_aggregate, vec![Expr::column("threshold")], scalar_aggregate_schema);
+    let scalar_projection = builder
+        .add_projection(scalar_aggregate, projection_outputs(vec![Expr::column("threshold")], scalar_aggregate_schema));
 
     let root = builder.add_join(
         grouped_projection,
@@ -8439,8 +8670,7 @@ fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     );
     let final_projection = builder.add_projection(
         root,
-        vec![Expr::column("ps_partkey"), Expr::column("value")],
-        Arc::clone(&output_schema),
+        projection_outputs(vec![Expr::column("ps_partkey"), Expr::column("value")], Arc::clone(&output_schema)),
     );
     let sort = builder.add_sort(
         final_projection,
@@ -8917,8 +9147,10 @@ fn assert_duplicate_host_sink_schema_restoration(bounded: bool) {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(
         source,
-        vec![Expr::column("m00").alias("exec_left_value"), Expr::column("m01").alias("exec_right_value")],
-        executable_schema,
+        projection_outputs(
+            vec![Expr::column("m00").alias("exec_left_value"), Expr::column("m01").alias("exec_right_value")],
+            executable_schema,
+        ),
     );
     let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&frontend_sink_schema));
     let mut context_builder = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime));
@@ -9342,7 +9574,7 @@ fn partition_column_query_plan(
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, filter, source_schema);
-    let projection = builder.add_projection(filter, projection, projected_schema);
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     builder.finish_with_host_sink(sort)
@@ -9504,6 +9736,27 @@ fn write_decimal_avg_input_parquet(path: &Path) -> Arc<Schema> {
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Decimal128Array::from_iter_values([100, 200, 300]).with_precision_and_scale(15, 2).unwrap())],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&schema), Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    schema
+}
+
+fn write_decimal_scale0_grouped_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("amount", DataType::Decimal128(20, 0), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2])),
+            Arc::new(Decimal128Array::from_iter_values([120, 340, 500]).with_precision_and_scale(20, 0).unwrap()),
+        ],
     )
     .unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();

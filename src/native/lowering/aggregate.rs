@@ -14,7 +14,7 @@ use datafusion::{
 use super::{
     FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings, physical_expr_field},
-    lower_native_input,
+    lower_native_input, projection_outputs,
     source::required_scan_projection,
 };
 use crate::{
@@ -145,7 +145,7 @@ fn project_required_output_columns(
         return Ok(LoweredNativeInput::with_bindings(input_node, input_schema, input_bindings));
     }
     let schema = Arc::new(Schema::new(fields));
-    let node = builder.add_projection(input_node, expressions, Arc::clone(&schema));
+    let node = builder.add_projection(input_node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
@@ -376,8 +376,10 @@ pub(super) fn prepare_aggregate_input_with_full_synthetic_projection(
     aggregate: &AggregateExec,
 ) -> Result<PreparedAggregateInput, FallbackReason> {
     let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &input)?;
-    let projection_node =
-        builder.add_projection(input.node, synthetic_projection.expressions, Arc::clone(&synthetic_projection.schema));
+    let projection_node = builder.add_projection(
+        input.node,
+        projection_outputs(synthetic_projection.expressions, &synthetic_projection.schema)?,
+    );
     Ok(PreparedAggregateInput {
         input: LoweredNativeInput::with_bindings(
             projection_node,
@@ -397,8 +399,7 @@ pub(super) fn prepare_aggregate_input_with_optional_synthetic_args(
     if let Some(synthetic_projection) = synthetic_aggregate_input_projection_if_needed(aggregate, &input)? {
         let synthetic_projection_node = builder.add_projection(
             input.node,
-            synthetic_projection.expressions,
-            Arc::clone(&synthetic_projection.schema),
+            projection_outputs(synthetic_projection.expressions, &synthetic_projection.schema)?,
         );
         Ok(PreparedAggregateInput {
             input: LoweredNativeInput::with_bindings(

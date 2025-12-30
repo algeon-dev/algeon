@@ -14,6 +14,7 @@ use datafusion::{
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, lower_physical_expr, lower_physical_expr_with_bindings},
+    projection_outputs,
 };
 use crate::{
     native::{
@@ -90,7 +91,7 @@ pub(super) fn lower_source_input(
         if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (builder.add_projection(source_node, expressions, Arc::clone(&schema)), schema)
+            (builder.add_projection(source_node, projection_outputs(expressions, &schema)?), schema)
         } else {
             (source_node, Arc::clone(&source_output_schema))
         }
@@ -191,7 +192,7 @@ pub(super) fn add_source_filter_projection(
             ))
         })
         .collect::<Result<Vec<_>, FallbackReason>>()?;
-    let node = builder.add_projection(filtered_node, expressions, Arc::clone(&schema));
+    let node = builder.add_projection(filtered_node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 

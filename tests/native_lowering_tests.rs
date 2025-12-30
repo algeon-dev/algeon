@@ -107,7 +107,7 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     let PlanNode::Projection(projection) = &projection_node.kind else {
         panic!("aggregate input should be a projection node");
     };
-    assert_eq!(projection.expressions.len(), 2);
+    assert_eq!(projection.outputs.len(), 2);
     let filter_node = plan.node(projection.input).expect("projection input should exist");
     let PlanNode::Filter(filter) = &filter_node.kind else {
         panic!("projection input should be a filter node");
@@ -490,7 +490,7 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
         .iter()
         .find_map(|node| match &node.kind {
             PlanNode::Projection(projection) => {
-                let exprs = projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let exprs = projection.expressions().map(ToString::to_string).collect::<Vec<_>>();
                 if exprs.iter().any(|expr| expr.contains("supp_nation"))
                     && exprs.iter().any(|expr| expr.contains("cust_nation"))
                 {
@@ -831,7 +831,7 @@ fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection()
         vec!["dup", "__cudf_group_expr_1_dup", "__cudf_aggregate_arg_0"]
     );
     assert!(
-        projection.expressions.iter().any(|expr| {
+        projection.expressions().any(|expr| {
             matches!(
                 expr,
                 Expr::Alias { expr, alias }
@@ -840,7 +840,7 @@ fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection()
             )
         }),
         "second duplicate group alias should be materialized under a unique executable name: {:?}",
-        projection.expressions
+        projection.expressions().collect::<Vec<_>>()
     );
     assert!(
         matches!(
@@ -1344,8 +1344,8 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
     let PlanNode::Projection(final_projection) = &final_projection_node.kind else {
         panic!("q22 sort input should be the final output projection");
     };
-    assert_eq!(final_projection.expressions.len(), 3);
-    let final_projection_text = final_projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+    assert_eq!(final_projection.outputs.len(), 3);
+    let final_projection_text = final_projection.expressions().map(ToString::to_string).collect::<Vec<_>>();
     for expected_output in ["cntrycode", "numcust", "totacctbal"] {
         assert!(
             final_projection_text.iter().any(|expr| expr.contains(expected_output)),
@@ -1362,8 +1362,7 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
         let PlanNode::Projection(projection) = &node.kind else {
             break;
         };
-        aggregate_input_projection_chain
-            .push(projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>());
+        aggregate_input_projection_chain.push(projection.expressions().map(ToString::to_string).collect::<Vec<_>>());
         current = projection.input;
     }
     assert!(
@@ -1497,7 +1496,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
         .iter()
         .find_map(|node| match &node.kind {
             PlanNode::Projection(projection) => {
-                let exprs = projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+                let exprs = projection.expressions().map(ToString::to_string).collect::<Vec<_>>();
                 if exprs.iter().any(|expr| expr.ends_with(" AS supp_nation"))
                     && exprs.iter().any(|expr| expr.ends_with(" AS cust_nation"))
                 {
@@ -1570,7 +1569,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     let PlanNode::Projection(final_projection) = &final_projection_node.kind else {
         panic!("q11 sort input should be the final output projection");
     };
-    let final_projection_text = final_projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+    let final_projection_text = final_projection.expressions().map(ToString::to_string).collect::<Vec<_>>();
     assert_eq!(final_projection_text.len(), 2);
     assert!(final_projection_text.iter().any(|expr| expr == "ps_partkey"));
     assert!(
@@ -2478,8 +2477,7 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
         .find_map(|node| match &node.kind {
             PlanNode::Projection(projection)
                 if projection
-                    .expressions
-                    .iter()
+                    .expressions()
                     .any(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "__cudf_aggregate_arg_0")) =>
             {
                 Some(projection)
@@ -2489,14 +2487,13 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
         .expect("aggregate input should materialize synthetic aggregate arguments");
     assert!(
         synthetic_projection
-            .expressions
-            .iter()
+            .expressions()
             .any(|expr| matches!(expr, Expr::Column(column) if column.name() == "payload")),
         "group expression should bind original payload, not compacted ordinal m00: {:?}",
-        synthetic_projection.expressions
+        synthetic_projection.expressions().collect::<Vec<_>>()
     );
     assert!(
-        synthetic_projection.expressions.iter().any(|expr| {
+        synthetic_projection.expressions().any(|expr| {
             matches!(
                 expr,
                 Expr::Alias { expr, alias }
@@ -2505,10 +2502,10 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
             )
         }),
         "first aggregate arg should bind original m00, not compacted ordinal m01: {:?}",
-        synthetic_projection.expressions
+        synthetic_projection.expressions().collect::<Vec<_>>()
     );
     assert!(
-        synthetic_projection.expressions.iter().any(|expr| {
+        synthetic_projection.expressions().any(|expr| {
             matches!(
                 expr,
                 Expr::Alias { expr, alias }
@@ -2517,7 +2514,7 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
             )
         }),
         "second aggregate arg should bind original m01: {:?}",
-        synthetic_projection.expressions
+        synthetic_projection.expressions().collect::<Vec<_>>()
     );
     let aggregate_exprs = native_aggregate_exprs(plan);
     assert_eq!(aggregate_exprs.len(), 2);
@@ -4393,7 +4390,7 @@ fn native_projection_exprs(plan: &cudf_query_engine::QueryPlan) -> Vec<&Expr> {
     plan.nodes()
         .iter()
         .flat_map(|node| match &node.kind {
-            PlanNode::Projection(projection) => projection.expressions.iter().collect::<Vec<_>>(),
+            PlanNode::Projection(projection) => projection.expressions().collect::<Vec<_>>(),
             _ => Vec::new(),
         })
         .collect()
@@ -4487,7 +4484,7 @@ fn assert_join_input_materializes_decimal_cast(
     };
     assert!(input_node.output_schema().field_with_name(alias).is_ok());
     assert!(
-        projection.expressions.iter().any(|expr| {
+        projection.expressions().any(|expr| {
             matches!(
                 expr,
                 Expr::Alias { expr, alias: actual_alias }
@@ -4504,7 +4501,7 @@ fn assert_join_input_materializes_decimal_cast(
             )
         }),
         "join input projection should materialize {source_column} decimal cast as {alias}: {:?}",
-        projection.expressions
+        projection.expressions().collect::<Vec<_>>()
     );
 }
 

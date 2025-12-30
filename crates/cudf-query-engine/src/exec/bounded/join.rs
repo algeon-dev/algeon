@@ -411,13 +411,15 @@ fn execute_bounded_join_leaf_filter(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_join_leaf_unary(
+        context,
         node_id,
         "join_leaf_filter",
         "join_leaf_filter_output",
         input,
         reservations,
         metrics,
-        |input, metrics| execute_filter(context, node, input, metrics),
+        false,
+        |context, input, _token, metrics| execute_filter(context, node, input, metrics),
     )
 }
 
@@ -431,24 +433,42 @@ fn execute_bounded_join_leaf_projection(
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_join_leaf_unary(
+        context,
         node_id,
         "join_leaf_projection",
         "join_leaf_projection_output",
         input,
         reservations,
         metrics,
-        |input, metrics| execute_projection(context, node, input, output_schema, metrics),
+        true,
+        |context, input, token, metrics| {
+            debug_assert_eq!(node.output_schema().as_ref(), output_schema.as_ref());
+            execute_projection_with_budget(
+                context,
+                node,
+                input,
+                token.expect("budget token is created for join leaf projection stages"),
+                metrics,
+            )
+        },
     )
 }
 
 fn execute_bounded_join_leaf_unary(
+    context: &ExecutionContext,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: ResidentGpuFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-    execute: impl FnOnce(GpuDataFrame, &mut QueryMetrics) -> Result<GpuDataFrame>,
+    use_budget_token: bool,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     let work_reservation = reservations.try_reserve(
         MemoryReservationRequest::new(
@@ -462,7 +482,25 @@ fn execute_bounded_join_leaf_unary(
         .with_attempt(1, 1),
         metrics,
     )?;
-    let result = execute(input.frame, metrics);
+    let token = if use_budget_token {
+        match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&work_reservation),
+            stage,
+            "cudf_query_engine.bounded_join_leaf.budget_token",
+            "failed to create bounded native join leaf operator budget token",
+        ) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                reservations.release(work_reservation);
+                reservations.release(input.reservation);
+                return Err(error);
+            },
+        }
+    } else {
+        None
+    };
+    let result = execute(context, input.frame, token.as_ref(), metrics);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {

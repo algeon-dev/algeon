@@ -171,15 +171,15 @@ pub(super) fn execute_bounded_chunk_attempt(
     let chunk_operator_timer = Instant::now();
     let chunk_output = (|| {
         for (projection, output_schema) in &bounded.pre_filter_projections {
-            frame =
-                execute_projection_with_budget(context, projection, frame, output_schema, &operator_token, metrics)?;
+            debug_assert_eq!(projection.output_schema().as_ref(), output_schema.as_ref());
+            frame = execute_projection_with_budget(context, projection, frame, &operator_token, metrics)?;
         }
         if let Some(filter) = bounded.filter {
             frame = execute_filter_with_budget(context, filter, frame, &operator_token, metrics)?;
         }
         for (projection, output_schema) in &bounded.post_filter_projections {
-            frame =
-                execute_projection_with_budget(context, projection, frame, output_schema, &operator_token, metrics)?;
+            debug_assert_eq!(projection.output_schema().as_ref(), output_schema.as_ref());
+            frame = execute_projection_with_budget(context, projection, frame, &operator_token, metrics)?;
         }
         execute_partial_aggregate_with_budget(
             context,

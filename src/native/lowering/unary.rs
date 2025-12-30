@@ -10,7 +10,7 @@ use datafusion::{
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings},
-    lower_native_input,
+    lower_native_input, projection_outputs,
 };
 use crate::{
     native::{
@@ -55,7 +55,7 @@ pub(super) fn lower_filter_input(
             ))
         })
         .collect::<Result<Vec<_>, FallbackReason>>()?;
-    let node = builder.add_projection(filtered_node, expressions, Arc::clone(&selection.schema));
+    let node = builder.add_projection(filtered_node, projection_outputs(expressions, &selection.schema)?);
     Ok(LoweredNativeInput::with_bindings(node, selection.schema, selection.bindings))
 }
 
@@ -130,7 +130,7 @@ pub(super) fn lower_projection_input(
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
         .collect::<Result<Vec<_>, FallbackReason>>()?;
-    let node = builder.add_projection(input.node, expressions, Arc::clone(&schema));
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
@@ -154,7 +154,7 @@ pub(super) fn add_projection_node_with_input(
             Ok(alias_if_needed(expr, binding.native_name.as_str()))
         })
         .collect::<Result<Vec<_>, FallbackReason>>()?;
-    let node = builder.add_projection(input.node, expressions, Arc::clone(&schema));
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
