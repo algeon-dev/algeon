@@ -12,6 +12,7 @@ use datafusion::{
 };
 
 use super::{
+    LoweredNativeInput,
     expr::{alias_if_needed, lower_binary_operator, lower_literal, physical_expr_field},
     join::CanonicalJoin,
 };
@@ -24,8 +25,8 @@ use crate::{
 /// pre-join synthetic expressions needed to evaluate it.
 pub(super) struct LoweredJoinResidual {
     pub(super) predicate: NativeExpr,
-    pub(super) left_required: BTreeSet<String>,
-    pub(super) right_required: BTreeSet<String>,
+    pub(super) left_required: BTreeSet<usize>,
+    pub(super) right_required: BTreeSet<usize>,
     pub(super) materializations: JoinResidualMaterializations,
 }
 
@@ -70,6 +71,13 @@ struct JoinFilterLoweringContext<'a> {
     left_schema: &'a SchemaRef,
     right_schema: &'a SchemaRef,
     canonical: CanonicalJoin,
+    bindings: Option<JoinResidualInputBindings<'a>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct JoinResidualInputBindings<'a> {
+    pub(super) left: &'a LoweredNativeInput,
+    pub(super) right: &'a LoweredNativeInput,
 }
 
 pub(super) fn lower_join_filter(
@@ -77,6 +85,7 @@ pub(super) fn lower_join_filter(
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
     canonical: CanonicalJoin,
+    bindings: Option<JoinResidualInputBindings<'_>>,
 ) -> Result<LoweredJoinResidual, FallbackReason> {
     // Supported residual vocabulary is deliberately small: columns, literals,
     // binary operators, NOT, null checks, casts, and literal IN lists. A join
@@ -85,7 +94,7 @@ pub(super) fn lower_join_filter(
     let mut left_required = BTreeSet::new();
     let mut right_required = BTreeSet::new();
     let mut materializations = JoinResidualMaterializations::default();
-    let context = JoinFilterLoweringContext { filter, left_schema, right_schema, canonical };
+    let context = JoinFilterLoweringContext { filter, left_schema, right_schema, canonical, bindings };
     let predicate = lower_join_filter_expr(
         filter.expression(),
         context,
@@ -102,20 +111,12 @@ pub(super) fn lower_join_filter(
 fn lower_join_filter_expr(
     expr: &Arc<dyn PhysicalExpr>,
     context: JoinFilterLoweringContext<'_>,
-    left_required: &mut BTreeSet<String>,
-    right_required: &mut BTreeSet<String>,
+    left_required: &mut BTreeSet<usize>,
+    right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
 ) -> Result<NativeExpr, FallbackReason> {
     if let Some(column) = expr.as_any().downcast_ref::<Column>() {
-        return lower_join_filter_column(
-            column,
-            context.filter,
-            context.left_schema,
-            context.right_schema,
-            context.canonical,
-            left_required,
-            right_required,
-        );
+        return lower_join_filter_column(column, context, left_required, right_required);
     }
     if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
         return lower_literal(literal.value());
@@ -207,8 +208,8 @@ fn is_supported_join_residual_materialized_cast_target(target_type: &DataType) -
 fn materialize_join_residual_expr(
     expr: &Arc<dyn PhysicalExpr>,
     context: JoinFilterLoweringContext<'_>,
-    left_required: &mut BTreeSet<String>,
-    right_required: &mut BTreeSet<String>,
+    left_required: &mut BTreeSet<usize>,
+    right_required: &mut BTreeSet<usize>,
     materializations: &mut JoinResidualMaterializations,
 ) -> Result<NativeExpr, FallbackReason> {
     // Materializations are valid only when the whole expression belongs to one
@@ -219,7 +220,7 @@ fn materialize_join_residual_expr(
         DataFusionJoinSide::Right => (context.right_schema, right_required),
         DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
     };
-    let native_expr = lower_join_filter_side_expr(expr, context.filter, schema, side, required)?;
+    let native_expr = lower_join_filter_side_expr(expr, context, schema, side, required)?;
     let side_materializations = materializations.side_mut(side)?;
     let alias = unique_synthetic_join_residual_alias(side, side_materializations.len(), schema, side_materializations);
     let field = physical_expr_field(expr, context.filter.schema(), alias.as_str())?;
@@ -290,13 +291,14 @@ fn collect_join_filter_expr_sides(
 
 fn lower_join_filter_side_expr(
     expr: &Arc<dyn PhysicalExpr>,
-    filter: &JoinFilter,
+    context: JoinFilterLoweringContext<'_>,
     side_schema: &SchemaRef,
     side: DataFusionJoinSide,
-    required: &mut BTreeSet<String>,
+    required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
     if let Some(column) = expr.as_any().downcast_ref::<Column>() {
-        let column_index = filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+        let column_index =
+            context.filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
         if column_index.side != side {
             return Err(FallbackReason::UnsupportedExpression);
         }
@@ -304,25 +306,25 @@ fn lower_join_filter_side_expr(
         if !is_supported_native_type(field.data_type()) {
             return Err(FallbackReason::UnsupportedType);
         }
-        required.insert(field.name().clone());
-        return Ok(NativeExpr::column(field.name()));
+        required.insert(column_index.index);
+        return Ok(NativeExpr::column(side_native_name(context, side, column_index.index, field.name())?));
     }
     if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
         return lower_literal(literal.value());
     }
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        let left = lower_join_filter_side_expr(binary.left(), filter, side_schema, side, required)?;
-        let right = lower_join_filter_side_expr(binary.right(), filter, side_schema, side, required)?;
+        let left = lower_join_filter_side_expr(binary.left(), context, side_schema, side, required)?;
+        let right = lower_join_filter_side_expr(binary.right(), context, side_schema, side, required)?;
         let op = lower_binary_operator(binary.op())?;
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
-        return Ok(!lower_join_filter_side_expr(not.arg(), filter, side_schema, side, required)?);
+        return Ok(!lower_join_filter_side_expr(not.arg(), context, side_schema, side, required)?);
     }
     if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
         return Ok(NativeExpr::is_null(lower_join_filter_side_expr(
             is_null.arg(),
-            filter,
+            context,
             side_schema,
             side,
             required,
@@ -331,20 +333,22 @@ fn lower_join_filter_side_expr(
     if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
         return Ok(NativeExpr::is_not_null(lower_join_filter_side_expr(
             is_not_null.arg(),
-            filter,
+            context,
             side_schema,
             side,
             required,
         )?));
     }
     if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
-        let source_type =
-            cast.expr().data_type(filter.schema().as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+        let source_type = cast
+            .expr()
+            .data_type(context.filter.schema().as_ref())
+            .map_err(|_error| FallbackReason::UnsupportedExpression)?;
         if !is_supported_native_cast(&source_type, cast.cast_type()) {
             return Err(FallbackReason::UnsupportedType);
         }
         return Ok(NativeExpr::cast(
-            lower_join_filter_side_expr(cast.expr(), filter, side_schema, side, required)?,
+            lower_join_filter_side_expr(cast.expr(), context, side_schema, side, required)?,
             cast.cast_type().clone(),
         ));
     }
@@ -352,7 +356,7 @@ fn lower_join_filter_side_expr(
         if in_list.is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
-        let expr = lower_join_filter_side_expr(in_list.expr(), filter, side_schema, side, required)?;
+        let expr = lower_join_filter_side_expr(in_list.expr(), context, side_schema, side, required)?;
         let list = in_list
             .list()
             .iter()
@@ -363,7 +367,7 @@ fn lower_join_filter_side_expr(
                 if literal.value().is_null() {
                     return Err(FallbackReason::UnsupportedExpression);
                 }
-                lower_join_filter_side_expr(item, filter, side_schema, side, required)
+                lower_join_filter_side_expr(item, context, side_schema, side, required)
             })
             .collect::<Result<Vec<_>, FallbackReason>>()?;
         return Ok(if in_list.negated() {
@@ -413,24 +417,40 @@ fn synthetic_join_residual_alias_is_available(
 
 fn lower_join_filter_column(
     column: &Column,
-    filter: &JoinFilter,
-    left_schema: &SchemaRef,
-    right_schema: &SchemaRef,
-    canonical: CanonicalJoin,
-    left_required: &mut BTreeSet<String>,
-    right_required: &mut BTreeSet<String>,
+    context: JoinFilterLoweringContext<'_>,
+    left_required: &mut BTreeSet<usize>,
+    right_required: &mut BTreeSet<usize>,
 ) -> Result<NativeExpr, FallbackReason> {
-    let column_index = filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+    let column_index =
+        context.filter.column_indices().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
     let (datafusion_side, schema, required) = match column_index.side {
-        DataFusionJoinSide::Left => (DataFusionJoinSide::Left, left_schema, left_required),
-        DataFusionJoinSide::Right => (DataFusionJoinSide::Right, right_schema, right_required),
+        DataFusionJoinSide::Left => (DataFusionJoinSide::Left, context.left_schema, left_required),
+        DataFusionJoinSide::Right => (DataFusionJoinSide::Right, context.right_schema, right_required),
         DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
     };
     let field = schema.fields().get(column_index.index).ok_or(FallbackReason::UnsupportedExpression)?;
     if !is_supported_native_type(field.data_type()) {
         return Err(FallbackReason::UnsupportedType);
     }
-    required.insert(field.name().clone());
-    let native_input_index = canonical.native_input_index_for_datafusion_side(datafusion_side)?;
-    Ok(NativeExpr::input_column(native_input_index, field.name(), field.name()))
+    required.insert(column_index.index);
+    let native_input_index = context.canonical.native_input_index_for_datafusion_side(datafusion_side)?;
+    let native_name = side_native_name(context, datafusion_side, column_index.index, field.name())?;
+    Ok(NativeExpr::input_column(native_input_index, native_name, field.name()))
+}
+
+fn side_native_name<'a>(
+    context: JoinFilterLoweringContext<'a>,
+    side: DataFusionJoinSide,
+    frontend_index: usize,
+    fallback_name: &'a str,
+) -> Result<&'a str, FallbackReason> {
+    let Some(bindings) = context.bindings else {
+        return Ok(fallback_name);
+    };
+    let input = match side {
+        DataFusionJoinSide::Left => bindings.left,
+        DataFusionJoinSide::Right => bindings.right,
+        DataFusionJoinSide::None => return Err(FallbackReason::UnsupportedExpression),
+    };
+    Ok(input.binding_for_frontend_index(frontend_index)?.native_name.as_str())
 }

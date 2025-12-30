@@ -468,7 +468,7 @@ pub(super) fn required_parquet_column_requirements(
 pub(super) fn required_parquet_column_requirements_for_scan_columns(
     file_scan: &FileScanConfig,
     filter: Option<&FilterExec>,
-    required_scan_output_columns: &[String],
+    required_scan_output_indices: &[usize],
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
     let file_schema = file_scan.file_schema();
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
@@ -484,11 +484,11 @@ pub(super) fn required_parquet_column_requirements_for_scan_columns(
         collect_required_columns(filter.predicate(), &scan_output_schema, &mut scan_output_columns)?;
     }
 
-    for column in required_scan_output_columns {
-        let index = scan_output_schema.index_of(column).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(column, index));
+    for index in required_scan_output_indices {
+        let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *index));
         collect_source_required_columns(&expr, scan_projection, &table_schema, &mut output_columns)?;
-        scan_output_columns.insert(column.clone());
+        scan_output_columns.insert(field.name().clone());
     }
 
     let mut read_columns: BTreeSet<String> = BTreeSet::new();

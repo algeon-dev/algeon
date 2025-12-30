@@ -42,6 +42,7 @@ pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
                 context,
                 committed,
                 plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
                 schema,
                 &mut reservations,
                 metrics,

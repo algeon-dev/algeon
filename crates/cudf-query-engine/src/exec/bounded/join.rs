@@ -56,6 +56,7 @@ pub(super) fn execute_bounded_root_join_query_plan(
                 context,
                 committed,
                 plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
                 schema,
                 &mut reservations,
                 metrics,

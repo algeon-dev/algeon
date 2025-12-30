@@ -479,13 +479,12 @@ fn collect_required_columns_for_scalar_function(
 }
 
 fn resolved_column_name<'a>(column: &Column, input_schema: &'a SchemaRef) -> Result<&'a str, FallbackReason> {
-    input_schema.field_with_name(column.name()).map(|field| field.name().as_str()).or_else(|_error| {
-        input_schema
-            .fields()
-            .get(column.index())
-            .map(|field| field.name().as_str())
-            .ok_or(FallbackReason::UnsupportedExpression)
-    })
+    input_schema
+        .fields()
+        .get(column.index())
+        .map(|field| field.name().as_str())
+        .or_else(|| input_schema.field_with_name(column.name()).ok().map(|field| field.name().as_str()))
+        .ok_or(FallbackReason::UnsupportedExpression)
 }
 
 fn validate_literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<(), FallbackReason> {

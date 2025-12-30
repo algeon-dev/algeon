@@ -10,20 +10,23 @@ use datafusion::{
 };
 
 use super::{
+    LoweredNativeInput, RequiredFields,
     aggregate::{
         RequiredScalarExpressions, lower_aggregate_spec, lower_zero_column_count_aggregate_spec,
-        required_aggregate_input_columns, synthetic_aggregate_input_projection,
-        synthetic_aggregate_input_projection_if_needed, validate_aggregate_root_operator_schemas,
+        prepare_aggregate_input_with_full_synthetic_projection, prepare_aggregate_input_with_optional_synthetic_args,
+        rename_aggregate_spec_outputs, required_aggregate_input_fields, validate_aggregate_root_operator_schemas,
         validate_joined_aggregate_scalar_expressions, validate_required_scalar_expressions,
     },
-    expr::lower_physical_expr,
+    executable_schema_and_bindings,
+    expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input,
-    sort::lower_sort_spec,
+    sort::lower_sort_spec_with_input,
     source::{
-        lower_required_file_source_projection_exprs, required_scan_projection,
+        add_source_filter_projection, lower_required_file_source_projection_exprs, required_scan_projection,
         required_scan_projection_requires_native_projection, required_scan_projection_schema,
+        source_bindings_for_schema,
     },
-    unary::{lower_filter_projection_exprs, lower_projection_exprs},
+    unary::add_projection_node_with_input,
 };
 use crate::{
     native::{
@@ -33,8 +36,8 @@ use crate::{
             required_parquet_column_requirements, validate_slice1_parquet_scan,
         },
         validate::{
-            collect_required_columns, native_zero_column_count_source_is_safe, validate_aggregate,
-            validate_physical_expr, validate_schema, validate_sort,
+            native_zero_column_count_source_is_safe, validate_aggregate, validate_physical_expr, validate_schema,
+            validate_sort,
         },
     },
     policy::FallbackReason,
@@ -129,79 +132,93 @@ pub(super) fn lower_slice1_plan(
     } else {
         (source_node, Arc::clone(&source_output_schema))
     };
-    let filter_input_schema = scan_projection.map_or_else(|| source_exec.schema(), |_| source_exec.schema());
-    let (filter_node, filter_output_schema) = if let Some(filter) = filter {
+    let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
+    let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
+    let required_filter_output_fields = if filter.and_then(|filter| filter.projection().as_ref()).is_some()
+        && !zero_column_count_safe
+        && pre_aggregate_projection.is_some()
+    {
+        required_aggregate_input_fields(aggregate, pre_aggregate_projection)?
+    } else {
+        RequiredFields::all()
+    };
+    let filtered = if let Some(filter) = filter {
         let filtered_node = builder.add_filter(
-            scan_output_node,
-            lower_physical_expr(filter.predicate(), &scan_output_schema)?,
-            Arc::clone(&scan_output_schema),
+            scan_output.node,
+            lower_physical_expr_with_bindings(
+                filter.predicate(),
+                &filter.input().schema(),
+                Some(&scan_output.bindings),
+            )?,
+            Arc::clone(&scan_output.schema),
         );
         if let Some(projection) = filter.projection() {
-            (
-                builder.add_projection(
-                    filtered_node,
-                    lower_filter_projection_exprs(projection, &filter_input_schema)?,
-                    filter.schema(),
-                ),
+            add_source_filter_projection(
+                &mut builder,
+                filtered_node,
+                &scan_output,
                 filter.schema(),
-            )
+                projection,
+                &required_filter_output_fields,
+            )?
         } else {
-            (filtered_node, scan_output_schema)
+            LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings)
         }
     } else {
-        (scan_output_node, scan_output_schema)
+        scan_output
     };
-    let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) = if zero_column_count_safe {
-        (filter_node, filter_output_schema, None)
+    let prepared_aggregate_input = if zero_column_count_safe {
+        super::aggregate::PreparedAggregateInput::new(filtered)
     } else if let Some(projection) = pre_aggregate_projection {
-        let projection_node =
-            builder.add_projection(filter_node, lower_projection_exprs(projection)?, projection.schema());
-        if let Some(synthetic_projection) =
-            synthetic_aggregate_input_projection_if_needed(aggregate, &projection.schema())?
-        {
-            let synthetic_projection_node = builder.add_projection(
-                projection_node,
-                synthetic_projection.expressions,
-                Arc::clone(&synthetic_projection.schema),
-            );
-            (synthetic_projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
-        } else {
-            (projection_node, projection.schema(), None)
-        }
+        let projected_input = add_projection_node_with_input(&mut builder, filtered, projection)?;
+        prepare_aggregate_input_with_optional_synthetic_args(&mut builder, projected_input, aggregate)?
     } else {
-        let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &filter_output_schema)?;
-        let projection_node = builder.add_projection(
-            filter_node,
-            synthetic_projection.expressions,
-            Arc::clone(&synthetic_projection.schema),
-        );
-        (projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
+        prepare_aggregate_input_with_full_synthetic_projection(&mut builder, filtered, aggregate)?
     };
     let aggregate_spec = if zero_column_count_safe {
         lower_zero_column_count_aggregate_spec(aggregate)?
     } else {
-        lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?
+        lower_aggregate_spec(aggregate, &prepared_aggregate_input)?
     };
-    let aggregate_node =
-        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&root.aggregate_output_schema));
-    let sort_input_node = if let Some(projection) = post_aggregate_projection {
-        builder.add_projection(aggregate_node, lower_projection_exprs(projection)?, projection.schema())
+    let (aggregate_output_schema, aggregate_output_bindings) =
+        executable_schema_and_bindings(&root.aggregate_output_schema, &RequiredFields::all())?;
+    let aggregate_spec = rename_aggregate_spec_outputs(aggregate_spec, &aggregate_output_bindings)?;
+    let aggregate_output = LoweredNativeInput::with_bindings(
+        builder.add_aggregate(
+            prepared_aggregate_input.input.node,
+            aggregate_spec,
+            Arc::clone(&aggregate_output_schema),
+        ),
+        aggregate_output_schema,
+        aggregate_output_bindings,
+    );
+    let sort_input = if let Some(projection) = post_aggregate_projection {
+        add_projection_node_with_input(&mut builder, aggregate_output, projection)?
     } else {
-        aggregate_node
+        aggregate_output
     };
-    let sorted_or_projected_node = if let Some(sort) = sort {
-        builder.add_sort(sort_input_node, lower_sort_spec(sort)?, sort.schema())
+    let sorted_or_projected = if let Some(sort) = sort {
+        let node = builder.add_sort(
+            sort_input.node,
+            lower_sort_spec_with_input(sort, &sort_input)?,
+            Arc::clone(&sort_input.schema),
+        );
+        LoweredNativeInput::with_bindings(node, sort_input.schema, sort_input.bindings)
     } else {
-        sort_input_node
+        sort_input
     };
-    let output_node = if let Some(limit_fetch) = normalized.limit_fetch {
-        let output_schema = normalized.sort.expect("native limit requires preceding sort").schema();
-        builder.add_limit(sorted_or_projected_node, NativeLimitSpec::fetch(limit_fetch), output_schema)
+    let output = if let Some(limit_fetch) = normalized.limit_fetch {
+        let node = builder.add_limit(
+            sorted_or_projected.node,
+            NativeLimitSpec::fetch(limit_fetch),
+            Arc::clone(&sorted_or_projected.schema),
+        );
+        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
-        sorted_or_projected_node
+        sorted_or_projected
     };
 
-    Ok(builder.finish_with_host_sink(output_node))
+    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
 }
 
 pub(super) fn lower_joined_aggregate_plan(
@@ -220,56 +237,57 @@ pub(super) fn lower_joined_aggregate_plan(
         validate_sort(sort)?;
     }
 
-    let required_input_columns = required_aggregate_input_columns(aggregate, pre_aggregate_projection)?;
+    let required_input_fields = required_aggregate_input_fields(aggregate, pre_aggregate_projection)?;
     let mut builder = NativeQueryPlanBuilder::new();
-    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_columns)?;
-    let (aggregate_input_node, aggregate_input_schema, synthetic_aggregate_args) = if let Some(projection) =
-        pre_aggregate_projection
-    {
-        let projection_node =
-            builder.add_projection(lowered_input.node, lower_projection_exprs(projection)?, projection.schema());
-        if let Some(synthetic_projection) =
-            synthetic_aggregate_input_projection_if_needed(aggregate, &projection.schema())?
-        {
-            let synthetic_projection_node = builder.add_projection(
-                projection_node,
-                synthetic_projection.expressions,
-                Arc::clone(&synthetic_projection.schema),
-            );
-            (synthetic_projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
-        } else {
-            (projection_node, projection.schema(), None)
-        }
+    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_fields)?;
+    let prepared_aggregate_input = if let Some(projection) = pre_aggregate_projection {
+        let projected_input = add_projection_node_with_input(&mut builder, lowered_input, projection)?;
+        prepare_aggregate_input_with_optional_synthetic_args(&mut builder, projected_input, aggregate)?
     } else {
-        let synthetic_projection = synthetic_aggregate_input_projection(aggregate, &lowered_input.schema)?;
-        let projection_node = builder.add_projection(
-            lowered_input.node,
-            synthetic_projection.expressions,
-            Arc::clone(&synthetic_projection.schema),
+        prepare_aggregate_input_with_full_synthetic_projection(&mut builder, lowered_input, aggregate)?
+    };
+    let (aggregate_output_schema, aggregate_output_bindings) =
+        executable_schema_and_bindings(&root.aggregate_output_schema, &RequiredFields::all())?;
+    let aggregate_spec = rename_aggregate_spec_outputs(
+        lower_aggregate_spec(aggregate, &prepared_aggregate_input)?,
+        &aggregate_output_bindings,
+    )?;
+    let aggregate_output = LoweredNativeInput::with_bindings(
+        builder.add_aggregate(
+            prepared_aggregate_input.input.node,
+            aggregate_spec,
+            Arc::clone(&aggregate_output_schema),
+        ),
+        aggregate_output_schema,
+        aggregate_output_bindings,
+    );
+    let sort_input = if let Some(projection) = post_aggregate_projection {
+        add_projection_node_with_input(&mut builder, aggregate_output, projection)?
+    } else {
+        aggregate_output
+    };
+    let sorted_or_projected = if let Some(sort) = sort {
+        let node = builder.add_sort(
+            sort_input.node,
+            lower_sort_spec_with_input(sort, &sort_input)?,
+            Arc::clone(&sort_input.schema),
         );
-        (projection_node, synthetic_projection.schema, Some(synthetic_projection.aggregate_arg_aliases))
-    };
-    let aggregate_spec = lower_aggregate_spec(aggregate, &aggregate_input_schema, synthetic_aggregate_args.as_deref())?;
-    let aggregate_node =
-        builder.add_aggregate(aggregate_input_node, aggregate_spec, Arc::clone(&root.aggregate_output_schema));
-    let sort_input_node = if let Some(projection) = post_aggregate_projection {
-        builder.add_projection(aggregate_node, lower_projection_exprs(projection)?, projection.schema())
+        LoweredNativeInput::with_bindings(node, sort_input.schema, sort_input.bindings)
     } else {
-        aggregate_node
+        sort_input
     };
-    let sorted_or_projected_node = if let Some(sort) = sort {
-        builder.add_sort(sort_input_node, lower_sort_spec(sort)?, sort.schema())
+    let output = if let Some(limit_fetch) = normalized.limit_fetch {
+        let node = builder.add_limit(
+            sorted_or_projected.node,
+            NativeLimitSpec::fetch(limit_fetch),
+            Arc::clone(&sorted_or_projected.schema),
+        );
+        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
-        sort_input_node
-    };
-    let output_node = if let Some(limit_fetch) = normalized.limit_fetch {
-        let output_schema = normalized.sort.expect("native limit requires preceding sort").schema();
-        builder.add_limit(sorted_or_projected_node, NativeLimitSpec::fetch(limit_fetch), output_schema)
-    } else {
-        sorted_or_projected_node
+        sorted_or_projected
     };
 
-    Ok(builder.finish_with_host_sink(output_node))
+    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
 }
 
 pub(super) fn lower_input_root_plan(
@@ -288,33 +306,42 @@ pub(super) fn lower_input_root_plan(
     }
 
     let mut builder = NativeQueryPlanBuilder::new();
-    let required_input_columns =
-        root.projection.map(required_root_projection_input_columns).transpose()?.unwrap_or_default();
-    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_columns)?;
-    let projected_node = if let Some(projection) = root.projection {
-        builder.add_projection(lowered_input.node, lower_projection_exprs(projection)?, projection.schema())
+    let required_input_fields =
+        root.projection.map(required_root_projection_input_fields).transpose()?.unwrap_or_else(RequiredFields::all);
+    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_fields)?;
+    let projected = if let Some(projection) = root.projection {
+        add_projection_node_with_input(&mut builder, lowered_input, projection)?
     } else {
-        lowered_input.node
+        lowered_input
     };
-    let sorted_or_projected_node = if let Some(sort) = normalized.sort {
-        builder.add_sort(projected_node, lower_sort_spec(sort)?, sort.schema())
+    let sorted_or_projected = if let Some(sort) = normalized.sort {
+        let node = builder.add_sort(
+            projected.node,
+            lower_sort_spec_with_input(sort, &projected)?,
+            Arc::clone(&projected.schema),
+        );
+        LoweredNativeInput::with_bindings(node, projected.schema, projected.bindings)
     } else {
-        projected_node
+        projected
     };
-    let output_node = if let Some(limit_fetch) = normalized.limit_fetch {
-        let output_schema = normalized.sort.expect("native limit requires preceding sort").schema();
-        builder.add_limit(sorted_or_projected_node, NativeLimitSpec::fetch(limit_fetch), output_schema)
+    let output = if let Some(limit_fetch) = normalized.limit_fetch {
+        let node = builder.add_limit(
+            sorted_or_projected.node,
+            NativeLimitSpec::fetch(limit_fetch),
+            Arc::clone(&sorted_or_projected.schema),
+        );
+        LoweredNativeInput::with_bindings(node, sorted_or_projected.schema, sorted_or_projected.bindings)
     } else {
-        sorted_or_projected_node
+        sorted_or_projected
     };
 
-    Ok(builder.finish_with_host_sink(output_node))
+    Ok(builder.finish_with_host_sink_schema(output.node, output.frontend_schema()?))
 }
 
-fn required_root_projection_input_columns(projection: &ProjectionExec) -> Result<Vec<String>, FallbackReason> {
+fn required_root_projection_input_fields(projection: &ProjectionExec) -> Result<RequiredFields, FallbackReason> {
     let mut required = BTreeSet::new();
     for projection_expr in projection.expr() {
-        collect_required_columns(&projection_expr.expr, &projection.input().schema(), &mut required)?;
+        collect_required_field_indices(&projection_expr.expr, &projection.input().schema(), &mut required)?;
     }
-    Ok(required.into_iter().collect())
+    Ok(RequiredFields::only(required))
 }

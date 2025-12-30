@@ -103,8 +103,15 @@ pub(super) fn execute_bounded_query_plan(
             Ok(QueryOutput::GpuResident(handle))
         },
         ResultSink::HostArrow { schema, .. } => {
-            let output =
-                materialize_bounded_to_host(context, frame, plan.sink().input(), schema, &mut reservations, metrics)?;
+            let output = materialize_bounded_to_host(
+                context,
+                frame,
+                plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
@@ -201,6 +208,7 @@ fn execute_bounded_generic_query_plan(
                 context,
                 committed,
                 plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
                 schema,
                 &mut reservations,
                 metrics,

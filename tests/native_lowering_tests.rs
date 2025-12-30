@@ -414,6 +414,160 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
 }
 
 #[test]
+fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_distinct_native_columns() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-join-fields");
+    let left_path = dir.join("supplier_nation.parquet");
+    let right_path = dir.join("customer_nation.parquet");
+    write_duplicate_nation_parquet_file(&left_path, &["FRANCE", "GERMANY"]);
+    write_duplicate_nation_parquet_file(&right_path, &["BRAZIL", "CANADA"]);
+    let left = parquet_scan(&left_path);
+    let right = parquet_scan(&right_path);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("id", &left_schema).unwrap(), col("id", &right_schema).unwrap())],
+            None,
+            &JoinType::Right,
+            Some(vec![
+                left_schema.index_of("n_name").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("n_name").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let join_schema = join.schema();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr {
+                    expr: Arc::new(datafusion::physical_expr::expressions::Column::new("n_name", 0)),
+                    alias: "supp_nation".to_string(),
+                },
+                ProjectionExpr {
+                    expr: Arc::new(datafusion::physical_expr::expressions::Column::new("n_name", 1)),
+                    alias: "cust_nation".to_string(),
+                },
+            ],
+            join,
+        )
+        .unwrap(),
+    );
+    let projection_schema = projection.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("supp_nation", &projection_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, projection).with_fetch(Some(10)));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}, join_schema={join_schema:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let join = native_joins(native_plan).into_iter().next().expect("native plan should contain a join");
+    let join_output_names =
+        join.spec.output_projection.iter().map(|column| column.output_name.as_str()).collect::<Vec<_>>();
+    assert_eq!(join_output_names.len(), 2);
+    assert_ne!(join_output_names[0], join_output_names[1]);
+    assert!(join_output_names.iter().all(|name| name.starts_with("__cudf_field_")));
+    assert_join_output_projection(
+        &join.spec.output_projection,
+        &[
+            (NativeJoinSide::Right, "input1.n_name", join_output_names[0]),
+            (NativeJoinSide::Left, "input0.n_name", join_output_names[1]),
+        ],
+    );
+
+    let projection_node = native_plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Projection(projection) => {
+                let exprs = projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+                if exprs.iter().any(|expr| expr.contains("supp_nation"))
+                    && exprs.iter().any(|expr| expr.contains("cust_nation"))
+                {
+                    Some(exprs)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        })
+        .expect("native plan should contain the aliasing projection");
+    assert_eq!(
+        projection_node,
+        vec![format!("{} AS supp_nation", join_output_names[0]), format!("{} AS cust_nation", join_output_names[1]),]
+    );
+    assert_eq!(
+        native_plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["supp_nation", "cust_nation"]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_executable_name_leak() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-bare-duplicate-join-fields");
+    let left_path = dir.join("supplier_nation.parquet");
+    let right_path = dir.join("customer_nation.parquet");
+    write_duplicate_nation_parquet_file(&left_path, &["FRANCE", "GERMANY"]);
+    write_duplicate_nation_parquet_file(&right_path, &["BRAZIL", "CANADA"]);
+    let left = parquet_scan(&left_path);
+    let right = parquet_scan(&right_path);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("id", &left_schema).unwrap(), col("id", &right_schema).unwrap())],
+            None,
+            &JoinType::Right,
+            Some(vec![
+                left_schema.index_of("n_name").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("n_name").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("n_name", 0)),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, join).with_fetch(Some(10)));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    assert_eq!(
+        native_plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["n_name", "n_name"]
+    );
+    let executable_root_schema = native_plan.node(native_plan.root_id()).unwrap().output_schema();
+    assert_eq!(
+        executable_root_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["__cudf_field_0_n_name", "__cudf_field_1_n_name"]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn recursive_hash_join_input_filters_lower_to_native_filters() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-recursive-input-filters");
     let left_path = dir.join("left.parquet");
@@ -496,6 +650,286 @@ fn post_join_filter_lowers_to_native_filter_input() {
             if matches!(left.as_ref(), Expr::Column(column) if column.name() == "l_m00")
                 && matches!(right.as_ref(), Expr::Column(column) if column.name() == "r_m01")
     ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-residual-bindings");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+
+    let left_scan = parquet_scan(&left_path);
+    let left_scan_schema = left_scan.schema();
+    let left: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &left_scan_schema).unwrap(), alias: "dup".to_string() },
+                ProjectionExpr { expr: col("l_payload", &left_scan_schema).unwrap(), alias: "dup".to_string() },
+            ],
+            left_scan,
+        )
+        .unwrap(),
+    );
+    let right_scan = parquet_scan(&right_path);
+    let right_scan_schema = right_scan.schema();
+    let right: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &right_scan_schema).unwrap(), alias: "dup".to_string() },
+                ProjectionExpr { expr: col("r_payload", &right_scan_schema).unwrap(), alias: "dup".to_string() },
+            ],
+            right_scan,
+        )
+        .unwrap(),
+    );
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![left_schema.field(1).clone(), right_schema.field(1).clone()]));
+    let filter_expr = binary(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+        Operator::Gt,
+        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 1)),
+        &filter_schema,
+    )
+    .unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![ColumnIndex { index: 1, side: JoinSide::Left }, ColumnIndex { index: 1, side: JoinSide::Right }],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(
+                Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+                Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+            )],
+            Some(filter),
+            &JoinType::Right,
+            Some(vec![1, left_schema.fields().len() + 1]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, join).with_fetch(Some(10)));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Left);
+    let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
+    assert!(matches!(
+        residual,
+        Expr::Binary { left, right, .. }
+            if matches!(
+                left.as_ref(),
+                Expr::Column(column) if column.to_string() == "input1.__cudf_field_1_dup"
+            )
+                && matches!(
+                    right.as_ref(),
+                    Expr::Column(column) if column.to_string() == "input0.__cudf_field_1_dup"
+                )
+    ));
+    assert_join_output_projection(
+        &join.spec.output_projection,
+        &[
+            (NativeJoinSide::Right, "input1.__cudf_field_1_dup", "__cudf_field_0_dup"),
+            (NativeJoinSide::Left, "input0.__cudf_field_1_dup", "__cudf_field_1_dup"),
+        ],
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_host_sink_schema() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-root-aggregate");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = duplicate_named_root_aggregate_sort_limit_plan(parquet_scan(&path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let aggregate_node = native_plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind, PlanNode::Aggregate(_)))
+        .expect("native plan should contain root aggregate node");
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        panic!("native plan should contain root aggregate node");
+    };
+    assert!(
+        matches!(&aggregate.spec.group_exprs[0], Expr::Alias { alias, .. } if alias == "__cudf_field_0_dup"),
+        "aggregate group output alias must use executable schema: {:?}",
+        aggregate.spec.group_exprs
+    );
+    assert_eq!(aggregate.spec.aggr_exprs[0].alias, "__cudf_field_1_dup");
+    assert_eq!(
+        aggregate_node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["__cudf_field_0_dup", "__cudf_field_1_dup"]
+    );
+    assert_eq!(
+        native_plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["dup", "dup"]
+    );
+    assert!(
+        native_plan.nodes().iter().all(|node| node
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == node.output_schema().fields().len()),
+        "native executable node schemas must be unique:\n{native_plan}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-root-group-aliases");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = duplicate_group_alias_root_aggregate_sort_limit_plan(parquet_scan(&path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let aggregate_node = native_plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind, PlanNode::Aggregate(_)))
+        .expect("native plan should contain root aggregate node");
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        panic!("native plan should contain root aggregate node");
+    };
+    let projection_node = native_plan.node(aggregate.input).expect("aggregate input projection should exist");
+    let PlanNode::Projection(projection) = &projection_node.kind else {
+        panic!("aggregate input should be the synthetic projection");
+    };
+    assert_eq!(
+        projection_node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["dup", "__cudf_group_expr_1_dup", "__cudf_aggregate_arg_0"]
+    );
+    assert!(
+        projection.expressions.iter().any(|expr| {
+            matches!(
+                expr,
+                Expr::Alias { expr, alias }
+                    if alias == "__cudf_group_expr_1_dup"
+                        && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "payload")
+            )
+        }),
+        "second duplicate group alias should be materialized under a unique executable name: {:?}",
+        projection.expressions
+    );
+    assert!(
+        matches!(
+            &aggregate.spec.group_exprs[0],
+            Expr::Alias { expr, alias }
+                if alias == "__cudf_field_0_dup"
+                    && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "dup")
+        ),
+        "first group key should read the first synthetic group column and output its executable aggregate name: {:?}",
+        aggregate.spec.group_exprs
+    );
+    assert!(
+        matches!(
+            &aggregate.spec.group_exprs[1],
+            Expr::Alias { expr, alias }
+                if alias == "__cudf_field_1_dup"
+                    && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "__cudf_group_expr_1_dup")
+        ),
+        "second group key should read the unique synthetic group column and output its executable aggregate name: {:?}",
+        aggregate.spec.group_exprs
+    );
+    assert_eq!(
+        aggregate_node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["__cudf_field_0_dup", "__cudf_field_1_dup", "sum_m00"]
+    );
+    assert_eq!(
+        native_plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["dup", "dup", "sum_m00"]
+    );
+    assert!(
+        native_plan.nodes().iter().all(|node| node
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == node.output_schema().fields().len()),
+        "native executable node schemas must be unique:\n{native_plan}"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn duplicate_group_alias_recursive_aggregate_input_renames_aggregate_spec_outputs() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-recursive-group-aliases");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = aggregate_over_duplicate_group_alias_input_sort_limit_plan(parquet_scan(&path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let inner_aggregate_node = native_plan
+        .nodes()
+        .iter()
+        .find(|node| {
+            node.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>()
+                == vec!["__cudf_field_0_dup", "__cudf_field_1_dup", "sum_m00"]
+        })
+        .expect("native plan should contain the recursive aggregate input node");
+    let PlanNode::Aggregate(inner_aggregate) = &inner_aggregate_node.kind else {
+        panic!("recursive aggregate input node should be an aggregate");
+    };
+    assert!(
+        matches!(&inner_aggregate.spec.group_exprs[0], Expr::Alias { alias, .. } if alias == "__cudf_field_0_dup"),
+        "recursive aggregate input first group output should use executable output name: {:?}",
+        inner_aggregate.spec.group_exprs
+    );
+    assert!(
+        matches!(&inner_aggregate.spec.group_exprs[1], Expr::Alias { alias, .. } if alias == "__cudf_field_1_dup"),
+        "recursive aggregate input second group output should use executable output name: {:?}",
+        inner_aggregate.spec.group_exprs
+    );
+    assert_eq!(inner_aggregate.spec.aggr_exprs[0].alias, "sum_m00");
+    assert!(
+        native_plan.nodes().iter().all(|node| node
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == node.output_schema().fields().len()),
+        "native executable node schemas must be unique:\n{native_plan}"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1039,6 +1473,56 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
         .find(|source| local_parquet_source_table(source) == Some("orders"))
         .expect("q22 orders source should be present");
     assert_eq!(orders_source.read_columns, vec!["o_custkey".to_string()]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_paths() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q7");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q7 = items.into_iter().find(|item| item.query_id == "q07").expect("TPC-H workload should include q07");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q7.input else {
+        panic!("q7 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    let nation_projection = native_plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Projection(projection) => {
+                let exprs = projection.expressions.iter().map(ToString::to_string).collect::<Vec<_>>();
+                if exprs.iter().any(|expr| expr.ends_with(" AS supp_nation"))
+                    && exprs.iter().any(|expr| expr.ends_with(" AS cust_nation"))
+                {
+                    Some(exprs)
+                } else {
+                    None
+                }
+            },
+            _ => None,
+        })
+        .expect("q7 should project supplier and customer nation aliases");
+    let supp_source = projection_source_for_alias(&nation_projection, "supp_nation");
+    let cust_source = projection_source_for_alias(&nation_projection, "cust_nation");
+    assert_ne!(supp_source, cust_source, "q7 nation aliases must read distinct native columns: {nation_projection:?}");
+    assert!(
+        native_plan.nodes().iter().all(|node| node
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<BTreeSet<_>>()
+            .len()
+            == node.output_schema().fields().len()),
+        "native executable node schemas must not contain duplicate output names:\n{native_plan}"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1972,6 +2456,73 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
     let source = native_local_parquet_source(&result.plans[0]);
     assert!(!source.read_columns.contains(&"blob".to_string()));
     assert!(source.schema.field_with_name("blob").is_err());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-aggregate-compacted-bindings");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = grouped_late_column_multi_sum_sort_limit_plan(parquet_scan(&path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let plan = &result.plans[0];
+    let synthetic_projection = plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Projection(projection)
+                if projection
+                    .expressions
+                    .iter()
+                    .any(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "__cudf_aggregate_arg_0")) =>
+            {
+                Some(projection)
+            },
+            _ => None,
+        })
+        .expect("aggregate input should materialize synthetic aggregate arguments");
+    assert!(
+        synthetic_projection
+            .expressions
+            .iter()
+            .any(|expr| matches!(expr, Expr::Column(column) if column.name() == "payload")),
+        "group expression should bind original payload, not compacted ordinal m00: {:?}",
+        synthetic_projection.expressions
+    );
+    assert!(
+        synthetic_projection.expressions.iter().any(|expr| {
+            matches!(
+                expr,
+                Expr::Alias { expr, alias }
+                    if alias == "__cudf_aggregate_arg_0"
+                        && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m00")
+            )
+        }),
+        "first aggregate arg should bind original m00, not compacted ordinal m01: {:?}",
+        synthetic_projection.expressions
+    );
+    assert!(
+        synthetic_projection.expressions.iter().any(|expr| {
+            matches!(
+                expr,
+                Expr::Alias { expr, alias }
+                    if alias == "__cudf_aggregate_arg_1"
+                        && matches!(expr.as_ref(), Expr::Column(column) if column.name() == "m01")
+            )
+        }),
+        "second aggregate arg should bind original m01: {:?}",
+        synthetic_projection.expressions
+    );
+    let aggregate_exprs = native_aggregate_exprs(plan);
+    assert_eq!(aggregate_exprs.len(), 2);
+    assert!(matches!(&aggregate_exprs[0].expr, Expr::Column(column) if column.name() == "__cudf_aggregate_arg_0"));
+    assert!(matches!(&aggregate_exprs[1].expr, Expr::Column(column) if column.name() == "__cudf_aggregate_arg_1"));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -3917,6 +4468,13 @@ fn assert_join_output_projection(
     assert_eq!(actual, expected);
 }
 
+fn projection_source_for_alias<'a>(expressions: &'a [String], alias: &str) -> &'a str {
+    expressions
+        .iter()
+        .find_map(|expr| expr.strip_suffix(format!(" AS {alias}").as_str()))
+        .unwrap_or_else(|| panic!("projection should contain alias {alias}: {expressions:?}"))
+}
+
 fn assert_join_input_materializes_decimal_cast(
     plan: &cudf_query_engine::QueryPlan,
     input: cudf_query_engine::NodeId,
@@ -4464,6 +5022,118 @@ fn aggregate_sort_limit_plan_without_filter(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
+fn grouped_late_column_multi_sum_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("payload", &scan_schema).unwrap(), "payload".to_string())]);
+    let sum_m00 = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    let sum_m01 = AggregateExprBuilder::new(sum_udaf(), vec![col("m01", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m01")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            group_by,
+            vec![Arc::new(sum_m00), Arc::new(sum_m01)],
+            vec![None, None],
+            scan,
+            scan_schema,
+        )
+        .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("payload", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(3)));
+    Arc::new(LocalLimitExec::new(sort, 3))
+}
+
+fn duplicate_named_root_aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let scan_schema = scan.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(col("key", &scan_schema).unwrap(), "dup".to_string())]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("dup")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], scan, scan_schema)
+            .unwrap(),
+    );
+
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(3)));
+    Arc::new(LocalLimitExec::new(sort, 3))
+}
+
+fn duplicate_group_alias_root_aggregate_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let aggregate = duplicate_group_alias_aggregate(scan);
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(3)));
+    Arc::new(LocalLimitExec::new(sort, 3))
+}
+
+fn aggregate_over_duplicate_group_alias_input_sort_limit_plan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let inner = duplicate_group_alias_aggregate(scan);
+    let inner_schema = inner.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(
+        Arc::new(datafusion::physical_expr::expressions::Column::new("dup", 0)),
+        "outer_dup".to_string(),
+    )]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("sum_m00", &inner_schema).unwrap()])
+        .schema(Arc::clone(&inner_schema))
+        .alias("outer_sum")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], inner, inner_schema)
+            .unwrap(),
+    );
+
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("outer_dup", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(3)));
+    Arc::new(LocalLimitExec::new(sort, 3))
+}
+
+fn duplicate_group_alias_aggregate(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let input_schema = input.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![
+        (col("key", &input_schema).unwrap(), "dup".to_string()),
+        (col("payload", &input_schema).unwrap(), "dup".to_string()),
+    ]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &input_schema).unwrap()])
+        .schema(Arc::clone(&input_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], input, input_schema)
+            .unwrap(),
+    )
+}
+
 fn grouped_count_projection_plan(
     scan: Arc<dyn ExecutionPlan>,
     projection_expr: Arc<dyn PhysicalExpr>,
@@ -4721,6 +5391,20 @@ fn write_join_right_parquet_file(path: &std::path::Path) {
             Arc::new(Int32Array::from(vec![10, 10, 10])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
         ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+fn write_duplicate_nation_parquet_file(path: &std::path::Path, names: &[&str]) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("n_name", DataType::Utf8, false),
+    ]));
+    let ids = (0..names.len()).map(|index| i32::try_from(index + 1).unwrap()).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(ids)), Arc::new(StringArray::from(names.to_vec()))],
     )
     .unwrap();
     write_batch(path, schema, batch);

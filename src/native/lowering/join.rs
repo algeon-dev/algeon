@@ -14,8 +14,7 @@ use datafusion::{
 };
 
 use super::{
-    LoweredNativeInput,
-    expr::resolved_column_name,
+    LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
     join_residual::{JoinResidualMaterialization, LoweredJoinResidual, lower_join_filter},
     lower_native_input,
 };
@@ -67,13 +66,6 @@ impl CanonicalJoin {
         }
     }
 
-    const fn datafusion_side_for_native_side(self, side: NativeJoinSide) -> DataFusionJoinSide {
-        match (self.swap_inputs, side) {
-            (false, NativeJoinSide::Left) | (true, NativeJoinSide::Right) => DataFusionJoinSide::Left,
-            (false, NativeJoinSide::Right) | (true, NativeJoinSide::Left) => DataFusionJoinSide::Right,
-        }
-    }
-
     const fn build_side(self) -> NativeJoinSide {
         // Left, semi, and anti joins preserve the native left side, so their
         // default build side is right. Inner/full/cross keep the native default.
@@ -100,75 +92,106 @@ fn add_join_residual_materializations(
     let mut expressions =
         input.schema.fields().iter().map(|field| NativeExpr::column(field.name())).collect::<Vec<_>>();
     let mut fields = input.schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+    let mut bindings = input.bindings;
     for materialization in materializations {
         expressions.push(materialization.expr.clone());
         fields.push(materialization.field.clone());
+        bindings.push(super::FieldBinding {
+            frontend_index: usize::MAX - bindings.len(),
+            frontend_name: materialization.alias.clone(),
+            native_name: materialization.alias.clone(),
+        });
     }
     let schema = Arc::new(Schema::new(fields));
     let node = builder.add_projection(input.node, expressions, Arc::clone(&schema));
-    Ok(LoweredNativeInput { node, schema })
+    Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
 pub(super) fn lower_hash_join_input(
     join: &NormalizedNativeHashJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_columns: &[String],
+    required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     // Flow: canonicalize the join type, derive DataFusion-output-preserving
     // projection, collect keys/residual requirements, lower both children, add
     // residual materializations, then order inputs for the native spec.
     let canonical = canonical_join(join.join.join_type())?;
-    let output_columns = hash_join_output_columns(join, required_output_columns, canonical)?;
+    let output_requests = hash_join_output_requests(join, required_output_fields)?;
     let residual = join
         .join
         .filter()
-        .map(|filter| lower_join_filter(filter, &join.join.left().schema(), &join.join.right().schema(), canonical))
+        .map(|filter| {
+            lower_join_filter(filter, &join.join.left().schema(), &join.join.right().schema(), canonical, None)
+        })
         .transpose()?;
-    let mut left_required = BTreeSet::new();
-    let mut right_required = BTreeSet::new();
-    let keys = join
+    let mut left_required = BTreeSet::<usize>::new();
+    let mut right_required = BTreeSet::<usize>::new();
+    let key_indices = join
         .join
         .on()
         .iter()
         .map(|(left, right)| {
             let left_schema = join.join.left().schema();
             let right_schema = join.join.right().schema();
-            let left_name = join_key_column_name(left, &left_schema)?;
-            let right_name = join_key_column_name(right, &right_schema)?;
-            left_required.insert(left_name.to_string());
-            right_required.insert(right_name.to_string());
-            if canonical.swap_inputs {
-                Ok(NativeJoinKey::new(
-                    NativeColumnRef::input(0, right_name, right_name),
-                    NativeColumnRef::input(1, left_name, left_name),
-                ))
-            } else {
-                Ok(NativeJoinKey::new(
-                    NativeColumnRef::input(0, left_name, left_name),
-                    NativeColumnRef::input(1, right_name, right_name),
-                ))
-            }
+            let left_index = join_key_column_index(left, &left_schema)?;
+            let right_index = join_key_column_index(right, &right_schema)?;
+            left_required.insert(left_index);
+            right_required.insert(right_index);
+            Ok((left_index, right_index))
         })
         .collect::<Result<Vec<_>, FallbackReason>>()?;
-    for output in &output_columns.projection {
-        match canonical.datafusion_side_for_native_side(output.side) {
+    for output in &output_requests.outputs {
+        match output.datafusion_side {
             DataFusionJoinSide::Left => {
-                left_required.insert(output.column.name().to_string());
+                left_required.insert(output.input_index);
             },
             DataFusionJoinSide::Right => {
-                right_required.insert(output.column.name().to_string());
+                right_required.insert(output.input_index);
             },
             DataFusionJoinSide::None => {},
         }
     }
     if let Some(residual) = &residual {
-        left_required.extend(residual.left_required.iter().cloned());
-        right_required.extend(residual.right_required.iter().cloned());
+        left_required.extend(residual.left_required.iter().copied());
+        right_required.extend(residual.right_required.iter().copied());
     }
-    let left_required = left_required.into_iter().collect::<Vec<_>>();
-    let right_required = right_required.into_iter().collect::<Vec<_>>();
-    let left = lower_native_input(&join.left, builder, &left_required)?;
-    let right = lower_native_input(&join.right, builder, &right_required)?;
+    let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
+    let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
+    let residual = if join.join.filter().is_some() {
+        join.join
+            .filter()
+            .map(|filter| {
+                lower_join_filter(
+                    filter,
+                    &join.join.left().schema(),
+                    &join.join.right().schema(),
+                    canonical,
+                    Some(super::join_residual::JoinResidualInputBindings { left: &left, right: &right }),
+                )
+            })
+            .transpose()?
+    } else {
+        residual
+    };
+    let keys = key_indices
+        .into_iter()
+        .map(|(left_index, right_index)| {
+            let left_binding = left.binding_for_frontend_index(left_index)?;
+            let right_binding = right.binding_for_frontend_index(right_index)?;
+            if canonical.swap_inputs {
+                Ok(NativeJoinKey::new(
+                    NativeColumnRef::input(0, right_binding.native_name.as_str(), right_binding.frontend_name.as_str()),
+                    NativeColumnRef::input(1, left_binding.native_name.as_str(), left_binding.frontend_name.as_str()),
+                ))
+            } else {
+                Ok(NativeJoinKey::new(
+                    NativeColumnRef::input(0, left_binding.native_name.as_str(), left_binding.frontend_name.as_str()),
+                    NativeColumnRef::input(1, right_binding.native_name.as_str(), right_binding.frontend_name.as_str()),
+                ))
+            }
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let output_columns = output_requests.lower(&left, &right, canonical)?;
     let (left, right) = if let Some(residual) = &residual {
         (
             add_join_residual_materializations(
@@ -195,41 +218,50 @@ pub(super) fn lower_hash_join_input(
         spec = spec.with_residual_predicate(residual.predicate);
     }
     let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
-    Ok(LoweredNativeInput { node, schema: output_columns.schema })
+    Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
 }
 
 pub(super) fn lower_nested_loop_join_input(
     join: &NormalizedNativeNestedLoopJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
-    required_output_columns: &[String],
+    required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
     // Nested-loop lowering shares the residual/materialization path with hash
     // joins, but has no equality keys. Cross joins are represented as keyless
     // native joins without residual predicates.
-    let canonical = nested_loop_join_canonical(join, required_output_columns)?;
+    let canonical = nested_loop_join_canonical(join, required_output_fields)?;
     let residual = nested_loop_join_residual(join.join, canonical)?;
-    let output_columns = nested_loop_join_output_columns(join, required_output_columns, canonical)?;
-    let mut left_required = BTreeSet::new();
-    let mut right_required = BTreeSet::new();
-    for output in &output_columns.projection {
-        match canonical.datafusion_side_for_native_side(output.side) {
+    let output_requests = nested_loop_join_output_requests(join, required_output_fields)?;
+    let mut left_required = BTreeSet::<usize>::new();
+    let mut right_required = BTreeSet::<usize>::new();
+    for output in &output_requests.outputs {
+        match output.datafusion_side {
             DataFusionJoinSide::Left => {
-                left_required.insert(output.column.name().to_string());
+                left_required.insert(output.input_index);
             },
             DataFusionJoinSide::Right => {
-                right_required.insert(output.column.name().to_string());
+                right_required.insert(output.input_index);
             },
             DataFusionJoinSide::None => {},
         }
     }
     if let Some(residual) = &residual {
-        left_required.extend(residual.left_required.iter().cloned());
-        right_required.extend(residual.right_required.iter().cloned());
+        left_required.extend(residual.left_required.iter().copied());
+        right_required.extend(residual.right_required.iter().copied());
     }
-    let left_required = left_required.into_iter().collect::<Vec<_>>();
-    let right_required = right_required.into_iter().collect::<Vec<_>>();
-    let left = lower_native_input(&join.left, builder, &left_required)?;
-    let right = lower_native_input(&join.right, builder, &right_required)?;
+    let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
+    let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
+    let residual = match join.join.filter() {
+        Some(filter) => Some(lower_join_filter(
+            filter,
+            &join.join.left().schema(),
+            &join.join.right().schema(),
+            canonical,
+            Some(super::join_residual::JoinResidualInputBindings { left: &left, right: &right }),
+        )?),
+        None => residual,
+    };
+    let output_columns = output_requests.lower(&left, &right, canonical)?;
     let (left, right) = if let Some(residual) = &residual {
         (
             add_join_residual_materializations(
@@ -255,7 +287,7 @@ pub(super) fn lower_nested_loop_join_input(
         spec = spec.with_residual_predicate(residual.predicate);
     }
     let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
-    Ok(LoweredNativeInput { node, schema: output_columns.schema })
+    Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
 }
 
 fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residual: bool) -> NativeJoinSide {
@@ -274,7 +306,7 @@ fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residu
 
 fn nested_loop_join_canonical(
     join: &NormalizedNativeNestedLoopJoin<'_>,
-    required_output_columns: &[String],
+    required_output_fields: &RequiredFields,
 ) -> Result<CanonicalJoin, FallbackReason> {
     // Predicate-free inner nested-loop joins are native cross joins. Predicate
     // inner joins may swap when only DataFusion-right columns are required,
@@ -284,7 +316,7 @@ fn nested_loop_join_canonical(
     }
     let canonical = canonical_join(join.join.join_type())?;
     if matches!(join.join.join_type(), JoinType::Inner)
-        && nested_loop_join_required_outputs_are_right_only(join, required_output_columns)?
+        && nested_loop_join_required_outputs_are_right_only(join, required_output_fields)?
     {
         Ok(CanonicalJoin::new(NativeJoinType::Inner, true))
     } else {
@@ -299,7 +331,7 @@ fn nested_loop_join_residual(
     // Non-inner nested-loop joins require a residual predicate today; a
     // predicate-free inner join has already canonicalized to cross join.
     if let Some(filter) = join.filter() {
-        let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema(), canonical)?;
+        let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema(), canonical, None)?;
         return Ok(Some(residual));
     }
     if matches!(join.join_type(), JoinType::Inner) {
@@ -310,14 +342,10 @@ fn nested_loop_join_residual(
 
 fn nested_loop_join_required_outputs_are_right_only(
     join: &NormalizedNativeNestedLoopJoin<'_>,
-    required_output_columns: &[String],
+    required_output_fields: &RequiredFields,
 ) -> Result<bool, FallbackReason> {
-    let required = required_output_columns.iter().collect::<BTreeSet<_>>();
     let mut saw_output = false;
-    for (output_index, field) in join.join.schema().fields().iter().enumerate() {
-        if !required.is_empty() && !required.contains(field.name()) {
-            continue;
-        }
+    for output_index in required_output_fields.requested_indices(join.join.schema().fields().len())? {
         saw_output = true;
         let join_schema_index = match join.join.projection().as_deref() {
             Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
@@ -337,91 +365,111 @@ fn nested_loop_join_required_outputs_are_right_only(
 struct JoinOutputColumns {
     projection: Vec<NativeJoinOutputColumn>,
     schema: SchemaRef,
+    bindings: Vec<super::FieldBinding>,
 }
 
-fn hash_join_output_columns(
+struct JoinOutputRequests {
+    outputs: Vec<JoinOutputRequest>,
+    schema: SchemaRef,
+    bindings: Vec<super::FieldBinding>,
+}
+
+impl JoinOutputRequests {
+    fn lower(
+        self,
+        left: &LoweredNativeInput,
+        right: &LoweredNativeInput,
+        canonical: CanonicalJoin,
+    ) -> Result<JoinOutputColumns, FallbackReason> {
+        let projection = self
+            .outputs
+            .iter()
+            .zip(self.bindings.iter())
+            .map(|(request, output_binding)| {
+                let side = canonical.native_side_for_datafusion_side(request.datafusion_side)?;
+                let input = if request.datafusion_side == DataFusionJoinSide::Left { left } else { right };
+                let input_binding = input.binding_for_frontend_index(request.input_index)?;
+                let input_ordinal = match side {
+                    NativeJoinSide::Left => 0,
+                    NativeJoinSide::Right => 1,
+                };
+                let column = NativeColumnRef::input(
+                    input_ordinal,
+                    input_binding.native_name.as_str(),
+                    input_binding.frontend_name.as_str(),
+                );
+                Ok(NativeJoinOutputColumn::new(side, column, output_binding.native_name.clone()))
+            })
+            .collect::<Result<Vec<_>, FallbackReason>>()?;
+        Ok(JoinOutputColumns { projection, schema: self.schema, bindings: self.bindings })
+    }
+}
+
+struct JoinOutputRequest {
+    datafusion_side: DataFusionJoinSide,
+    input_index: usize,
+}
+
+fn hash_join_output_requests(
     join: &NormalizedNativeHashJoin<'_>,
-    required_output_columns: &[String],
-    canonical: CanonicalJoin,
-) -> Result<JoinOutputColumns, FallbackReason> {
-    join_output_columns(
-        required_output_columns,
+    required_output_fields: &RequiredFields,
+) -> Result<JoinOutputRequests, FallbackReason> {
+    join_output_requests(
+        required_output_fields,
         &join.join.left().schema(),
         &join.join.right().schema(),
         &join.join.schema(),
         join.join.projection.as_deref(),
         join.join.join_type(),
-        canonical,
     )
 }
 
-fn nested_loop_join_output_columns(
+fn nested_loop_join_output_requests(
     join: &NormalizedNativeNestedLoopJoin<'_>,
-    required_output_columns: &[String],
-    canonical: CanonicalJoin,
-) -> Result<JoinOutputColumns, FallbackReason> {
-    join_output_columns(
-        required_output_columns,
+    required_output_fields: &RequiredFields,
+) -> Result<JoinOutputRequests, FallbackReason> {
+    join_output_requests(
+        required_output_fields,
         &join.join.left().schema(),
         &join.join.right().schema(),
         &join.join.schema(),
         join.join.projection().as_deref(),
         join.join.join_type(),
-        canonical,
     )
 }
 
-fn join_output_columns(
-    required_output_columns: &[String],
+fn join_output_requests(
+    required_output_fields: &RequiredFields,
     left_schema: &SchemaRef,
     right_schema: &SchemaRef,
     output_schema: &SchemaRef,
     projection_indices: Option<&[usize]>,
     datafusion_join_type: &JoinType,
-    canonical: CanonicalJoin,
-) -> Result<JoinOutputColumns, FallbackReason> {
+) -> Result<JoinOutputRequests, FallbackReason> {
     // DataFusion owns output ordering, projection, aliases, and semi/anti
     // output-side rules. Convert each requested DataFusion output field into a
     // native side/column reference after canonicalization.
-    let required = required_output_columns.iter().collect::<BTreeSet<_>>();
-    let mut output_fields = Vec::new();
-    let mut projection = Vec::new();
-    for (output_index, field) in output_schema.fields().iter().enumerate() {
-        if !required.is_empty() && !required.contains(field.name()) {
-            continue;
-        }
+    let (schema, bindings) = executable_schema_and_bindings(output_schema, required_output_fields)?;
+    let mut outputs = Vec::new();
+    for output_index in required_output_fields.requested_indices(output_schema.fields().len())? {
         let join_schema_index = match projection_indices {
             Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
             None => output_index,
         };
         let (datafusion_side, input_index) =
             datafusion_join_output_side(datafusion_join_type, join_schema_index, left_schema)?;
-        let side = canonical.native_side_for_datafusion_side(datafusion_side)?;
         let input_schema = if datafusion_side == DataFusionJoinSide::Left { left_schema } else { right_schema };
-        let input_field = input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?;
-        let output_name = field.name().clone();
-        let column = NativeColumnRef::input(
-            match side {
-                NativeJoinSide::Left => 0,
-                NativeJoinSide::Right => 1,
-            },
-            input_field.name(),
-            output_name.clone(),
-        );
-        projection.push(NativeJoinOutputColumn::new(side, column, output_name));
-        output_fields.push(field.as_ref().clone());
+        input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?;
+        outputs.push(JoinOutputRequest { datafusion_side, input_index });
     }
-    Ok(JoinOutputColumns { projection, schema: Arc::new(Schema::new(output_fields)) })
+    Ok(JoinOutputRequests { outputs, schema, bindings })
 }
 
-fn join_key_column_name<'a>(
-    expr: &'a Arc<dyn PhysicalExpr>,
-    input_schema: &'a SchemaRef,
-) -> Result<&'a str, FallbackReason> {
+fn join_key_column_index(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<usize, FallbackReason> {
     let Some(column) = expr.as_any().downcast_ref::<Column>() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
-    resolved_column_name(column, input_schema)
+    input_schema.fields().get(column.index()).map(|_| column.index()).ok_or(FallbackReason::UnsupportedExpression)
 }
 
 fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, FallbackReason> {
