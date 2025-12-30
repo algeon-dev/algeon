@@ -964,11 +964,33 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     row.query_id
                 );
                 assert_eq!(
+                    row.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str),
+                    Some(expected_tpch_bounded_join_blocked_reservations(row.query_id.as_str())),
+                    "missing bounded join missing-reservation facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
                     row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
                     Some(expected_tpch_bounded_join_lower_level_blockers(row.query_id.as_str())),
                     "missing lower-level blocker facts for {}",
                     row.query_id
                 );
+                if let Some(expected_family) = expected_tpch_bounded_join_blocked_family(row.query_id.as_str()) {
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+                        Some(expected_family),
+                        "missing bounded join blocked family fact for {}",
+                        row.query_id
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts
+                            .get("bounded_join_required_lower_level_contract")
+                            .map(String::as_str),
+                        Some(expected_tpch_bounded_join_lower_level_blockers(row.query_id.as_str())),
+                        "missing bounded join lower-level contract fact for {}",
+                        row.query_id
+                    );
+                }
                 assert_eq!(
                     row.bounded_join_reservation_facts.get("bounded_join_unsupported_shape").map(String::as_str),
                     Some(expected_supported_shape.as_str()),
@@ -1249,10 +1271,40 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
         Some("source_read,operator_output,final_sort")
     );
     assert_eq!(
+        q15.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str),
+        Some("source_read,operator_output,final_sort")
+    );
+    assert_eq!(
         q15.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
         Some("source_contract,aggregate_contract,final_sort_contract")
     );
     assert!(q15.rejected_before_execution, "q15 should remain rejected before native execution");
+
+    let q17 = planning_row(&report, "q17");
+    assert_eq!(q17.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+    assert_eq!(q17.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
+    assert_eq!(q17.unsupported_category.as_deref(), Some("operator_hashjoin"));
+    assert_eq!(
+        q17.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline")
+    );
+    assert_eq!(
+        q17.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("source_contract,aggregate_contract")
+    );
+    assert_eq!(
+        q17.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
+        Some("source_read,operator_output")
+    );
+    assert_eq!(
+        q17.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str),
+        Some("source_read,operator_output")
+    );
+    assert_eq!(
+        q17.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
+        Some("source_contract,aggregate_contract")
+    );
+    assert!(q17.rejected_before_execution, "q17 should remain rejected before native execution");
 
     let text = report.to_tsv();
     assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=6\n"));
@@ -1577,6 +1629,7 @@ fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str,
 fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
     match query_id {
         "q15" => "source_contract,aggregate_contract,final_sort_contract",
+        "q17" => "source_contract,aggregate_contract",
         _ => "",
     }
 }
@@ -1584,7 +1637,16 @@ fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static s
 fn expected_tpch_bounded_join_blocked_reservations(query_id: &str) -> &'static str {
     match query_id {
         "q15" => "source_read,operator_output,final_sort",
+        "q17" => "source_read,operator_output",
         _ => "",
+    }
+}
+
+fn expected_tpch_bounded_join_blocked_family(query_id: &str) -> Option<&'static str> {
+    match query_id {
+        "q15" => Some("keyed_hash_join_resident_subplan_pipeline"),
+        "q17" => Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
+        _ => None,
     }
 }
 

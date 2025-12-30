@@ -25,8 +25,8 @@ pub(super) fn validate_projection_capability(
         .with_fact("facts_output_schema", format!("{output_schema:?}")));
     }
 
-    for expr in node.expressions() {
-        lower_expr(expr)?;
+    for output in &node.outputs {
+        lower_projection_output_expr(output)?;
     }
 
     Ok(())
@@ -208,7 +208,7 @@ pub(super) fn execute_projection(
     let exprs = node
         .outputs
         .iter()
-        .map(|output| lower_expr(&output.expr).map(|expr| (output.field.name().as_str(), expr)))
+        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
         .collect::<Result<Vec<_>>>()?;
     let output_columns = output_names.iter().map(String::as_str).collect::<Vec<_>>();
     let overrides = execution_overrides(context);
@@ -240,7 +240,7 @@ pub(super) fn execute_projection_with_budget(
     let exprs = node
         .outputs
         .iter()
-        .map(|output| lower_expr(&output.expr).map(|expr| (output.field.name().as_str(), expr)))
+        .map(|output| lower_projection_output_expr(output).map(|expr| (output.field.name().as_str(), expr)))
         .collect::<Result<Vec<_>>>()?;
     let output_columns = output_names.iter().map(String::as_str).collect::<Vec<_>>();
     let timer = Instant::now();

@@ -1,4 +1,5 @@
 use cudf::ops::{
+    binary::BinaryOperator,
     expr::{lit_decimal128_raw, lit_duration_raw, lit_timestamp_raw},
     lit_null,
     strings::StringSliceOptions,
@@ -6,7 +7,10 @@ use cudf::ops::{
 };
 
 use super::*;
-use crate::expr::{CaseWhen, DatePart};
+use crate::{
+    expr::{CaseWhen, DatePart},
+    plan::ProjectionOutput,
+};
 
 pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
@@ -42,6 +46,29 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::Case { branches, else_expr } => lower_case(branches, else_expr),
         Expr::Extract { field, expr } => lower_extract(*field, expr),
         Expr::Alias { expr, alias } => Ok(lower_expr(expr)?.alias(alias)),
+    }
+}
+
+pub(super) fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<cudf::Expr> {
+    lower_expr_with_expected_type(&output.expr, Some(output.field.data_type()))
+}
+
+fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataType>) -> Result<cudf::Expr> {
+    match expr {
+        Expr::Cast { expr, target_type } => {
+            let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.expr.lower_cast",
+                    "native execution does not support casts to this target type",
+                )
+                .with_fact("target_type", format!("{target_type:?}"))
+            })?;
+            Ok(lower_expr_with_expected_type(expr, Some(target_type))?.cast(target_dtype))
+        },
+        Expr::Binary { left, op, right } => lower_binary_expr_with_expected_type(left, *op, right, expected_type),
+        Expr::Alias { expr, alias } => Ok(lower_expr_with_expected_type(expr, expected_type)?.alias(alias)),
+        _ => lower_expr(expr),
     }
 }
 
@@ -87,6 +114,15 @@ pub(super) fn lower_literal(value: &LiteralValue) -> Result<cudf::Expr> {
 }
 
 fn lower_binary_expr(left: &Expr, op: BinaryOp, right: &Expr) -> Result<cudf::Expr> {
+    lower_binary_expr_with_expected_type(left, op, right, None)
+}
+
+fn lower_binary_expr_with_expected_type(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    expected_type: Option<&ArrowDataType>,
+) -> Result<cudf::Expr> {
     if let Some((months, days, nanoseconds)) = interval_month_day_nano(right) {
         return match op {
             BinaryOp::Add => lower_datetime_interval_offset(left, months, days, nanoseconds),
@@ -94,7 +130,7 @@ fn lower_binary_expr(left: &Expr, op: BinaryOp, right: &Expr) -> Result<cudf::Ex
                 let (months, days, nanoseconds) = negate_interval(months, days, nanoseconds)?;
                 lower_datetime_interval_offset(left, months, days, nanoseconds)
             },
-            _ => lower_binary(lower_expr(left)?, op, lower_expr(right)?),
+            _ => lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, expected_type),
         };
     }
     if let Some((months, days, nanoseconds)) = interval_month_day_nano(left)
@@ -102,7 +138,7 @@ fn lower_binary_expr(left: &Expr, op: BinaryOp, right: &Expr) -> Result<cudf::Ex
     {
         return lower_datetime_interval_offset(right, months, days, nanoseconds);
     }
-    lower_binary(lower_expr(left)?, op, lower_expr(right)?)
+    lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, expected_type)
 }
 
 fn lower_datetime_interval_offset(expr: &Expr, months: i32, days: i32, nanoseconds: i64) -> Result<cudf::Expr> {
@@ -144,7 +180,19 @@ fn negate_interval(months: i32, days: i32, nanoseconds: i64) -> Result<(i32, i32
     Ok((months, days, nanoseconds))
 }
 
-pub(super) fn lower_binary(left: cudf::Expr, op: BinaryOp, right: cudf::Expr) -> Result<cudf::Expr> {
+fn lower_binary_with_expected_type(
+    left: cudf::Expr,
+    op: BinaryOp,
+    right: cudf::Expr,
+    expected_type: Option<&ArrowDataType>,
+) -> Result<cudf::Expr> {
+    if op == BinaryOp::Divide
+        && let Some(expected_type) = expected_type
+        && let Some(output_type) = expected_decimal_dtype(expected_type)?
+    {
+        return Ok(left.binary_op_with_type(right, BinaryOperator::Div, output_type));
+    }
+
     match op {
         BinaryOp::Add => Ok(left + right),
         BinaryOp::Subtract => Ok(left - right),
@@ -160,6 +208,21 @@ pub(super) fn lower_binary(left: cudf::Expr, op: BinaryOp, right: cudf::Expr) ->
         BinaryOp::And => Ok(left & right),
         BinaryOp::Or => Ok(left | right),
     }
+}
+
+fn expected_decimal_dtype(expected_type: &ArrowDataType) -> Result<Option<cudf::DataType>> {
+    if !matches!(expected_type, ArrowDataType::Decimal128(_, _)) {
+        return Ok(None);
+    }
+    let dtype = cudf_dtype_from_arrow_type(expected_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.expr.lower_binary",
+            "native decimal division output type is not supported",
+        )
+        .with_fact("expected_type", format!("{expected_type:?}"))
+    })?;
+    Ok(Some(dtype))
 }
 
 fn lower_substring(expr: &Expr, start: i32, length: Option<i32>) -> Result<cudf::Expr> {

@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef, TimeUnit};
+use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
 
 use super::*;
 use crate::{
     datatypes::{is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type},
     expr::{CaseWhen, ColumnQualifier, ColumnRef},
-    plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, QueryNode},
+    plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType, ProjectionOutput, QueryNode},
 };
 
 pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
@@ -39,8 +40,8 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
             PlanNode::Projection(projection) => {
                 let input = input_node(plan, projection.input, node.id)?;
                 let input_available = available_columns(&available_columns_by_node, projection.input)?;
-                for expr in projection.expressions() {
-                    validate_expr(expr, input.output_schema(), input_available)?;
+                for output in &projection.outputs {
+                    validate_projection_output_expr(output, input.output_schema(), input_available)?;
                 }
                 validate_projection_capability(projection, &node.facts.output_schema)?;
                 schema_column_names(node.output_schema())
@@ -724,6 +725,45 @@ fn validate_expr(expr: &Expr, input_schema: &SchemaRef, available_columns: &BTre
     }
 }
 
+fn validate_projection_output_expr(
+    output: &ProjectionOutput,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    validate_expr_with_expected_type(&output.expr, Some(output.field.data_type()), input_schema, available_columns)
+}
+
+fn validate_expr_with_expected_type(
+    expr: &Expr,
+    expected_type: Option<&ArrowDataType>,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    match expr {
+        Expr::Cast { expr, target_type } => {
+            let source_type =
+                validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
+            if !is_supported_arrow_cast(&source_type, target_type) {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.plan.validate_expr",
+                    "native cast source and target types are not supported",
+                )
+                .with_fact("source_type", format!("{source_type:?}"))
+                .with_fact("target_type", format!("{target_type:?}")));
+            }
+            Ok(target_type.clone())
+        },
+        Expr::Binary { left, op, right } => {
+            validate_binary_expr_with_expected_type(left, *op, right, expected_type, input_schema, available_columns)
+        },
+        Expr::Alias { expr, .. } => {
+            validate_expr_with_expected_type(expr, expected_type, input_schema, available_columns)
+        },
+        _ => validate_expr(expr, input_schema, available_columns),
+    }
+}
+
 fn validate_column(
     name: &str,
     input_schema: &SchemaRef,
@@ -788,6 +828,17 @@ fn validate_binary_expr(
     input_schema: &SchemaRef,
     available_columns: &BTreeSet<String>,
 ) -> Result<ArrowDataType> {
+    validate_binary_expr_with_expected_type(left, op, right, None, input_schema, available_columns)
+}
+
+fn validate_binary_expr_with_expected_type(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    expected_type: Option<&ArrowDataType>,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
     let left_interval = interval_literal(left);
     let right_interval = interval_literal(right);
     if left_interval.is_some() || right_interval.is_some() {
@@ -812,7 +863,11 @@ fn validate_binary_expr(
             require_arithmetic_type(&left_type, "binary arithmetic left operand")?;
             require_arithmetic_type(&right_type, "binary arithmetic right operand")?;
             require_compatible_types(&left_type, &right_type, "binary arithmetic operands")?;
-            Ok(left_type)
+            if is_decimal_type(&left_type) || is_decimal_type(&right_type) {
+                decimal_arithmetic_output_type(op, &left_type, &right_type, expected_type)
+            } else {
+                Ok(left_type)
+            }
         },
         BinaryOp::Modulo => {
             require_integral_type(&left_type, "modulo left operand")?;
@@ -829,6 +884,95 @@ fn validate_binary_expr(
             require_boolean(&right_type, "boolean binary right operand")?;
             Ok(ArrowDataType::Boolean)
         },
+    }
+}
+
+fn decimal_arithmetic_output_type(
+    op: BinaryOp,
+    left_type: &ArrowDataType,
+    right_type: &ArrowDataType,
+    expected_type: Option<&ArrowDataType>,
+) -> Result<ArrowDataType> {
+    if !is_decimal_type(left_type) && !is_decimal_type(right_type) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.plan.validate_expr",
+            "not decimal arithmetic",
+        ));
+    }
+    if op == BinaryOp::Divide {
+        let Some(expected_type @ ArrowDataType::Decimal128(_, _)) = expected_type else {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.plan.validate_expr",
+                "native decimal division requires a declared decimal output type",
+            )
+            .with_fact("left_type", format!("{left_type:?}"))
+            .with_fact("right_type", format!("{right_type:?}"))
+            .with_fact("operator", op.to_string()));
+        };
+        if !is_supported_arrow_type(expected_type) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.plan.validate_expr",
+                "native decimal division declared output type is not supported",
+            )
+            .with_fact("expected_type", format!("{expected_type:?}")));
+        }
+        return Ok(expected_type.clone());
+    }
+
+    let left_dtype = cudf_dtype_from_arrow_type(left_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.plan.validate_expr",
+            "native decimal arithmetic left operand type is not supported",
+        )
+        .with_fact("left_type", format!("{left_type:?}"))
+    })?;
+    let right_dtype = cudf_dtype_from_arrow_type(right_type).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.plan.validate_expr",
+            "native decimal arithmetic right operand type is not supported",
+        )
+        .with_fact("right_type", format!("{right_type:?}"))
+    })?;
+    let output_dtype =
+        infer_binary_output_dtype(left_dtype, right_dtype, cudf_binary_operator(op)?).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.plan.validate_expr",
+                "failed to infer native decimal arithmetic output type",
+                error,
+            )
+            .with_fact("left_type", format!("{left_type:?}"))
+            .with_fact("right_type", format!("{right_type:?}"))
+            .with_fact("operator", op.to_string())
+        })?;
+    cudf::interop::arrow_host::arrow_type_from_cudf_dtype(output_dtype).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.plan.validate_expr",
+            "failed to map inferred native decimal arithmetic output type to Arrow",
+            error,
+        )
+        .with_fact("left_type", format!("{left_type:?}"))
+        .with_fact("right_type", format!("{right_type:?}"))
+        .with_fact("operator", op.to_string())
+    })
+}
+
+fn cudf_binary_operator(op: BinaryOp) -> Result<BinaryOperator> {
+    match op {
+        BinaryOp::Add => Ok(BinaryOperator::Add),
+        BinaryOp::Subtract => Ok(BinaryOperator::Sub),
+        BinaryOp::Multiply => Ok(BinaryOperator::Mul),
+        BinaryOp::Divide => Ok(BinaryOperator::Div),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.plan.validate_expr",
+            "native decimal arithmetic cannot infer output type for this operator",
+        )
+        .with_fact("operator", op.to_string())),
     }
 }
 
