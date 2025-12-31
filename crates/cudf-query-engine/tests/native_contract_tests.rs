@@ -16,12 +16,12 @@ use cudf_query_engine::{
     BoundedJoinReservationStatus, BuildMaterializationBoundary, ByteRangeDisposition, ColumnRef, DataPlacement,
     ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics,
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationRequest, OperatorMetrics, PartitionColumn, PartitionColumnDisposition,
-    PlanNode, PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError, QueryErrorCode,
-    QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, ReservationKind,
-    ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition, SortExpr,
-    SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary, ZERO_COLUMN_COUNT_COLUMN,
-    ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
+    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, OperatorMetrics, PartitionColumn,
+    PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError,
+    QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
+    ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition,
+    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary,
+    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
     is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
     plan_local_parquet_source_chunks, validate_local_parquet_source,
@@ -318,6 +318,22 @@ fn memory_reservation_failure_is_temporary_resource_exhaustion() {
     assert_eq!(error.fact_value("row_groups"), Some("4,5"));
     assert_eq!(error.fact_value("attempt"), Some("2"));
     assert_eq!(error.fact_value("max_attempts"), Some("4"));
+    assert_eq!(error.fact_value("memory_space"), None);
+}
+
+#[test]
+fn memory_space_id_display_and_request_defaults_are_stable() {
+    let device_zero = MemorySpaceId::Device { device_ordinal: 0 };
+    let device_one = MemorySpaceId::Device { device_ordinal: 1 };
+
+    assert_eq!(device_zero.to_string(), "GPU:0");
+    assert_eq!(device_one.to_string(), "GPU:1");
+
+    let default_request = MemoryReservationRequest::new(ReservationKind::SourceRead, 1024, 4096);
+    assert_eq!(default_request.memory_space, device_zero);
+
+    let explicit_request = default_request.with_memory_space(device_one);
+    assert_eq!(explicit_request.memory_space, device_one);
 }
 
 #[test]
@@ -335,6 +351,9 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert!(!unbounded.is_bounded());
     assert_eq!(bounded.as_str(), "bounded");
     assert!(bounded.is_bounded());
+    assert_eq!(ReservationKind::SourceRead.as_str(), "source_read");
+    assert_eq!(ReservationKind::ChunkOperator.as_str(), "chunk_operator");
+    assert_eq!(ReservationKind::OperatorOutput.as_str(), "operator_output");
     assert_eq!(ReservationKind::FinalMerge.as_str(), "final_merge");
     assert_eq!(ReservationKind::BuildSide.as_str(), "build_side");
     assert_eq!(ReservationKind::ProbeSide.as_str(), "probe_side");
@@ -343,6 +362,8 @@ fn memory_control_policy_names_bounded_and_unbounded_modes() {
     assert_eq!(ReservationKind::MixedSizeData.as_str(), "mixed_size_data");
     assert_eq!(ReservationKind::GatherMap.as_str(), "gather_map");
     assert_eq!(ReservationKind::JoinOutput.as_str(), "join_output");
+    assert_eq!(ReservationKind::PartialState.as_str(), "partial_state");
+    assert_eq!(ReservationKind::FinalSort.as_str(), "final_sort");
     assert_eq!(ReservationKind::Materialization.as_str(), "materialization");
 
     let chunk_policy = SourceChunkPlanningPolicy::from(bounded);
@@ -437,14 +458,14 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.execution_families().len(), 9);
+    assert_eq!(contract.execution_families().len(), 10);
     assert_eq!(
         contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
+        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"
     );
     assert_eq!(
         contract.supported_shape_requirement(),
-        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
+        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline)"
     );
     assert!(contract.enabled());
 
@@ -501,7 +522,7 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     assert_eq!(
         unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
         Some(
-            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline)"
+            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline)"
         )
     );
     assert_eq!(
@@ -1100,68 +1121,64 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_recognizer_stays_narrow() {
 }
 
 #[test]
-fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_reports_lower_level_blockers() {
-    let plan = q17_shaped_resident_grouped_aggregate_input_plan(Q17ResidentGroupedAggregateInputVariant::BlockedFamily);
+fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_is_executable() {
+    for variant in [
+        Q17ResidentGroupedAggregateInputVariant::BlockedFamily,
+        Q17ResidentGroupedAggregateInputVariant::GlobalAggregateNotSum,
+        Q17ResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg,
+        Q17ResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage,
+        Q17ResidentGroupedAggregateInputVariant::ResidualWrongMultiplier,
+        Q17ResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier,
+    ] {
+        let plan = q17_shaped_resident_grouped_aggregate_input_plan(variant);
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
-    let facts = plan
-        .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-        .expect("blocked Q17-shaped resident grouped aggregate input pipeline should produce unsupported-shape facts");
-    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("unsupported_plan_shape"));
-    assert_eq!(
-        facts.get("bounded_join_blocked_join_family").map(String::as_str),
-        Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline")
-    );
-    assert_eq!(
-        facts.get("bounded_join_shape_blocker").map(String::as_str),
-        Some("bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_lower_level_contracts")
-    );
-    assert_eq!(
-        facts.get("bounded_join_required_shape_contract").map(String::as_str),
-        Some(
-            "projected_global_aggregate_over_keyed_residual_inner_hash_join_with_projection_wrapped_join_subtree_and_projection_wrapped_grouped_local_parquet_aggregate_input"
-        )
-    );
-    assert_eq!(
-        facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("source_contract,aggregate_contract")
-    );
-    assert_eq!(
-        facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
-        Some("source_contract,aggregate_contract")
-    );
-    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some("source_read,operator_output"));
-    assert_eq!(facts.get("missing_reservations").map(String::as_str), Some("source_read,operator_output"));
-    assert_eq!(
-        facts.get("bounded_join_reservation_kinds").map(String::as_str),
-        Some(
-            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
-        )
-    );
-    assert_eq!(
-        facts.get("modeled_reservations").map(String::as_str),
-        Some(
-            "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
-        )
-    );
-    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
-        value.contains("source_read:blocked_by_lower_level")
-            && value.contains("operator_output:blocked_by_lower_level")
-            && value.contains("build_side:modeled")
-            && value.contains("materialization:modeled")
-            && !value.contains("final_sort")
-    }));
-    let reservation_requirements = facts
-        .get("bounded_join_reservation_requirements")
-        .expect("Q17-shaped blocked family should report overridden reservation requirements");
-    assert!(reservation_requirements.contains("source_read:source_contract:blocked_by_lower_level"));
-    assert!(reservation_requirements.contains("operator_output:aggregate_contract:blocked_by_lower_level"));
-    assert!(!reservation_requirements.contains("final_sort"));
-    assert!(!facts.values().any(|value| value.contains("final_sort_contract")));
+        assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
+        assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
+        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
+        assert!(
+            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            "{variant:?}"
+        );
+        assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
+        assert!(
+            plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+            "{variant:?}"
+        );
+        assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
+        let facts = plan
+            .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+            .expect("executable q17-style family should emit modeled facts");
+        assert_eq!(
+            facts.get("bounded_join_execution_family").map(String::as_str),
+            Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
+            "{variant:?}"
+        );
+        assert_eq!(
+            facts.get("bounded_join_contract_modes").map(String::as_str),
+            Some("source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report"),
+            "{variant:?}"
+        );
+        assert_eq!(
+            facts.get("bounded_join_unresolved_preflight_contracts").map(String::as_str),
+            Some(
+                "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"
+            ),
+            "{variant:?}"
+        );
+        assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""), "{variant:?}");
+        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""), "{variant:?}");
+        assert_eq!(
+            facts.get("modeled_reservations").map(String::as_str),
+            Some(
+                "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+            ),
+            "{variant:?}"
+        );
+        assert!(
+            !facts.get("bounded_join_contract_modes").is_some_and(|value| value.contains("final_sort_contract")),
+            "{variant:?}"
+        );
+    }
 }
 
 #[test]
@@ -1173,11 +1190,6 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_r
         Q17ResidentGroupedAggregateInputVariant::GroupedAggregateGpuResidentInput,
         Q17ResidentGroupedAggregateInputVariant::BareGlobalAggregateInput,
         Q17ResidentGroupedAggregateInputVariant::FinalSort,
-        Q17ResidentGroupedAggregateInputVariant::GlobalAggregateNotSum,
-        Q17ResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg,
-        Q17ResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage,
-        Q17ResidentGroupedAggregateInputVariant::ResidualWrongMultiplier,
-        Q17ResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier,
         Q17ResidentGroupedAggregateInputVariant::RootOutputIncludesGroupedAggregate,
     ] {
         let plan = q17_shaped_resident_grouped_aggregate_input_plan(variant);
@@ -1190,9 +1202,13 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_r
             "{variant:?}"
         );
         assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
+        assert!(
+            !plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+            "{variant:?}"
+        );
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
-            .expect("unsupported Q17-like resident grouped aggregate input variant should produce facts");
+            .expect("unsupported resident grouped aggregate input variant should produce facts");
         assert_ne!(
             facts.get("bounded_join_blocked_join_family").map(String::as_str),
             Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
@@ -1264,7 +1280,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     assert_eq!(
         facts.get("bounded_join_execution_families").map(String::as_str),
         Some(
-            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
+            "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"
         )
     );
 

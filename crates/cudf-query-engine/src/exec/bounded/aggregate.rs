@@ -135,6 +135,122 @@ impl<'a> BoundedPlan<'a> {
         })
     }
 
+    pub(super) fn analyze_projection_wrapped_local_aggregate_subplan(
+        plan: &'a QueryPlan,
+        root_id: NodeId,
+    ) -> Result<Self> {
+        let mut current = root_id;
+        let post_aggregate_projection = match plan.node(current) {
+            Some(node) => match &node.kind {
+                PlanNode::Projection(projection) => {
+                    current = projection.input;
+                    Some((projection, &node.facts.output_schema))
+                },
+                _ => {
+                    return Err(unsupported_bounded_shape(
+                        "bounded mixed keyed residual join grouped aggregate input requires a projection-wrapped aggregate",
+                        "bounded_join_plan_shape_unsupported",
+                    )
+                    .with_fact("node_id", root_id)
+                    .with_fact("node_kind", bounded_local_aggregate_subplan_node_kind(&node.kind)));
+                },
+            },
+            None => {
+                return Err(invalid_node_reference(
+                    current,
+                    "bounded mixed keyed residual join grouped aggregate input references a missing projection node",
+                ));
+            },
+        };
+
+        let aggregate_id = current;
+        let aggregate_node = plan.node(current).ok_or_else(|| {
+            invalid_node_reference(
+                current,
+                "bounded mixed keyed residual join grouped aggregate input references a missing aggregate node",
+            )
+        })?;
+        let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+            return Err(unsupported_bounded_shape(
+                "bounded mixed keyed residual join grouped aggregate input requires a grouped aggregate",
+                "bounded_join_plan_shape_unsupported",
+            )
+            .with_fact("node_id", aggregate_id)
+            .with_fact("node_kind", bounded_local_aggregate_subplan_node_kind(&aggregate_node.kind)));
+        };
+        if aggregate.spec.group_exprs.is_empty() {
+            return Err(unsupported_bounded_shape(
+                "bounded mixed keyed residual join grouped aggregate input requires grouped aggregate state",
+                "bounded_join_plan_shape_unsupported",
+            )
+            .with_fact("node_id", aggregate_id)
+            .with_fact("node_kind", "scalar_aggregate"));
+        }
+        let aggregate_input_node = plan.node(aggregate.input).ok_or_else(|| {
+            invalid_node_reference(
+                aggregate.input,
+                "bounded mixed keyed residual join grouped aggregate input references a missing aggregate input node",
+            )
+        })?;
+        current = aggregate.input;
+
+        let post_filter_projections = take_projection_stack(
+            plan,
+            &mut current,
+            "bounded mixed keyed residual join grouped aggregate input references a missing aggregate input node",
+        )?;
+
+        let filter = match plan.node(current).map(|node| &node.kind) {
+            Some(PlanNode::Filter(node)) => {
+                current = node.input;
+                Some(node)
+            },
+            _ => None,
+        };
+
+        let pre_filter_projections = take_projection_stack(
+            plan,
+            &mut current,
+            "bounded mixed keyed residual join grouped aggregate input references a missing source input node",
+        )?;
+
+        let source_node = plan.node(current).ok_or_else(|| {
+            invalid_node_reference(
+                current,
+                "bounded mixed keyed residual join grouped aggregate input references a missing source node",
+            )
+        })?;
+        let PlanNode::Source(source_node) = &source_node.kind else {
+            return Err(unsupported_bounded_shape(
+                "bounded mixed keyed residual join grouped aggregate input supports only local parquet sources",
+                "non_local_parquet_source",
+            )
+            .with_fact("node_id", current)
+            .with_fact("node_kind", bounded_local_aggregate_subplan_node_kind(&source_node.kind)));
+        };
+        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref() else {
+            return Err(unsupported_bounded_shape(
+                "bounded mixed keyed residual join grouped aggregate input supports only local parquet sources",
+                "non_local_parquet_source",
+            )
+            .with_fact("node_id", current));
+        };
+
+        Ok(Self {
+            source_id: current,
+            source,
+            pre_filter_projections,
+            filter,
+            post_filter_projections,
+            aggregate_id,
+            aggregate_input_schema: &aggregate_input_node.facts.output_schema,
+            aggregate: (aggregate, &aggregate_node.facts.output_schema),
+            post_aggregate_projection,
+            sort: None,
+            limit: None,
+        })
+    }
+
     pub(super) fn validate_capabilities(&self) -> Result<()> {
         if let Some(filter) = self.filter {
             lower_expr(&filter.predicate)?;
@@ -163,6 +279,18 @@ impl<'a> BoundedPlan<'a> {
         }
 
         Ok(())
+    }
+}
+
+fn bounded_local_aggregate_subplan_node_kind(node: &PlanNode) -> &'static str {
+    match node {
+        PlanNode::Source(_) => "source",
+        PlanNode::Filter(_) => "filter",
+        PlanNode::Projection(_) => "projection",
+        PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Sort(_) => "sort",
+        PlanNode::Limit(_) => "limit",
+        PlanNode::Join(_) => "join",
     }
 }
 

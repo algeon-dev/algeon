@@ -96,6 +96,22 @@ struct JoinIndexInput<'a, 'exec> {
     overrides: &'a ExecutionOverrides<'exec>,
 }
 
+struct JoinKeyDiagnostics {
+    key_pairs: String,
+    left_key_dtypes: String,
+    right_key_dtypes: String,
+}
+
+impl JoinKeyDiagnostics {
+    fn new(left: &DataFrame, right: &DataFrame, left_keys: &[String], right_keys: &[String]) -> Self {
+        Self {
+            key_pairs: format_join_key_pairs(left_keys, right_keys),
+            left_key_dtypes: format_join_key_dtypes(left, left_keys),
+            right_key_dtypes: format_join_key_dtypes(right, right_keys),
+        }
+    }
+}
+
 struct BuiltHashJoin {
     hash_join: GpuHashJoinBuildHandle,
     hash_table_bytes: u64,
@@ -344,8 +360,15 @@ fn execute_reusable_hash_join_indices(
         JoinSide::Right => {
             let build =
                 build_hash_join(input.context, input.right, input.right_keys, input.overrides, node, scratch, metrics)?;
-            let indices =
-                probe_hash_join(build.hash_join.hash_join(), input.left, input.left_keys, input.overrides, node)?;
+            let diagnostics = JoinKeyDiagnostics::new(input.left, input.right, input.left_keys, input.right_keys);
+            let indices = probe_hash_join(
+                build.hash_join.hash_join(),
+                input.left,
+                input.left_keys,
+                input.overrides,
+                node,
+                &diagnostics,
+            )?;
             Ok(JoinIndexResult::with_hash_table(
                 EquiJoinIndices::Pair { left: indices.probe().clone(), right: indices.build().clone() },
                 build.hash_table_bytes,
@@ -363,8 +386,15 @@ fn execute_reusable_hash_join_indices(
             }
             let build =
                 build_hash_join(input.context, input.left, input.left_keys, input.overrides, node, scratch, metrics)?;
-            let indices =
-                probe_hash_join(build.hash_join.hash_join(), input.right, input.right_keys, input.overrides, node)?;
+            let diagnostics = JoinKeyDiagnostics::new(input.left, input.right, input.left_keys, input.right_keys);
+            let indices = probe_hash_join(
+                build.hash_join.hash_join(),
+                input.right,
+                input.right_keys,
+                input.overrides,
+                node,
+                &diagnostics,
+            )?;
             Ok(JoinIndexResult::with_hash_table(
                 EquiJoinIndices::Pair { left: indices.build().clone(), right: indices.probe().clone() },
                 build.hash_table_bytes,
@@ -660,6 +690,7 @@ fn probe_hash_join(
     probe_keys: &[String],
     overrides: &ExecutionOverrides<'_>,
     node: &JoinNode,
+    diagnostics: &JoinKeyDiagnostics,
 ) -> Result<DataFrameHashJoinPairIndices> {
     let output_size = match node.spec.join_type {
         JoinType::Inner => hash_join.inner_probe_size_in(probe, probe_keys, overrides),
@@ -674,7 +705,7 @@ fn probe_hash_join(
             .with_fact("join_type", node.spec.join_type));
         },
     }
-    .map_err(|error| join_index_error(error, node))?;
+    .map_err(|error| join_index_error_with_diagnostics(error, node, diagnostics))?;
 
     let result = match node.spec.join_type {
         JoinType::Inner => hash_join.inner_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
@@ -690,7 +721,7 @@ fn probe_hash_join(
         },
     };
 
-    result.map_err(|error| join_index_error(error, node))
+    result.map_err(|error| join_index_error_with_diagnostics(error, node, diagnostics))
 }
 
 fn dataframe_join_options(
@@ -727,11 +758,49 @@ pub(super) fn dataframe_mixed_join_options(
 }
 
 pub(super) fn join_index_error(error: cudf::Error, node: &JoinNode) -> QueryError {
-    QueryError::from_cudf("cudf_query_engine.join.execute", "failed to execute native cudf join indices", error)
-        .with_fact("join_type", node.spec.join_type)
-        .with_fact("key_count", node.spec.keys.len())
-        .with_fact("null_equality", node.spec.null_equality)
-        .with_fact("build_side", node.spec.build_side)
+    join_index_error_impl(error, node, None)
+}
+
+fn join_index_error_with_diagnostics(
+    error: cudf::Error,
+    node: &JoinNode,
+    diagnostics: &JoinKeyDiagnostics,
+) -> QueryError {
+    join_index_error_impl(error, node, Some(diagnostics))
+}
+
+fn join_index_error_impl(error: cudf::Error, node: &JoinNode, diagnostics: Option<&JoinKeyDiagnostics>) -> QueryError {
+    let error =
+        QueryError::from_cudf("cudf_query_engine.join.execute", "failed to execute native cudf join indices", error)
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("key_count", node.spec.keys.len())
+            .with_fact("null_equality", node.spec.null_equality)
+            .with_fact("build_side", node.spec.build_side);
+    match diagnostics {
+        Some(diagnostics) => error
+            .with_fact("join_key_pairs", diagnostics.key_pairs.as_str())
+            .with_fact("left_key_dtypes", diagnostics.left_key_dtypes.as_str())
+            .with_fact("right_key_dtypes", diagnostics.right_key_dtypes.as_str()),
+        None => error,
+    }
+}
+
+fn format_join_key_pairs(left_keys: &[String], right_keys: &[String]) -> String {
+    left_keys.iter().zip(right_keys.iter()).map(|(left, right)| format!("{left}={right}")).collect::<Vec<_>>().join(",")
+}
+
+fn format_join_key_dtypes(frame: &DataFrame, keys: &[String]) -> String {
+    keys.iter()
+        .map(|key| {
+            let dtype = frame
+                .series(key.as_str())
+                .and_then(|series| series.dtype())
+                .map(|dtype| format!("{dtype:?}"))
+                .unwrap_or_else(|error| format!("error:{error}"));
+            format!("{key}:{dtype}")
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn materialize_join_output(

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use arrow::datatypes::SchemaRef;
 
 use crate::{
-    expr::{AggregateFunction, BinaryOp, ColumnQualifier, ColumnRef, Expr, LiteralValue},
+    expr::{AggregateFunction, ColumnQualifier, ColumnRef, Expr},
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode,
         QueryPlan, SortNode,
@@ -31,13 +31,15 @@ const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKE
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_SHAPE_CONTRACT: &str = "projected_global_aggregate_over_keyed_residual_inner_hash_join_with_projection_wrapped_join_subtree_and_projection_wrapped_grouped_local_parquet_aggregate_input";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_LOWER_LEVEL_CONTRACT: &str =
     "source_contract,aggregate_contract";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKED_RESERVATIONS: &str =
-    "source_read,operator_output";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_MODES: &str =
+    "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKED_RESERVATIONS: &str = "";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES: &str = "source_read:blocked_by_lower_level,operator_output:blocked_by_lower_level,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,materialization:modeled";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:blocked_by_lower_level,operator_output:aggregate_contract:blocked_by_lower_level,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS: &str =
-    "build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,materialization:modeled";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
+const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
 
 /// Bounded join admission result, ordered from the narrowest root shape to
 /// progressively broader bounded pipeline families.
@@ -55,6 +57,10 @@ pub(crate) enum BoundedJoinPlanSupport {
     KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
     /// A supported multi-join subtree followed by a post-root unary pipeline.
     MultiJoinTreePostRootPipeline,
+    /// A keyed residual root join whose inputs are a bounded join subtree and a
+    /// projection-wrapped grouped local-Parquet aggregate, followed by a
+    /// projection/global-aggregate/projection post-root pipeline.
+    MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
     /// The plan contains joins but does not match any bounded join family.
     Unsupported,
 }
@@ -97,6 +103,17 @@ pub(crate) struct BoundedJoinPipelineShape<'a> {
     pub(crate) join_id: NodeId,
     pub(crate) join: &'a JoinNode,
     pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
+}
+
+/// Normalized shape for the Q17-style family. The name is intentionally
+/// topology-based: admission must not depend on query id, table names, column
+/// names, or literal constants.
+pub(crate) struct BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipelineShape<'a> {
+    pub(crate) join_id: NodeId,
+    pub(crate) join: &'a JoinNode,
+    pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
+    pub(crate) join_subtree_side: JoinSide,
+    pub(crate) grouped_aggregate_side: JoinSide,
 }
 
 /// A post-root bounded pipeline stage.
@@ -146,17 +163,22 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
 
     match analyze_bounded_join_pipeline(plan) {
         Ok(_) => BoundedJoinPlanSupport::SingleJoinPostRootPipeline,
-        Err(_) => match analyze_bounded_keyless_conditional_join_input_subplan_pipeline(plan) {
-            Ok(_) => BoundedJoinPlanSupport::KeylessConditionalJoinInputSubplanPipeline,
-            Err(_) => {
-                match analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan) {
+        Err(_) => {
+            match analyze_bounded_keyless_conditional_join_input_subplan_pipeline(plan) {
+                Ok(_) => BoundedJoinPlanSupport::KeylessConditionalJoinInputSubplanPipeline,
+                Err(_) => {
+                    match analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan) {
                     Ok(_) => BoundedJoinPlanSupport::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
                     Err(_) => match analyze_bounded_multi_join_pipeline(plan) {
                         Ok(_) => BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline,
-                        Err(_) => BoundedJoinPlanSupport::Unsupported,
+                        Err(_) => match analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
+                            Ok(_) => BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+                            Err(_) => BoundedJoinPlanSupport::Unsupported,
+                        },
                     },
                 }
-            },
+                },
+            }
         },
     }
 }
@@ -273,6 +295,56 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
     facts
 }
 
+pub(crate) fn bounded_join_modeled_facts(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+) -> BTreeMap<&'static str, String> {
+    let mut facts = BoundedJoinReservationContract.facts(boundary_policy);
+    if analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok() {
+        facts.insert(
+            "bounded_join_execution_family",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_FAMILY.to_string(),
+        );
+        facts.insert(
+            "bounded_join_required_shape_contract",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_SHAPE_CONTRACT.to_string(),
+        );
+        facts.insert(
+            "bounded_join_contract_modes",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_MODES.to_string(),
+        );
+        facts.insert(
+            "bounded_join_unresolved_preflight_contracts",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_UNRESOLVED_PREFLIGHT_CONTRACTS
+                .to_string(),
+        );
+        facts.insert(
+            "bounded_join_contract_report_fields",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_REPORT_FIELDS.to_string(),
+        );
+        facts.insert(
+            "bounded_join_reservation_kinds",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_KINDS.to_string(),
+        );
+        facts.insert(
+            "bounded_join_reservation_statuses",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES.to_string(),
+        );
+        facts.insert(
+            "bounded_join_reservation_requirements",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS.to_string(),
+        );
+        facts.insert("blocked_reservations", String::new());
+        facts.insert("missing_reservations", String::new());
+        facts.insert(
+            "modeled_reservations",
+            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS.to_string(),
+        );
+        facts.insert("bounded_join_lower_level_blockers", String::new());
+    }
+    facts
+}
+
 pub(crate) fn analyze_bounded_join_pipeline(
     plan: &QueryPlan,
 ) -> std::result::Result<BoundedJoinPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
@@ -325,6 +397,48 @@ pub(crate) fn analyze_bounded_keyless_conditional_join_aggregate_over_join_subpl
         AggregateOverJoinSubplanInputKind::Scalar,
     )?;
     Ok(shape)
+}
+
+pub(crate) fn analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(
+    plan: &QueryPlan,
+) -> std::result::Result<
+    BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipelineShape<'_>,
+    BoundedJoinPipelineRejection<'_>,
+> {
+    let shape = analyze_bounded_join_pipeline_shape(plan, false)?;
+    if !bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_root_compatible(shape.join) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: shape.join });
+    }
+    validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline(&shape)?;
+    if validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides(
+        plan,
+        shape.join,
+        JoinSide::Left,
+        JoinSide::Right,
+    )
+    .is_ok()
+    {
+        return Ok(BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipelineShape {
+            join_id: shape.join_id,
+            join: shape.join,
+            stages: shape.stages,
+            join_subtree_side: JoinSide::Left,
+            grouped_aggregate_side: JoinSide::Right,
+        });
+    }
+    validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides(
+        plan,
+        shape.join,
+        JoinSide::Right,
+        JoinSide::Left,
+    )?;
+    Ok(BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipelineShape {
+        join_id: shape.join_id,
+        join: shape.join,
+        stages: shape.stages,
+        join_subtree_side: JoinSide::Right,
+        grouped_aggregate_side: JoinSide::Left,
+    })
 }
 
 pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
@@ -380,6 +494,15 @@ pub(crate) fn bounded_root_mixed_join_compatible(join: &JoinNode) -> bool {
         },
         JoinType::Cross => false,
     }
+}
+
+pub(crate) fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_root_compatible(
+    join: &JoinNode,
+) -> bool {
+    join.spec.join_type == JoinType::Inner
+        && !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_some()
+        && !join.spec.output_projection.is_empty()
 }
 
 pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
@@ -615,6 +738,109 @@ fn validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_
     Ok(())
 }
 
+fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline<'a>(
+    shape: &BoundedJoinPipelineShape<'a>,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    let [
+        BoundedJoinPipelineStage::Projection { .. },
+        BoundedJoinPipelineStage::Aggregate { node_id: aggregate_id, node: aggregate, .. },
+        BoundedJoinPipelineStage::Projection { .. },
+    ] = shape.stages.as_slice()
+    else {
+        let node_id = shape.stages.first().map(pipeline_stage_node_id).unwrap_or(shape.join_id);
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "post_root_pipeline" });
+    };
+
+    if !aggregate.spec.group_exprs.is_empty() {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: *aggregate_id,
+            node_kind: "grouped_post_root_aggregate",
+        });
+    }
+    Ok(())
+}
+
+fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides<'a>(
+    plan: &'a QueryPlan,
+    root_join: &'a JoinNode,
+    join_subtree_side: JoinSide,
+    grouped_aggregate_side: JoinSide,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    validate_projection_wrapped_join_subtree_input_structural(
+        plan,
+        root_join.inputs[join_side_index(join_subtree_side)],
+    )?;
+    validate_projection_wrapped_grouped_local_parquet_aggregate_input_structural(
+        plan,
+        root_join.inputs[join_side_index(grouped_aggregate_side)],
+    )?;
+    if root_join.spec.output_projection.iter().any(|column| column.side != join_subtree_side) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    let Some(predicate) = root_join.spec.residual_predicate.as_ref() else {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    };
+    if !expr_references_input(predicate, join_side_index(join_subtree_side))
+        || !expr_references_input(predicate, join_side_index(grouped_aggregate_side))
+    {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    Ok(())
+}
+
+fn validate_projection_wrapped_join_subtree_input_structural(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let Some((join_id, projection_count)) = peel_projection_chain(plan, node_id, 3) else {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "projection_chain" });
+    };
+    if projection_count == 0 {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "bare_join_subtree" });
+    }
+    validate_bounded_multi_join_subtree(plan, join_id)?;
+    if bounded_join_subtree_join_count(plan, join_id)? == 0 {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: join_id,
+            node_kind: "non_join_subtree",
+        });
+    }
+    Ok(())
+}
+
+fn validate_projection_wrapped_grouped_local_parquet_aggregate_input_structural(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded mixed keyed residual join grouped aggregate input pipeline references a missing input",
+    })?;
+    let PlanNode::Projection(projection) = &node.kind else {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id,
+            node_kind: "bare_grouped_aggregate_input",
+        });
+    };
+    let aggregate_node = plan.node(projection.input).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id: projection.input,
+        message: "bounded mixed keyed residual join grouped aggregate input pipeline projection references a missing aggregate",
+    })?;
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: projection.input,
+            node_kind: "non_aggregate_input",
+        });
+    };
+    if aggregate.spec.group_exprs.is_empty() {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: projection.input,
+            node_kind: "scalar_aggregate",
+        });
+    }
+    validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(plan, aggregate.input)
+}
+
 fn validate_projection_wrapped_aggregate_over_join_subplan_input(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -742,228 +968,7 @@ fn bounded_join_subtree_join_count(
 }
 
 fn matches_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan: &QueryPlan) -> bool {
-    let Some(projection) = projection_node(plan, plan.sink().input()) else {
-        return false;
-    };
-    let Some(global_aggregate) = aggregate_node(plan, projection.input) else {
-        return false;
-    };
-    if !global_aggregate.spec.group_exprs.is_empty() {
-        return false;
-    }
-    let counts = reachable_node_kind_counts(plan);
-    if counts.joins != 2 || counts.aggregates != 2 || counts.sorts != 0 || counts.limits != 0 {
-        return false;
-    }
-
-    let Some((root_join_id, pre_aggregate_projection_count)) = peel_projection_chain(plan, global_aggregate.input, 1)
-    else {
-        return false;
-    };
-    if pre_aggregate_projection_count == 0 {
-        return false;
-    };
-    let Some(root_join) = join_node(plan, root_join_id) else {
-        return false;
-    };
-    keyed_inner_residual_hash_join(root_join)
-        && validate_q17_global_sum_aggregate(plan, global_aggregate)
-        && (validate_q17_pipeline_with_sides(plan, root_join, JoinSide::Left, JoinSide::Right)
-            || validate_q17_pipeline_with_sides(plan, root_join, JoinSide::Right, JoinSide::Left))
-}
-
-fn validate_q17_pipeline_with_sides(
-    plan: &QueryPlan,
-    root_join: &JoinNode,
-    join_subtree_side: JoinSide,
-    grouped_aggregate_side: JoinSide,
-) -> bool {
-    validate_projection_wrapped_join_subtree_input(plan, root_join.inputs[join_side_index(join_subtree_side)])
-        && validate_projection_wrapped_grouped_local_parquet_aggregate_input(
-            plan,
-            root_join.inputs[join_side_index(grouped_aggregate_side)],
-        )
-        && q17_root_key_matches(root_join, join_subtree_side, grouped_aggregate_side)
-        && q17_root_output_is_join_subtree_extended_price(root_join, join_subtree_side)
-        && root_join.spec.residual_predicate.as_ref().is_some_and(|predicate| {
-            q17_residual_matches(plan, root_join, predicate, join_subtree_side, grouped_aggregate_side)
-        })
-}
-
-fn validate_q17_global_sum_aggregate(plan: &QueryPlan, aggregate: &AggregateNode) -> bool {
-    let [aggregate_expr] = aggregate.spec.aggr_exprs.as_slice() else {
-        return false;
-    };
-    aggregate_expr.function == AggregateFunction::Sum
-        && aggregate_argument_has_q17_role(plan, aggregate, &aggregate_expr.expr, Q17Role::ExtendedPrice)
-}
-
-fn validate_projection_wrapped_join_subtree_input(plan: &QueryPlan, node_id: NodeId) -> bool {
-    let Some((join_id, projection_count)) = peel_projection_chain(plan, node_id, 2) else {
-        return false;
-    };
-    if projection_count == 0 {
-        return false;
-    }
-    let Some(join) = join_node(plan, join_id) else {
-        return false;
-    };
-    bounded_multi_join_compatible(join)
-        && validate_bounded_multi_join_subtree(plan, join_id).is_ok()
-        && bounded_join_subtree_join_count(plan, join_id).is_ok_and(|join_count| join_count == 1)
-}
-
-fn validate_projection_wrapped_grouped_local_parquet_aggregate_input(plan: &QueryPlan, node_id: NodeId) -> bool {
-    let Some(projection) = projection_node(plan, node_id) else {
-        return false;
-    };
-    let Some(aggregate) = aggregate_node(plan, projection.input) else {
-        return false;
-    };
-    validate_q17_grouped_quantity_aggregate(aggregate) && local_parquet_source_node(plan, aggregate.input)
-}
-
-fn validate_q17_grouped_quantity_aggregate(aggregate: &AggregateNode) -> bool {
-    let [group_expr] = aggregate.spec.group_exprs.as_slice() else {
-        return false;
-    };
-    let [aggregate_expr] = aggregate.spec.aggr_exprs.as_slice() else {
-        return false;
-    };
-    expr_has_q17_role(group_expr, Q17Role::PartKey)
-        && aggregate_expr.function == AggregateFunction::Avg
-        && expr_has_q17_role(&aggregate_expr.expr, Q17Role::Quantity)
-}
-
-fn local_parquet_source_node(plan: &QueryPlan, node_id: NodeId) -> bool {
-    plan.node(node_id).is_some_and(
-        |node| matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_))),
-    )
-}
-
-fn q17_root_key_matches(root_join: &JoinNode, join_subtree_side: JoinSide, grouped_aggregate_side: JoinSide) -> bool {
-    let [key] = root_join.spec.keys.as_slice() else {
-        return false;
-    };
-    join_key_column_for_side(key, join_subtree_side).is_some_and(|column| column_has_q17_role(column, Q17Role::PartKey))
-        && join_key_column_for_side(key, grouped_aggregate_side)
-            .is_some_and(|column| column_has_q17_role(column, Q17Role::PartKey))
-}
-
-fn q17_root_output_is_join_subtree_extended_price(root_join: &JoinNode, join_subtree_side: JoinSide) -> bool {
-    let [column] = root_join.spec.output_projection.as_slice() else {
-        return false;
-    };
-    column.side == join_subtree_side && q17_role_for_join_output_column(column) == Some(Q17Role::ExtendedPrice)
-}
-
-fn q17_residual_matches(
-    plan: &QueryPlan,
-    root_join: &JoinNode,
-    predicate: &Expr,
-    join_subtree_side: JoinSide,
-    grouped_aggregate_side: JoinSide,
-) -> bool {
-    let Expr::Binary { left, op: BinaryOp::Lt, right } = predicate else {
-        return false;
-    };
-    q17_expr_is_join_subtree_quantity(plan, root_join, left, join_subtree_side)
-        && q17_expr_is_scaled_grouped_average_quantity(plan, root_join, right, grouped_aggregate_side)
-}
-
-fn q17_expr_is_join_subtree_quantity(plan: &QueryPlan, root_join: &JoinNode, expr: &Expr, side: JoinSide) -> bool {
-    q17_input_expr_has_role(plan, root_join.inputs[join_side_index(side)], expr, side, Q17Role::Quantity)
-}
-
-fn q17_expr_is_scaled_grouped_average_quantity(
-    plan: &QueryPlan,
-    root_join: &JoinNode,
-    expr: &Expr,
-    side: JoinSide,
-) -> bool {
-    let input_node_id = root_join.inputs[join_side_index(side)];
-    match expr {
-        Expr::Column(column) if column_qualifier_input_index(column) == Some(join_side_index(side)) => {
-            projection_chain_expression_for_column(plan, input_node_id, column)
-                .is_some_and(|projected| q17_scaled_average_expression_matches(plan, input_node_id, projected, side))
-        },
-        Expr::Cast { expr, .. } | Expr::Alias { expr, .. } => {
-            q17_expr_is_scaled_grouped_average_quantity(plan, root_join, expr, side)
-        },
-        _ => q17_scaled_average_expression_matches(plan, input_node_id, expr, side),
-    }
-}
-
-fn q17_scaled_average_expression_matches(plan: &QueryPlan, input_node_id: NodeId, expr: &Expr, side: JoinSide) -> bool {
-    match expr {
-        Expr::Binary { left, op: BinaryOp::Multiply, right } => {
-            (expr_is_q17_point_two_literal(left)
-                && q17_average_quantity_operand_matches(plan, input_node_id, right, side))
-                || (expr_is_q17_point_two_literal(right)
-                    && q17_average_quantity_operand_matches(plan, input_node_id, left, side))
-        },
-        Expr::Cast { expr, .. } | Expr::Alias { expr, .. } => {
-            q17_scaled_average_expression_matches(plan, input_node_id, expr, side)
-        },
-        _ => false,
-    }
-}
-
-fn q17_average_quantity_operand_matches(plan: &QueryPlan, input_node_id: NodeId, expr: &Expr, side: JoinSide) -> bool {
-    q17_input_expr_has_role(plan, input_node_id, expr, side, Q17Role::AverageQuantity)
-        || q17_projection_expr_has_role(plan, input_node_id, expr, Q17Role::AverageQuantity)
-}
-
-fn q17_projection_expr_has_role(plan: &QueryPlan, input_node_id: NodeId, expr: &Expr, role: Q17Role) -> bool {
-    match expr {
-        Expr::Column(column) => {
-            column_has_q17_role(column, role)
-                || projection_chain_defines_q17_column_with_role(plan, input_node_id, column, role)
-        },
-        Expr::Alias { expr, alias } => {
-            (role != Q17Role::ScaledAverageQuantity && name_has_q17_role(alias, role))
-                || q17_projection_expr_has_role(plan, input_node_id, expr, role)
-        },
-        Expr::Cast { expr, .. } => q17_projection_expr_has_role(plan, input_node_id, expr, role),
-        _ => false,
-    }
-}
-
-fn q17_input_expr_has_role(
-    plan: &QueryPlan,
-    input_node_id: NodeId,
-    expr: &Expr,
-    side: JoinSide,
-    role: Q17Role,
-) -> bool {
-    match expr {
-        Expr::Column(column) => {
-            column_qualifier_input_index(column) == Some(join_side_index(side))
-                && role != Q17Role::ScaledAverageQuantity
-                && (column_has_q17_role(column, role)
-                    || projection_chain_defines_q17_column_with_role(plan, input_node_id, column, role))
-        },
-        Expr::Alias { expr, alias } => {
-            (role != Q17Role::ScaledAverageQuantity && name_has_q17_role(alias, role))
-                || q17_input_expr_has_role(plan, input_node_id, expr, side, role)
-        },
-        Expr::Cast { expr, .. } => q17_input_expr_has_role(plan, input_node_id, expr, side, role),
-        _ => false,
-    }
-}
-
-fn expr_is_q17_point_two_literal(expr: &Expr) -> bool {
-    match expr {
-        Expr::Literal(LiteralValue::Float64(value)) => (*value - 0.2).abs() <= f64::EPSILON,
-        Expr::Literal(LiteralValue::Float32(value)) => (*value - 0.2).abs() <= f32::EPSILON,
-        Expr::Literal(LiteralValue::Decimal128 { raw, scale, .. }) => decimal_literal_matches_f64(*raw, *scale, 0.2),
-        Expr::Cast { expr, .. } | Expr::Alias { expr, .. } => expr_is_q17_point_two_literal(expr),
-        _ => false,
-    }
-}
-
-fn decimal_literal_matches_f64(raw: i128, scale: i8, expected: f64) -> bool {
-    ((raw as f64) * 10_f64.powi(-i32::from(scale)) - expected).abs() <= f64::EPSILON
+    analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok()
 }
 
 fn join_side_index(side: JoinSide) -> usize {
@@ -973,73 +978,47 @@ fn join_side_index(side: JoinSide) -> usize {
     }
 }
 
-fn join_key_column_for_side(key: &crate::plan::JoinKey, side: JoinSide) -> Option<&ColumnRef> {
-    match side {
-        JoinSide::Left => Some(&key.left),
-        JoinSide::Right => Some(&key.right),
-    }
-}
-
-fn aggregate_argument_has_q17_role(plan: &QueryPlan, aggregate: &AggregateNode, expr: &Expr, role: Q17Role) -> bool {
-    if expr_has_q17_role(expr, role) {
-        return true;
-    }
-    let Expr::Column(column) = expr else {
-        return false;
-    };
-    projection_chain_defines_q17_column_with_role(plan, aggregate.input, column, role)
-}
-
-fn projection_chain_defines_q17_column_with_role(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    column: &ColumnRef,
-    role: Q17Role,
-) -> bool {
-    let mut current = node_id;
-    let mut projection_count = 0;
-    while let Some(projection) = projection_node(plan, current) {
-        if projection
-            .expressions()
-            .any(|expr| expr_output_name_matches_column(expr, column) && expr_has_q17_role(expr, role))
-        {
-            return true;
-        }
-        projection_count += 1;
-        if projection_count == 3 {
-            return false;
-        }
-        current = projection.input;
-    }
-    false
-}
-
-fn projection_chain_expression_for_column<'a>(
-    plan: &'a QueryPlan,
-    node_id: NodeId,
-    column: &ColumnRef,
-) -> Option<&'a Expr> {
-    let mut current = node_id;
-    let mut projection_count = 0;
-    while let Some(projection) = projection_node(plan, current) {
-        if let Some(output) =
-            projection.outputs.iter().find(|output| expr_output_name_matches_column(&output.expr, column))
-        {
-            return Some(&output.expr);
-        }
-        projection_count += 1;
-        if projection_count == 3 {
-            return None;
-        }
-        current = projection.input;
-    }
-    None
-}
-
 fn column_qualifier_input_index(column: &ColumnRef) -> Option<usize> {
     match column.qualifier() {
         Some(ColumnQualifier::Input { index }) => Some(*index),
         Some(ColumnQualifier::Node { .. } | ColumnQualifier::Relation { .. }) | None => None,
+    }
+}
+
+fn expr_references_input(expr: &Expr, input_index: usize) -> bool {
+    match expr {
+        Expr::Column(column) => column_qualifier_input_index(column) == Some(input_index),
+        Expr::Alias { expr, .. }
+        | Expr::Cast { expr, .. }
+        | Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Like { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Extract { expr, .. } => expr_references_input(expr, input_index),
+        Expr::Binary { left, right, .. } => {
+            expr_references_input(left, input_index) || expr_references_input(right, input_index)
+        },
+        Expr::InList { expr, list, .. } => {
+            expr_references_input(expr, input_index) || list.iter().any(|item| expr_references_input(item, input_index))
+        },
+        Expr::Case { branches, else_expr } => {
+            expr_references_input(else_expr, input_index)
+                || branches.iter().any(|branch| {
+                    expr_references_input(&branch.when, input_index) || expr_references_input(&branch.then, input_index)
+                })
+        },
+        Expr::Literal(_) => false,
+    }
+}
+
+fn pipeline_stage_node_id(stage: &BoundedJoinPipelineStage<'_>) -> NodeId {
+    match stage {
+        BoundedJoinPipelineStage::Filter { node_id, .. }
+        | BoundedJoinPipelineStage::Projection { node_id, .. }
+        | BoundedJoinPipelineStage::Aggregate { node_id, .. }
+        | BoundedJoinPipelineStage::Sort { node_id, .. }
+        | BoundedJoinPipelineStage::Limit { node_id, .. } => *node_id,
     }
 }
 
@@ -1204,17 +1183,44 @@ fn validate_source_filter_projection_leaf_pipeline(plan: &QueryPlan, node_id: No
     }
 }
 
+fn validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let node = plan.node(node_id).ok_or(BoundedJoinPipelineRejection::MissingNode {
+        node_id,
+        message: "bounded mixed keyed residual join grouped aggregate input pipeline references a missing aggregate source",
+    })?;
+    match &node.kind {
+        PlanNode::Source(source) => {
+            if matches!(source.as_ref(), SourceNode::LocalParquet(_)) {
+                Ok(())
+            } else {
+                Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+                    node_id,
+                    node_kind: "non_local_parquet_source",
+                })
+            }
+        },
+        PlanNode::Filter(filter) => {
+            validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(plan, filter.input)
+        },
+        PlanNode::Projection(projection) => {
+            validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(plan, projection.input)
+        },
+        PlanNode::Join(_) => Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "join" }),
+        PlanNode::Aggregate(_) => {
+            Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "aggregate" })
+        },
+        PlanNode::Sort(_) => Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "sort" }),
+        PlanNode::Limit(_) => Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id, node_kind: "limit" }),
+    }
+}
+
 fn keyed_inner_hash_join_without_residual(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
-        && !join.spec.output_projection.is_empty()
-}
-
-fn keyed_inner_residual_hash_join(join: &JoinNode) -> bool {
-    join.spec.join_type == JoinType::Inner
-        && !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_some()
         && !join.spec.output_projection.is_empty()
 }
 
@@ -1275,21 +1281,8 @@ enum Q15Role {
     MaxRevenue,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Q17Role {
-    PartKey,
-    Quantity,
-    AverageQuantity,
-    ScaledAverageQuantity,
-    ExtendedPrice,
-}
-
 fn q15_role_for_join_output_column(column: &crate::plan::JoinOutputColumn) -> Option<Q15Role> {
     q15_role_for_names([column.output_name.as_str(), column.column.display_name(), column.column.name()])
-}
-
-fn q17_role_for_join_output_column(column: &crate::plan::JoinOutputColumn) -> Option<Q17Role> {
-    q17_role_for_names([column.output_name.as_str(), column.column.display_name(), column.column.name()])
 }
 
 fn schema_has_role(schema: &SchemaRef, role: Q15Role) -> bool {
@@ -1339,53 +1332,16 @@ fn expr_has_role(expr: &Expr, role: Q15Role) -> bool {
     }
 }
 
-fn expr_has_q17_role(expr: &Expr, role: Q17Role) -> bool {
-    match expr {
-        Expr::Column(column) => column_has_q17_role(column, role),
-        Expr::Alias { expr, alias } => name_has_q17_role(alias, role) || expr_has_q17_role(expr, role),
-        Expr::Binary { left, right, .. } => expr_has_q17_role(left, role) || expr_has_q17_role(right, role),
-        Expr::Cast { expr, .. }
-        | Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Extract { expr, .. } => expr_has_q17_role(expr, role),
-        Expr::InList { expr, list, .. } => {
-            expr_has_q17_role(expr, role) || list.iter().any(|item| expr_has_q17_role(item, role))
-        },
-        Expr::Case { branches, else_expr } => {
-            expr_has_q17_role(else_expr, role)
-                || branches
-                    .iter()
-                    .any(|branch| expr_has_q17_role(&branch.when, role) || expr_has_q17_role(&branch.then, role))
-        },
-        Expr::Literal(_) => false,
-    }
-}
-
 fn column_has_role(column: &ColumnRef, role: Q15Role) -> bool {
     q15_role_for_names([column.display_name(), column.name()]).is_some_and(|column_role| column_role == role)
-}
-
-fn column_has_q17_role(column: &ColumnRef, role: Q17Role) -> bool {
-    q17_role_for_names([column.display_name(), column.name()]).is_some_and(|column_role| column_role == role)
 }
 
 fn name_has_role(name: &str, role: Q15Role) -> bool {
     q15_role_for_name(name).is_some_and(|name_role| name_role == role)
 }
 
-fn name_has_q17_role(name: &str, role: Q17Role) -> bool {
-    q17_role_for_name(name).is_some_and(|name_role| name_role == role)
-}
-
 fn q15_role_for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Q15Role> {
     names.into_iter().find_map(q15_role_for_name)
-}
-
-fn q17_role_for_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<Q17Role> {
-    names.into_iter().find_map(q17_role_for_name)
 }
 
 fn q15_role_for_name(name: &str) -> Option<Q15Role> {
@@ -1398,23 +1354,6 @@ fn q15_role_for_name(name: &str) -> Option<Q15Role> {
         "revenue" | "revenueamount" | "extendedprice" | "lextendedprice" => Some(Q15Role::RevenueMeasure),
         "totalrevenue" => Some(Q15Role::TotalRevenue),
         "maxrevenue" | "maximumrevenue" | "maxrevenuetotalrevenue" => Some(Q15Role::MaxRevenue),
-        _ => None,
-    }
-}
-
-fn q17_role_for_name(name: &str) -> Option<Q17Role> {
-    let normalized = normalized_role_name(name);
-    match normalized.as_str() {
-        "lpartkey" | "ppartkey" | "partkey" => Some(Q17Role::PartKey),
-        "lquantity" | "quantity" => Some(Q17Role::Quantity),
-        "lextendedprice" | "extendedprice" => Some(Q17Role::ExtendedPrice),
-        _ if normalized.contains("avg") && normalized.contains("quantity") => {
-            if normalized.contains("02") || normalized.contains("scaled") {
-                Some(Q17Role::ScaledAverageQuantity)
-            } else {
-                Some(Q17Role::AverageQuantity)
-            }
-        },
         _ => None,
     }
 }

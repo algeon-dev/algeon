@@ -6,8 +6,10 @@ use crate::{
     bounded_support::{
         BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
         analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
-        analyze_bounded_keyless_conditional_join_input_subplan_pipeline, bounded_join_unsupported_shape_facts,
-        bounded_root_filtered_join_compatible, bounded_root_hash_join_compatible, bounded_root_join_compatible,
+        analyze_bounded_keyless_conditional_join_input_subplan_pipeline,
+        analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
+        bounded_join_modeled_facts, bounded_join_unsupported_shape_facts, bounded_root_filtered_join_compatible,
+        bounded_root_hash_join_compatible, bounded_root_join_compatible,
         bounded_root_keyless_conditional_join_compatible, bounded_root_mixed_join_compatible,
         bounded_root_projected_cross_join_compatible,
     },
@@ -114,6 +116,12 @@ impl QueryPlan {
         crate::bounded_support::analyze_bounded_multi_join_pipeline(self).is_ok()
     }
 
+    /// Returns true when the plan matches the supported keyed-residual join
+    /// with a resident grouped local-Parquet aggregate input.
+    pub fn has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
+        analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(self).is_ok()
+    }
+
     /// Returns diagnostic facts for join plans rejected by every bounded join path.
     ///
     /// These facts are explanatory planning/execution diagnostics. They do not
@@ -128,11 +136,20 @@ impl QueryPlan {
             && !self.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline()
             && !self.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
             && !self.has_bounded_executable_multi_join_pipeline()
+            && !self.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
         {
             Some(bounded_join_unsupported_shape_facts(self, boundary_policy))
         } else {
             None
         }
+    }
+
+    /// Returns modeled bounded-join facts for executable bounded join plans.
+    pub fn bounded_join_modeled_facts(
+        &self,
+        boundary_policy: ExecutionBoundaryPolicy,
+    ) -> Option<BTreeMap<&'static str, String>> {
+        self.contains_join().then(|| bounded_join_modeled_facts(self, boundary_policy))
     }
 
     /// Returns nodes that are not reachable from the explicit sink input.

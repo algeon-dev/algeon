@@ -16,7 +16,7 @@ pub(super) fn execute_bounded_multi_join_pipeline_query_plan(
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_multi_join_pipeline_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new(device_budget_bytes);
+    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
     let mut committed =
         execute_bounded_multi_join_subtree(context, plan, shape.join_id, gpu_inputs, &mut reservations, metrics)?;
 

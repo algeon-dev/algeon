@@ -105,6 +105,11 @@ impl ExecutionContext {
         DevicePlacement::SingleDevice { device_ordinal: self.runtime.device().ordinal() }
     }
 
+    /// Reports the default device memory space used for bounded reservation accounting.
+    pub fn device_memory_space(&self) -> MemorySpaceId {
+        MemorySpaceId::Device { device_ordinal: self.runtime.device().ordinal() }
+    }
+
     /// Returns the memory-resource construction policy recorded for this context.
     pub fn memory_policy(&self) -> MemoryResourcePolicy {
         self.memory_policy
@@ -275,6 +280,25 @@ impl ExecutionContextBuilder {
 pub enum DevicePlacement {
     /// All work for the context runs on one CUDA device ordinal.
     SingleDevice { device_ordinal: usize },
+}
+
+/// Memory space accounted by bounded reservation events.
+///
+/// Phase 1 models only the device memory owned by the current cudf runtime.
+/// The display form is a stable metric value and must not inherit debug output
+/// from runtime placement types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MemorySpaceId {
+    /// CUDA device memory for one runtime device ordinal.
+    Device { device_ordinal: usize },
+}
+
+impl std::fmt::Display for MemorySpaceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Device { device_ordinal } => write!(f, "GPU:{device_ordinal}"),
+        }
+    }
 }
 
 /// Policy used when this crate constructs the cudf runtime memory resource.
@@ -854,6 +878,9 @@ pub enum BoundedJoinExecutionFamily {
     MultiJoinReusableHashPipeline,
     /// A multi-join tree that may include keyed residual inner/semi/anti joins.
     MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
+    /// A keyed residual root join whose inputs are a bounded join subtree and a
+    /// projection-wrapped grouped local-Parquet aggregate.
+    MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
 }
 
 impl BoundedJoinExecutionFamily {
@@ -873,6 +900,9 @@ impl BoundedJoinExecutionFamily {
             Self::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline => {
                 "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
             },
+            Self::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline => {
+                "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"
+            },
         }
     }
 }
@@ -880,7 +910,7 @@ impl BoundedJoinExecutionFamily {
 /// Report-facing catalogue of bounded join execution families.
 ///
 /// Ordering is preserved in CSV facts and tests.
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 9] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 10] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
@@ -890,6 +920,7 @@ pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 9] = [
     BoundedJoinExecutionFamily::RootMixedKeyedResidualJoin,
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
     BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
+    BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
 ];
 
 /// Public bounded join reservation contract and fact builder.
@@ -1172,6 +1203,13 @@ where
 pub struct MemoryReservationRequest {
     /// Category of memory being reserved.
     pub reservation_kind: ReservationKind,
+    /// Memory space charged by this request.
+    ///
+    /// Direct request construction defaults to `GPU:0` for simple contract
+    /// tests. Bounded execution stamps requests with
+    /// [`ExecutionContext::device_memory_space`] before recording metrics or
+    /// emitting denial errors.
+    pub memory_space: MemorySpaceId,
     /// Stable boundary name for diagnostics.
     ///
     /// Defaults to `reservation_kind.as_str()` but callers should override it
@@ -1205,6 +1243,7 @@ impl MemoryReservationRequest {
     pub fn new(reservation_kind: ReservationKind, requested_bytes: u64, budget_bytes: u64) -> Self {
         Self {
             reservation_kind,
+            memory_space: MemorySpaceId::Device { device_ordinal: 0 },
             memory_boundary: reservation_kind.as_str().to_string(),
             requested_bytes,
             budget_bytes,
@@ -1217,6 +1256,13 @@ impl MemoryReservationRequest {
             attempt: None,
             max_attempts: None,
         }
+    }
+
+    /// Overrides the memory space charged by this request.
+    #[must_use]
+    pub fn with_memory_space(mut self, memory_space: MemorySpaceId) -> Self {
+        self.memory_space = memory_space;
+        self
     }
 
     /// Overrides the stable memory-boundary diagnostic string.

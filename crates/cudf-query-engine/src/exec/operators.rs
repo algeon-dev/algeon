@@ -137,7 +137,11 @@ pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &Execu
         .with_fact_if_absent("budget_status", "exceeded_or_lower_layer_rejected")
 }
 
-fn budgeted_value<T>(outcome: BudgetedExecutionOutcome<T>, metrics: &mut QueryMetrics, operation: &'static str) -> T {
+pub(super) fn budgeted_value<T>(
+    outcome: BudgetedExecutionOutcome<T>,
+    metrics: &mut QueryMetrics,
+    operation: &'static str,
+) -> T {
     let (value, report) = outcome.into_parts();
     metrics.record_budgeted_execution(operation, &report);
     value
@@ -416,6 +420,7 @@ pub(super) fn execute_aggregate(
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute")?;
+    output = cast_reduction_output_columns(output, &node.spec, output_schema)?;
     output = cast_count_output_columns(output, &node.spec, output_schema)?;
     output = cast_avg_output_columns(output, &node.spec, output_schema)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
@@ -462,6 +467,7 @@ pub(super) fn execute_aggregate_with_budget(
         "cudf_query_engine.aggregate.execute",
         "failed to execute bounded native cudf aggregate",
     )?;
+    output = cast_reduction_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
     output = cast_count_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
     output = cast_avg_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
@@ -763,8 +769,8 @@ fn execute_global_aggregate_impl(
             )
         })?;
     output = match token {
-        Some(token) => cast_global_reduction_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
-        None => cast_global_reduction_output_columns(output, spec, output_schema)?,
+        Some(token) => cast_reduction_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
+        None => cast_reduction_output_columns(output, spec, output_schema)?,
     };
     output = match token {
         Some(token) => finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?,
@@ -1376,25 +1382,25 @@ fn cast_avg_output_columns_impl(
     Ok(frame)
 }
 
-pub(super) fn cast_global_reduction_output_columns(
+pub(super) fn cast_reduction_output_columns(
     frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
 ) -> Result<DataFrame> {
-    cast_global_reduction_output_columns_impl(frame, spec, output_schema, None)
+    cast_reduction_output_columns_impl(frame, spec, output_schema, None)
 }
 
-pub(super) fn cast_global_reduction_output_columns_with_budget(
+pub(super) fn cast_reduction_output_columns_with_budget(
     frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
-    cast_global_reduction_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
+    cast_reduction_output_columns_impl(frame, spec, output_schema, Some((token, metrics)))
 }
 
-fn cast_global_reduction_output_columns_impl(
+fn cast_reduction_output_columns_impl(
     mut frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &arrow::datatypes::SchemaRef,
@@ -1407,7 +1413,7 @@ fn cast_global_reduction_output_columns_impl(
             QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "cudf_query_engine.aggregate.cast_reduction",
-                "global reduction output field is missing from output schema",
+                "reduction output field is missing from output schema",
             )
             .with_fact("alias", expr.alias.as_str())
         })?;
@@ -1415,7 +1421,7 @@ fn cast_global_reduction_output_columns_impl(
             QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "cudf_query_engine.aggregate.cast_reduction",
-                "global reduction output schema type is not supported by native execution",
+                "reduction output schema type is not supported by native execution",
             )
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
@@ -1425,7 +1431,7 @@ fn cast_global_reduction_output_columns_impl(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
                     QueryError::from_cudf_with_budget_details(
                         "cudf_query_engine.aggregate.cast_reduction",
-                        "failed to cast bounded native global reduction output column",
+                        "failed to cast bounded native reduction output column",
                         error,
                     )
                     .with_fact("alias", expr.alias.as_str())
@@ -1437,7 +1443,7 @@ fn cast_global_reduction_output_columns_impl(
             None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
                 QueryError::from_cudf(
                     "cudf_query_engine.aggregate.cast_reduction",
-                    "failed to cast native global reduction output column",
+                    "failed to cast native reduction output column",
                     error,
                 )
                 .with_fact("alias", expr.alias.as_str())

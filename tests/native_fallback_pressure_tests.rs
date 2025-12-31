@@ -54,10 +54,10 @@ use datafusion_cudf::{
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
     "q01", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q16", "q19", "q21",
-    "q22",
+    "q17", "q22",
 ];
 const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] =
-    &["q03", "q04", "q05", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q16", "q19", "q21", "q22"];
+    &["q03", "q04", "q05", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q16", "q17", "q19", "q21", "q22"];
 
 #[tokio::test]
 async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
@@ -867,18 +867,66 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     "accepted bounded join row should preserve execution family facts for {}",
                     row.query_id
                 );
-                assert_eq!(
-                    row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
-                    Some(expected_modeled_reservations.as_str()),
-                    "accepted bounded join row should preserve modeled reservation facts for {}",
-                    row.query_id
-                );
-                assert_eq!(
-                    row.bounded_join_reservation_facts.get("bounded_join_reservation_statuses").map(String::as_str),
-                    Some(expected_reservation_statuses.as_str()),
-                    "accepted bounded join row should preserve reservation status facts for {}",
-                    row.query_id
-                );
+                if row.query_id == "q17" {
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
+                        Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
+                        "q17 should report its admitted bounded family"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
+                        Some(
+                            "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
+                        ),
+                        "q17 should not claim final_sort reservations"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_reservation_statuses").map(String::as_str),
+                        Some(
+                            "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,materialization:modeled"
+                        ),
+                        "q17 should report shape-local reservation statuses"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+                        Some("source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report"),
+                        "q17 should only claim hard-budgeted source/aggregate contracts"
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts
+                            .get("bounded_join_unresolved_preflight_contracts")
+                            .map(String::as_str),
+                        Some(
+                            "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"
+                        ),
+                        "q17 should keep source/aggregate preflight gaps as evidence"
+                    );
+                    assert!(
+                        !row.bounded_join_reservation_facts
+                            .get("bounded_join_contract_modes")
+                            .is_some_and(|value| value.contains("final_sort_contract")),
+                        "q17 should not claim final_sort contract modes"
+                    );
+                } else {
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
+                        Some(expected_modeled_reservations.as_str()),
+                        "accepted bounded join row should preserve modeled reservation facts for {}",
+                        row.query_id
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_reservation_statuses").map(String::as_str),
+                        Some(expected_reservation_statuses.as_str()),
+                        "accepted bounded join row should preserve reservation status facts for {}",
+                        row.query_id
+                    );
+                    assert_eq!(
+                        row.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+                        None,
+                        "non-q17 accepted rows should not claim Q17 hard-budgeted report modes for {}",
+                        row.query_id
+                    );
+                }
                 assert_eq!(
                     row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
                     Some(""),
@@ -973,6 +1021,12 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
                     row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
                     Some(expected_tpch_bounded_join_lower_level_blockers(row.query_id.as_str())),
                     "missing lower-level blocker facts for {}",
+                    row.query_id
+                );
+                assert_eq!(
+                    row.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+                    None,
+                    "rejected bounded join row should not claim admitted hard-budgeted contract modes for {}",
                     row.query_id
                 );
                 if let Some(expected_family) = expected_tpch_bounded_join_blocked_family(row.query_id.as_str()) {
@@ -1252,7 +1306,7 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
         .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
         .map(|row| row.query_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(rejected_query_ids, vec!["q02", "q15", "q17", "q18", "q20"]);
+    assert_eq!(rejected_query_ids, vec!["q02", "q15", "q18", "q20"]);
 
     let q15 = planning_row(&report, "q15");
     assert_eq!(q15.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
@@ -1278,33 +1332,41 @@ async fn tpch_datafusion_planning_report_emits_one_stable_row_per_query() {
         q15.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
         Some("source_contract,aggregate_contract,final_sort_contract")
     );
+    assert_eq!(q15.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str), None);
     assert!(q15.rejected_before_execution, "q15 should remain rejected before native execution");
 
     let q17 = planning_row(&report, "q17");
-    assert_eq!(q17.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-    assert_eq!(q17.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
-    assert_eq!(q17.unsupported_category.as_deref(), Some("operator_hashjoin"));
+    assert_eq!(q17.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q17.reason_code, None);
+    assert_eq!(q17.unsupported_category, None);
+    assert_eq!(q17.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q17.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert_eq!(
-        q17.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        q17.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
         Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline")
     );
     assert_eq!(
         q17.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("source_contract,aggregate_contract")
+        Some("")
+    );
+    assert_eq!(q17.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(q17.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str), Some(""));
+    assert_eq!(
+        q17.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+        Some("source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report")
     );
     assert_eq!(
-        q17.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str),
-        Some("source_read,operator_output")
+        q17.bounded_join_reservation_facts.get("bounded_join_unresolved_preflight_contracts").map(String::as_str),
+        Some(
+            "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"
+        )
     );
-    assert_eq!(
-        q17.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str),
-        Some("source_read,operator_output")
+    assert!(
+        !q17.bounded_join_reservation_facts
+            .get("bounded_join_contract_modes")
+            .is_some_and(|value| value.contains("final_sort_contract"))
     );
-    assert_eq!(
-        q17.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
-        Some("source_contract,aggregate_contract")
-    );
-    assert!(q17.rejected_before_execution, "q17 should remain rejected before native execution");
+    assert!(!q17.rejected_before_execution, "q17 should be replaced by native execution");
 
     let text = report.to_tsv();
     assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=6\n"));
@@ -1621,7 +1683,6 @@ fn expected_tpch_native_candidate_shape_family(query_id: &str) -> &'static str {
 fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'static str, &'static str) {
     match query_id {
         "q02" | "q15" | "q18" | "q20" => ("native_bounded_join_unsupported", "operator_hashjoin"),
-        "q17" => ("native_bounded_join_unsupported", "operator_hashjoin"),
         _ => ("unsupported_operator", expected_tpch_operator_unsupported_category(query_id)),
     }
 }
