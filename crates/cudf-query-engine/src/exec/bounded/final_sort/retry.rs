@@ -1,0 +1,34 @@
+use super::*;
+
+pub(super) fn is_retryable_final_sort_error(error: &QueryError) -> bool {
+    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+}
+
+pub(super) fn record_final_sort_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+    match error.code() {
+        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
+        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
+        _ => {},
+    }
+}
+
+pub(super) fn final_sort_retry_facts(retry_action: &'static str, metrics: &QueryMetrics) -> RetryFacts {
+    RetryFacts::new()
+        .with_retry_action(retry_action)
+        .with_resume_boundary("final_sort")
+        .with_committed_chunks(metrics.source_chunks_committed as usize)
+        .with_committed_partials(metrics.partial_aggregate_count as usize)
+}
+
+pub(super) fn final_sort_topk_retry_facts(
+    merge_level: usize,
+    merge_fan_in: usize,
+    metrics: &QueryMetrics,
+) -> RetryFacts {
+    final_sort_retry_facts(
+        if merge_fan_in <= 2 { "fail_min_topk_fan_in" } else { "hierarchical_topk_retry_exhausted" },
+        metrics,
+    )
+    .with_merge_level(merge_level)
+    .with_merge_fan_in(merge_fan_in)
+}
