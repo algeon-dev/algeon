@@ -1,6 +1,14 @@
 use std::{fmt, ops::Not};
 
-use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};
+use arrow::datatypes::DataType;
+
+mod column;
+mod literal;
+
+pub use self::{
+    column::{ColumnQualifier, ColumnRef},
+    literal::LiteralValue,
+};
 
 /// Scalar expression IR used by native query-plan nodes.
 ///
@@ -212,130 +220,6 @@ impl Expr {
     }
 }
 
-/// Column identity in the native expression IR.
-///
-/// `name` is the physical/logical field name used to resolve the column against
-/// an input schema. `qualifier` disambiguates which input namespace owns that
-/// field when a node has more than one input. `display_name` is deliberately
-/// separate: it is the externally visible or projected name used for output
-/// contracts and selected diagnostics, and it may differ from `name` when the
-/// same source column is projected under a distinct alias. `Display`
-/// formatting uses the qualifier and lookup name.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ColumnRef {
-    /// Optional namespace for resolving the column in multi-input or graph contexts.
-    qualifier: Option<ColumnQualifier>,
-    /// Source/input field name used for schema lookup and execution lowering.
-    name: String,
-    /// User-visible or projected field name retained for output contracts.
-    display_name: String,
-}
-
-impl ColumnRef {
-    /// Build a column reference with no namespace qualifier.
-    ///
-    /// Unqualified references resolve against the current single-input schema.
-    /// The display name is initialized to the same value as the lookup name.
-    pub fn unqualified(name: impl Into<String>) -> Self {
-        let name = name.into();
-        Self { qualifier: None, display_name: name.clone(), name }
-    }
-
-    /// Build a column reference scoped to an input ordinal.
-    ///
-    /// This is the preferred qualifier for binary-input nodes such as joins.
-    /// `input` is zero-based and identifies the node input, not a field index.
-    pub fn input(input: usize, name: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            qualifier: Some(ColumnQualifier::Input { index: input }),
-            name: name.into(),
-            display_name: display_name.into(),
-        }
-    }
-
-    /// Build a column reference scoped to a query-plan node identifier.
-    pub fn node(node_id: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            qualifier: Some(ColumnQualifier::Node { id: node_id.into() }),
-            name: name.into(),
-            display_name: display_name.into(),
-        }
-    }
-
-    /// Build a column reference scoped to a named relation.
-    pub fn relation(relation: impl Into<String>, name: impl Into<String>, display_name: impl Into<String>) -> Self {
-        Self {
-            qualifier: Some(ColumnQualifier::Relation { name: relation.into() }),
-            name: name.into(),
-            display_name: display_name.into(),
-        }
-    }
-
-    /// Return the optional namespace qualifier.
-    pub fn qualifier(&self) -> Option<&ColumnQualifier> {
-        self.qualifier.as_ref()
-    }
-
-    /// Return the source/input field name used for lookup.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    /// Return the user-visible or projected field name.
-    pub fn display_name(&self) -> &str {
-        &self.display_name
-    }
-
-    /// Return true when this reference carries an explicit namespace.
-    pub fn is_qualified(&self) -> bool {
-        self.qualifier.is_some()
-    }
-}
-
-impl fmt::Display for ColumnRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if let Some(qualifier) = &self.qualifier {
-            write!(f, "{qualifier}.{}", self.name)
-        } else {
-            f.write_str(&self.name)
-        }
-    }
-}
-
-/// Namespace used to disambiguate column references.
-///
-/// The formatted qualifier is part of expression diagnostics and plan display.
-/// It is not necessarily the field name exposed by downstream schemas; use
-/// [`ColumnRef::display_name`] for that.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ColumnQualifier {
-    /// Positional input namespace, formatted as `input{index}`.
-    Input {
-        /// Zero-based input ordinal for a multi-input node.
-        index: usize,
-    },
-    /// Query-plan node namespace.
-    Node {
-        /// Stable node identifier used by the plan graph.
-        id: String,
-    },
-    /// Named relation namespace.
-    Relation {
-        /// Relation or table name.
-        name: String,
-    },
-}
-
-impl fmt::Display for ColumnQualifier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Input { index } => write!(f, "input{index}"),
-            Self::Node { id } => write!(f, "{id}"),
-            Self::Relation { name } => f.write_str(name),
-        }
-    }
-}
-
 impl Not for Expr {
     type Output = Self;
 
@@ -424,142 +308,6 @@ impl fmt::Display for DatePart {
             Self::Month => "MONTH",
             Self::Day => "DAY",
         })
-    }
-}
-
-/// Typed scalar literal in native expression IR.
-///
-/// Nulls are represented as [`LiteralValue::Null`] with an explicit
-/// [`DataType`], because a SQL null has no value from which its type can be
-/// inferred. Decimal, date, timestamp, duration, and interval literals keep
-/// Arrow-compatible raw encodings in the IR and lowering validation. Actual
-/// execution support depends on the expression context.
-#[derive(Debug, Clone, PartialEq)]
-pub enum LiteralValue {
-    /// Boolean scalar.
-    Boolean(bool),
-    /// Signed 8-bit integer scalar.
-    Int8(i8),
-    /// Signed 16-bit integer scalar.
-    Int16(i16),
-    /// Signed 32-bit integer scalar.
-    Int32(i32),
-    /// Signed 64-bit integer scalar.
-    Int64(i64),
-    /// Unsigned 8-bit integer scalar.
-    UInt8(u8),
-    /// Unsigned 16-bit integer scalar.
-    UInt16(u16),
-    /// Unsigned 32-bit integer scalar.
-    UInt32(u32),
-    /// Unsigned 64-bit integer scalar.
-    UInt64(u64),
-    /// 32-bit floating-point scalar.
-    Float32(f32),
-    /// 64-bit floating-point scalar.
-    Float64(f64),
-    /// UTF-8 string scalar with Arrow `Utf8` type.
-    Utf8(String),
-    /// UTF-8 string scalar with Arrow `LargeUtf8` type.
-    LargeUtf8(String),
-    /// Arrow `Decimal128` scalar.
-    ///
-    /// `raw` is the unscaled integer payload. `precision` and `scale` are the
-    /// Arrow decimal metadata; the mathematical value is `raw * 10^-scale`.
-    Decimal128 {
-        /// Unscaled 128-bit decimal payload.
-        raw: i128,
-        /// Maximum number of significant decimal digits.
-        precision: u8,
-        /// Decimal scale in Arrow's representation.
-        scale: i8,
-    },
-    /// Arrow `Date32` scalar, encoded as days since the Unix epoch.
-    Date32(i32),
-    /// Arrow timestamp scalar without a timezone.
-    ///
-    /// `raw` is the count of `unit` intervals since the Unix epoch.
-    Timestamp {
-        /// Epoch-relative timestamp value in the given unit.
-        raw: i64,
-        /// Timestamp resolution.
-        unit: TimeUnit,
-    },
-    /// Arrow duration scalar.
-    ///
-    /// `raw` is the count of `unit` intervals.
-    Duration {
-        /// Duration value in the given unit.
-        raw: i64,
-        /// Duration resolution.
-        unit: TimeUnit,
-    },
-    /// Arrow `Interval(MonthDayNano)` scalar.
-    IntervalMonthDayNano {
-        /// Month component.
-        months: i32,
-        /// Day component.
-        days: i32,
-        /// Nanosecond component.
-        nanoseconds: i64,
-    },
-    /// Typed SQL null literal.
-    Null(DataType),
-}
-
-impl LiteralValue {
-    /// Return the Arrow data type represented by this literal.
-    pub fn data_type(&self) -> DataType {
-        match self {
-            Self::Boolean(_) => DataType::Boolean,
-            Self::Int8(_) => DataType::Int8,
-            Self::Int16(_) => DataType::Int16,
-            Self::Int32(_) => DataType::Int32,
-            Self::Int64(_) => DataType::Int64,
-            Self::UInt8(_) => DataType::UInt8,
-            Self::UInt16(_) => DataType::UInt16,
-            Self::UInt32(_) => DataType::UInt32,
-            Self::UInt64(_) => DataType::UInt64,
-            Self::Float32(_) => DataType::Float32,
-            Self::Float64(_) => DataType::Float64,
-            Self::Utf8(_) => DataType::Utf8,
-            Self::LargeUtf8(_) => DataType::LargeUtf8,
-            Self::Decimal128 { precision, scale, .. } => DataType::Decimal128(*precision, *scale),
-            Self::Date32(_) => DataType::Date32,
-            Self::Timestamp { unit, .. } => DataType::Timestamp(*unit, None),
-            Self::Duration { unit, .. } => DataType::Duration(*unit),
-            Self::IntervalMonthDayNano { .. } => DataType::Interval(IntervalUnit::MonthDayNano),
-            Self::Null(data_type) => data_type.clone(),
-        }
-    }
-}
-
-impl fmt::Display for LiteralValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Boolean(value) => write!(f, "{value}"),
-            Self::Int8(value) => write!(f, "{value}"),
-            Self::Int16(value) => write!(f, "{value}"),
-            Self::Int32(value) => write!(f, "{value}"),
-            Self::Int64(value) => write!(f, "{value}"),
-            Self::UInt8(value) => write!(f, "{value}"),
-            Self::UInt16(value) => write!(f, "{value}"),
-            Self::UInt32(value) => write!(f, "{value}"),
-            Self::UInt64(value) => write!(f, "{value}"),
-            Self::Float32(value) => write!(f, "{value}"),
-            Self::Float64(value) => write!(f, "{value}"),
-            Self::Utf8(value) | Self::LargeUtf8(value) => write!(f, "{value:?}"),
-            Self::Decimal128 { raw, precision, scale } => {
-                write!(f, "DECIMAL128({raw}, precision={precision}, scale={scale})")
-            },
-            Self::Date32(value) => write!(f, "DATE32({value})"),
-            Self::Timestamp { raw, unit } => write!(f, "TIMESTAMP({raw}, {unit:?})"),
-            Self::Duration { raw, unit } => write!(f, "DURATION({raw}, {unit:?})"),
-            Self::IntervalMonthDayNano { months, days, nanoseconds } => {
-                write!(f, "INTERVAL(months={months}, days={days}, nanoseconds={nanoseconds})")
-            },
-            Self::Null(data_type) => write!(f, "NULL::{data_type}"),
-        }
     }
 }
 
