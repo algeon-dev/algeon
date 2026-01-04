@@ -108,6 +108,84 @@ fn native_execution_boundary_policy_reports_direct_source_and_explicit_host_mate
 }
 
 #[test]
+fn bounded_generic_local_parquet_pipeline_uses_ordered_source_scheduler() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-generic-source-scheduler");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("x00", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
+    let projection =
+        vec![Expr::column("key"), Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::column("m01")).alias("x00")];
+    let sort = SortSpec::new(vec![
+        SortExpr::new(Expr::column("key"), false, false),
+        SortExpr::new(Expr::column("x00"), true, false),
+    ]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let projection = builder.add_projection(filter, projection_outputs(projection, Arc::clone(&projected_schema)));
+    let sort = builder.add_sort(projection, sort, Arc::clone(&projected_schema));
+    let limit = builder.add_limit(sort, LimitSpec::fetch(4), projected_schema);
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_attempted, 3);
+    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.source_read_prefetches_started, 2);
+    assert_eq!(metrics.source_read_prefetches_completed, 2);
+    assert_eq!(metrics.source_read_prefetches_skipped, 0);
+    assert_eq!(metrics.source_read_prefetches_abandoned, 0);
+    let first_generic_operator = metrics
+        .reservation_events
+        .iter()
+        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "bounded_generic_filter")
+        .expect("bounded generic filter reservation should be recorded");
+    let prefetches_before_first_operator = metrics.reservation_events[..first_generic_operator]
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted" && event.memory_boundary == "bounded_generic_source_read_prefetch"
+        })
+        .count();
+    assert_eq!(prefetches_before_first_operator, 2);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 1, 2, 2]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[303, 101, 505, 202]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_group_only_aggregate_as_distinct_keys() {
     let dir = unique_temp_dir("cudf-query-engine-native-group-only-aggregate");
     let path = dir.join("input.parquet");

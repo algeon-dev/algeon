@@ -1,5 +1,7 @@
+use std::collections::VecDeque;
+
 use super::*;
-use crate::exec::source::{format_row_groups, read_local_parquet_chunk};
+use crate::exec::source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk};
 
 pub(in crate::exec::bounded) fn execute_bounded_join_leaf_input(
     context: &ExecutionContext,
@@ -127,8 +129,32 @@ fn execute_bounded_join_leaf_local_parquet_source(
     }
     record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
 
-    let mut chunks = Vec::with_capacity(chunk_plan.chunks.len());
-    for chunk in &chunk_plan.chunks {
+    let chunks = if context.source_scheduler_policy().enables_prefetch() && chunk_plan.chunks.len() > 1 {
+        read_join_leaf_source_chunks_with_scheduler(
+            context,
+            source,
+            node_id,
+            &chunk_plan.chunks,
+            reservations,
+            metrics,
+        )?
+    } else {
+        read_join_leaf_source_chunks_serial(context, source, node_id, &chunk_plan.chunks, reservations, metrics)?
+    };
+
+    concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics)
+}
+
+fn read_join_leaf_source_chunks_serial(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    source_chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
+    let mut chunks = Vec::with_capacity(source_chunks.len());
+    for chunk in source_chunks {
         metrics.record_source_chunk_attempt();
         let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
         let mut reservation = match reservations.try_reserve(
@@ -168,7 +194,222 @@ fn execute_bounded_join_leaf_local_parquet_source(
         chunks.push((frame, reservation));
     }
 
-    concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics)
+    Ok(chunks)
+}
+
+fn read_join_leaf_source_chunks_with_scheduler(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    source_chunks: &[SourceChunk],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
+    let mut pending = VecDeque::new();
+    let mut next_chunk_index = 0usize;
+    start_next_required_join_leaf_read(
+        context,
+        source,
+        source_chunks,
+        node_id,
+        reservations,
+        metrics,
+        &mut pending,
+        &mut next_chunk_index,
+    )?;
+    if let Err(error) = fill_optional_join_leaf_reads(
+        context,
+        source,
+        source_chunks,
+        node_id,
+        reservations,
+        metrics,
+        &mut pending,
+        &mut next_chunk_index,
+    ) {
+        abandon_join_leaf_reads(pending, reservations, metrics);
+        return Err(error);
+    }
+
+    let mut chunks = Vec::with_capacity(source_chunks.len());
+    for (index, chunk) in source_chunks.iter().enumerate() {
+        let scheduled =
+            pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
+        let is_prefetch = scheduled.is_prefetch();
+        let mut output = match scheduled.finish(reservations, metrics) {
+            Ok(output) => output,
+            Err(error) => {
+                abandon_join_leaf_reads(pending, reservations, metrics);
+                release_join_source_chunks_reverse(reservations, chunks);
+                return Err(attach_join_source_read_resource_facts(error, node_id, chunk));
+            },
+        };
+        if is_prefetch {
+            metrics.record_source_read_prefetch_completed();
+        }
+        if let Err(error) = grow_join_source_reservation_to_observed_frame(
+            &output.frame,
+            &mut output.reservation,
+            reservations,
+            node_id,
+            chunk,
+            metrics,
+        ) {
+            drop(output.frame);
+            reservations.release(output.reservation);
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            release_join_source_chunks_reverse(reservations, chunks);
+            return Err(error);
+        }
+        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+        chunks.push((output.frame, output.reservation));
+
+        if let Err(error) = fill_optional_join_leaf_reads(
+            context,
+            source,
+            source_chunks,
+            node_id,
+            reservations,
+            metrics,
+            &mut pending,
+            &mut next_chunk_index,
+        ) {
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            release_join_source_chunks_reverse(reservations, chunks);
+            return Err(error);
+        }
+        if pending.is_empty() && index + 1 < source_chunks.len() {
+            if let Err(error) = start_next_required_join_leaf_read(
+                context,
+                source,
+                source_chunks,
+                node_id,
+                reservations,
+                metrics,
+                &mut pending,
+                &mut next_chunk_index,
+            ) {
+                release_join_source_chunks_reverse(reservations, chunks);
+                return Err(error);
+            }
+        }
+    }
+
+    Ok(chunks)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_next_required_join_leaf_read(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    node_id: NodeId,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    pending: &mut VecDeque<ScheduledLocalParquetRead>,
+    next_chunk_index: &mut usize,
+) -> Result<()> {
+    if let Some(chunk) = chunks.get(*next_chunk_index) {
+        let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
+        pending.push_back(start_join_leaf_scheduled_source_read(
+            context,
+            source,
+            chunk,
+            node_id,
+            reservations,
+            metrics,
+            requested_bytes,
+            "join_source_read",
+            false,
+            false,
+        )?);
+        *next_chunk_index += 1;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn fill_optional_join_leaf_reads(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+    node_id: NodeId,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    pending: &mut VecDeque<ScheduledLocalParquetRead>,
+    next_chunk_index: &mut usize,
+) -> Result<()> {
+    let max_in_flight = context.source_scheduler_policy().max_source_reads_in_flight().max(1);
+    while pending.len() < max_in_flight {
+        let Some(chunk) = chunks.get(*next_chunk_index) else {
+            break;
+        };
+        let requested_bytes = prefetch_requested_bytes(context.memory_control_policy(), chunk);
+        if !reservations.can_reserve(requested_bytes) {
+            metrics.record_source_read_prefetch_skipped();
+            break;
+        }
+        metrics.record_source_read_prefetch_started();
+        pending.push_back(start_join_leaf_scheduled_source_read(
+            context,
+            source,
+            chunk,
+            node_id,
+            reservations,
+            metrics,
+            requested_bytes,
+            "join_source_read_prefetch",
+            true,
+            true,
+        )?);
+        *next_chunk_index += 1;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_join_leaf_scheduled_source_read(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    node_id: NodeId,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    requested_bytes: u64,
+    memory_boundary: &'static str,
+    strict_token_budget: bool,
+    prefetch: bool,
+) -> Result<ScheduledLocalParquetRead> {
+    metrics.record_source_chunk_attempt();
+    let request = join_source_read_reservation_request_for_boundary(
+        requested_bytes,
+        reservations.budget(),
+        node_id,
+        chunk,
+        memory_boundary,
+    );
+    let reservation = reservations.try_reserve(request, metrics)?;
+    let source_token_budget =
+        if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
+    Ok(ScheduledLocalParquetRead::spawn(
+        context.clone(),
+        source.clone(),
+        chunk.clone(),
+        reservation,
+        source_token_budget,
+        memory_boundary,
+        prefetch,
+    ))
+}
+
+fn abandon_join_leaf_reads(
+    mut pending: VecDeque<ScheduledLocalParquetRead>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(prefetch) = pending.pop_back() {
+        prefetch.abandon(reservations, metrics);
+    }
 }
 
 fn attach_join_source_read_resource_facts(error: QueryError, node_id: NodeId, chunk: &SourceChunk) -> QueryError {
@@ -190,10 +431,20 @@ fn join_source_read_reservation_request(
     node_id: NodeId,
     chunk: &SourceChunk,
 ) -> MemoryReservationRequest {
+    join_source_read_reservation_request_for_boundary(requested_bytes, budget_bytes, node_id, chunk, "join_source_read")
+}
+
+fn join_source_read_reservation_request_for_boundary(
+    requested_bytes: u64,
+    budget_bytes: u64,
+    node_id: NodeId,
+    chunk: &SourceChunk,
+    memory_boundary: &'static str,
+) -> MemoryReservationRequest {
     let mut request = MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, budget_bytes)
-        .with_memory_boundary("join_source_read")
+        .with_memory_boundary(memory_boundary)
         .with_node_id(node_id)
-        .with_stage("join_source_read")
+        .with_stage(memory_boundary)
         .with_chunk_index(chunk.chunk_index)
         .with_file_index(chunk.file_index)
         .with_path(chunk.path.display())
