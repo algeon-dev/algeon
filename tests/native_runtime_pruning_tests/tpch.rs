@@ -1,0 +1,453 @@
+use std::fs::File;
+
+use arrow::array::{Date32Array, Int64Array, StringArray};
+use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+
+use super::{fixtures::date32, *};
+
+#[tokio::test]
+async fn native_runtime_tpch_q6_tiny_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q6-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    assert_tpch_q6_native_parity(&dir.join("lineitem.parquet")).await;
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q1_tiny_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q1-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q1 = TPCH_QUERIES.iter().find(|query| query.id == "q01").expect("TPC-H Q1 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q1.sql).await;
+    assert!(
+        cpu_batches.iter().map(|batch| batch.num_rows()).sum::<usize>() > 0,
+        "tiny TPC-H Q1 should exercise non-empty output parity"
+    );
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q1.sql, native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q1 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q3-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q3 = TPCH_QUERIES.iter().find(|query| query.id == "q03").expect("TPC-H Q3 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q3.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q3.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q3 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q7-tiny-bounded");
+    write_q7_nonempty_tpch_parquet_dataset(&dir);
+    let q7 = TPCH_QUERIES.iter().find(|query| query.id == "q07").expect("TPC-H Q7 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q7.sql).await;
+    assert_q7_nation_identity_rows(&cpu_batches);
+
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q7.sql).await;
+    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert!(
+        lowering.plans[0].has_bounded_executable_multi_join_pipeline(),
+        "Q7 should use the bounded multi-join native path:\n{}",
+        lowering.plans[0]
+    );
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q7 should be replaced by NativeCudfExec");
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_q7_nation_identity_rows(&native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q2_tiny_root_topk_join_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q2-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q2 = TPCH_QUERIES.iter().find(|query| query.id == "q02").expect("TPC-H Q2 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q2.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q2 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q19-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q19 = TPCH_QUERIES.iter().find(|query| query.id == "q19").expect("TPC-H Q19 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q19.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q19.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q19 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q15_tiny_root_join_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q15-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q15 = TPCH_QUERIES.iter().find(|query| query.id == "q15").expect("TPC-H Q15 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q15.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q15.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q15 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q16_tiny_distinct_anti_join_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q16-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q16 = TPCH_QUERIES.iter().find(|query| query.id == "q16").expect("TPC-H Q16 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q16.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q16.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q16 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q11 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-bounded");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
+    assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q11 CPU output should be non-empty");
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q11 should be replaced by NativeCudfExec");
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+
+    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservation_facts() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-budget-failure");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q11.sql, constrained_native_datafusion_config()).await;
+    assert_native_cudf_exec(
+        &native_plan,
+        "bounded TPC-H Q11 should be admitted before the constrained runtime budget fails",
+    );
+
+    let error = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap_err();
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
+    assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
+    assert_eq!(
+        adapter_error.fact_value("bounded_join_execution_family"),
+        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
+    );
+    for fact in [
+        "memory_boundary",
+        "reservation_kind",
+        "requested_bytes",
+        "granted_bytes",
+        "budget_bytes",
+        "node_id",
+        "stage",
+        "attempt",
+        "max_attempts",
+    ] {
+        assert!(adapter_error.fact_value(fact).is_some(), "missing Q11 reservation failure fact {fact}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q17_tiny_decimal_residual_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q17-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q17 = TPCH_QUERIES.iter().find(|query| query.id == "q17").expect("TPC-H Q17 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q17.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql, unbounded_native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q17 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q22-tiny");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let q22 = TPCH_QUERIES.iter().find(|query| query.id == "q22").expect("TPC-H Q22 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q22.sql).await;
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q22.sql, native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q22 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires local TPC-H SF1 Parquet data"]
+async fn native_runtime_tpch_q6_sf1_matches_cpu() {
+    let root = std::env::var("CUDF_TPCH_PARQUET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("tests/data/tpch/sf1/parquet"));
+    assert_tpch_q6_native_parity(&root.join("lineitem.parquet")).await;
+}
+
+fn record_batch_row_count(batches: &[RecordBatch]) -> usize {
+    batches.iter().map(RecordBatch::num_rows).sum()
+}
+
+async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
+    assert!(lineitem_path.exists(), "missing lineitem parquet file: {}", lineitem_path.display());
+    let q6 = TPCH_QUERIES.iter().find(|query| query.id == "q06").expect("TPC-H Q6 query must exist");
+    let cpu_batches = cpu_lineitem_sql_output(lineitem_path, q6.sql).await;
+    assert!(
+        cpu_batches.iter().map(|batch| batch.num_rows()).sum::<usize>() > 0,
+        "tiny TPC-H Q6 should exercise non-empty output parity"
+    );
+
+    let native_plan = native_datafusion_lineitem_sql_plan(lineitem_path, q6.sql, native_datafusion_config()).await;
+    assert!(
+        displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
+        "TPC-H Q6 should be replaced by NativeCudfExec"
+    );
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(native_plan, Arc::new(TaskContext::default())).await.unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
+    assert_batches_equal(&cpu_batches, &native_batches);
+}
+
+fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
+    write_tiny_tpch_parquet_dataset(root).unwrap();
+    write_q7_table(
+        &root.join("customer.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("c_custkey", DataType::Int64, false),
+            Field::new("c_nationkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![10, 20])), Arc::new(Int64Array::from(vec![3, 4]))],
+    );
+    write_q7_table(
+        &root.join("supplier.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("s_suppkey", DataType::Int64, false),
+            Field::new("s_nationkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![100, 200])), Arc::new(Int64Array::from(vec![3, 4]))],
+    );
+    write_q7_table(
+        &root.join("orders.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("o_orderkey", DataType::Int64, false),
+            Field::new("o_custkey", DataType::Int64, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![1000, 2000, 3000])), Arc::new(Int64Array::from(vec![20, 10, 20]))],
+    );
+    write_q7_table(
+        &root.join("nation.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("n_nationkey", DataType::Int64, false),
+            Field::new("n_name", DataType::Utf8, false),
+        ])),
+        vec![Arc::new(Int64Array::from(vec![3, 4])), Arc::new(StringArray::from(vec!["FRANCE", "GERMANY"]))],
+    );
+    write_q7_table(
+        &root.join("lineitem.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("l_orderkey", DataType::Int64, false),
+            Field::new("l_suppkey", DataType::Int64, false),
+            Field::new("l_shipdate", DataType::Date32, false),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+            Field::new("l_discount", DataType::Decimal128(15, 2), false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1000, 2000, 3000])),
+            Arc::new(Int64Array::from(vec![100, 200, 200])),
+            Arc::new(Date32Array::from(vec![date32(1995, 6, 1), date32(1996, 7, 1), date32(1995, 8, 1)])),
+            Arc::new(
+                Decimal128Array::from_iter_values([10_000, 20_000, 30_000]).with_precision_and_scale(15, 2).unwrap(),
+            ),
+            Arc::new(Decimal128Array::from_iter_values([10, 5, 0]).with_precision_and_scale(15, 2).unwrap()),
+        ],
+    );
+}
+
+fn write_q7_table(path: &std::path::Path, schema: Arc<Schema>, columns: Vec<ArrayRef>) {
+    let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn assert_q7_nation_identity_rows(batches: &[RecordBatch]) {
+    assert!(!batches.is_empty());
+    assert_eq!(batches[0].schema().field(0).name(), "supp_nation");
+    assert_eq!(batches[0].schema().field(1).name(), "cust_nation");
+    assert_eq!(batches[0].schema().field(2).name(), "l_year");
+    let mut rows = Vec::new();
+    for batch in batches {
+        for row in 0..batch.num_rows() {
+            rows.push((
+                array_value(batch.column(0), row),
+                array_value(batch.column(1), row),
+                array_value(batch.column(2), row),
+            ));
+        }
+    }
+    rows.sort_unstable();
+    assert_eq!(
+        rows,
+        vec![
+            ("FRANCE".to_string(), "GERMANY".to_string(), "1995".to_string()),
+            ("GERMANY".to_string(), "FRANCE".to_string(), "1996".to_string()),
+        ]
+    );
+}

@@ -1,0 +1,102 @@
+use super::super::*;
+
+#[tokio::test]
+async fn tpch_workload_builder_generates_stable_query_items() {
+    let dir = unique_temp_dir("datafusion-cudf-tpch-workload-builder");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+
+    for table in TPCH_TABLES {
+        assert!(dir.join(format!("{table}.parquet")).exists());
+    }
+    let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
+    assert_eq!(metadata.scale_factor, "tiny");
+    assert_eq!(metadata.provenance, "generated_tiny");
+    assert_eq!(metadata.generation_command, "datafusion-cudf::write_tiny_tpch_parquet_dataset");
+    assert_eq!(metadata.table_count, TPCH_TABLES.len());
+    assert_eq!(metadata.file_count, TPCH_TABLES.len());
+    assert_eq!(metadata.total_rows, 26);
+    assert_eq!(
+        metadata.table_row_counts(),
+        "customer=3,lineitem=3,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3"
+    );
+    assert_eq!(
+        metadata.table_file_counts(),
+        "customer=1,lineitem=1,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1"
+    );
+    assert!(metadata.metadata_fingerprint.starts_with("metadata-fnv1a64:"));
+    assert_eq!(metadata.content_fingerprint, None);
+
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let actual_ids = items.iter().map(|item| item.query_id.as_str()).collect::<Vec<_>>();
+    let expected_ids = tpch_query_ids().collect::<Vec<_>>();
+    assert_eq!(TPCH_QUERY_COUNT, 22);
+    assert_eq!(items.len(), TPCH_QUERY_COUNT);
+    assert_eq!(actual_ids, expected_ids);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_metadata_accepts_directory_layouts_and_pins_fingerprint_semantics() {
+    let source = unique_temp_dir("datafusion-cudf-tpch-directory-layout-source");
+    let layout_a = unique_temp_dir("datafusion-cudf-tpch-directory-layout-a");
+    let layout_b = unique_temp_dir("datafusion-cudf-tpch-directory-layout-b");
+    write_tiny_tpch_parquet_dataset(&source).unwrap();
+    copy_tiny_tpch_as_directory_layout(&source, &layout_a, &["part-000.parquet"]);
+    copy_tiny_tpch_as_directory_layout(&source, &layout_b, &["renamed-000.parquet"]);
+
+    let metadata =
+        describe_tpch_dataset_with_content_fingerprint(&layout_a, "tiny", "directory_layout", "copy_tiny", true)
+            .unwrap();
+    assert_eq!(metadata.table_count, TPCH_TABLES.len());
+    assert_eq!(metadata.file_count, TPCH_TABLES.len());
+    assert_eq!(metadata.total_rows, 26);
+    assert!(metadata.metadata_fingerprint.starts_with("metadata-fnv1a64:"));
+    assert!(metadata.content_fingerprint.as_deref().unwrap().starts_with("content-fnv1a64:"));
+
+    let lineitem = metadata.tables.iter().find(|table| table.table == "lineitem").unwrap();
+    assert_eq!(lineitem.path, layout_a.join("lineitem"));
+    assert_eq!(lineitem.file_count, 1);
+    assert_eq!(lineitem.files[0].relative_path, "lineitem/part-000.parquet");
+    assert!(lineitem.schema.contains("l_orderkey"));
+
+    let same_content_different_paths =
+        describe_tpch_dataset_with_content_fingerprint(&layout_b, "tiny", "directory_layout", "copy_tiny", true)
+            .unwrap();
+    assert_ne!(
+        metadata.metadata_fingerprint, same_content_different_paths.metadata_fingerprint,
+        "metadata fingerprint must include table-relative file paths"
+    );
+    assert_ne!(
+        metadata.content_fingerprint, same_content_different_paths.content_fingerprint,
+        "content fingerprint includes relative paths as part of dataset identity"
+    );
+
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(layout_a).unwrap();
+    fs::remove_dir_all(layout_b).unwrap();
+}
+
+#[tokio::test]
+async fn tpch_workload_builder_registers_multi_file_directory_layout() {
+    let source = unique_temp_dir("datafusion-cudf-tpch-multi-file-source");
+    let layout = unique_temp_dir("datafusion-cudf-tpch-multi-file-layout");
+    write_tiny_tpch_parquet_dataset(&source).unwrap();
+    copy_tiny_tpch_as_directory_layout(&source, &layout, &["part-000.parquet", "part-001.parquet"]);
+
+    let metadata =
+        describe_tpch_dataset_with_content_fingerprint(&layout, "tiny", "directory_layout", "copy_tiny", false)
+            .unwrap();
+    assert_eq!(metadata.file_count, TPCH_TABLES.len() * 2);
+    assert_eq!(metadata.total_rows, 52);
+    assert_eq!(
+        metadata.table_file_counts(),
+        "customer=2,lineitem=2,nation=2,orders=2,part=2,partsupp=2,region=2,supplier=2"
+    );
+
+    let items = tpch_fallback_pressure_workload_items(&layout, tpch_report_session_config()).await.unwrap();
+    assert_eq!(items.len(), TPCH_QUERY_COUNT);
+
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(layout).unwrap();
+}

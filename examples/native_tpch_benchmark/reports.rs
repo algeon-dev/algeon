@@ -1,5 +1,10 @@
 use super::*;
 
+#[path = "reports/formatting.rs"]
+mod formatting;
+
+use formatting::*;
+
 pub(super) const NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION: u32 = 4;
 pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tbounded_join_reservation_facts\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tjoin_gather_map_bytes\tparquet_read_time_ms\tsource_read_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
 
@@ -394,140 +399,4 @@ pub(super) fn bounded_status(memory_policy: NativeTpchMemoryPolicy, row: &Native
         },
         (NativeTpchMemoryPolicy::Unbounded, true, _, validation::ParityStatus::NotRun) => "unbounded_accepted_not_run",
     }
-}
-
-fn write_native_memory_policy_metadata(output: &mut String, memory_policy: NativeTpchMemoryPolicy) {
-    match memory_policy {
-        NativeTpchMemoryPolicy::Unbounded => {
-            push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_row_groups_per_chunk=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_retry_attempts=none"));
-            push_line(output, format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups=none"));
-        },
-        NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-        } => {
-            push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes={device_budget_bytes}"));
-            push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes={max_source_chunk_bytes}"));
-            push_line(
-                output,
-                format_args!("# tpch_benchmark_native_max_row_groups_per_chunk={max_row_groups_per_chunk}"),
-            );
-            push_line(output, format_args!("# tpch_benchmark_native_max_retry_attempts={max_retry_attempts}"));
-            push_line(
-                output,
-                format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups={min_retry_chunk_row_groups}"),
-            );
-        },
-    }
-}
-
-fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDatasetMetadata) {
-    push_line(output, format_args!("# tpch_dataset_root={}", metadata.root.display()));
-    push_line(output, format_args!("# tpch_dataset_scale_factor={}", metadata_value(&metadata.scale_factor)));
-    push_line(output, format_args!("# tpch_dataset_provenance={}", metadata_value(&metadata.provenance)));
-    push_line(
-        output,
-        format_args!("# tpch_dataset_generation_command={}", metadata_value(&metadata.generation_command)),
-    );
-    push_line(output, format_args!("# tpch_dataset_table_count={}", metadata.table_count));
-    push_line(output, format_args!("# tpch_dataset_file_count={}", metadata.file_count));
-    push_line(output, format_args!("# tpch_dataset_total_rows={}", metadata.total_rows));
-    push_line(output, format_args!("# tpch_dataset_total_bytes={}", metadata.total_bytes));
-    push_line(output, format_args!("# tpch_dataset_metadata_fingerprint={}", metadata.metadata_fingerprint));
-    push_line(
-        output,
-        format_args!(
-            "# tpch_dataset_content_fingerprint={}",
-            metadata.content_fingerprint.as_deref().unwrap_or("not_computed")
-        ),
-    );
-    push_line(output, format_args!("# tpch_dataset_table_file_counts={}", metadata.table_file_counts()));
-    push_line(output, format_args!("# tpch_dataset_table_row_counts={}", metadata.table_row_counts()));
-    push_line(output, format_args!("# tpch_dataset_table_byte_sizes={}", metadata.table_byte_sizes()));
-    push_line(output, format_args!("# tpch_dataset_table_row_group_counts={}", metadata.table_row_group_counts()));
-}
-
-fn format_bounded_join_reservation_facts(facts: &BTreeMap<String, String>) -> String {
-    format_key_value_facts(facts)
-}
-
-fn format_failure_facts(facts: &BTreeMap<String, String>) -> String {
-    format_key_value_facts(facts)
-}
-
-fn format_key_value_facts(facts: &BTreeMap<String, String>) -> String {
-    if facts.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut output = String::new();
-    for (index, (key, value)) in facts.iter().enumerate() {
-        if index > 0 {
-            output.push(';');
-        }
-        output.push_str(&stable_tsv_field(key));
-        output.push('=');
-        output.push_str(&stable_tsv_field(value));
-    }
-    output
-}
-
-fn metric_duration_ms(metrics: &MetricsSet, name: &str) -> Option<f64> {
-    metrics
-        .sum_by_name(name)
-        .map(|value| duration_ms(Duration::from_nanos(value.as_usize().min(u64::MAX as usize) as u64)))
-}
-
-fn mean_duration(samples: &[Duration]) -> Duration {
-    let total_nanos = samples.iter().map(Duration::as_nanos).sum::<u128>();
-    Duration::from_nanos((total_nanos / samples.len().max(1) as u128).min(u128::from(u64::MAX)) as u64)
-}
-
-fn duration_ms(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1_000.0
-}
-
-fn optional_f64_text(value: Option<f64>) -> String {
-    value.map_or_else(|| "not_run".to_string(), |value| format!("{value:.3}"))
-}
-
-fn optional_usize_text(value: Option<usize>) -> String {
-    value.map_or_else(|| "not_run".to_string(), |value| value.to_string())
-}
-
-fn optional_usize_text_none(value: Option<usize>) -> String {
-    value.map_or_else(|| "none".to_string(), |value| value.to_string())
-}
-
-fn optional_text(value: Option<&str>, missing: &str) -> String {
-    value.map_or_else(|| missing.to_string(), stable_tsv_field)
-}
-
-fn mean_optional_f64(values: impl IntoIterator<Item = Option<f64>>) -> Option<f64> {
-    let mut sum = 0.0;
-    let mut count = 0_u64;
-    for value in values.into_iter().flatten() {
-        sum += value;
-        count += 1;
-    }
-    (count > 0).then_some(sum / count as f64)
-}
-
-fn metadata_value(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-fn stable_tsv_field(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-fn push_line(output: &mut String, args: std::fmt::Arguments<'_>) {
-    use std::fmt::Write;
-    let _ = writeln!(output, "{args}");
 }
