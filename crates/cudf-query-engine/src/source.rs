@@ -25,6 +25,7 @@ pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
 /// filter-only column roles, and source diagnostics. The executor should not
 /// need frontend-specific scan metadata.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum SourceNode {
     /// Local filesystem Parquet input.
     LocalParquet(LocalParquetSource),
@@ -387,6 +388,19 @@ pub struct LocalParquetFile {
     pub row_groups: Option<Vec<usize>>,
     /// Estimated or known byte sizes for selected row groups.
     pub row_group_bytes: Option<Vec<u64>>,
+    /// Estimated or known compressed byte sizes for projected output file columns.
+    pub projected_row_group_compressed_bytes: Option<Vec<u64>>,
+    /// Estimated or known uncompressed byte sizes for projected output file columns.
+    ///
+    /// Bounded source chunk planning uses this as its primary chunk-size input
+    /// when available. Columns used only by source-adjacent filters are tracked
+    /// separately so they can contribute to read/decode cost without forcing
+    /// retained output sizing.
+    pub projected_row_group_uncompressed_bytes: Option<Vec<u64>>,
+    /// Estimated or known compressed byte sizes for pure-filter file columns.
+    pub pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
+    /// Estimated or known uncompressed byte sizes for pure-filter file columns.
+    pub pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     /// Estimated or known row counts for selected row groups.
     pub row_group_rows: Option<Vec<u64>>,
     /// Values for `LocalParquetSource::partition_columns` in source order.
@@ -404,6 +418,10 @@ impl LocalParquetFile {
             file_size_bytes: None,
             row_groups: None,
             row_group_bytes: None,
+            projected_row_group_compressed_bytes: None,
+            projected_row_group_uncompressed_bytes: None,
+            pure_filter_row_group_compressed_bytes: None,
+            pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
             partition_values: Vec::new(),
         }
@@ -433,6 +451,24 @@ impl LocalParquetFile {
         self
     }
 
+    /// Sets projected output column byte-size metadata for row groups.
+    pub fn with_projected_row_group_bytes(mut self, compressed_bytes: Vec<u64>, uncompressed_bytes: Vec<u64>) -> Self {
+        self.projected_row_group_compressed_bytes = Some(compressed_bytes);
+        self.projected_row_group_uncompressed_bytes = Some(uncompressed_bytes);
+        self
+    }
+
+    /// Sets pure-filter column byte-size metadata for row groups.
+    pub fn with_pure_filter_row_group_bytes(
+        mut self,
+        compressed_bytes: Vec<u64>,
+        uncompressed_bytes: Vec<u64>,
+    ) -> Self {
+        self.pure_filter_row_group_compressed_bytes = Some(compressed_bytes);
+        self.pure_filter_row_group_uncompressed_bytes = Some(uncompressed_bytes);
+        self
+    }
+
     /// Sets row-count metadata for selected row groups.
     pub fn with_row_group_rows(mut self, row_group_rows: Vec<u64>) -> Self {
         self.row_group_rows = Some(row_group_rows);
@@ -448,7 +484,13 @@ impl LocalParquetFile {
     /// Returns the represented selected row-group count, or zero if unknown.
     pub fn selected_row_group_count(&self) -> usize {
         self.row_groups.as_ref().map_or_else(
-            || self.row_group_bytes.as_ref().or(self.row_group_rows.as_ref()).map_or(0, Vec::len),
+            || {
+                self.row_group_bytes
+                    .as_ref()
+                    .or(self.projected_row_group_uncompressed_bytes.as_ref())
+                    .or(self.row_group_rows.as_ref())
+                    .map_or(0, Vec::len)
+            },
             Vec::len,
         )
     }

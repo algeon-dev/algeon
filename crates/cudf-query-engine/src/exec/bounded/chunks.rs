@@ -227,7 +227,12 @@ pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceC
         MemoryControlPolicy::Unbounded => 0,
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => max_source_chunk_bytes,
     };
-    chunk.known_row_group_bytes.or(chunk.estimated_chunk_bytes).or(chunk.known_file_bytes).unwrap_or(fallback)
+    chunk
+        .estimated_source_read_bytes
+        .or(chunk.known_row_group_bytes)
+        .or(chunk.estimated_chunk_bytes)
+        .or(chunk.known_file_bytes)
+        .unwrap_or(fallback)
 }
 
 pub(super) fn chunk_reservation_request(
@@ -289,6 +294,17 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
     let parent_row_group_count = parent.row_group_indexes.len();
     let known_row_group_bytes =
         proportional_bytes(parent.known_row_group_bytes, row_group_indexes.len(), parent_row_group_count);
+    let known_projected_compressed_bytes =
+        proportional_bytes(parent.known_projected_compressed_bytes, row_group_indexes.len(), parent_row_group_count);
+    let known_projected_uncompressed_bytes =
+        proportional_bytes(parent.known_projected_uncompressed_bytes, row_group_indexes.len(), parent_row_group_count);
+    let known_pure_filter_compressed_bytes =
+        proportional_bytes(parent.known_pure_filter_compressed_bytes, row_group_indexes.len(), parent_row_group_count);
+    let known_pure_filter_uncompressed_bytes = proportional_bytes(
+        parent.known_pure_filter_uncompressed_bytes,
+        row_group_indexes.len(),
+        parent_row_group_count,
+    );
     let known_file_bytes = if parent.known_row_group_bytes.is_some() {
         parent.known_file_bytes
     } else {
@@ -296,6 +312,15 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
     };
     let estimated_chunk_bytes = proportional_bytes(
         parent.estimated_chunk_bytes.or(parent.known_row_group_bytes).or(parent.known_file_bytes),
+        row_group_indexes.len(),
+        parent_row_group_count,
+    );
+    let estimated_source_read_bytes = proportional_bytes(
+        parent
+            .estimated_source_read_bytes
+            .or(parent.known_row_group_bytes)
+            .or(parent.estimated_chunk_bytes)
+            .or(parent.known_file_bytes),
         row_group_indexes.len(),
         parent_row_group_count,
     );
@@ -310,7 +335,12 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         reads_all_row_groups: false,
         known_file_bytes,
         known_row_group_bytes,
+        known_projected_compressed_bytes,
+        known_projected_uncompressed_bytes,
+        known_pure_filter_compressed_bytes,
+        known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
+        estimated_source_read_bytes,
         read_columns: parent.read_columns.clone(),
         partition_values: parent.partition_values.clone(),
         zero_column_count: parent.zero_column_count,

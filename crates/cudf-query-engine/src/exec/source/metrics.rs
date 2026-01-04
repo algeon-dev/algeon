@@ -10,7 +10,12 @@ pub(in crate::exec) fn record_bounded_parquet_source_metrics(
         .chunks
         .iter()
         .map(|chunk| {
-            chunk.known_row_group_bytes.or(chunk.estimated_chunk_bytes).or(chunk.known_file_bytes).unwrap_or(0)
+            chunk
+                .estimated_source_read_bytes
+                .or(chunk.known_row_group_bytes)
+                .or(chunk.estimated_chunk_bytes)
+                .or(chunk.known_file_bytes)
+                .unwrap_or(0)
         })
         .sum::<u64>();
 

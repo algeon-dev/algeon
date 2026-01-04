@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+pub(super) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 14 * 1024 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
@@ -72,7 +72,7 @@ impl Default for NativeTpchBenchmarkConfig {
             query_ids: TPCH_QUERIES.iter().map(|query| query.id.to_string()).collect(),
             warmup_iterations: 0,
             iterations: 1,
-            dataset_mode: NativeTpchDatasetMode::Sf1External,
+            dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf1),
             native_memory_policy: NativeTpchMemoryPolicy::default(),
         }
     }
@@ -80,7 +80,7 @@ impl Default for NativeTpchBenchmarkConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NativeTpchDatasetMode {
-    Sf1External,
+    External(NativeTpchScaleFactor),
     AllowTiny,
 }
 
@@ -91,16 +91,48 @@ impl NativeTpchDatasetMode {
             Some(value) => value.to_string_lossy().to_ascii_lowercase(),
         };
         match mode.as_str() {
-            "sf1_external" | "external" | "sf1" => Ok(Self::Sf1External),
+            "sf1_external" | "external" | "sf1" => Ok(Self::External(NativeTpchScaleFactor::Sf1)),
+            "sf10_external" | "sf10" => Ok(Self::External(NativeTpchScaleFactor::Sf10)),
             "allow_tiny" | "dev_tiny" | "tiny" => Ok(Self::AllowTiny),
-            other => Err(plan_error(format!("invalid {name}: {other}; expected sf1_external or allow_tiny"))),
+            other => {
+                Err(plan_error(format!("invalid {name}: {other}; expected sf1_external, sf10_external, or allow_tiny")))
+            },
         }
     }
 
     pub(super) const fn as_str(self) -> &'static str {
         match self {
-            Self::Sf1External => "sf1_external",
+            Self::External(scale_factor) => scale_factor.dataset_mode_str(),
             Self::AllowTiny => "allow_tiny",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeTpchScaleFactor {
+    Sf1,
+    Sf10,
+}
+
+impl NativeTpchScaleFactor {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sf1 => "sf1",
+            Self::Sf10 => "sf10",
+        }
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        match self {
+            Self::Sf1 => "SF1",
+            Self::Sf10 => "SF10",
+        }
+    }
+
+    pub(super) const fn dataset_mode_str(self) -> &'static str {
+        match self {
+            Self::Sf1 => "sf1_external",
+            Self::Sf10 => "sf10_external",
         }
     }
 }

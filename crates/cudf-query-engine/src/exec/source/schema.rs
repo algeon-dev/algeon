@@ -9,7 +9,7 @@ pub(super) fn coerce_local_parquet_source_schema(
     let timer = Instant::now();
     for (field_index, field) in source.schema.fields().iter().enumerate() {
         let field_name = field.name();
-        if !frame.column_names().iter().any(|name| *name == field_name.as_str()) {
+        if !frame.column_names().contains(&field_name.as_str()) {
             continue;
         }
         let expected_dtype = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {

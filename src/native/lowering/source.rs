@@ -119,9 +119,9 @@ pub(super) fn lower_source_input(
                 projection,
                 required_output_fields,
             )?;
-            return Ok(projected);
+            Ok(projected)
         } else {
-            return Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings));
+            Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
         }
     } else {
         Ok(scan_output)

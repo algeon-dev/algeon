@@ -87,7 +87,7 @@ pub(super) fn execute_bounded_root_keyless_conditional_join(
                 size_data_bytes,
                 expected_output_rows,
                 gather_map_reservation_bytes,
-                BoundedKeylessConditionalJoinWork::Full { size_data, size_data_reservation },
+                BoundedKeylessConditionalJoinWork::Full { size_data: Box::new(size_data), size_data_reservation },
             )
         } else {
             let output_size = keyless_conditional_join_output_size(
@@ -120,7 +120,7 @@ pub(super) fn execute_bounded_root_keyless_conditional_join(
     )?;
     let indices = match work {
         BoundedKeylessConditionalJoinWork::Full { size_data, size_data_reservation } => {
-            let indices = size_data.materialize_indices_in(&overrides);
+            let indices = (*size_data).materialize_indices_in(&overrides);
             reservations.release(size_data_reservation);
             let indices = indices.map_err(|error| join_index_error(error, node))?;
             BoundedKeylessConditionalJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
@@ -195,7 +195,7 @@ enum BoundedKeylessConditionalJoinIndices {
 }
 
 enum BoundedKeylessConditionalJoinWork<'a> {
-    Full { size_data: cudf::DataFrameConditionalFullJoinSizeData<'a>, size_data_reservation: ActiveReservation },
+    Full { size_data: Box<cudf::DataFrameConditionalFullJoinSizeData<'a>>, size_data_reservation: ActiveReservation },
     Sized { output_size: usize, options: cudf::DataFramePredicateJoinOptions },
 }
 

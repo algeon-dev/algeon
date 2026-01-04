@@ -48,7 +48,7 @@ pub(super) fn assert_source_budget_event_context(
     assert_eq!(event.context_facts.get("source_read_mode").map(String::as_str), Some("execution_frame"));
     assert_eq!(event.context_facts.get("read_columns").map(String::as_str), Some(read_columns));
     assert_eq!(event.context_facts.get("projected_columns").map(String::as_str), Some(projected_columns));
-    assert!(event.context_facts.get("path").is_some(), "source event should record source path: {event:?}");
+    assert!(event.context_facts.contains_key("path"), "source event should record source path: {event:?}");
     assert!(event.output_rows.is_some_and(|rows| rows > 0), "source event should record decoded rows: {event:?}");
     assert!(
         event.retained_bytes.is_some_and(|bytes| bytes > 0),

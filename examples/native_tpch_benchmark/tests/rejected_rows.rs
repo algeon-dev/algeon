@@ -41,7 +41,7 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
     assert!(text.contains("# tpch_benchmark_native_peak_memory_fields=max_across_measured_iterations\n"));
     assert!(text.contains("# tpch_benchmark_native_timing_fields=per_measured_iteration_mean\n"));
     assert!(text.contains("# tpch_benchmark_dataset_mode=sf1_external\n"));
-    assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=8589934592\n"));
+    assert!(text.contains("# tpch_benchmark_native_device_budget_bytes=15032385536\n"));
     assert!(text.contains("# tpch_benchmark_native_max_source_chunk_bytes=536870912\n"));
     assert!(text.contains(
         "q02\trejected_before_execution\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"

@@ -7,6 +7,7 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(config.selected_queries().len(), TPCH_QUERIES.len());
     assert_eq!(config.iterations, 1);
     assert_eq!(config.dataset_mode.as_str(), "sf1_external");
+    assert_eq!(NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf10).as_str(), "sf10_external");
     assert_eq!(config.native_memory_policy.as_str(), "bounded");
     config.validate().unwrap();
 }
@@ -14,6 +15,7 @@ fn default_config_selects_all_tpch_queries() {
 #[test]
 fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
     dataset::validate_sf1_external_metadata(&benchmark_metadata()).unwrap();
+    dataset::validate_sf10_external_metadata(&benchmark_sf10_metadata()).unwrap();
 
     let tiny = TpchDatasetMetadata {
         scale_factor: "tiny".to_string(),
@@ -49,6 +51,14 @@ fn sf1_external_dataset_mode_rejects_tiny_or_unknown_metadata() {
     let error = dataset::validate_sf1_external_metadata(&mislabeled_tiny)
         .expect_err("SF1 benchmark mode must reject mislabeled tiny data");
     assert!(error.to_string().contains("requires SF1 row count lineitem=6001215"));
+
+    let error = dataset::validate_sf1_external_metadata(&benchmark_sf10_metadata())
+        .expect_err("SF1 benchmark mode must reject SF10 metadata");
+    assert!(error.to_string().contains("requires CUDF_TPCH_SCALE_FACTOR=sf1"));
+
+    let error = dataset::validate_sf10_external_metadata(&benchmark_metadata())
+        .expect_err("SF10 benchmark mode must reject SF1 metadata");
+    assert!(error.to_string().contains("requires CUDF_TPCH_SCALE_FACTOR=sf10"));
 }
 
 #[test]

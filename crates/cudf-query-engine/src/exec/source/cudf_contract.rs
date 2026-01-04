@@ -116,6 +116,38 @@ fn cudf_local_parquet_file_for_chunk(
                 .with_fact("file_index", chunk.file_index)
             })?;
     }
+    if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
+        (&file.projected_row_group_compressed_bytes, &file.projected_row_group_uncompressed_bytes)
+    {
+        cudf_file = cudf_file
+            .with_projected_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_chunk.file_cudf",
+                    "failed to attach projected row-group byte metadata to cudf source contract",
+                    error,
+                )
+                .with_fact("path", chunk.path.display())
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+            })?;
+    }
+    if let (Some(compressed_bytes), Some(uncompressed_bytes)) =
+        (&file.pure_filter_row_group_compressed_bytes, &file.pure_filter_row_group_uncompressed_bytes)
+    {
+        cudf_file = cudf_file
+            .with_pure_filter_row_group_bytes(compressed_bytes.clone(), uncompressed_bytes.clone())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_chunk.file_cudf",
+                    "failed to attach pure-filter row-group byte metadata to cudf source contract",
+                    error,
+                )
+                .with_fact("path", chunk.path.display())
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+            })?;
+    }
     Ok(cudf_file)
 }
 

@@ -52,10 +52,10 @@ pub(super) fn physical_projection_field_with_name(plan: &dyn ExecutionPlan, fiel
 }
 
 fn collect_physical_projection_fields_with_name(plan: &dyn ExecutionPlan, field_name: &str, fields: &mut Vec<Field>) {
-    if plan.as_any().is::<ProjectionExec>() {
-        if let Ok(field) = plan.schema().field_with_name(field_name) {
-            fields.push(field.clone());
-        }
+    if plan.as_any().is::<ProjectionExec>()
+        && let Ok(field) = plan.schema().field_with_name(field_name)
+    {
+        fields.push(field.clone());
     }
     for child in plan.children() {
         collect_physical_projection_fields_with_name(child.as_ref(), field_name, fields);
