@@ -79,6 +79,10 @@ impl ReservationTracker {
         self.budget_bytes.saturating_sub(self.reserved_bytes())
     }
 
+    pub(in crate::exec) fn can_reserve(&self, requested_bytes: u64) -> bool {
+        requested_bytes <= self.remaining_bytes()
+    }
+
     pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
         self.assert_reservation_belongs_to_tracker(reservation, "available_bytes_including");
         reservation.bytes().saturating_add(self.remaining_bytes())

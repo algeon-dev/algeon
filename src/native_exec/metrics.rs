@@ -39,6 +39,10 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "source_chunks_attempted",
     "source_chunks_committed",
     "source_chunks_retried",
+    "source_read_prefetches_started",
+    "source_read_prefetches_completed",
+    "source_read_prefetches_skipped",
+    "source_read_prefetches_abandoned",
     "row_groups_planned",
     "row_groups_committed",
     "partial_aggregate_count",
@@ -64,6 +68,8 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "filtered_join_probe_state_bytes",
     "mixed_join_size_data_bytes",
     "join_gather_map_bytes",
+    "source_metadata_load_time",
+    "source_read_queue_wait_time",
     "parquet_read_time",
     "source_read_time",
     "operator_time",
@@ -106,6 +112,10 @@ pub(super) struct NativeCudfMetrics {
     source_chunks_attempted: Count,
     source_chunks_committed: Count,
     source_chunks_retried: Count,
+    source_read_prefetches_started: Count,
+    source_read_prefetches_completed: Count,
+    source_read_prefetches_skipped: Count,
+    source_read_prefetches_abandoned: Count,
     row_groups_planned: Count,
     row_groups_committed: Count,
     partial_aggregate_count: Count,
@@ -131,6 +141,8 @@ pub(super) struct NativeCudfMetrics {
     filtered_join_probe_state_bytes: Count,
     mixed_join_size_data_bytes: Count,
     join_gather_map_bytes: Count,
+    source_metadata_load_time: Time,
+    source_read_queue_wait_time: Time,
     parquet_read_time: Time,
     source_read_time: Time,
     operator_time: Time,
@@ -196,6 +208,10 @@ impl NativeCudfMetrics {
             source_chunks_attempted: summary_counter(metrics, "source_chunks_attempted", partition),
             source_chunks_committed: summary_counter(metrics, "source_chunks_committed", partition),
             source_chunks_retried: summary_counter(metrics, "source_chunks_retried", partition),
+            source_read_prefetches_started: summary_counter(metrics, "source_read_prefetches_started", partition),
+            source_read_prefetches_completed: summary_counter(metrics, "source_read_prefetches_completed", partition),
+            source_read_prefetches_skipped: summary_counter(metrics, "source_read_prefetches_skipped", partition),
+            source_read_prefetches_abandoned: summary_counter(metrics, "source_read_prefetches_abandoned", partition),
             row_groups_planned: summary_counter(metrics, "row_groups_planned", partition),
             row_groups_committed: summary_counter(metrics, "row_groups_committed", partition),
             partial_aggregate_count: summary_counter(metrics, "partial_aggregate_count", partition),
@@ -221,6 +237,8 @@ impl NativeCudfMetrics {
             filtered_join_probe_state_bytes: summary_counter(metrics, "filtered_join_probe_state_bytes", partition),
             mixed_join_size_data_bytes: summary_counter(metrics, "mixed_join_size_data_bytes", partition),
             join_gather_map_bytes: summary_counter(metrics, "join_gather_map_bytes", partition),
+            source_metadata_load_time: summary_timer(metrics, "source_metadata_load_time", partition),
+            source_read_queue_wait_time: summary_timer(metrics, "source_read_queue_wait_time", partition),
             parquet_read_time: summary_timer(metrics, "parquet_read_time", partition),
             source_read_time: summary_timer(metrics, "source_read_time", partition),
             operator_time: summary_timer(metrics, "operator_time", partition),
@@ -262,6 +280,10 @@ impl NativeCudfMetrics {
         self.source_chunks_attempted.add(count(metrics.source_chunks_attempted));
         self.source_chunks_committed.add(count(metrics.source_chunks_committed));
         self.source_chunks_retried.add(count(metrics.source_chunks_retried));
+        self.source_read_prefetches_started.add(count(metrics.source_read_prefetches_started));
+        self.source_read_prefetches_completed.add(count(metrics.source_read_prefetches_completed));
+        self.source_read_prefetches_skipped.add(count(metrics.source_read_prefetches_skipped));
+        self.source_read_prefetches_abandoned.add(count(metrics.source_read_prefetches_abandoned));
         self.row_groups_planned.add(count(metrics.row_groups_planned));
         self.row_groups_committed.add(count(metrics.row_groups_committed));
         self.partial_aggregate_count.add(count(metrics.partial_aggregate_count));
@@ -287,6 +309,8 @@ impl NativeCudfMetrics {
         self.filtered_join_probe_state_bytes.add(count(metrics.filtered_join_probe_state_bytes));
         self.mixed_join_size_data_bytes.add(count(metrics.mixed_join_size_data_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
+        self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
+        self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);
         self.parquet_read_time.add_duration(metrics.parquet_read_time);
         self.source_read_time.add_duration(metrics.source_read_time);
         self.operator_time.add_duration(metrics.operator_time);

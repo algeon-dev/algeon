@@ -1,6 +1,14 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use parquet::file::reader::{FileReader, SerializedFileReader};
+use parquet::file::{
+    metadata::ParquetMetaData,
+    reader::{FileReader, SerializedFileReader},
+};
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -50,6 +58,8 @@ pub struct SourceChunkPlan {
     pub row_group_metadata_available: bool,
     pub size_estimate_based: bool,
     pub metadata_unavailable_files: usize,
+    pub metadata_load_time: Duration,
+    pub metadata_load_count: u64,
 }
 
 impl SourceChunkPlan {
@@ -68,6 +78,7 @@ pub struct SourceChunk {
     pub chunk_index: usize,
     pub file_index: usize,
     pub path: PathBuf,
+    pub stable_id: String,
     pub row_group_indexes: Vec<usize>,
     pub reads_all_row_groups: bool,
     pub known_file_bytes: Option<u64>,
@@ -78,6 +89,13 @@ pub struct SourceChunk {
     pub known_pure_filter_uncompressed_bytes: Option<u64>,
     pub estimated_chunk_bytes: Option<u64>,
     pub estimated_source_read_bytes: Option<u64>,
+    pub source_file_row_groups: Option<Vec<usize>>,
+    pub source_file_row_group_bytes: Option<Vec<u64>>,
+    pub source_file_projected_compressed_bytes: Option<Vec<u64>>,
+    pub source_file_projected_uncompressed_bytes: Option<Vec<u64>>,
+    pub source_file_pure_filter_compressed_bytes: Option<Vec<u64>>,
+    pub source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
+    pub source_file_row_group_rows: Option<Vec<u64>>,
     pub read_columns: Vec<String>,
     pub partition_values: Vec<LiteralValue>,
     pub zero_column_count: bool,
@@ -96,6 +114,16 @@ pub fn plan_local_parquet_source_chunks(
     source: &LocalParquetSource,
     policy: SourceChunkPlanningPolicy,
 ) -> Result<SourceChunkPlan> {
+    let mut metadata_cache = SourceMetadataCache::default();
+    plan_local_parquet_source_chunks_with_metadata_cache(source_node_id, source, policy, &mut metadata_cache)
+}
+
+pub fn plan_local_parquet_source_chunks_with_metadata_cache(
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    policy: SourceChunkPlanningPolicy,
+    metadata_cache: &mut SourceMetadataCache,
+) -> Result<SourceChunkPlan> {
     validate_chunk_planning_source(source)?;
     validate_chunk_planning_policy(policy)?;
 
@@ -103,9 +131,14 @@ pub fn plan_local_parquet_source_chunks(
     let mut saw_metadata = false;
     let mut saw_missing_metadata = false;
     let mut metadata_unavailable_files = 0;
+    let mut metadata_load_time = Duration::ZERO;
+    let mut metadata_load_count = 0u64;
 
     for (file_index, file) in source.files.iter().enumerate() {
-        let metadata = read_parquet_metadata(source, file);
+        let metadata_load = read_parquet_metadata(source, file, metadata_cache);
+        metadata_load_time += metadata_load.load_time;
+        metadata_load_count = metadata_load_count.saturating_add(metadata_load.load_count);
+        let metadata = metadata_load.metadata;
         saw_metadata |= metadata.is_some();
         if metadata.is_none() {
             saw_missing_metadata = true;
@@ -150,7 +183,53 @@ pub fn plan_local_parquet_source_chunks(
         row_group_metadata_available: saw_metadata && !saw_missing_metadata,
         size_estimate_based: saw_missing_metadata,
         metadata_unavailable_files,
+        metadata_load_time,
+        metadata_load_count,
     })
+}
+
+#[derive(Debug, Default)]
+pub struct SourceMetadataCache {
+    footers: HashMap<SourceMetadataCacheKey, Option<Arc<ParquetMetaData>>>,
+}
+
+impl SourceMetadataCache {
+    pub fn cached_footer_count(&self) -> usize {
+        self.footers.len()
+    }
+
+    fn footer_metadata(&mut self, file: &LocalParquetFile) -> FooterMetadataLoad {
+        let key = SourceMetadataCacheKey::from_file(file);
+        if let Some(metadata) = self.footers.get(&key) {
+            return FooterMetadataLoad { metadata: metadata.clone(), load_time: Duration::ZERO, load_count: 0 };
+        }
+
+        let timer = Instant::now();
+        let metadata =
+            SerializedFileReader::try_from(file.path.as_path()).ok().map(|reader| Arc::new(reader.metadata().clone()));
+        let load_time = timer.elapsed();
+        self.footers.insert(key, metadata.clone());
+        FooterMetadataLoad { metadata, load_time, load_count: 1 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SourceMetadataCacheKey {
+    path: PathBuf,
+    stable_id: String,
+    file_size_bytes: Option<u64>,
+}
+
+impl SourceMetadataCacheKey {
+    fn from_file(file: &LocalParquetFile) -> Self {
+        Self { path: file.path.clone(), stable_id: file.stable_id.clone(), file_size_bytes: file.file_size_bytes }
+    }
+}
+
+struct FooterMetadataLoad {
+    metadata: Option<Arc<ParquetMetaData>>,
+    load_time: Duration,
+    load_count: u64,
 }
 
 fn validate_chunk_planning_policy(policy: SourceChunkPlanningPolicy) -> Result<()> {
@@ -244,85 +323,89 @@ fn validate_file_row_group_metadata_lengths(file: &LocalParquetFile, file_index:
     Ok(())
 }
 
-fn read_parquet_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> Option<RowGroupMetadata> {
+struct SourceMetadataLoad {
+    metadata: Option<RowGroupMetadata>,
+    load_time: Duration,
+    load_count: u64,
+}
+
+fn read_parquet_metadata(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    metadata_cache: &mut SourceMetadataCache,
+) -> SourceMetadataLoad {
     let needs_footer_metadata = file.row_group_bytes.is_none()
         || file.projected_row_group_compressed_bytes.is_none()
         || file.projected_row_group_uncompressed_bytes.is_none()
         || file.pure_filter_row_group_compressed_bytes.is_none()
         || file.pure_filter_row_group_uncompressed_bytes.is_none()
         || file.row_group_rows.is_none();
-    let file_metadata = if needs_footer_metadata {
-        SerializedFileReader::try_from(file.path.as_path()).ok().map(|reader| {
-            let metadata = reader.metadata().clone();
-            let read_column_indexes = source.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
-            let projected_column_indexes = source
-                .projected_output_column_source_refs
-                .iter()
-                .filter_map(|source_ref| match source_ref {
-                    crate::source::SourceColumnRef::File(index) => Some(*index),
-                    crate::source::SourceColumnRef::Partition(_) => None,
-                })
-                .collect::<BTreeSet<_>>();
-            let pure_filter_column_indexes = source
-                .pure_filter_column_source_refs
-                .iter()
-                .filter_map(|source_ref| match source_ref {
-                    crate::source::SourceColumnRef::File(index) if !projected_column_indexes.contains(index) => {
-                        Some(*index)
-                    },
-                    crate::source::SourceColumnRef::File(_) | crate::source::SourceColumnRef::Partition(_) => None,
-                })
-                .collect::<BTreeSet<_>>();
-            let row_group_bytes = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| row_group_column_bytes(row_group, &read_column_indexes, ColumnByteKind::Compressed))
-                .collect::<Option<Vec<_>>>();
-            let projected_compressed_bytes = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| {
-                    row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Compressed)
-                })
-                .collect::<Option<Vec<_>>>();
-            let projected_uncompressed_bytes = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| {
-                    row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Uncompressed)
-                })
-                .collect::<Option<Vec<_>>>();
-            let pure_filter_compressed_bytes = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| {
-                    row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Compressed)
-                })
-                .collect::<Option<Vec<_>>>();
-            let pure_filter_uncompressed_bytes = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| {
-                    row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Uncompressed)
-                })
-                .collect::<Option<Vec<_>>>();
-            let row_group_rows = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| u64::try_from(row_group.num_rows()).ok())
-                .collect::<Option<Vec<_>>>();
-            (
-                row_group_bytes,
-                projected_compressed_bytes,
-                projected_uncompressed_bytes,
-                pure_filter_compressed_bytes,
-                pure_filter_uncompressed_bytes,
-                row_group_rows,
-            )
-        })
+    let footer_load = if needs_footer_metadata {
+        metadata_cache.footer_metadata(file)
     } else {
-        None
+        FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 }
     };
+    let file_metadata = footer_load.metadata.as_ref().map(|metadata| {
+        let read_column_indexes = source.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
+        let projected_column_indexes = source
+            .projected_output_column_source_refs
+            .iter()
+            .filter_map(|source_ref| match source_ref {
+                crate::source::SourceColumnRef::File(index) => Some(*index),
+                crate::source::SourceColumnRef::Partition(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let pure_filter_column_indexes = source
+            .pure_filter_column_source_refs
+            .iter()
+            .filter_map(|source_ref| match source_ref {
+                crate::source::SourceColumnRef::File(index) if !projected_column_indexes.contains(index) => {
+                    Some(*index)
+                },
+                crate::source::SourceColumnRef::File(_) | crate::source::SourceColumnRef::Partition(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let row_group_bytes = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| row_group_column_bytes(row_group, &read_column_indexes, ColumnByteKind::Compressed))
+            .collect::<Option<Vec<_>>>();
+        let projected_compressed_bytes = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Compressed))
+            .collect::<Option<Vec<_>>>();
+        let projected_uncompressed_bytes = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| row_group_column_bytes(row_group, &projected_column_indexes, ColumnByteKind::Uncompressed))
+            .collect::<Option<Vec<_>>>();
+        let pure_filter_compressed_bytes = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Compressed))
+            .collect::<Option<Vec<_>>>();
+        let pure_filter_uncompressed_bytes = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| {
+                row_group_column_bytes(row_group, &pure_filter_column_indexes, ColumnByteKind::Uncompressed)
+            })
+            .collect::<Option<Vec<_>>>();
+        let row_group_rows = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| u64::try_from(row_group.num_rows()).ok())
+            .collect::<Option<Vec<_>>>();
+        (
+            row_group_bytes,
+            projected_compressed_bytes,
+            projected_uncompressed_bytes,
+            pure_filter_compressed_bytes,
+            pure_filter_uncompressed_bytes,
+            row_group_rows,
+        )
+    });
     let row_group_bytes =
         file.row_group_bytes.clone().or_else(|| file_metadata.as_ref().and_then(|(bytes, ..)| bytes.clone()));
     let projected_compressed_bytes = file
@@ -350,16 +433,20 @@ fn read_parquet_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -
         || pure_filter_uncompressed_bytes.is_some()
         || row_group_rows.is_some()
     {
-        Some(RowGroupMetadata {
-            row_group_bytes,
-            projected_compressed_bytes,
-            projected_uncompressed_bytes,
-            pure_filter_compressed_bytes,
-            pure_filter_uncompressed_bytes,
-            row_group_rows,
-        })
+        SourceMetadataLoad {
+            metadata: Some(RowGroupMetadata {
+                row_group_bytes,
+                projected_compressed_bytes,
+                projected_uncompressed_bytes,
+                pure_filter_compressed_bytes,
+                pure_filter_uncompressed_bytes,
+                row_group_rows,
+            }),
+            load_time: footer_load.load_time,
+            load_count: footer_load.load_count,
+        }
     } else {
-        None
+        SourceMetadataLoad { metadata: None, load_time: footer_load.load_time, load_count: footer_load.load_count }
     }
 }
 
@@ -458,7 +545,16 @@ fn append_row_group_chunks(
         let row_group_rows = metadata.and_then(|metadata| metadata.row_group_rows(*row_group));
         let planning_bytes = projected_uncompressed_bytes.or(row_group_bytes);
         if current.should_flush_before(planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
-            push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), &mut current, chunks);
+            push_pending_chunk(
+                source_node_id,
+                source,
+                file,
+                file_index,
+                row_groups.len(),
+                metadata,
+                &mut current,
+                chunks,
+            );
         }
         current.push(
             *row_group,
@@ -472,7 +568,7 @@ fn append_row_group_chunks(
         );
     }
 
-    push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), &mut current, chunks);
+    push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), metadata, &mut current, chunks);
 }
 
 fn push_pending_chunk(
@@ -481,6 +577,7 @@ fn push_pending_chunk(
     file: &LocalParquetFile,
     file_index: usize,
     planned_row_group_count: usize,
+    metadata: Option<&RowGroupMetadata>,
     pending: &mut PendingChunk,
     chunks: &mut Vec<SourceChunk>,
 ) {
@@ -507,6 +604,7 @@ fn push_pending_chunk(
         chunk_index: chunks.len(),
         file_index,
         path: file.path.clone(),
+        stable_id: file.stable_id.clone(),
         row_group_indexes: std::mem::take(&mut pending.row_groups),
         reads_all_row_groups: false,
         known_file_bytes: file.file_size_bytes,
@@ -517,6 +615,14 @@ fn push_pending_chunk(
         known_pure_filter_uncompressed_bytes,
         estimated_chunk_bytes,
         estimated_source_read_bytes,
+        source_file_row_groups: file.row_groups.clone(),
+        source_file_row_group_bytes: metadata.and_then(RowGroupMetadata::row_group_bytes_vec),
+        source_file_projected_compressed_bytes: metadata.and_then(RowGroupMetadata::projected_compressed_bytes_vec),
+        source_file_projected_uncompressed_bytes: metadata.and_then(RowGroupMetadata::projected_uncompressed_bytes_vec),
+        source_file_pure_filter_compressed_bytes: metadata.and_then(RowGroupMetadata::pure_filter_compressed_bytes_vec),
+        source_file_pure_filter_uncompressed_bytes: metadata
+            .and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
+        source_file_row_group_rows: metadata.and_then(RowGroupMetadata::row_group_rows_vec),
         read_columns: source.read_columns.clone(),
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
@@ -538,6 +644,7 @@ fn single_all_row_groups_chunk(
         chunk_index,
         file_index,
         path: file.path.clone(),
+        stable_id: file.stable_id.clone(),
         row_group_indexes: Vec::new(),
         reads_all_row_groups: true,
         known_file_bytes: file.file_size_bytes,
@@ -548,6 +655,13 @@ fn single_all_row_groups_chunk(
         known_pure_filter_uncompressed_bytes: None,
         estimated_chunk_bytes: file.file_size_bytes,
         estimated_source_read_bytes: file.file_size_bytes,
+        source_file_row_groups: file.row_groups.clone(),
+        source_file_row_group_bytes: None,
+        source_file_projected_compressed_bytes: None,
+        source_file_projected_uncompressed_bytes: None,
+        source_file_pure_filter_compressed_bytes: None,
+        source_file_pure_filter_uncompressed_bytes: None,
+        source_file_row_group_rows: None,
         read_columns: source.read_columns.clone(),
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
@@ -567,7 +681,7 @@ fn proportional_bytes(total_bytes: Option<u64>, child_row_groups: usize, parent_
     Some(numerator.div_ceil(denominator).min(u128::from(u64::MAX)) as u64)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RowGroupMetadata {
     row_group_bytes: Option<Vec<u64>>,
     projected_compressed_bytes: Option<Vec<u64>>,
@@ -611,6 +725,30 @@ impl RowGroupMetadata {
 
     fn row_group_rows(&self, row_group: usize) -> Option<u64> {
         self.row_group_rows.as_ref().and_then(|rows| rows.get(row_group).copied())
+    }
+
+    fn row_group_bytes_vec(&self) -> Option<Vec<u64>> {
+        self.row_group_bytes.clone()
+    }
+
+    fn projected_compressed_bytes_vec(&self) -> Option<Vec<u64>> {
+        self.projected_compressed_bytes.clone()
+    }
+
+    fn projected_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
+        self.projected_uncompressed_bytes.clone()
+    }
+
+    fn pure_filter_compressed_bytes_vec(&self) -> Option<Vec<u64>> {
+        self.pure_filter_compressed_bytes.clone()
+    }
+
+    fn pure_filter_uncompressed_bytes_vec(&self) -> Option<Vec<u64>> {
+        self.pure_filter_uncompressed_bytes.clone()
+    }
+
+    fn row_group_rows_vec(&self) -> Option<Vec<u64>> {
+        self.row_group_rows.clone()
     }
 }
 

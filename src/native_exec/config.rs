@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use cudf_query_engine::{
     ExecutionBoundaryPolicy, ExecutionContext, GpuHashJoinBuildCache, MemoryControlPolicy, MemoryResourcePolicy,
+    SourceSchedulerPolicy,
 };
 
 use crate::error::Error;
@@ -19,6 +20,7 @@ pub struct NativeCudfExecutionConfig {
     memory_resource_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
     boundary_policy: ExecutionBoundaryPolicy,
+    source_scheduler_policy: SourceSchedulerPolicy,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
 }
 
@@ -31,6 +33,7 @@ impl NativeCudfExecutionConfig {
             memory_resource_policy: MemoryResourcePolicy::DefaultCuda,
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
+            source_scheduler_policy: SourceSchedulerPolicy::default(),
             hash_join_build_cache: None,
         }
     }
@@ -59,6 +62,7 @@ impl NativeCudfExecutionConfig {
                 min_retry_chunk_row_groups,
             },
             boundary_policy: ExecutionBoundaryPolicy::default(),
+            source_scheduler_policy: SourceSchedulerPolicy::default(),
             hash_join_build_cache: None,
         }
     }
@@ -106,6 +110,12 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Set bounded source scheduling controls.
+    pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
+        self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+
     /// Attach the durable GPU hash-join build cache required by durable build-boundary policy.
     pub fn with_hash_join_build_cache(mut self, cache: Arc<GpuHashJoinBuildCache>) -> Self {
         self.hash_join_build_cache = Some(cache);
@@ -120,13 +130,18 @@ impl NativeCudfExecutionConfig {
         self.boundary_policy
     }
 
+    pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
+        self.source_scheduler_policy
+    }
+
     // DataFusion-to-native config boundary. Native context construction and validation errors are
     // converted here into adapter errors before any query execution starts.
     pub(super) fn execution_context(&self) -> crate::error::Result<ExecutionContext> {
         let mut builder = ExecutionContext::builder()
             .with_memory_policy(self.memory_resource_policy)
             .with_memory_control_policy(self.memory_control_policy)
-            .with_boundary_policy(self.boundary_policy);
+            .with_boundary_policy(self.boundary_policy)
+            .with_source_scheduler_policy(self.source_scheduler_policy);
         if let Some(runtime) = &self.runtime {
             builder = builder.with_shared_runtime(Arc::clone(runtime));
         }

@@ -24,6 +24,7 @@ pub(in crate::exec) fn record_bounded_parquet_source_metrics(
     metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(chunk_plan.row_group_count() as u64);
     metrics.read_columns =
         metrics.read_columns.saturating_add((source.file_count() * source.read_column_count()) as u64);
+    metrics.source_metadata_load_time += chunk_plan.metadata_load_time;
 }
 
 pub(in crate::exec) fn format_row_groups(chunk: &SourceChunk) -> String {

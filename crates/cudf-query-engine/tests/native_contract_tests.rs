@@ -20,11 +20,13 @@ use cudf_query_engine::{
     PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError,
     QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
     ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, SchemaBehavior, SchemaMappingDisposition,
-    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceNode, SourceReadBoundary,
-    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition, cudf_dtype_from_arrow_type,
+    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache, SourceNode,
+    SourceReadBoundary, SourceSchedulerPolicy, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    cudf_dtype_from_arrow_type,
     expr::{CaseWhen, DatePart},
     is_supported_arrow_cast, is_supported_arrow_implicit_cast, is_supported_arrow_type,
-    plan_local_parquet_source_chunks, validate_local_parquet_source,
+    plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
+    validate_local_parquet_source,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -175,6 +177,24 @@ fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
     );
     assert_eq!(explicit, policy);
     explicit.validate(false).unwrap();
+}
+
+#[test]
+fn source_scheduler_policy_defaults_to_serialized_and_rejects_zero_in_flight() {
+    let policy = SourceSchedulerPolicy::default();
+    assert_eq!(policy.max_source_reads_in_flight(), 1);
+    assert!(!policy.enables_prefetch());
+
+    let prefetch = SourceSchedulerPolicy::new(2);
+    assert_eq!(prefetch.max_source_reads_in_flight(), 2);
+    assert!(prefetch.enables_prefetch());
+
+    let error =
+        ExecutionContext::builder().with_source_scheduler_policy(SourceSchedulerPolicy::new(0)).build().unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.source_scheduler_policy.validate");
+    assert_eq!(error.fact_value("field"), Some("max_source_reads_in_flight"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 
 #[test]
