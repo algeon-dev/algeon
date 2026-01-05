@@ -34,10 +34,17 @@ pub fn read_local_parquet_source(
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let mut frames = Vec::with_capacity(source.files.len());
+    let mut remaining_rows = source.scan_limit;
     for file in &source.files {
         let frame = read_local_parquet_file(context, file, &columns, metrics)?;
         let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
-        frames.push(coerce_local_parquet_source_schema(frame, source, None, metrics)?);
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let (frame, remaining) = apply_source_scan_limit_to_frame(context, frame, remaining_rows, metrics)?;
+        frames.push(frame);
+        remaining_rows = remaining;
+        if remaining_rows == Some(0) {
+            break;
+        }
     }
 
     let mut frames = frames.into_iter();
@@ -148,6 +155,70 @@ pub(super) fn read_local_parquet_chunk(
     metrics.source_read_time += read_elapsed;
     let frame = outcome.into_value();
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
+    let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(GpuDataFrame::new(frame))
+}
+
+fn apply_source_scan_limit_to_frame(
+    context: &ExecutionContext,
+    frame: DataFrame,
+    remaining_rows: Option<usize>,
+    metrics: &mut QueryMetrics,
+) -> Result<(DataFrame, Option<usize>)> {
+    let Some(remaining_rows) = remaining_rows else {
+        return Ok((frame, None));
+    };
+    let row_count = frame.num_rows();
+    let keep_rows = row_count.min(remaining_rows);
+    let remaining_rows = Some(remaining_rows.saturating_sub(keep_rows));
+    if keep_rows == row_count {
+        return Ok((frame, remaining_rows));
+    }
+
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let frame = frame.with_execution(&overrides).slice(0, keep_rows).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.scan_limit",
+            "failed to apply native source scan limit",
+            error,
+        )
+        .with_fact("input_rows", row_count)
+        .with_fact("keep_rows", keep_rows)
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok((frame, remaining_rows))
+}
+
+fn apply_source_chunk_scan_limit(
+    context: &ExecutionContext,
+    chunk: &SourceChunk,
+    frame: DataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    let Some(keep_rows) = chunk.scan_limit_rows else {
+        return Ok(frame);
+    };
+    let row_count = frame.num_rows();
+    if keep_rows >= row_count {
+        return Ok(frame);
+    }
+
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let frame = frame.with_execution(&overrides).slice(0, keep_rows).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_chunk.scan_limit",
+            "failed to apply native source chunk scan limit",
+            error,
+        )
+        .with_fact("path", chunk.path.display())
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("input_rows", row_count)
+        .with_fact("keep_rows", keep_rows)
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(frame)
 }

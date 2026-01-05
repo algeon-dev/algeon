@@ -30,7 +30,7 @@ impl QueryNode {
                 SourceNode::LocalParquet(source) => {
                     writeln!(
                         f,
-                        "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
+                        "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
                         self.id,
                         source.diagnostics.file_count,
                         source.files.first().map_or_else(|| "none".to_string(), |file| file.path.display().to_string()),
@@ -48,6 +48,7 @@ impl QueryNode {
                         source.diagnostics.byte_range_disposition.as_str(),
                         source.diagnostics.partition_column_disposition.as_str(),
                         source.diagnostics.zero_column_count_disposition.as_str(),
+                        source.diagnostics.scan_limit_disposition.as_str(),
                         source.diagnostics.schema_mapping_disposition.as_str(),
                         source
                             .diagnostics

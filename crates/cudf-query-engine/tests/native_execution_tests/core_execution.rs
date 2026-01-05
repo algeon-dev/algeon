@@ -108,6 +108,42 @@ fn native_execution_boundary_policy_reports_direct_source_and_explicit_host_mate
 }
 
 #[test]
+fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
+    let dir = unique_temp_dir("cudf-query-engine-native-source-scan-limit");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &path);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "payload".to_string()],
+    )
+    .with_scan_limit(Some(2));
+    let projection = vec![Expr::column("key"), Expr::column("payload")];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[5, 10]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_generic_local_parquet_pipeline_uses_ordered_source_scheduler() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-generic-source-scheduler");
     let path = dir.join("input.parquet");
@@ -181,6 +217,57 @@ fn bounded_generic_local_parquet_pipeline_uses_ordered_source_scheduler() {
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 1, 2, 2]);
     assert_eq!(int64_array(batch, 1).values().as_ref(), &[303, 101, 505, 202]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_generic_local_parquet_source_scan_limit_stops_after_required_chunks() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-scan-limit");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        source_schema,
+        vec!["key".to_string(), "payload".to_string()],
+    )
+    .with_scan_limit(Some(3));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 2);
+    assert_eq!(metrics.source_chunks_attempted, 2);
+    assert_eq!(metrics.source_chunks_committed, 2);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 10, 20]);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -50,7 +50,7 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
             diagnostics.selected_row_groups.map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string());
         let _ = write!(
             output,
-            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},schema_mapping={},rejected_features={}",
+            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
             diagnostics.format,
             diagnostics.direct_device_read,
             diagnostics.file_count,
@@ -64,6 +64,7 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
             diagnostics.byte_range_disposition,
             diagnostics.partition_column_disposition,
             diagnostics.zero_column_count_disposition,
+            diagnostics.scan_limit_disposition,
             diagnostics.schema_mapping_disposition,
             rejected_features,
         );

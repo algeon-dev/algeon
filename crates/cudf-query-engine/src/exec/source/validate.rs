@@ -179,6 +179,21 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
             ));
         },
     }
+    match diagnostics.scan_limit_disposition {
+        ScanLimitDisposition::Absent => {
+            if source.scan_limit.is_some() {
+                return Err(unsupported_source_contract_fact("scan_limit", "diagnostic_absent_but_present"));
+            }
+        },
+        ScanLimitDisposition::Represented => {
+            if source.scan_limit.is_none() {
+                return Err(unsupported_source_contract_fact("scan_limit", "diagnostic_represented_but_absent"));
+            }
+        },
+        ScanLimitDisposition::Rejected => {
+            return Err(unsupported_source_contract_fact("scan_limit", diagnostics.scan_limit_disposition.as_str()));
+        },
+    }
     if diagnostics.schema_mapping_disposition != SchemaMappingDisposition::DirectByName {
         return Err(unsupported_source_contract_fact(
             "schema_mapping",

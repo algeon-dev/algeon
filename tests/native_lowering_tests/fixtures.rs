@@ -198,6 +198,26 @@ pub(super) fn write_row_group_pruning_parquet_file(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
+pub(super) fn write_nullable_row_group_pruning_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("orderkey", DataType::Int64, true),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(1), Some(2), Some(4), None, Some(5), None])),
+            Arc::new(Int64Array::from(vec![10, 20, 40, 400, 50, 500])),
+        ],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 pub(super) fn write_parquet_file_with_tpch_like_columns(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -239,26 +259,33 @@ pub(super) fn write_q6_lineitem_parquet_file(path: &std::path::Path) {
         Arc::clone(&schema),
         vec![
             Arc::new(
-                Decimal128Array::from_iter_values([2_300, 2_500, 1_000, 1_200])
+                Decimal128Array::from_iter_values([2_300, 2_500, 1_000, 1_200, 1_200, 1_200, 1_200])
                     .with_precision_and_scale(15, 2)
                     .unwrap(),
             ),
             Arc::new(
-                Decimal128Array::from_iter_values([10_000, 20_000, 30_000, 40_000])
+                Decimal128Array::from_iter_values([10_000, 20_000, 30_000, 40_000, 50_000, 60_000, 70_000])
                     .with_precision_and_scale(15, 2)
                     .unwrap(),
             ),
-            Arc::new(Decimal128Array::from_iter_values([5, 6, 7, 6]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(Decimal128Array::from_iter_values([5, 6, 7, 6, 4, 8, 6]).with_precision_and_scale(15, 2).unwrap()),
             Arc::new(Date32Array::from(vec![
                 date32(1994, 1, 15),
                 date32(1994, 6, 1),
                 date32(1994, 9, 30),
                 date32(1995, 1, 1),
+                date32(1994, 3, 15),
+                date32(1994, 11, 15),
+                date32(1993, 12, 31),
             ])),
         ],
     )
     .unwrap();
-    write_batch(path, schema, batch);
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }
 
 fn write_batch(path: &std::path::Path, schema: Arc<Schema>, batch: RecordBatch) {

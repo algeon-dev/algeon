@@ -106,6 +106,7 @@ pub(super) fn lower_slice1_plan(
         )
         .with_partition_columns(column_requirements.partition_columns.clone())
     };
+    source = source.with_scan_limit(file_scan.limit);
     source.diagnostics = local_parquet_source_diagnostics(
         file_scan,
         parquet_source,

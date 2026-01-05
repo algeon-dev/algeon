@@ -149,6 +149,7 @@ pub struct NativeSourceDiagnosticSummary {
     pub byte_range_disposition: String,
     pub partition_column_disposition: String,
     pub zero_column_count_disposition: String,
+    pub scan_limit_disposition: String,
     pub schema_mapping_disposition: String,
     pub read_column_count: usize,
     pub projected_output_column_count: usize,

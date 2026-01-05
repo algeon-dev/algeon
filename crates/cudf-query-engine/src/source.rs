@@ -9,7 +9,7 @@ mod diagnostics;
 use diagnostics::LocalParquetDiagnosticColumns;
 pub use diagnostics::{
     ByteRangeDisposition, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    SchemaMappingDisposition, SourceDiagnostics, SourceFormat, ZeroColumnCountDisposition,
+    ScanLimitDisposition, SchemaMappingDisposition, SourceDiagnostics, SourceFormat, ZeroColumnCountDisposition,
 };
 
 /// Synthetic output column used for Parquet plans that only need a row count.
@@ -147,6 +147,8 @@ pub struct LocalParquetSource {
     pub pure_filter_column_source_refs: Vec<SourceColumnRef>,
     /// Synthetic source columns populated from file partition values.
     pub partition_columns: Vec<PartitionColumn>,
+    /// Source-level scan limit applied before source-adjacent native filters.
+    pub scan_limit: Option<usize>,
     /// Source capability and rejection details captured during lowering.
     pub diagnostics: SourceDiagnostics,
 }
@@ -175,6 +177,7 @@ impl LocalParquetSource {
                 pure_filter_columns: &pure_filter_columns,
                 pure_filter_column_source_refs: &pure_filter_column_source_refs,
                 partition_columns: &partition_columns,
+                scan_limit: None,
             },
         );
         Self {
@@ -187,6 +190,7 @@ impl LocalParquetSource {
             pure_filter_columns,
             pure_filter_column_source_refs,
             partition_columns,
+            scan_limit: None,
             diagnostics,
         }
     }
@@ -273,6 +277,13 @@ impl LocalParquetSource {
         self
     }
 
+    /// Sets an order-insensitive source-level scan limit.
+    pub fn with_scan_limit(mut self, scan_limit: Option<usize>) -> Self {
+        self.scan_limit = scan_limit;
+        self.refresh_diagnostics();
+        self
+    }
+
     /// Recomputes diagnostics from the current source metadata.
     pub fn refresh_diagnostics(&mut self) {
         let zero_column_count_represented = self.is_zero_column_count_source();
@@ -352,6 +363,7 @@ impl LocalParquetSource {
             pure_filter_columns: &self.pure_filter_columns,
             pure_filter_column_source_refs: &self.pure_filter_column_source_refs,
             partition_columns: &self.partition_columns,
+            scan_limit: self.scan_limit,
         }
     }
 

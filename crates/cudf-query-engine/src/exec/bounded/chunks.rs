@@ -1123,9 +1123,42 @@ pub(super) fn split_retryable_chunk(
 
     let left_row_groups = chunk.row_group_indexes[..split_at].to_vec();
     let right_row_groups = chunk.row_group_indexes[split_at..].to_vec();
-    let left = retry_child_chunk(chunk, left_row_groups);
-    let right = retry_child_chunk(chunk, right_row_groups);
+    let mut left = retry_child_chunk(chunk, left_row_groups);
+    let mut right = retry_child_chunk(chunk, right_row_groups);
+    apply_parent_scan_limit_to_retry_children(chunk, &mut left, &mut right);
     Some((left, right))
+}
+
+fn apply_parent_scan_limit_to_retry_children(parent: &SourceChunk, left: &mut SourceChunk, right: &mut SourceChunk) {
+    let Some(parent_limit) = parent.scan_limit_rows else {
+        return;
+    };
+    let Ok(mut remaining) = u64::try_from(parent_limit) else {
+        return;
+    };
+    apply_retry_child_scan_limit(left, &mut remaining);
+    apply_retry_child_scan_limit(right, &mut remaining);
+}
+
+fn apply_retry_child_scan_limit(child: &mut SourceChunk, remaining: &mut u64) {
+    let Some(row_count) = child.known_row_count else {
+        child.scan_limit_rows = usize::try_from(*remaining).ok();
+        return;
+    };
+    if *remaining == 0 {
+        child.scan_limit_rows = Some(0);
+        child.known_row_count = Some(0);
+        return;
+    }
+    if row_count <= *remaining {
+        *remaining = remaining.saturating_sub(row_count);
+        return;
+    }
+    if let Ok(keep_rows) = usize::try_from(*remaining) {
+        child.scan_limit_rows = Some(keep_rows);
+        child.known_row_count = Some(*remaining);
+    }
+    *remaining = 0;
 }
 
 pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usize>) -> SourceChunk {
@@ -1213,6 +1246,7 @@ pub(super) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usi
         partition_values: parent.partition_values.clone(),
         zero_column_count: parent.zero_column_count,
         known_row_count,
+        scan_limit_rows: None,
         size_estimate_based: true,
     }
 }
