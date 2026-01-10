@@ -181,6 +181,9 @@ pub enum ByteRangeDisposition {
     FullFiles,
     /// Byte ranges were safely coalesced back to whole-file reads.
     CoalescedFullFiles,
+    /// Byte-ranged source entries are represented by explicit row-group
+    /// selections on whole-file local reads.
+    RowGroupSelection,
     /// Byte ranges remain and are not supported by the native source.
     Rejected,
 }
@@ -191,6 +194,7 @@ impl ByteRangeDisposition {
         match self {
             Self::FullFiles => "full_files",
             Self::CoalescedFullFiles => "coalesced_full_files",
+            Self::RowGroupSelection => "row_group_selection",
             Self::Rejected => "rejected",
         }
     }
@@ -272,6 +276,8 @@ pub enum RejectedSourceFeature {
     PartitionColumns,
     /// DataFusion scan expression adapter is present.
     ExprAdapter,
+    /// A custom Parquet file reader factory is present.
+    ParquetFileReaderFactory,
     /// DataFusion scan limit is present.
     ScanLimit,
     /// Source requires preserved input order.
@@ -303,6 +309,7 @@ impl RejectedSourceFeature {
             Self::NonLocalObjectStore => "non_local_object_store",
             Self::PartitionColumns => "partition_columns",
             Self::ExprAdapter => "expr_adapter",
+            Self::ParquetFileReaderFactory => "parquet_file_reader_factory",
             Self::ScanLimit => "scan_limit",
             Self::PreserveOrder => "preserve_order",
             Self::OutputOrdering => "output_ordering",

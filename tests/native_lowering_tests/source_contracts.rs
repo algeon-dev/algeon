@@ -189,6 +189,40 @@ fn partial_byte_range_is_rejected_with_source_reason() {
 }
 
 #[test]
+fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-ranged-access-plan");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let access_plan = ParquetAccessPlan::new(vec![
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+        RowGroupAccess::Skip,
+        RowGroupAccess::Scan,
+    ]);
+    let scan = parquet_scan_with_partial_byte_range_and_access_plan(&path, access_plan);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.file_count(), 1);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 3][..]));
+    assert_eq!(source.diagnostics.ranged_file_count, 1);
+    assert_eq!(source.diagnostics.byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(source.diagnostics.selected_row_groups, Some(2));
+    assert!(source.diagnostics.direct_device_read);
+    assert!(source.diagnostics.rejected_features.is_empty());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].byte_range_disposition.as_str(), "row_group_selection");
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(2));
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-split-ranged-file");
     let path = dir.join("input.parquet");
@@ -263,6 +297,34 @@ fn remote_parquet_object_store_is_rejected_with_source_reason() {
             .any(|feature| feature.as_str() == "non_local_object_store")
     );
     assert_eq!(result.source_diagnostics[0].partition_column_disposition.as_str(), "absent");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn custom_parquet_file_reader_factory_is_rejected_with_source_reason() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-custom-reader-factory");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_custom_reader_factory(&path);
+    let plan = aggregate_sort_limit_plan(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert!(result.plans.is_empty());
+    assert_eq!(result.rejected_count(), 1);
+    assert!(matches!(
+        result.report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourceParquetFileReaderFactory, .. }
+    ));
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert!(!result.source_diagnostics[0].direct_device_read);
+    assert!(
+        result.source_diagnostics[0]
+            .rejected_features
+            .iter()
+            .any(|feature| feature.as_str() == "parquet_file_reader_factory")
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }

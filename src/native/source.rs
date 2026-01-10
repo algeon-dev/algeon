@@ -46,7 +46,10 @@ pub(super) fn validate_slice1_parquet_scan(
     if file_scan.expr_adapter_factory.is_some() {
         return Err(FallbackReason::NativeSourceExprAdapter);
     }
-    if file_scan.preserve_order {
+    if !native_parquet_file_reader_factory_is_supported(parquet_source) {
+        return Err(FallbackReason::NativeSourceParquetFileReaderFactory);
+    }
+    if !native_preserve_order_scan_is_supported(file_scan) {
         return Err(FallbackReason::NativeSourcePreserveOrder);
     }
     if !file_scan.output_ordering.is_empty() {
@@ -57,6 +60,24 @@ pub(super) fn validate_slice1_parquet_scan(
     }
     local_parquet_files(file_scan, parquet_source, filter, source_schema, column_requirements)?;
     Ok(())
+}
+
+pub(super) fn native_preserve_order_scan_is_supported(file_scan: &FileScanConfig) -> bool {
+    !file_scan.preserve_order || file_scan.file_groups.len() == 1
+}
+
+pub(super) fn native_parquet_file_reader_factory_is_supported(parquet_source: &ParquetSource) -> bool {
+    let Some(factory) = parquet_source.parquet_file_reader_factory() else {
+        return true;
+    };
+
+    // DataFusion's normal local-file scans can carry its default or cached
+    // object-store reader factory. Native local reads represent that contract
+    // directly through filesystem paths; caller-provided factories remain
+    // rejected because they may change bytes, metadata, caching, credentials,
+    // or IO semantics in ways the native source IR cannot represent.
+    let debug = format!("{factory:?}");
+    debug.starts_with("DefaultParquetFileReaderFactory") || debug.starts_with("CachedParquetFileReaderFactory")
 }
 
 /// Converts DataFusion `PartitionedFile` entries into native local Parquet files.

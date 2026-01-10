@@ -128,6 +128,7 @@ pub(super) fn unsupported_category(
         FallbackReason::NativeSourceNonLocalObjectStore
         | FallbackReason::NativeSourcePartitionColumns
         | FallbackReason::NativeSourceExprAdapter
+        | FallbackReason::NativeSourceParquetFileReaderFactory
         | FallbackReason::NativeSourceScanLimit
         | FallbackReason::NativeSourcePreserveOrder
         | FallbackReason::NativeSourceOutputOrdering

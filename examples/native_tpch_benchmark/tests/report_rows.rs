@@ -60,37 +60,43 @@ fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() 
             source_read_prefetches_completed: 24,
             source_read_prefetches_skipped: 25,
             source_read_prefetches_abandoned: 26,
-            row_groups_planned: 27,
-            row_groups_committed: 28,
-            partial_aggregate_count: 29,
-            partial_aggregate_rows: 30,
-            final_merge_attempts: 31,
-            final_merge_levels: 32,
-            retry_count: 33,
-            retry_resource_exhausted_count: 34,
-            retry_reservation_failure_count: 35,
-            hash_join_build_count: 36,
-            filtered_join_build_count: 37,
-            hash_join_cache_hits: 38,
-            hash_join_cache_misses: 39,
-            hash_join_durable_cache_hits: 40,
-            hash_join_durable_cache_misses: 41,
-            hash_join_durable_cache_inserts: 42,
-            hash_join_hash_table_bytes: 43,
-            filtered_join_hash_table_bytes: 44,
-            filtered_join_probe_state_bytes: 45,
-            mixed_join_size_data_bytes: 46,
-            join_gather_map_bytes: 47,
+            source_cache_hits: 27,
+            source_cache_misses: 28,
+            source_cache_inserts: 29,
+            source_cache_insert_skipped: 30,
+            source_cache_retained_bytes: 31,
+            row_groups_planned: 32,
+            row_groups_committed: 33,
+            partial_aggregate_count: 34,
+            partial_aggregate_rows: 35,
+            final_merge_attempts: 36,
+            final_merge_levels: 37,
+            retry_count: 38,
+            retry_resource_exhausted_count: 39,
+            retry_reservation_failure_count: 40,
+            hash_join_build_count: 41,
+            filtered_join_build_count: 42,
+            hash_join_cache_hits: 43,
+            hash_join_cache_misses: 44,
+            hash_join_durable_cache_hits: 45,
+            hash_join_durable_cache_misses: 46,
+            hash_join_durable_cache_inserts: 47,
+            hash_join_hash_table_bytes: 48,
+            filtered_join_hash_table_bytes: 49,
+            filtered_join_probe_state_bytes: 50,
+            mixed_join_size_data_bytes: 51,
+            join_gather_map_bytes: 52,
         },
         timing_metrics: NativeTpchTimingMetrics {
             parquet_read_time_ms: Some(1.0),
             source_read_time_ms: Some(2.0),
             source_read_queue_wait_time_ms: Some(3.0),
-            operator_time_ms: Some(4.0),
-            chunk_operator_time_ms: Some(5.0),
-            final_merge_time_ms: Some(6.0),
-            final_sort_time_ms: Some(7.0),
-            materialization_time_ms: Some(8.0),
+            source_cache_lookup_time_ms: Some(4.0),
+            operator_time_ms: Some(5.0),
+            chunk_operator_time_ms: Some(6.0),
+            final_merge_time_ms: Some(7.0),
+            final_sort_time_ms: Some(8.0),
+            materialization_time_ms: Some(9.0),
         },
     };
     let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
@@ -102,8 +108,10 @@ fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() 
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
     ));
-    assert!(text.contains("\t27\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t"));
-    assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\n"));
+    assert!(text.contains(
+        "\t27\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t"
+    ));
+    assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\n"));
 }
 
 #[test]

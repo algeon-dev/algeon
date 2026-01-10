@@ -208,6 +208,7 @@ fn source_disposition_names_are_stable_manifest_values() {
 
     assert_eq!(ByteRangeDisposition::FullFiles.as_str(), "full_files");
     assert_eq!(ByteRangeDisposition::CoalescedFullFiles.as_str(), "coalesced_full_files");
+    assert_eq!(ByteRangeDisposition::RowGroupSelection.as_str(), "row_group_selection");
     assert_eq!(ByteRangeDisposition::Rejected.as_str(), "rejected");
     assert_eq!(PartitionColumnDisposition::Absent.as_str(), "absent");
     assert_eq!(PartitionColumnDisposition::Rejected.as_str(), "rejected");
@@ -221,6 +222,7 @@ fn source_disposition_names_are_stable_manifest_values() {
     assert_eq!(SchemaMappingDisposition::DirectByName.as_str(), "direct_by_name");
     assert_eq!(SchemaMappingDisposition::MissingNullableColumns.as_str(), "missing_nullable_columns");
     assert_eq!(SchemaMappingDisposition::Rejected.as_str(), "rejected");
+    assert_eq!(RejectedSourceFeature::ParquetFileReaderFactory.as_str(), "parquet_file_reader_factory");
 }
 
 #[test]

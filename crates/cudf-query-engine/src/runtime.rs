@@ -117,6 +117,11 @@ pub struct ExecutionContext {
     /// materialization. Query-scoped build materialization does not use this
     /// cache.
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
+    /// Optional durable GPU local-Parquet source cache.
+    ///
+    /// This Phase 5 seed is intentionally rejected for bounded memory-control
+    /// execution until cache-resident bytes are reservation-accounted.
+    local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
 }
 
 impl ExecutionContext {
@@ -146,6 +151,7 @@ impl ExecutionContext {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             hash_join_build_cache: None,
+            local_parquet_source_cache: None,
         }
     }
 
@@ -209,6 +215,11 @@ impl ExecutionContext {
     pub fn hash_join_build_cache(&self) -> Option<Arc<crate::exec::GpuHashJoinBuildCache>> {
         self.hash_join_build_cache.as_ref().map(Arc::clone)
     }
+
+    /// Returns the durable GPU local-Parquet source cache, when configured.
+    pub fn local_parquet_source_cache(&self) -> Option<Arc<crate::exec::GpuLocalParquetSourceCache>> {
+        self.local_parquet_source_cache.as_ref().map(Arc::clone)
+    }
 }
 
 /// Builder for [`ExecutionContext`].
@@ -234,6 +245,8 @@ pub struct ExecutionContextBuilder {
     source_scheduler_policy: SourceSchedulerPolicy,
     /// Optional durable hash-join build cache.
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
+    /// Optional durable local-Parquet source cache.
+    local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
 }
 
 impl ExecutionContextBuilder {
@@ -305,6 +318,15 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Provides the durable GPU local-Parquet source cache.
+    ///
+    /// Bounded execution currently rejects this cache because retained source
+    /// frames must first be represented in the reservation ledger.
+    pub fn with_local_parquet_source_cache(mut self, cache: Arc<crate::exec::GpuLocalParquetSourceCache>) -> Self {
+        self.local_parquet_source_cache = Some(cache);
+        self
+    }
+
     /// Validates policies, constructs or records the runtime, and returns a context.
     ///
     /// Validation failures carry report-facing facts such as
@@ -313,6 +335,15 @@ impl ExecutionContextBuilder {
         self.memory_control_policy.validate()?;
         self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
         self.source_scheduler_policy.validate()?;
+        if self.local_parquet_source_cache.is_some() && self.memory_control_policy.is_bounded() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.runtime.source_cache",
+                "GPU local Parquet source cache requires unbounded execution until cache reservations are modeled",
+            )
+            .with_fact("reason", "source_cache_requires_reservation_accounting")
+            .with_fact("memory_control_policy", self.memory_control_policy.as_str()));
+        }
 
         if let Some(runtime) = self.runtime {
             return Ok(ExecutionContext {
@@ -322,6 +353,7 @@ impl ExecutionContextBuilder {
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 hash_join_build_cache: self.hash_join_build_cache,
+                local_parquet_source_cache: self.local_parquet_source_cache,
             });
         }
 
@@ -355,6 +387,7 @@ impl ExecutionContextBuilder {
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             hash_join_build_cache: self.hash_join_build_cache,
+            local_parquet_source_cache: self.local_parquet_source_cache,
         })
     }
 }

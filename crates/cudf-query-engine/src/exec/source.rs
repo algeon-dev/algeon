@@ -21,6 +21,8 @@ use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 pub use validate::validate_local_parquet_source;
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
 
+use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
+
 pub fn read_local_parquet_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -28,6 +30,48 @@ pub fn read_local_parquet_source(
 ) -> Result<GpuDataFrame> {
     validate_local_parquet_source(source)?;
 
+    if let Some(cache) = context.local_parquet_source_cache() {
+        return read_cacheable_local_parquet_source(context, source, &cache, metrics);
+    }
+
+    read_local_parquet_source_uncached(context, source, metrics)
+}
+
+fn read_cacheable_local_parquet_source(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    cache: &std::sync::Arc<crate::exec::GpuLocalParquetSourceCache>,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let key = GpuLocalParquetSourceCacheKey::from_source(source);
+    let lookup_timer = Instant::now();
+    let cached = cache.get(&key, context, &source.schema)?;
+    metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
+    if let Some(handle) = cached {
+        metrics.record_source_cache_hit(cache.retained_device_bytes()?);
+        return Ok(handle.into_gpu_frame());
+    }
+
+    metrics.record_source_cache_miss(cache.retained_device_bytes()?);
+    let frame = read_local_parquet_source_uncached(context, source, metrics)?;
+    let retained_device_bytes = frame.device_allocated_size_bytes()?;
+    let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(&source.schema))?;
+    match cache.insert_if_absent(key, handle, retained_device_bytes)? {
+        GpuLocalParquetSourceCacheInsert::Inserted => {
+            metrics.record_source_cache_insert(cache.retained_device_bytes()?);
+        },
+        GpuLocalParquetSourceCacheInsert::AlreadyPresent | GpuLocalParquetSourceCacheInsert::CapacitySkipped => {
+            metrics.record_source_cache_insert_skipped(cache.retained_device_bytes()?);
+        },
+    }
+    Ok(frame)
+}
+
+fn read_local_parquet_source_uncached(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
     if source.is_zero_column_count_source() {
         return read_zero_column_count_source(context, source, metrics);
     }

@@ -93,6 +93,11 @@ pub struct QueryMetrics {
     pub source_read_prefetches_completed: u64,
     pub source_read_prefetches_skipped: u64,
     pub source_read_prefetches_abandoned: u64,
+    pub source_cache_hits: u64,
+    pub source_cache_misses: u64,
+    pub source_cache_inserts: u64,
+    pub source_cache_insert_skipped: u64,
+    pub source_cache_retained_bytes: u64,
     pub row_groups_planned: u64,
     pub row_groups_committed: u64,
     pub partial_aggregate_count: u64,
@@ -134,6 +139,7 @@ pub struct QueryMetrics {
     pub read_columns: u64,
     pub source_metadata_load_time: Duration,
     pub source_read_queue_wait_time: Duration,
+    pub source_cache_lookup_time: Duration,
     pub parquet_read_time: Duration,
     pub source_read_time: Duration,
     pub operator_time: Duration,
@@ -226,6 +232,34 @@ impl QueryMetrics {
 
     pub fn record_source_read_queue_wait(&mut self, elapsed: Duration) {
         self.source_read_queue_wait_time += elapsed;
+    }
+
+    pub fn record_source_cache_hit(&mut self, retained_bytes: u64) {
+        self.source_cache_hits = self.source_cache_hits.saturating_add(1);
+        self.record_source_cache_retained_bytes(retained_bytes);
+    }
+
+    pub fn record_source_cache_miss(&mut self, retained_bytes: u64) {
+        self.source_cache_misses = self.source_cache_misses.saturating_add(1);
+        self.record_source_cache_retained_bytes(retained_bytes);
+    }
+
+    pub fn record_source_cache_insert(&mut self, retained_bytes: u64) {
+        self.source_cache_inserts = self.source_cache_inserts.saturating_add(1);
+        self.record_source_cache_retained_bytes(retained_bytes);
+    }
+
+    pub fn record_source_cache_insert_skipped(&mut self, retained_bytes: u64) {
+        self.source_cache_insert_skipped = self.source_cache_insert_skipped.saturating_add(1);
+        self.record_source_cache_retained_bytes(retained_bytes);
+    }
+
+    pub fn record_source_cache_lookup_time(&mut self, elapsed: Duration) {
+        self.source_cache_lookup_time += elapsed;
+    }
+
+    fn record_source_cache_retained_bytes(&mut self, retained_bytes: u64) {
+        self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(retained_bytes);
     }
 
     pub fn record_retry_resource_exhausted(&mut self) {
@@ -323,6 +357,12 @@ impl QueryMetrics {
             self.source_read_prefetches_skipped.saturating_add(other.source_read_prefetches_skipped);
         self.source_read_prefetches_abandoned =
             self.source_read_prefetches_abandoned.saturating_add(other.source_read_prefetches_abandoned);
+        self.source_cache_hits = self.source_cache_hits.saturating_add(other.source_cache_hits);
+        self.source_cache_misses = self.source_cache_misses.saturating_add(other.source_cache_misses);
+        self.source_cache_inserts = self.source_cache_inserts.saturating_add(other.source_cache_inserts);
+        self.source_cache_insert_skipped =
+            self.source_cache_insert_skipped.saturating_add(other.source_cache_insert_skipped);
+        self.source_cache_retained_bytes = self.source_cache_retained_bytes.max(other.source_cache_retained_bytes);
         self.row_groups_planned = self.row_groups_planned.saturating_add(other.row_groups_planned);
         self.row_groups_committed = self.row_groups_committed.saturating_add(other.row_groups_committed);
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(other.partial_aggregate_count);
@@ -358,6 +398,7 @@ impl QueryMetrics {
         self.read_columns = self.read_columns.saturating_add(other.read_columns);
         self.source_metadata_load_time += other.source_metadata_load_time;
         self.source_read_queue_wait_time += other.source_read_queue_wait_time;
+        self.source_cache_lookup_time += other.source_cache_lookup_time;
         self.parquet_read_time += other.parquet_read_time;
         self.source_read_time += other.source_read_time;
         self.operator_time += other.operator_time;

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use cudf_query_engine::{
-    ExecutionBoundaryPolicy, ExecutionContext, GpuHashJoinBuildCache, MemoryControlPolicy, MemoryResourcePolicy,
-    SourceSchedulerPolicy,
+    ExecutionBoundaryPolicy, ExecutionContext, GpuHashJoinBuildCache, GpuLocalParquetSourceCache, MemoryControlPolicy,
+    MemoryResourcePolicy, SourceSchedulerPolicy,
 };
 
 use crate::error::Error;
@@ -22,6 +22,7 @@ pub struct NativeCudfExecutionConfig {
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
+    local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
 }
 
 impl NativeCudfExecutionConfig {
@@ -35,6 +36,7 @@ impl NativeCudfExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             hash_join_build_cache: None,
+            local_parquet_source_cache: None,
         }
     }
 
@@ -64,6 +66,7 @@ impl NativeCudfExecutionConfig {
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             hash_join_build_cache: None,
+            local_parquet_source_cache: None,
         }
     }
 
@@ -122,6 +125,16 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Attach a durable GPU local-Parquet source cache for repeated source scans.
+    ///
+    /// The native engine currently accepts this only with unbounded memory
+    /// control; bounded cache admission is deferred until cache-resident bytes
+    /// are represented in the reservation ledger.
+    pub fn with_local_parquet_source_cache(mut self, cache: Arc<GpuLocalParquetSourceCache>) -> Self {
+        self.local_parquet_source_cache = Some(cache);
+        self
+    }
+
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
         self.memory_control_policy
     }
@@ -150,6 +163,9 @@ impl NativeCudfExecutionConfig {
         }
         if let Some(cache) = &self.hash_join_build_cache {
             builder = builder.with_hash_join_build_cache(Arc::clone(cache));
+        }
+        if let Some(cache) = &self.local_parquet_source_cache {
+            builder = builder.with_local_parquet_source_cache(Arc::clone(cache));
         }
         builder.build().map_err(|error| {
             Error::from_native(

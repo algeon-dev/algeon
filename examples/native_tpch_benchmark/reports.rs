@@ -5,8 +5,8 @@ mod formatting;
 
 use formatting::*;
 
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION: u32 = 5;
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tbounded_join_reservation_facts\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tjoin_gather_map_bytes\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION: u32 = 6;
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tbounded_join_reservation_facts\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tjoin_gather_map_bytes\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
 
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchBenchmarkReport {
@@ -42,6 +42,7 @@ impl NativeTpchBenchmarkReport {
             &mut output,
             self.config.native_memory_policy,
             self.config.max_source_reads_in_flight,
+            self.config.native_source_cache_policy,
         );
         output.push_str(NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push('\n');
@@ -297,6 +298,11 @@ impl NativeTpchBenchmarkRow {
             self.metrics.source_read_prefetches_completed.to_string(),
             self.metrics.source_read_prefetches_skipped.to_string(),
             self.metrics.source_read_prefetches_abandoned.to_string(),
+            self.metrics.source_cache_hits.to_string(),
+            self.metrics.source_cache_misses.to_string(),
+            self.metrics.source_cache_inserts.to_string(),
+            self.metrics.source_cache_insert_skipped.to_string(),
+            self.metrics.source_cache_retained_bytes.to_string(),
             self.metrics.row_groups_planned.to_string(),
             self.metrics.row_groups_committed.to_string(),
             self.metrics.partial_aggregate_count.to_string(),
@@ -321,6 +327,7 @@ impl NativeTpchBenchmarkRow {
             optional_f64_text(self.timing_metrics.parquet_read_time_ms),
             optional_f64_text(self.timing_metrics.source_read_time_ms),
             optional_f64_text(self.timing_metrics.source_read_queue_wait_time_ms),
+            optional_f64_text(self.timing_metrics.source_cache_lookup_time_ms),
             optional_f64_text(self.timing_metrics.operator_time_ms),
             optional_f64_text(self.timing_metrics.chunk_operator_time_ms),
             optional_f64_text(self.timing_metrics.final_merge_time_ms),
@@ -336,6 +343,7 @@ pub(super) struct NativeTpchTimingMetrics {
     pub(super) parquet_read_time_ms: Option<f64>,
     pub(super) source_read_time_ms: Option<f64>,
     pub(super) source_read_queue_wait_time_ms: Option<f64>,
+    pub(super) source_cache_lookup_time_ms: Option<f64>,
     pub(super) operator_time_ms: Option<f64>,
     pub(super) chunk_operator_time_ms: Option<f64>,
     pub(super) final_merge_time_ms: Option<f64>,
@@ -349,6 +357,7 @@ impl NativeTpchTimingMetrics {
             parquet_read_time_ms: metric_duration_ms(metrics, "parquet_read_time"),
             source_read_time_ms: metric_duration_ms(metrics, "source_read_time"),
             source_read_queue_wait_time_ms: metric_duration_ms(metrics, "source_read_queue_wait_time"),
+            source_cache_lookup_time_ms: metric_duration_ms(metrics, "source_cache_lookup_time"),
             operator_time_ms: metric_duration_ms(metrics, "operator_time"),
             chunk_operator_time_ms: metric_duration_ms(metrics, "chunk_operator_time"),
             final_merge_time_ms: metric_duration_ms(metrics, "final_merge_time"),
@@ -364,6 +373,9 @@ impl NativeTpchTimingMetrics {
             source_read_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.source_read_time_ms)),
             source_read_queue_wait_time_ms: mean_optional_f64(
                 values.iter().map(|metrics| metrics.source_read_queue_wait_time_ms),
+            ),
+            source_cache_lookup_time_ms: mean_optional_f64(
+                values.iter().map(|metrics| metrics.source_cache_lookup_time_ms),
             ),
             operator_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.operator_time_ms)),
             chunk_operator_time_ms: mean_optional_f64(values.iter().map(|metrics| metrics.chunk_operator_time_ms)),
