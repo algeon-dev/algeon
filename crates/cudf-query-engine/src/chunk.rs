@@ -419,7 +419,7 @@ fn read_parquet_metadata(
             .iter()
             .filter_map(|source_ref| match source_ref {
                 crate::source::SourceColumnRef::File(index) => Some(*index),
-                crate::source::SourceColumnRef::Partition(_) => None,
+                crate::source::SourceColumnRef::Partition(_) | crate::source::SourceColumnRef::MissingNull(_) => None,
             })
             .collect::<BTreeSet<_>>();
         let pure_filter_column_indexes = source
@@ -429,7 +429,9 @@ fn read_parquet_metadata(
                 crate::source::SourceColumnRef::File(index) if !projected_column_indexes.contains(index) => {
                     Some(*index)
                 },
-                crate::source::SourceColumnRef::File(_) | crate::source::SourceColumnRef::Partition(_) => None,
+                crate::source::SourceColumnRef::File(_)
+                | crate::source::SourceColumnRef::Partition(_)
+                | crate::source::SourceColumnRef::MissingNull(_) => None,
             })
             .collect::<BTreeSet<_>>();
         let row_group_bytes = metadata

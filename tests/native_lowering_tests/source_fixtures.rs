@@ -24,6 +24,24 @@ pub(super) fn parquet_scan_with_projection_indices(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_missing_nullable_column(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let mut fields = file_scan.file_schema().fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(Field::new("missing_payload", DataType::Int32, true)));
+    let table_schema = Arc::new(Schema::new(fields));
+    let projected_indices = (0..table_schema.fields().len()).collect::<Vec<_>>();
+    let parquet_source = ParquetSource::new(Arc::clone(&table_schema));
+    let file_scan = FileScanConfigBuilder::new(file_scan.object_store_url.clone(), Arc::new(parquet_source))
+        .with_file_groups(file_scan.file_groups.clone())
+        .with_projection_indices(Some(projected_indices))
+        .unwrap()
+        .build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn filtered_payload_scan(
     scan: Arc<dyn ExecutionPlan>,
     payload_column: &str,

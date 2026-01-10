@@ -47,7 +47,7 @@ pub use runtime::{
     RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
 };
 pub use source::{
-    ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, PartitionColumn,
+    ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, MissingColumn, PartitionColumn,
     PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature, ScanLimitDisposition,
     SchemaMappingDisposition, SourceColumnRef, SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
     ZeroColumnCountDisposition,

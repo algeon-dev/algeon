@@ -144,6 +144,99 @@ fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
 }
 
 #[test]
+fn native_local_parquet_source_materializes_missing_nullable_columns() {
+    let dir = unique_temp_dir("cudf-query-engine-native-missing-nullable-source-columns");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    write_input_parquet(&runtime, &path);
+
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("missing_payload", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_rows(vec![4]),
+        ],
+        Arc::clone(&source_schema),
+        vec!["key".to_string()],
+    )
+    .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, true)])
+    .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3]);
+    let missing = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(missing.null_count(), 4);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_local_parquet_source_materializes_missing_nullable_columns() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-missing-nullable-source-columns");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    write_input_parquet(&runtime, &path);
+
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("missing_payload", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![4096])
+                .with_row_group_rows(vec![4]),
+        ],
+        Arc::clone(&source_schema),
+        vec!["key".to_string()],
+    )
+    .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, true)])
+    .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 64 * 1024 * 1024,
+            max_source_chunk_bytes: 16 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 2,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(result.metrics().source_chunks_committed, 1);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3]);
+    let missing = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(missing.null_count(), 4);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_generic_local_parquet_pipeline_uses_ordered_source_scheduler() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-generic-source-scheduler");
     let path = dir.join("input.parquet");

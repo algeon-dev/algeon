@@ -457,3 +457,50 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn parquet_missing_nullable_columns_are_represented_as_native_typed_nulls() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-missing-nullable-columns");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan_with_missing_nullable_column(&path);
+    let scan_schema = scan.schema();
+    let group_by = PhysicalGroupBy::new_single(vec![(
+        col("missing_payload", &scan_schema).unwrap(),
+        "missing_payload".to_string(),
+    )]);
+    let sum = AggregateExprBuilder::new(sum_udaf(), vec![col("m00", &scan_schema).unwrap()])
+        .schema(Arc::clone(&scan_schema))
+        .alias("sum_m00")
+        .build()
+        .unwrap();
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(AggregateMode::Single, group_by, vec![Arc::new(sum)], vec![None], scan, scan_schema)
+            .unwrap(),
+    );
+    let aggregate_schema = aggregate.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("sum_m00", &aggregate_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, aggregate).with_fetch(Some(1)));
+    let plan = Arc::new(LocalLimitExec::new(sort, 1));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].schema_mapping_disposition.as_str(), "missing_nullable_columns");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.missing_columns.len(), 1);
+    assert_eq!(source.missing_columns[0].name, "missing_payload");
+    assert_eq!(
+        source.projected_output_column_source_refs,
+        vec![SourceColumnRef::File(2), SourceColumnRef::MissingNull(0)]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}

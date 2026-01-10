@@ -16,7 +16,7 @@ use cudf_query_engine::{
     BoundedJoinReservationStatus, BuildMaterializationBoundary, ByteRangeDisposition, ColumnRef, DataPlacement,
     ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics,
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, OperatorMetrics, PartitionColumn,
+    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, MissingColumn, OperatorMetrics, PartitionColumn,
     PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError,
     QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
     ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,

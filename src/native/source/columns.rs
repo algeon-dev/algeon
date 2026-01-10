@@ -1,15 +1,25 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
-use cudf_query_engine::{PartitionColumn as NativePartitionColumn, SourceColumnRef as NativeSourceColumnRef};
+use cudf_query_engine::{
+    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
+    SourceColumnRef as NativeSourceColumnRef,
+};
 use datafusion::{
     datasource::physical_plan::FileScanConfig,
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
 };
+use parquet::{
+    arrow::parquet_to_arrow_schema,
+    file::reader::{FileReader, SerializedFileReader},
+};
 
 use crate::{
-    native::validate::{collect_required_columns, is_supported_native_type, native_zero_column_count_source_is_safe},
+    native::{
+        pruning::local_object_path_to_filesystem,
+        validate::{collect_required_columns, is_supported_native_type, native_zero_column_count_source_is_safe},
+    },
     policy::FallbackReason,
 };
 
@@ -54,6 +64,8 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     pub(in crate::native) partition_columns: Vec<NativePartitionColumn>,
     /// DataFusion table partition-column indices required by this source.
     pub(in crate::native) partition_column_indices: Vec<usize>,
+    /// Required nullable table columns missing from the physical file schema.
+    pub(in crate::native) missing_columns: Vec<NativeMissingColumn>,
     /// DataFusion scan-output column names consumed by the lowered subtree.
     ///
     /// This preserves the adapter-side view of the scan projection so later
@@ -75,7 +87,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
     pre_aggregate_projection: Option<&ProjectionExec>,
     aggregate: &AggregateExec,
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
-    let file_schema = file_scan.file_schema();
+    let file_schema = native_physical_file_schema(file_scan)?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     if native_zero_column_count_source_is_safe(filter, pre_aggregate_projection, aggregate) {
         return Ok(NativeParquetColumnRequirements {
@@ -87,6 +99,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
             pure_filter_column_source_refs: Vec::new(),
             partition_columns: Vec::new(),
             partition_column_indices: Vec::new(),
+            missing_columns: Vec::new(),
             scan_output_columns: Vec::new(),
         });
     }
@@ -147,10 +160,13 @@ pub(in crate::native) fn required_parquet_column_requirements(
     let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
     let (partition_columns, partition_column_indices) =
         native_required_partition_columns(file_scan, &required_source_columns)?;
-    let read_column_file_indices = column_file_indices(file_schema, &read_columns)?;
+    let missing_columns =
+        native_required_missing_columns(file_scan, &file_schema, &required_source_columns, &partition_columns)?;
+    let read_column_file_indices = column_file_indices(&file_schema, &read_columns)?;
     let projected_output_column_source_refs =
-        column_source_refs(file_schema, &partition_columns, &projected_output_columns)?;
-    let pure_filter_column_source_refs = column_source_refs(file_schema, &partition_columns, &pure_filter_columns)?;
+        column_source_refs(&file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
+    let pure_filter_column_source_refs =
+        column_source_refs(&file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
 
     Ok(NativeParquetColumnRequirements {
         read_columns,
@@ -161,6 +177,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
         pure_filter_column_source_refs,
         partition_columns,
         partition_column_indices,
+        missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
     })
 }
@@ -178,7 +195,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     filter: Option<&FilterExec>,
     required_scan_output_indices: &[usize],
 ) -> Result<NativeParquetColumnRequirements, FallbackReason> {
-    let file_schema = file_scan.file_schema();
+    let file_schema = native_physical_file_schema(file_scan)?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let scan_projection = file_scan.file_source().projection();
     let scan_output_schema = file_scan.projected_schema().map_err(|_error| FallbackReason::UnsupportedExpression)?;
@@ -212,10 +229,13 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
     let (partition_columns, partition_column_indices) =
         native_required_partition_columns(file_scan, &required_source_columns)?;
-    let read_column_file_indices = column_file_indices(file_schema, &read_columns)?;
+    let missing_columns =
+        native_required_missing_columns(file_scan, &file_schema, &required_source_columns, &partition_columns)?;
+    let read_column_file_indices = column_file_indices(&file_schema, &read_columns)?;
     let projected_output_column_source_refs =
-        column_source_refs(file_schema, &partition_columns, &projected_output_columns)?;
-    let pure_filter_column_source_refs = column_source_refs(file_schema, &partition_columns, &pure_filter_columns)?;
+        column_source_refs(&file_schema, &partition_columns, &missing_columns, &projected_output_columns)?;
+    let pure_filter_column_source_refs =
+        column_source_refs(&file_schema, &partition_columns, &missing_columns, &pure_filter_columns)?;
 
     Ok(NativeParquetColumnRequirements {
         read_columns,
@@ -226,6 +246,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
         pure_filter_column_source_refs,
         partition_columns,
         partition_column_indices,
+        missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
     })
 }
@@ -270,6 +291,34 @@ fn collect_source_required_columns(
     collect_required_columns(&source_expr, table_schema, required)
 }
 
+fn native_physical_file_schema(file_scan: &FileScanConfig) -> Result<SchemaRef, FallbackReason> {
+    if !file_scan.object_store_url.as_str().starts_with("file://") {
+        return Ok(Arc::clone(file_scan.file_schema()));
+    }
+    let files = file_scan.file_groups.iter().flat_map(|group| group.files()).collect::<Vec<_>>();
+    let Some(first_file) = files.first() else {
+        return Ok(Arc::clone(file_scan.file_schema()));
+    };
+    let first_schema = local_parquet_footer_schema(first_file.object_meta.location.as_ref())?;
+    for file in files.iter().skip(1) {
+        let schema = local_parquet_footer_schema(file.object_meta.location.as_ref())?;
+        if schema.as_ref() != first_schema.as_ref() {
+            return Err(FallbackReason::NativeSourceSchemaMapping);
+        }
+    }
+    Ok(first_schema)
+}
+
+fn local_parquet_footer_schema(location: &str) -> Result<SchemaRef, FallbackReason> {
+    let path = local_object_path_to_filesystem(location);
+    let reader =
+        SerializedFileReader::try_from(path.as_path()).map_err(|_error| FallbackReason::NativeSourceSchemaMapping)?;
+    let metadata = reader.metadata().file_metadata();
+    let schema = parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata())
+        .map_err(|_error| FallbackReason::NativeSourceSchemaMapping)?;
+    Ok(Arc::new(schema))
+}
+
 fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Vec<usize>, FallbackReason> {
     columns
         .iter()
@@ -290,7 +339,9 @@ pub(in crate::native) fn native_source_output_schema(
     requirements: &NativeParquetColumnRequirements,
 ) -> Result<SchemaRef, FallbackReason> {
     let file_schema = file_scan.file_schema();
-    let mut fields = Vec::with_capacity(requirements.read_columns.len() + requirements.partition_columns.len());
+    let mut fields = Vec::with_capacity(
+        requirements.read_columns.len() + requirements.partition_columns.len() + requirements.missing_columns.len(),
+    );
     for column in &requirements.read_columns {
         fields
             .push(file_schema.field_with_name(column).map_err(|_error| FallbackReason::UnsupportedExpression)?.clone());
@@ -300,6 +351,13 @@ pub(in crate::native) fn native_source_output_schema(
             partition_column.name.as_str(),
             partition_column.data_type.clone(),
             partition_column.nullable,
+        ));
+    }
+    for missing_column in &requirements.missing_columns {
+        fields.push(arrow::datatypes::Field::new(
+            missing_column.name.as_str(),
+            missing_column.data_type.clone(),
+            missing_column.nullable,
         ));
     }
     Ok(Arc::new(Schema::new(fields)))
@@ -328,10 +386,35 @@ fn native_required_partition_columns(
     Ok((columns, indices))
 }
 
+fn native_required_missing_columns(
+    file_scan: &FileScanConfig,
+    file_schema: &SchemaRef,
+    required_columns: &BTreeSet<String>,
+    partition_columns: &[NativePartitionColumn],
+) -> Result<Vec<NativeMissingColumn>, FallbackReason> {
+    let table_schema = file_scan.file_source().table_schema().table_schema();
+    let mut columns = Vec::new();
+    for column in required_columns {
+        if file_schema.index_of(column).is_ok() || partition_columns.iter().any(|field| &field.name == column) {
+            continue;
+        }
+        let field = table_schema.field_with_name(column).map_err(|_error| FallbackReason::NativeSourceSchemaMapping)?;
+        if !field.is_nullable() {
+            return Err(FallbackReason::NativeSourceSchemaMapping);
+        }
+        if !is_supported_native_type(field.data_type()) {
+            return Err(FallbackReason::UnsupportedType);
+        }
+        columns.push(NativeMissingColumn::new(column.as_str(), field.data_type().clone(), field.is_nullable()));
+    }
+    Ok(columns)
+}
+
 /// Resolves logical source column names to file-schema or partition-column refs.
 fn column_source_refs(
     file_schema: &SchemaRef,
     partition_columns: &[NativePartitionColumn],
+    missing_columns: &[NativeMissingColumn],
     columns: &[String],
 ) -> Result<Vec<NativeSourceColumnRef>, FallbackReason> {
     columns
@@ -344,6 +427,12 @@ fn column_source_refs(
                 .iter()
                 .position(|field| &field.name == column)
                 .map(NativeSourceColumnRef::Partition)
+                .or_else(|| {
+                    missing_columns
+                        .iter()
+                        .position(|field| &field.name == column)
+                        .map(NativeSourceColumnRef::MissingNull)
+                })
                 .ok_or(FallbackReason::UnsupportedExpression)
         })
         .collect()

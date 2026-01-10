@@ -146,6 +146,14 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
                 NativeZeroColumnCountDisposition::NotRequired
             }
         });
+    let schema_mapping_disposition =
+        column_requirements.map_or(NativeSchemaMappingDisposition::DirectByName, |requirements| {
+            if !requirements.missing_columns.is_empty() {
+                NativeSchemaMappingDisposition::MissingNullableColumns
+            } else {
+                NativeSchemaMappingDisposition::DirectByName
+            }
+        });
 
     let mut rejected_features = Vec::new();
     if !file_scan.object_store_url.as_str().starts_with("file://") {
@@ -179,6 +187,9 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     }
     if zero_column_count_disposition == NativeZeroColumnCountDisposition::Rejected {
         rejected_features.push(NativeRejectedSourceFeature::ZeroColumnCount);
+    }
+    if matches!(schema_mapping_disposition, NativeSchemaMappingDisposition::Rejected) {
+        rejected_features.push(NativeRejectedSourceFeature::SchemaMapping);
     }
     let ranges_are_safely_coalesced = ranged_file_count > 0
         && file_scan.object_store_url.as_str().starts_with("file://")
@@ -219,7 +230,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         partition_column_disposition,
         zero_column_count_disposition,
         scan_limit_disposition,
-        schema_mapping_disposition: NativeSchemaMappingDisposition::DirectByName,
+        schema_mapping_disposition,
         read_column_count,
         projected_output_column_count,
         pure_filter_column_count,
