@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 
 use super::*;
-use crate::exec::source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk};
+use crate::exec::{
+    bounded::chunks::{insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk},
+    source::{ScheduledLocalParquetRead, format_row_groups, read_local_parquet_chunk},
+};
 
 pub(in crate::exec::bounded) fn execute_bounded_join_leaf_input(
     context: &ExecutionContext,
@@ -156,6 +159,11 @@ fn read_join_leaf_source_chunks_serial(
     let mut chunks = Vec::with_capacity(source_chunks.len());
     for chunk in source_chunks {
         metrics.record_source_chunk_attempt();
+        if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
+            metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+            chunks.push((output.frame, output.reservation));
+            continue;
+        }
         let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
         let mut reservation = match reservations.try_reserve(
             join_source_read_reservation_request(requested_bytes, reservations.budget(), node_id, chunk),
@@ -190,6 +198,20 @@ fn read_join_leaf_source_chunks_serial(
             release_join_source_chunks_reverse(reservations, chunks);
             return Err(error);
         }
+        let retained_device_bytes = reservation.bytes();
+        insert_bounded_local_parquet_source_cache(
+            context,
+            source,
+            chunk,
+            &frame,
+            &mut reservation,
+            reservations,
+            metrics,
+            "join_source_read",
+            1,
+            1,
+            retained_device_bytes,
+        )?;
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
         chunks.push((frame, reservation));
     }
@@ -254,6 +276,26 @@ fn read_join_leaf_source_chunks_with_scheduler(
             node_id,
             chunk,
             metrics,
+        ) {
+            drop(output.frame);
+            reservations.release(output.reservation);
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            release_join_source_chunks_reverse(reservations, chunks);
+            return Err(error);
+        }
+        let retained_device_bytes = output.reservation.bytes();
+        if let Err(error) = insert_bounded_local_parquet_source_cache(
+            context,
+            source,
+            chunk,
+            &output.frame,
+            &mut output.reservation,
+            reservations,
+            metrics,
+            "join_source_read",
+            1,
+            1,
+            retained_device_bytes,
         ) {
             drop(output.frame);
             reservations.release(output.reservation);
@@ -381,6 +423,9 @@ fn start_join_leaf_scheduled_source_read(
     prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
     metrics.record_source_chunk_attempt();
+    if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
+        return Ok(ScheduledLocalParquetRead::ready(output, memory_boundary, prefetch));
+    }
     let request = join_source_read_reservation_request_for_boundary(
         requested_bytes,
         reservations.budget(),

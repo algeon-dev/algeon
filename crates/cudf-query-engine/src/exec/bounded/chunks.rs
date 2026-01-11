@@ -4,6 +4,7 @@ use super::{
     super::source::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, read_local_parquet_chunk},
     *,
 };
+use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::exec::bounded) struct SourceReadSchedulerBoundaries {
@@ -86,7 +87,15 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
     for (index, chunk) in chunks.iter().enumerate() {
         let scheduled =
             queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
-        let source = match finish_scheduled_source_read(scheduled, reservations, metrics, 1, max_attempts) {
+        let source = match finish_scheduled_source_read(
+            scheduled,
+            context,
+            bounded.source,
+            reservations,
+            metrics,
+            1,
+            max_attempts,
+        ) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
                 metrics.record_source_read_prefetch_abandoned();
@@ -280,6 +289,11 @@ fn read_local_parquet_chunks_serial(
     let mut outputs = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         metrics.record_source_chunk_attempt();
+        if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
+            metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+            outputs.push(output);
+            continue;
+        }
         let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
         let source_request = chunk_reservation_request(
             ReservationKind::SourceRead,
@@ -328,6 +342,19 @@ fn read_local_parquet_chunks_serial(
                 return Err(error);
             },
         };
+        insert_bounded_local_parquet_source_cache(
+            context,
+            source,
+            &output.chunk,
+            &output.frame,
+            &mut output.reservation,
+            reservations,
+            metrics,
+            boundaries.required(),
+            1,
+            1,
+            output.observed_bytes,
+        )?;
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
         outputs.push(output);
     }
@@ -356,7 +383,14 @@ fn read_local_parquet_chunks_with_ordered_scheduler(
     for (index, _chunk) in chunks.iter().enumerate() {
         let scheduled =
             queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
-        let output = match finish_ordered_scheduled_source_read(scheduled, reservations, metrics) {
+        let output = match finish_ordered_scheduled_source_read(
+            scheduled,
+            context,
+            source,
+            reservations,
+            metrics,
+            boundaries.required(),
+        ) {
             Ok(output) => output,
             Err(error) => {
                 queue.abandon_all(index + 1, reservations, metrics);
@@ -394,8 +428,11 @@ fn read_local_parquet_chunks_with_ordered_scheduler(
 
 fn finish_ordered_scheduled_source_read(
     scheduled: ScheduledLocalParquetRead,
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
+    cache_memory_boundary: &'static str,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     let is_prefetch = scheduled.is_prefetch();
     let memory_boundary = scheduled.budget_boundary();
@@ -409,6 +446,19 @@ fn finish_ordered_scheduled_source_read(
         memory_boundary,
         1,
         1,
+    )?;
+    insert_bounded_local_parquet_source_cache(
+        context,
+        source,
+        &output.chunk,
+        &output.frame,
+        &mut output.reservation,
+        reservations,
+        metrics,
+        cache_memory_boundary,
+        1,
+        1,
+        output.observed_bytes,
     )?;
     if is_prefetch {
         metrics.record_source_read_prefetch_completed();
@@ -705,6 +755,9 @@ fn start_scheduled_source_read(
     prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
     metrics.record_source_chunk_attempt();
+    if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
+        return Ok(ScheduledLocalParquetRead::ready(output, budget_boundary, prefetch));
+    }
     let request = chunk_reservation_request(
         ReservationKind::SourceRead,
         budget_boundary,
@@ -730,6 +783,8 @@ fn start_scheduled_source_read(
 
 fn finish_scheduled_source_read(
     scheduled: ScheduledLocalParquetRead,
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
     attempt: usize,
@@ -737,21 +792,102 @@ fn finish_scheduled_source_read(
 ) -> Result<ScheduledLocalParquetReadOutput> {
     let is_prefetch = scheduled.is_prefetch();
     let memory_boundary = scheduled.budget_boundary();
-    let mut source = scheduled.finish(reservations, metrics)?;
-    source.observed_bytes = grow_source_reservation_to_observed(
-        &source.frame,
-        &mut source.reservation,
+    let mut output = scheduled.finish(reservations, metrics)?;
+    output.observed_bytes = grow_source_reservation_to_observed(
+        &output.frame,
+        &mut output.reservation,
         reservations,
-        &source.chunk,
+        &output.chunk,
         metrics,
         memory_boundary,
         attempt,
         max_attempts,
     )?;
+    insert_bounded_local_parquet_source_cache(
+        context,
+        source,
+        &output.chunk,
+        &output.frame,
+        &mut output.reservation,
+        reservations,
+        metrics,
+        memory_boundary,
+        attempt,
+        max_attempts,
+        output.observed_bytes,
+    )?;
     if is_prefetch {
         metrics.record_source_read_prefetch_completed();
     }
-    Ok(source)
+    Ok(output)
+}
+
+pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<ScheduledLocalParquetReadOutput>> {
+    let Some(cache) = context.local_parquet_source_cache() else {
+        return Ok(None);
+    };
+    let key = GpuLocalParquetSourceCacheKey::from_source_chunk(source, chunk);
+    let lookup_timer = Instant::now();
+    let cached = cache.get(&key, context, &source.schema)?;
+    metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
+    if let Some((handle, retained_device_bytes)) = cached {
+        metrics.record_source_cache_hit(cache.retained_device_bytes()?);
+        return Ok(Some(ScheduledLocalParquetReadOutput {
+            chunk: chunk.clone(),
+            frame: handle.into_gpu_frame(),
+            reservation: reservations.borrow_accounted(retained_device_bytes),
+            observed_bytes: retained_device_bytes,
+        }));
+    }
+    metrics.record_source_cache_miss(cache.retained_device_bytes()?);
+    Ok(None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    frame: &GpuDataFrame,
+    source_reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+    retained_device_bytes: u64,
+) -> Result<()> {
+    let Some(cache) = context.local_parquet_source_cache() else {
+        return Ok(());
+    };
+    let key = GpuLocalParquetSourceCacheKey::from_source_chunk(source, chunk);
+    let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(&source.schema))?;
+    match cache.insert_if_absent(key, handle, retained_device_bytes)? {
+        GpuLocalParquetSourceCacheInsert::Inserted => {
+            metrics.record_source_cache_insert(cache.retained_device_bytes()?);
+            let request = chunk_reservation_request(
+                ReservationKind::SourceCacheRetained,
+                "source_cache_retained",
+                retained_device_bytes,
+                reservations.budget(),
+                chunk,
+                attempt,
+                max_attempts,
+            )
+            .with_stage(memory_boundary);
+            reservations.promote_source_cache_insert(source_reservation, retained_device_bytes, request, metrics)?;
+        },
+        GpuLocalParquetSourceCacheInsert::AlreadyPresent | GpuLocalParquetSourceCacheInsert::CapacitySkipped => {
+            metrics.record_source_cache_insert_skipped(cache.retained_device_bytes()?);
+        },
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -862,6 +998,9 @@ fn read_bounded_chunk_source(
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     metrics.record_source_chunk_attempt();
+    if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
+        return Ok(output);
+    }
 
     let source_request = chunk_reservation_request(
         ReservationKind::SourceRead,
@@ -897,6 +1036,19 @@ fn read_bounded_chunk_source(
         "source_chunk_read",
         attempt,
         max_attempts,
+    )?;
+    insert_bounded_local_parquet_source_cache(
+        context,
+        source,
+        &output.chunk,
+        &output.frame,
+        &mut output.reservation,
+        reservations,
+        metrics,
+        "source_chunk_read",
+        attempt,
+        max_attempts,
+        output.observed_bytes,
     )?;
     Ok(output)
 }

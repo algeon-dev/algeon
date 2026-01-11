@@ -47,7 +47,7 @@ fn read_cacheable_local_parquet_source(
     let lookup_timer = Instant::now();
     let cached = cache.get(&key, context, &source.schema)?;
     metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
-    if let Some(handle) = cached {
+    if let Some((handle, _retained_device_bytes)) = cached {
         metrics.record_source_cache_hit(cache.retained_device_bytes()?);
         return Ok(handle.into_gpu_frame());
     }

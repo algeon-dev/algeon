@@ -127,9 +127,8 @@ impl NativeCudfExecutionConfig {
 
     /// Attach a durable GPU local-Parquet source cache for repeated source scans.
     ///
-    /// The native engine currently accepts this only with unbounded memory
-    /// control; bounded cache admission is deferred until cache-resident bytes
-    /// are represented in the reservation ledger.
+    /// Bounded native execution charges cache-resident source bytes through the
+    /// query-engine reservation ledger before source/operator admission.
     pub fn with_local_parquet_source_cache(mut self, cache: Arc<GpuLocalParquetSourceCache>) -> Self {
         self.local_parquet_source_cache = Some(cache);
         self

@@ -63,7 +63,7 @@ pub(super) fn execute_bounded_join_pipeline_query_plan(
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         unreachable!("execute_bounded_join_pipeline_query_plan is called only for bounded policies");
     };
-    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
     let left = execute_bounded_join_leaf_input(
         context,
         plan,
@@ -178,7 +178,7 @@ fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pi
             "execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan is called only for bounded policies"
         );
     };
-    let mut reservations = ReservationTracker::new(context.device_memory_space(), device_budget_bytes);
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
     let join_subtree = execute_bounded_multi_join_subtree(
         context,
         plan,

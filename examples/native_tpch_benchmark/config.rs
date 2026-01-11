@@ -43,11 +43,6 @@ impl NativeTpchBenchmarkConfig {
         validate_nonzero("CUDF_TPCH_BENCH_ITERATIONS", self.iterations)?;
         validate_query_ids(&self.query_ids)?;
         validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT", self.max_source_reads_in_flight)?;
-        if self.native_source_cache_policy.is_enabled() && self.native_memory_policy.is_bounded() {
-            return Err(plan_error(
-                "CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_POLICY requires CUDF_TPCH_BENCH_NATIVE_MEMORY_POLICY=unbounded until source-cache reservations are modeled",
-            ));
-        }
         if let Some(max_retained_bytes) = self.native_source_cache_policy.max_retained_bytes() {
             validate_nonzero("CUDF_TPCH_BENCH_NATIVE_SOURCE_CACHE_MAX_RETAINED_BYTES", max_retained_bytes)?;
         }

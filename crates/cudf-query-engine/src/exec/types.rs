@@ -11,6 +11,7 @@ use cudf::{
 };
 
 use crate::{
+    chunk::SourceChunk,
     error::{QueryError, Result},
     metrics::QueryMetrics,
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
@@ -475,17 +476,7 @@ impl GpuLocalParquetSourceCacheKey {
     pub fn from_source(source: &LocalParquetSource) -> Self {
         let mut fingerprint = String::new();
         push_token(&mut fingerprint, "mode", "unbounded_local_parquet_source");
-        push_schema(&mut fingerprint, &source.schema);
-        push_string_vec(&mut fingerprint, "read_columns", &source.read_columns);
-        push_usize_vec(&mut fingerprint, "read_column_file_indices", &source.read_column_file_indices);
-        push_string_vec(&mut fingerprint, "projected_output_columns", &source.projected_output_columns);
-        push_source_refs(
-            &mut fingerprint,
-            "projected_output_column_source_refs",
-            &source.projected_output_column_source_refs,
-        );
-        push_string_vec(&mut fingerprint, "pure_filter_columns", &source.pure_filter_columns);
-        push_source_refs(&mut fingerprint, "pure_filter_column_source_refs", &source.pure_filter_column_source_refs);
+        push_source_scan_contract(&mut fingerprint, source);
         push_token(
             &mut fingerprint,
             "scan_limit",
@@ -537,6 +528,90 @@ impl GpuLocalParquetSourceCacheKey {
         Self { fingerprint }
     }
 
+    pub fn from_source_chunk(source: &LocalParquetSource, chunk: &SourceChunk) -> Self {
+        let mut fingerprint = String::new();
+        push_token(&mut fingerprint, "mode", "bounded_local_parquet_source_chunk");
+        push_source_scan_contract(&mut fingerprint, source);
+        push_token(
+            &mut fingerprint,
+            "source_scan_limit",
+            source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
+        );
+        push_token(
+            &mut fingerprint,
+            "chunk_scan_limit",
+            chunk.scan_limit_rows.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
+        );
+        push_token(&mut fingerprint, "chunk.source_node_id", chunk.source_node_id.to_string());
+        push_token(&mut fingerprint, "chunk.index", chunk.chunk_index.to_string());
+        push_token(&mut fingerprint, "chunk.file_index", chunk.file_index.to_string());
+        push_token(&mut fingerprint, "chunk.path", chunk.path.display().to_string());
+        push_token(&mut fingerprint, "chunk.stable_id", &chunk.stable_id);
+        push_token(&mut fingerprint, "chunk.reads_all_row_groups", chunk.reads_all_row_groups.to_string());
+        push_usize_vec(&mut fingerprint, "chunk.row_groups", &chunk.row_group_indexes);
+        push_optional_u64(&mut fingerprint, "chunk.known_file_bytes", chunk.known_file_bytes);
+        push_optional_u64(&mut fingerprint, "chunk.known_row_group_bytes", chunk.known_row_group_bytes);
+        push_optional_u64(
+            &mut fingerprint,
+            "chunk.known_projected_compressed_bytes",
+            chunk.known_projected_compressed_bytes,
+        );
+        push_optional_u64(
+            &mut fingerprint,
+            "chunk.known_projected_uncompressed_bytes",
+            chunk.known_projected_uncompressed_bytes,
+        );
+        push_optional_u64(
+            &mut fingerprint,
+            "chunk.known_pure_filter_compressed_bytes",
+            chunk.known_pure_filter_compressed_bytes,
+        );
+        push_optional_u64(
+            &mut fingerprint,
+            "chunk.known_pure_filter_uncompressed_bytes",
+            chunk.known_pure_filter_uncompressed_bytes,
+        );
+        push_optional_usize_vec(
+            &mut fingerprint,
+            "chunk.source_file_row_groups",
+            chunk.source_file_row_groups.as_deref(),
+        );
+        push_optional_u64_vec(
+            &mut fingerprint,
+            "chunk.source_file_row_group_bytes",
+            chunk.source_file_row_group_bytes.as_deref(),
+        );
+        push_optional_u64_vec(
+            &mut fingerprint,
+            "chunk.source_file_projected_compressed_bytes",
+            chunk.source_file_projected_compressed_bytes.as_deref(),
+        );
+        push_optional_u64_vec(
+            &mut fingerprint,
+            "chunk.source_file_projected_uncompressed_bytes",
+            chunk.source_file_projected_uncompressed_bytes.as_deref(),
+        );
+        push_optional_u64_vec(
+            &mut fingerprint,
+            "chunk.source_file_pure_filter_compressed_bytes",
+            chunk.source_file_pure_filter_compressed_bytes.as_deref(),
+        );
+        push_optional_u64_vec(
+            &mut fingerprint,
+            "chunk.source_file_pure_filter_uncompressed_bytes",
+            chunk.source_file_pure_filter_uncompressed_bytes.as_deref(),
+        );
+        push_optional_u64_vec(
+            &mut fingerprint,
+            "chunk.source_file_row_group_rows",
+            chunk.source_file_row_group_rows.as_deref(),
+        );
+        push_string_vec(&mut fingerprint, "chunk.read_columns", &chunk.read_columns);
+        let partition_values = chunk.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
+        push_string_vec(&mut fingerprint, "chunk.partition_values", &partition_values);
+        Self { fingerprint }
+    }
+
     pub fn as_str(&self) -> &str {
         &self.fingerprint
     }
@@ -553,12 +628,14 @@ pub enum GpuLocalParquetSourceCacheInsert {
 struct GpuLocalParquetSourceCacheEntry {
     handle: GpuResultHandle,
     retained_device_bytes: u64,
+    last_access_epoch: u64,
 }
 
 #[derive(Default)]
 struct GpuLocalParquetSourceCacheState {
     cache: HashMap<GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCacheEntry>,
     retained_device_bytes: u64,
+    next_access_epoch: u64,
 }
 
 pub struct GpuLocalParquetSourceCache {
@@ -603,18 +680,24 @@ impl GpuLocalParquetSourceCache {
         key: &GpuLocalParquetSourceCacheKey,
         context: &ExecutionContext,
         schema: &SchemaRef,
-    ) -> Result<Option<GpuResultHandle>> {
-        let Some(entry) = self.lock()?.cache.get(key).cloned() else {
+    ) -> Result<Option<(GpuResultHandle, u64)>> {
+        let mut state = self.lock()?;
+        let access_epoch = state.next_epoch();
+        let Some(entry) = state.cache.get_mut(key) else {
             return Ok(None);
         };
-        if !entry.handle.can_reuse_for_source_cache(context, schema)? {
+        entry.last_access_epoch = access_epoch;
+        let handle = entry.handle.clone();
+        let retained_device_bytes = entry.retained_device_bytes;
+        drop(state);
+        if !handle.can_reuse_for_source_cache(context, schema)? {
             let mut state = self.lock()?;
             if let Some(removed) = state.cache.remove(key) {
                 state.retained_device_bytes = state.retained_device_bytes.saturating_sub(removed.retained_device_bytes);
             }
             return Ok(None);
         }
-        Ok(Some(entry.handle))
+        Ok(Some((handle, retained_device_bytes)))
     }
 
     pub(crate) fn insert_if_absent(
@@ -627,14 +710,16 @@ impl GpuLocalParquetSourceCache {
         if state.cache.contains_key(&key) {
             return Ok(GpuLocalParquetSourceCacheInsert::AlreadyPresent);
         }
-        let Some(next_retained_bytes) = state.retained_device_bytes.checked_add(retained_device_bytes) else {
-            return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
-        };
-        if next_retained_bytes > self.max_retained_device_bytes {
+        if retained_device_bytes > self.max_retained_device_bytes {
             return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
         }
-        state.cache.insert(key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes });
-        state.retained_device_bytes = next_retained_bytes;
+        state.evict_until_fits(self.max_retained_device_bytes, retained_device_bytes);
+        if state.retained_device_bytes.saturating_add(retained_device_bytes) > self.max_retained_device_bytes {
+            return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
+        }
+        let last_access_epoch = state.next_epoch();
+        state.cache.insert(key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes, last_access_epoch });
+        state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
         Ok(GpuLocalParquetSourceCacheInsert::Inserted)
     }
 
@@ -646,6 +731,27 @@ impl GpuLocalParquetSourceCache {
                 "native GPU local Parquet source cache lock was poisoned",
             )
         })
+    }
+}
+
+impl GpuLocalParquetSourceCacheState {
+    fn next_epoch(&mut self) -> u64 {
+        let epoch = self.next_access_epoch;
+        self.next_access_epoch = self.next_access_epoch.saturating_add(1);
+        epoch
+    }
+
+    fn evict_until_fits(&mut self, max_retained_device_bytes: u64, incoming_retained_device_bytes: u64) {
+        while self.retained_device_bytes.saturating_add(incoming_retained_device_bytes) > max_retained_device_bytes {
+            let Some(evict_key) =
+                self.cache.iter().min_by_key(|(_key, entry)| entry.last_access_epoch).map(|(key, _entry)| key.clone())
+            else {
+                break;
+            };
+            if let Some(evicted) = self.cache.remove(&evict_key) {
+                self.retained_device_bytes = self.retained_device_bytes.saturating_sub(evicted.retained_device_bytes);
+            }
+        }
     }
 }
 
@@ -686,6 +792,16 @@ fn push_schema(output: &mut String, schema: &SchemaRef) {
     }
 }
 
+fn push_source_scan_contract(output: &mut String, source: &LocalParquetSource) {
+    push_schema(output, &source.schema);
+    push_string_vec(output, "read_columns", &source.read_columns);
+    push_usize_vec(output, "read_column_file_indices", &source.read_column_file_indices);
+    push_string_vec(output, "projected_output_columns", &source.projected_output_columns);
+    push_source_refs(output, "projected_output_column_source_refs", &source.projected_output_column_source_refs);
+    push_string_vec(output, "pure_filter_columns", &source.pure_filter_columns);
+    push_source_refs(output, "pure_filter_column_source_refs", &source.pure_filter_column_source_refs);
+}
+
 fn push_source_refs(output: &mut String, label: impl AsRef<str>, refs: &[SourceColumnRef]) {
     let values = refs.iter().map(format_source_ref).collect::<Vec<_>>();
     push_string_vec(output, label, &values);
@@ -716,6 +832,13 @@ fn push_usize_vec(output: &mut String, label: impl AsRef<str>, values: &[usize])
 fn push_optional_usize_vec(output: &mut String, label: impl AsRef<str>, values: Option<&[usize]>) {
     match values {
         Some(values) => push_usize_vec(output, label, values),
+        None => push_token(output, label, "none"),
+    }
+}
+
+fn push_optional_u64(output: &mut String, label: impl AsRef<str>, value: Option<u64>) {
+    match value {
+        Some(value) => push_token(output, label, value.to_string()),
         None => push_token(output, label, "none"),
     }
 }

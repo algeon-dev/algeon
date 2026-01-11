@@ -119,8 +119,8 @@ pub struct ExecutionContext {
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     /// Optional durable GPU local-Parquet source cache.
     ///
-    /// This Phase 5 seed is intentionally rejected for bounded memory-control
-    /// execution until cache-resident bytes are reservation-accounted.
+    /// Bounded execution charges retained cache bytes to the reservation ledger
+    /// before admitting source or operator work.
     local_parquet_source_cache: Option<Arc<crate::exec::GpuLocalParquetSourceCache>>,
 }
 
@@ -320,8 +320,8 @@ impl ExecutionContextBuilder {
 
     /// Provides the durable GPU local-Parquet source cache.
     ///
-    /// Bounded execution currently rejects this cache because retained source
-    /// frames must first be represented in the reservation ledger.
+    /// Bounded execution charges retained source frames through the reservation
+    /// ledger before using cached frames or retaining newly read frames.
     pub fn with_local_parquet_source_cache(mut self, cache: Arc<crate::exec::GpuLocalParquetSourceCache>) -> Self {
         self.local_parquet_source_cache = Some(cache);
         self
@@ -335,16 +335,6 @@ impl ExecutionContextBuilder {
         self.memory_control_policy.validate()?;
         self.boundary_policy.validate(self.hash_join_build_cache.is_some())?;
         self.source_scheduler_policy.validate()?;
-        if self.local_parquet_source_cache.is_some() && self.memory_control_policy.is_bounded() {
-            return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
-                "cudf_query_engine.runtime.source_cache",
-                "GPU local Parquet source cache requires unbounded execution until cache reservations are modeled",
-            )
-            .with_fact("reason", "source_cache_requires_reservation_accounting")
-            .with_fact("memory_control_policy", self.memory_control_policy.as_str()));
-        }
-
         if let Some(runtime) = self.runtime {
             return Ok(ExecutionContext {
                 runtime,
