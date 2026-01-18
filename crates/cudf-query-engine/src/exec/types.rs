@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Write,
     sync::{Arc, Mutex},
 };
@@ -542,8 +542,6 @@ impl GpuLocalParquetSourceCacheKey {
             "chunk_scan_limit",
             chunk.scan_limit_rows.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
         );
-        push_token(&mut fingerprint, "chunk.source_node_id", chunk.source_node_id.to_string());
-        push_token(&mut fingerprint, "chunk.index", chunk.chunk_index.to_string());
         push_token(&mut fingerprint, "chunk.file_index", chunk.file_index.to_string());
         push_token(&mut fingerprint, "chunk.path", chunk.path.display().to_string());
         push_token(&mut fingerprint, "chunk.stable_id", &chunk.stable_id);
@@ -624,6 +622,13 @@ pub enum GpuLocalParquetSourceCacheInsert {
     CapacitySkipped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GpuLocalParquetSourceCacheInsertResult {
+    pub(crate) outcome: GpuLocalParquetSourceCacheInsert,
+    pub(crate) evicted_device_bytes: u64,
+    pub(crate) retained_device_bytes: u64,
+}
+
 #[derive(Clone)]
 struct GpuLocalParquetSourceCacheEntry {
     handle: GpuResultHandle,
@@ -675,6 +680,15 @@ impl GpuLocalParquetSourceCache {
         Ok(self.lock()?.retained_device_bytes)
     }
 
+    pub(crate) fn evict_at_least_protecting(
+        &self,
+        target_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> Result<u64> {
+        let mut state = self.lock()?;
+        Ok(state.evict_at_least(target_device_bytes, protected_keys))
+    }
+
     pub(crate) fn get(
         &self,
         key: &GpuLocalParquetSourceCacheKey,
@@ -706,21 +720,49 @@ impl GpuLocalParquetSourceCache {
         handle: GpuResultHandle,
         retained_device_bytes: u64,
     ) -> Result<GpuLocalParquetSourceCacheInsert> {
+        Ok(self.insert_if_absent_protecting(key, handle, retained_device_bytes, &HashSet::new())?.outcome)
+    }
+
+    pub(crate) fn insert_if_absent_protecting(
+        &self,
+        key: GpuLocalParquetSourceCacheKey,
+        handle: GpuResultHandle,
+        retained_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> Result<GpuLocalParquetSourceCacheInsertResult> {
         let mut state = self.lock()?;
+        let retained_before = state.retained_device_bytes;
         if state.cache.contains_key(&key) {
-            return Ok(GpuLocalParquetSourceCacheInsert::AlreadyPresent);
+            return Ok(GpuLocalParquetSourceCacheInsertResult {
+                outcome: GpuLocalParquetSourceCacheInsert::AlreadyPresent,
+                evicted_device_bytes: 0,
+                retained_device_bytes: retained_before,
+            });
         }
         if retained_device_bytes > self.max_retained_device_bytes {
-            return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
+            return Ok(GpuLocalParquetSourceCacheInsertResult {
+                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                evicted_device_bytes: 0,
+                retained_device_bytes: retained_before,
+            });
         }
-        state.evict_until_fits(self.max_retained_device_bytes, retained_device_bytes);
+        let evicted_device_bytes =
+            state.evict_until_fits(self.max_retained_device_bytes, retained_device_bytes, protected_keys);
         if state.retained_device_bytes.saturating_add(retained_device_bytes) > self.max_retained_device_bytes {
-            return Ok(GpuLocalParquetSourceCacheInsert::CapacitySkipped);
+            return Ok(GpuLocalParquetSourceCacheInsertResult {
+                outcome: GpuLocalParquetSourceCacheInsert::CapacitySkipped,
+                evicted_device_bytes,
+                retained_device_bytes: state.retained_device_bytes,
+            });
         }
         let last_access_epoch = state.next_epoch();
         state.cache.insert(key, GpuLocalParquetSourceCacheEntry { handle, retained_device_bytes, last_access_epoch });
         state.retained_device_bytes = state.retained_device_bytes.saturating_add(retained_device_bytes);
-        Ok(GpuLocalParquetSourceCacheInsert::Inserted)
+        Ok(GpuLocalParquetSourceCacheInsertResult {
+            outcome: GpuLocalParquetSourceCacheInsert::Inserted,
+            evicted_device_bytes,
+            retained_device_bytes: state.retained_device_bytes,
+        })
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, GpuLocalParquetSourceCacheState>> {
@@ -741,17 +783,52 @@ impl GpuLocalParquetSourceCacheState {
         epoch
     }
 
-    fn evict_until_fits(&mut self, max_retained_device_bytes: u64, incoming_retained_device_bytes: u64) {
+    fn evict_until_fits(
+        &mut self,
+        max_retained_device_bytes: u64,
+        incoming_retained_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> u64 {
+        let mut evicted_device_bytes = 0u64;
         while self.retained_device_bytes.saturating_add(incoming_retained_device_bytes) > max_retained_device_bytes {
-            let Some(evict_key) =
-                self.cache.iter().min_by_key(|(_key, entry)| entry.last_access_epoch).map(|(key, _entry)| key.clone())
-            else {
+            let Some(evict_key) = self.lru_unprotected_key(protected_keys) else {
                 break;
             };
             if let Some(evicted) = self.cache.remove(&evict_key) {
                 self.retained_device_bytes = self.retained_device_bytes.saturating_sub(evicted.retained_device_bytes);
+                evicted_device_bytes = evicted_device_bytes.saturating_add(evicted.retained_device_bytes);
             }
         }
+        evicted_device_bytes
+    }
+
+    fn evict_at_least(
+        &mut self,
+        target_device_bytes: u64,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> u64 {
+        let mut evicted_device_bytes = 0u64;
+        while evicted_device_bytes < target_device_bytes {
+            let Some(evict_key) = self.lru_unprotected_key(protected_keys) else {
+                break;
+            };
+            if let Some(evicted) = self.cache.remove(&evict_key) {
+                self.retained_device_bytes = self.retained_device_bytes.saturating_sub(evicted.retained_device_bytes);
+                evicted_device_bytes = evicted_device_bytes.saturating_add(evicted.retained_device_bytes);
+            }
+        }
+        evicted_device_bytes
+    }
+
+    fn lru_unprotected_key(
+        &self,
+        protected_keys: &HashSet<GpuLocalParquetSourceCacheKey>,
+    ) -> Option<GpuLocalParquetSourceCacheKey> {
+        self.cache
+            .iter()
+            .filter(|(key, _entry)| !protected_keys.contains(*key))
+            .min_by_key(|(_key, entry)| entry.last_access_epoch)
+            .map(|(key, _entry)| key.clone())
     }
 }
 

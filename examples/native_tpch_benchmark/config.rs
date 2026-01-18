@@ -19,6 +19,12 @@ pub(super) struct NativeTpchBenchmarkConfig {
     pub(super) native_source_cache_policy: NativeTpchSourceCachePolicy,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct NativeTpchRuntimeResources {
+    pub(super) runtime: Option<Arc<cudf::Runtime>>,
+    pub(super) source_cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+}
+
 impl NativeTpchBenchmarkConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
         let config = Self {
@@ -61,15 +67,11 @@ impl NativeTpchBenchmarkConfig {
             .collect()
     }
 
-    pub(super) fn native_execution_config(&self) -> NativeCudfExecutionConfig {
-        self.native_execution_config_with_source_cache(None)
-    }
-
-    pub(super) fn native_execution_config_with_source_cache(
+    pub(super) fn native_execution_config_with_resources(
         &self,
-        source_cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+        resources: &NativeTpchRuntimeResources,
     ) -> NativeCudfExecutionConfig {
-        match self.native_memory_policy {
+        let config = match self.native_memory_policy {
             NativeTpchMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
             NativeTpchMemoryPolicy::Bounded {
                 device_budget_bytes,
@@ -87,16 +89,23 @@ impl NativeTpchBenchmarkConfig {
             .with_source_scheduler_policy(cudf_query_engine::SourceSchedulerPolicy::new(
                 self.max_source_reads_in_flight,
             )),
-        }
-        .with_optional_local_parquet_source_cache(source_cache)
+        };
+        config
+            .with_optional_shared_runtime(resources.runtime.clone())
+            .with_optional_local_parquet_source_cache(resources.source_cache.clone())
     }
 
-    pub(super) fn new_source_cache(&self) -> Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>> {
+    pub(super) fn new_runtime_resources(&self) -> DataFusionResult<NativeTpchRuntimeResources> {
         match self.native_source_cache_policy {
-            NativeTpchSourceCachePolicy::Disabled => None,
-            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => {
-                Some(Arc::new(cudf_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes)))
+            NativeTpchSourceCachePolicy::Disabled => {
+                Ok(NativeTpchRuntimeResources { runtime: None, source_cache: None })
             },
+            NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => Ok(NativeTpchRuntimeResources {
+                runtime: Some(Arc::new(cudf::Runtime::new().map_err(|error| {
+                    plan_error(format!("failed to initialize native source-cache runtime: {error}"))
+                })?)),
+                source_cache: Some(Arc::new(cudf_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes))),
+            }),
         }
     }
 }
@@ -116,6 +125,8 @@ impl Default for NativeTpchBenchmarkConfig {
 }
 
 trait NativeExecutionConfigSourceCacheExt {
+    fn with_optional_shared_runtime(self, runtime: Option<Arc<cudf::Runtime>>) -> Self;
+
     fn with_optional_local_parquet_source_cache(
         self,
         cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
@@ -123,6 +134,13 @@ trait NativeExecutionConfigSourceCacheExt {
 }
 
 impl NativeExecutionConfigSourceCacheExt for NativeCudfExecutionConfig {
+    fn with_optional_shared_runtime(self, runtime: Option<Arc<cudf::Runtime>>) -> Self {
+        match runtime {
+            Some(runtime) => self.with_shared_runtime(runtime),
+            None => self,
+        }
+    }
+
     fn with_optional_local_parquet_source_cache(
         self,
         cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
@@ -264,10 +282,6 @@ impl NativeTpchMemoryPolicy {
         validate_nonzero("CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS", min_retry_chunk_row_groups)?;
         Ok(())
     }
-
-    const fn is_bounded(self) -> bool {
-        matches!(self, Self::Bounded { .. })
-    }
 }
 
 impl Default for NativeTpchMemoryPolicy {
@@ -318,10 +332,6 @@ impl NativeTpchSourceCachePolicy {
             Self::Disabled => None,
             Self::GpuResident { max_retained_bytes } => Some(max_retained_bytes),
         }
-    }
-
-    const fn is_enabled(self) -> bool {
-        matches!(self, Self::GpuResident { .. })
     }
 }
 

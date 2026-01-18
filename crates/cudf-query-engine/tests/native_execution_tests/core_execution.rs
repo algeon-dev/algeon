@@ -366,6 +366,297 @@ fn bounded_generic_local_parquet_source_scan_limit_stops_after_required_chunks()
 }
 
 #[test]
+fn bounded_local_parquet_source_cache_reuses_equivalent_relowered_scan_contract() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-cache-reuse");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let cache = Arc::new(GpuLocalParquetSourceCache::new(64 * 1024 * 1024));
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_stable_id("stable-input").with_file_size_bytes(file_size)],
+            Arc::clone(&source_schema),
+            vec!["key".to_string(), "payload".to_string()],
+        );
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        builder.finish_with_host_sink(source)
+    };
+    let build_context = || {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 8 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let first = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let first_metrics = first.metrics();
+    assert_eq!(first_metrics.source_chunks_planned, 3);
+    assert_eq!(first_metrics.source_cache_hits, 0);
+    assert_eq!(first_metrics.source_cache_misses, 3);
+    assert_eq!(first_metrics.source_cache_inserts, 3);
+    assert_eq!(first_metrics.source_cache_insert_skipped, 0);
+    assert!(first_metrics.source_cache_retained_bytes > 0);
+    assert_eq!(cache.len().unwrap(), 3);
+    let retained_bytes = cache.retained_device_bytes().unwrap();
+    assert!(retained_bytes > 0);
+
+    let second = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    let second_metrics = second.metrics();
+    assert_eq!(second_metrics.source_chunks_planned, 3);
+    assert_eq!(second_metrics.source_cache_hits, 3);
+    assert_eq!(second_metrics.source_cache_misses, 0);
+    assert_eq!(second_metrics.source_cache_inserts, 0);
+    assert_eq!(second_metrics.source_cache_insert_skipped, 0);
+    assert_eq!(second_metrics.source_cache_retained_bytes, retained_bytes);
+    assert!(second_metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.reservation_kind == ReservationKind::SourceCacheRetained
+            && event.memory_boundary == "source_cache_retained"
+            && event.requested_bytes == retained_bytes
+    }));
+
+    let QueryOutput::HostArrow(batch) = second.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 6);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 10, 20, 20, 30, 5]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_local_parquet_source_cache_binds_execution_frame_schema_with_pure_filter_columns() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-cache-execution-frame-schema");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("payload", DataType::Int64, false),
+        Field::new("key", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let cache = Arc::new(GpuLocalParquetSourceCache::new(64 * 1024 * 1024));
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_stable_id("stable-input").with_file_size_bytes(file_size)],
+            Arc::clone(&source_schema),
+            vec!["payload".to_string(), "key".to_string()],
+        )
+        .with_column_roles(vec!["key".to_string()], vec!["payload".to_string()]);
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let filter = builder.add_filter(
+            source,
+            Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(20))),
+            Arc::clone(&source_schema),
+        );
+        let projection =
+            builder.add_projection(filter, projection_outputs(vec![Expr::column("key")], Arc::clone(&output_schema)));
+        builder.finish_with_host_sink(projection)
+    };
+    let build_context = || {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes: 8 * 1024 * 1024 * 1024,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk: 1,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let first = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(first.metrics().source_cache_misses, 3);
+    assert_eq!(first.metrics().source_cache_inserts, 3);
+
+    let second = execute_query_plan(&build_context(), &build_plan()).unwrap();
+    assert_eq!(second.metrics().source_cache_hits, 3);
+    assert_eq!(second.metrics().source_cache_misses, 0);
+
+    let QueryOutput::HostArrow(batch) = second.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 3, 2]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_local_parquet_source_cache_retained_bytes_are_admitted_before_cache_hits() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-cache-admission");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let cache = Arc::new(GpuLocalParquetSourceCache::new(64 * 1024 * 1024));
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = || {
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&path).with_stable_id("stable-input").with_file_size_bytes(file_size)],
+            Arc::clone(&source_schema),
+            vec!["key".to_string(), "payload".to_string()],
+        );
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        builder.finish_with_host_sink(source)
+    };
+    let warm_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_local_parquet_source_cache(Arc::clone(&cache))
+        .build()
+        .unwrap();
+    execute_query_plan(&warm_context, &build_plan()).unwrap();
+    let retained_bytes = cache.retained_device_bytes().unwrap();
+    assert!(retained_bytes > 0);
+
+    let constrained_context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: retained_bytes.saturating_sub(1),
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_local_parquet_source_cache(Arc::clone(&cache))
+        .build()
+        .unwrap();
+    let error = match execute_query_plan(&constrained_context, &build_plan()) {
+        Ok(_) => panic!("source-cache retained bytes must be reserved before cache hits can be reused"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.fact_value("memory_boundary"), Some("source_cache_retained"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_cache_retained"));
+    let requested_bytes = error.fact_value("requested_bytes").and_then(|value| value.parse::<u64>().ok());
+    assert_eq!(requested_bytes, Some(retained_bytes));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_local_parquet_source_cache_reclaims_retained_bytes_under_reservation_pressure() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-cache-pressure");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let _input_schema = write_row_grouped_input_parquet(&path);
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let cache = Arc::new(GpuLocalParquetSourceCache::new(64 * 1024 * 1024));
+    let file_size = fs::metadata(&path).unwrap().len();
+
+    let build_plan = |source_path: &std::path::Path, stable_id: &str| {
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(source_path)
+                    .with_stable_id(stable_id)
+                    .with_file_size_bytes(file_size)
+                    .with_row_group_bytes(vec![8192, 8192, 8192])
+                    .with_projected_row_group_bytes(vec![8192, 8192, 8192], vec![8192, 8192, 8192]),
+            ],
+            Arc::clone(&source_schema),
+            vec!["key".to_string(), "payload".to_string()],
+        );
+
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        builder.finish_gpu_resident(source)
+    };
+    let build_context = |device_budget_bytes, max_row_groups_per_chunk| {
+        ExecutionContext::builder()
+            .with_shared_runtime(Arc::clone(&runtime))
+            .with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes,
+                max_source_chunk_bytes: 1024 * 1024,
+                max_row_groups_per_chunk,
+                max_retry_attempts: 1,
+                min_retry_chunk_row_groups: 1,
+            })
+            .with_local_parquet_source_cache(Arc::clone(&cache))
+            .build()
+            .unwrap()
+    };
+
+    let mut max_source_read_request = None;
+    for index in 0..3 {
+        let warm_path = dir.join(format!("warm-{index}.parquet"));
+        fs::copy(&path, &warm_path).unwrap();
+        let stable_id = format!("stable-input-a{index}");
+        let warm =
+            execute_query_plan(&build_context(8 * 1024 * 1024 * 1024, 3), &build_plan(&warm_path, &stable_id)).unwrap();
+        assert_eq!(warm.metrics().source_cache_inserts, 1);
+        max_source_read_request = warm
+            .metrics()
+            .reservation_events
+            .iter()
+            .filter(|event| event.reservation_kind == ReservationKind::SourceRead)
+            .map(|event| event.requested_bytes)
+            .max();
+    }
+    let retained_bytes = cache.retained_device_bytes().unwrap();
+    assert!(retained_bytes > 0);
+    let max_source_read_request =
+        max_source_read_request.expect("warm source read should record a reservation request");
+
+    let pressured = execute_query_plan(
+        &build_context(retained_bytes.saturating_add(max_source_read_request).saturating_sub(1), 3),
+        &build_plan(&path, "stable-input-b"),
+    )
+    .unwrap();
+    assert_eq!(pressured.metrics().source_cache_hits, 0);
+    assert_eq!(pressured.metrics().source_cache_misses, 1);
+    assert!(pressured.metrics().source_cache_inserts > 0);
+    assert_eq!(pressured.metrics().reservation_denied_count, 0);
+
+    let QueryOutput::GpuResident(handle) = pressured.output() else {
+        panic!("gpu sink should retain one GPU result handle");
+    };
+    assert_eq!(handle.num_rows(), 6);
+    assert_eq!(handle.num_columns(), 2);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_executes_group_only_aggregate_as_distinct_keys() {
     let dir = unique_temp_dir("cudf-query-engine-native-group-only-aggregate");
     let path = dir.join("input.parquet");

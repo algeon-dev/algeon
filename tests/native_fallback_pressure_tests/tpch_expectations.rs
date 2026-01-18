@@ -117,8 +117,21 @@ pub(super) fn expected_tpch_bounded_join_blocked_reservations(query_id: &str) ->
 
 pub(super) fn expected_tpch_bounded_join_blocked_family(query_id: &str) -> Option<&'static str> {
     match query_id {
+        "q02" => Some("multi_join_with_aggregate_over_join_subplan_topk"),
         "q15" => Some("keyed_hash_join_resident_subplan_pipeline"),
         "q17" => Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
+        "q18" => Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"),
+        "q20" => Some("multi_join_with_resident_grouped_aggregate_subquery_filter"),
+        _ => None,
+    }
+}
+
+pub(super) fn expected_tpch_bounded_join_shape_blocker(query_id: &str) -> Option<&'static str> {
+    match query_id {
+        "q02" => Some("bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing"),
+        "q15" => Some("bounded_keyed_hash_join_resident_subplan_lower_level_contracts"),
+        "q18" => Some("bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing"),
+        "q20" => Some("bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing"),
         _ => None,
     }
 }

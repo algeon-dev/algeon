@@ -6,10 +6,11 @@ pub(super) async fn run_native_tpch_benchmark(
 ) -> DataFusionResult<NativeTpchBenchmarkReport> {
     config.validate()?;
     let (_root, metadata) = dataset::prepare_benchmark_dataset(config, work_dir).await?;
+    let runtime_resources = config.new_runtime_resources()?;
     let mut rows = Vec::with_capacity(config.query_ids.len());
 
     for query in config.selected_queries() {
-        rows.push(run_query(config, &metadata, query).await);
+        rows.push(run_query(config, &metadata, query, &runtime_resources).await);
     }
 
     Ok(NativeTpchBenchmarkReport { metadata, config: config.clone(), rows })
@@ -19,6 +20,7 @@ async fn run_query(
     config: &NativeTpchBenchmarkConfig,
     metadata: &TpchDatasetMetadata,
     query: &TpchQuery,
+    runtime_resources: &NativeTpchRuntimeResources,
 ) -> NativeTpchBenchmarkRow {
     let planned = match execution::plan_native_query(metadata, query, config).await {
         Ok(planned) => planned,
@@ -36,6 +38,7 @@ async fn run_query(
     }
 
     let cpu = execution::run_cpu_query_iterations(metadata, query, config).await;
-    let native = execution::run_native_query_iterations(metadata, query, config, &planned.planning_row).await;
+    let native =
+        execution::run_native_query_iterations(metadata, query, config, &planned.planning_row, runtime_resources).await;
     NativeTpchBenchmarkRow::accepted(query.id, planned.planning_row, cpu, native)
 }

@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 
 use super::{
-    super::source::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, read_local_parquet_chunk},
+    super::source::{
+        ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, local_parquet_execution_frame_schema,
+        read_local_parquet_chunk,
+    },
     *,
 };
 use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
@@ -833,15 +836,16 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
         return Ok(None);
     };
     let key = GpuLocalParquetSourceCacheKey::from_source_chunk(source, chunk);
+    let schema = local_parquet_execution_frame_schema(source)?;
     let lookup_timer = Instant::now();
-    let cached = cache.get(&key, context, &source.schema)?;
+    let cached = cache.get(&key, context, &schema)?;
     metrics.record_source_cache_lookup_time(lookup_timer.elapsed());
     if let Some((handle, retained_device_bytes)) = cached {
         metrics.record_source_cache_hit(cache.retained_device_bytes()?);
         return Ok(Some(ScheduledLocalParquetReadOutput {
             chunk: chunk.clone(),
             frame: handle.into_gpu_frame(),
-            reservation: reservations.borrow_accounted(retained_device_bytes),
+            reservation: reservations.borrow_accounted_source_cache(key, retained_device_bytes),
             observed_bytes: retained_device_bytes,
         }));
     }
@@ -867,10 +871,14 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
         return Ok(());
     };
     let key = GpuLocalParquetSourceCacheKey::from_source_chunk(source, chunk);
-    let handle = GpuResultHandle::new(context, frame.clone(), Arc::clone(&source.schema))?;
-    match cache.insert_if_absent(key, handle, retained_device_bytes)? {
+    let schema = local_parquet_execution_frame_schema(source)?;
+    let handle = GpuResultHandle::new(context, frame.clone(), schema)?;
+    let protected_keys = reservations.source_cache_protected_keys_with(&key);
+    let insert = cache.insert_if_absent_protecting(key.clone(), handle, retained_device_bytes, &protected_keys)?;
+    reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes);
+    match insert.outcome {
         GpuLocalParquetSourceCacheInsert::Inserted => {
-            metrics.record_source_cache_insert(cache.retained_device_bytes()?);
+            metrics.record_source_cache_insert(insert.retained_device_bytes);
             let request = chunk_reservation_request(
                 ReservationKind::SourceCacheRetained,
                 "source_cache_retained",
@@ -881,10 +889,16 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
                 max_attempts,
             )
             .with_stage(memory_boundary);
-            reservations.promote_source_cache_insert(source_reservation, retained_device_bytes, request, metrics)?;
+            reservations.promote_source_cache_insert(
+                source_reservation,
+                retained_device_bytes,
+                request,
+                metrics,
+                &key,
+            )?;
         },
         GpuLocalParquetSourceCacheInsert::AlreadyPresent | GpuLocalParquetSourceCacheInsert::CapacitySkipped => {
-            metrics.record_source_cache_insert_skipped(cache.retained_device_bytes()?);
+            metrics.record_source_cache_insert_skipped(insert.retained_device_bytes);
         },
     }
     Ok(())

@@ -11,9 +11,15 @@ pub(super) enum Q22InputSubplanVariant {
     NestedJoinInput,
 }
 
+#[path = "plans/remaining_topologies.rs"]
+mod remaining_topologies;
 #[path = "plans/resident_subplan.rs"]
 mod resident_subplan;
 
+pub(super) use remaining_topologies::{
+    q02_shaped_aggregate_over_join_subplan_topk_plan, q18_shaped_grouped_aggregate_input_post_join_aggregate_topk_plan,
+    q20_shaped_grouped_aggregate_subquery_filter_plan,
+};
 pub(super) use resident_subplan::{
     KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
 };

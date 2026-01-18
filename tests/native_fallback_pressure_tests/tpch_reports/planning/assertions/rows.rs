@@ -197,13 +197,32 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
                         row.query_id
                     );
                     assert_eq!(
-                        row.bounded_join_reservation_facts
-                            .get("bounded_join_required_lower_level_contract")
-                            .map(String::as_str),
-                        Some(expected_tpch_bounded_join_lower_level_blockers(row.query_id.as_str())),
-                        "missing bounded join lower-level contract fact for {}",
+                        row.bounded_join_reservation_facts.get("bounded_join_shape_blocker").map(String::as_str),
+                        expected_tpch_bounded_join_shape_blocker(row.query_id.as_str()),
+                        "missing bounded join shape blocker fact for {}",
                         row.query_id
                     );
+                    let expected_lower_level_blockers =
+                        expected_tpch_bounded_join_lower_level_blockers(row.query_id.as_str());
+                    if expected_lower_level_blockers.is_empty() {
+                        assert_eq!(
+                            row.bounded_join_reservation_facts
+                                .get("bounded_join_required_lower_level_contract")
+                                .map(String::as_str),
+                            None,
+                            "structural bounded topology rejections should not claim lower-level blockers for {}",
+                            row.query_id
+                        );
+                    } else {
+                        assert_eq!(
+                            row.bounded_join_reservation_facts
+                                .get("bounded_join_required_lower_level_contract")
+                                .map(String::as_str),
+                            Some(expected_lower_level_blockers),
+                            "missing bounded join lower-level contract fact for {}",
+                            row.query_id
+                        );
+                    }
                 }
                 assert_eq!(
                     row.bounded_join_reservation_facts.get("bounded_join_unsupported_shape").map(String::as_str),
