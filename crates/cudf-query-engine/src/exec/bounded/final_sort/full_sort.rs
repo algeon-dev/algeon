@@ -1,6 +1,6 @@
 use super::*;
 
-impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
+impl<'a> FinalSortExecutor<'a> {
     pub(super) fn full_sort_limit_attempt(
         &mut self,
         limit: Option<&LimitNode>,
@@ -33,7 +33,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         let sorted_order_request =
             MemoryReservationRequest::new(ReservationKind::FinalSort, sorted_order_bytes, self.reservations.budget())
                 .with_memory_boundary("final_sort")
-                .with_node_id(self.bounded.aggregate_id)
+                .with_node_id(self.node_id)
                 .with_stage("final_sort")
                 .with_attempt(attempt, self.max_attempts);
         let sorted_order_reservation = self.reservations.try_reserve(sorted_order_request, self.metrics)?;
@@ -146,7 +146,7 @@ impl<'a, 'plan> FinalSortExecutor<'a, 'plan> {
         let output_request =
             MemoryReservationRequest::new(ReservationKind::FinalSort, output_bytes, self.reservations.budget())
                 .with_memory_boundary("final_sort")
-                .with_node_id(self.bounded.aggregate_id)
+                .with_node_id(self.node_id)
                 .with_stage("final_sort")
                 .with_attempt(attempt, self.max_attempts);
         self.reservations.try_reserve(output_request, self.metrics)

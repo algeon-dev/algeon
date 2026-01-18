@@ -209,6 +209,9 @@ pub enum BoundedJoinExecutionFamily {
     /// A keyed residual root join whose inputs are a bounded join subtree and a
     /// projection-wrapped grouped local-Parquet aggregate.
     MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+    /// A final sort over keyed hash joins with resident grouped/scalar revenue
+    /// subplans.
+    KeyedHashJoinResidentSubplanPipeline,
 }
 
 impl BoundedJoinExecutionFamily {
@@ -231,6 +234,7 @@ impl BoundedJoinExecutionFamily {
             Self::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline => {
                 "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"
             },
+            Self::KeyedHashJoinResidentSubplanPipeline => "keyed_hash_join_resident_subplan_pipeline",
         }
     }
 }
@@ -238,7 +242,7 @@ impl BoundedJoinExecutionFamily {
 /// Report-facing catalogue of bounded join execution families.
 ///
 /// Ordering is preserved in CSV facts and tests.
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 10] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 11] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
@@ -249,6 +253,7 @@ pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 10] = [
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
     BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
     BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+    BoundedJoinExecutionFamily::KeyedHashJoinResidentSubplanPipeline,
 ];
 
 /// Public bounded join reservation contract and fact builder.

@@ -25,6 +25,7 @@ pub(crate) use compatibility::{
     bounded_root_projected_cross_join_compatible,
 };
 pub(crate) use facts::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
+pub(crate) use q15::analyze_keyed_hash_join_resident_subplan_pipeline;
 use shape::{
     AggregateOverJoinSubplanInputKind, analyze_bounded_join_pipeline_shape,
     bounded_join_inputs_include_resident_subplan, bounded_join_source_leaf_inputs_compatible,
@@ -56,6 +57,10 @@ pub(crate) enum BoundedJoinPlanSupport {
     /// projection-wrapped grouped local-Parquet aggregate, followed by a
     /// projection/global-aggregate/projection post-root pipeline.
     MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+    /// A final sort over a keyed root hash join whose inputs are a
+    /// supplier/revenue keyed hash join and a scalar aggregate over a resident
+    /// grouped revenue subplan.
+    KeyedHashJoinResidentSubplanPipeline,
     /// The plan contains joins but does not match any bounded join family.
     Unsupported,
 }
@@ -79,6 +84,36 @@ pub(crate) struct BoundedMixedKeyedResidualJoinResidentGroupedAggregateInputPipe
     pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
     pub(crate) join_subtree_side: JoinSide,
     pub(crate) grouped_aggregate_side: JoinSide,
+}
+
+/// Normalized shape for the Q15-style family. The name describes the topology:
+/// two keyed hash joins where one branch owns a resident grouped aggregate
+/// subplan and the other derives a scalar aggregate from the same logical
+/// revenue subplan, followed by a final full sort.
+pub(crate) struct BoundedKeyedHashJoinResidentSubplanPipelineShape<'a> {
+    pub(crate) final_sort_id: NodeId,
+    pub(crate) final_sort: &'a SortNode,
+    pub(crate) root_join_id: NodeId,
+    pub(crate) root_join: &'a JoinNode,
+    pub(crate) supplier_revenue_side: JoinSide,
+    pub(crate) supplier_revenue: BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'a>,
+    pub(crate) scalar_max: BoundedKeyedHashJoinResidentScalarMaxBranchShape<'a>,
+}
+
+pub(crate) struct BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'a> {
+    pub(crate) join_id: NodeId,
+    pub(crate) join: &'a JoinNode,
+    pub(crate) supplier_source_side: JoinSide,
+    pub(crate) grouped_revenue_side: JoinSide,
+    pub(crate) projection_stages: Vec<BoundedJoinPipelineStage<'a>>,
+}
+
+pub(crate) struct BoundedKeyedHashJoinResidentScalarMaxBranchShape<'a> {
+    pub(crate) grouped_revenue_root_id: NodeId,
+    pub(crate) projection_stages_after_grouped_revenue: Vec<BoundedJoinPipelineStage<'a>>,
+    pub(crate) aggregate_id: NodeId,
+    pub(crate) aggregate: &'a AggregateNode,
+    pub(crate) output_schema: &'a SchemaRef,
 }
 
 /// A post-root bounded pipeline stage.
@@ -138,7 +173,10 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
                         Ok(_) => BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline,
                         Err(_) => match analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
                             Ok(_) => BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
-                            Err(_) => BoundedJoinPlanSupport::Unsupported,
+                            Err(_) => match analyze_keyed_hash_join_resident_subplan_pipeline(plan) {
+                                Ok(_) => BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline,
+                                Err(_) => BoundedJoinPlanSupport::Unsupported,
+                            },
                         },
                     },
                 }

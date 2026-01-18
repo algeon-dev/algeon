@@ -2,6 +2,7 @@ use super::*;
 use crate::bounded_support::{
     BoundedJoinPipelineRejection, BoundedJoinPipelineStage, analyze_bounded_join_pipeline,
     analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
+    analyze_keyed_hash_join_resident_subplan_pipeline,
 };
 
 mod keyless;
@@ -46,6 +47,13 @@ fn attach_mixed_keyed_residual_join_resident_grouped_aggregate_input_execution_f
     attach_bounded_join_execution_family(
         error,
         crate::runtime::BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+    )
+}
+
+fn attach_keyed_hash_join_resident_subplan_execution_family(error: QueryError) -> QueryError {
+    attach_bounded_join_execution_family(
+        error,
+        crate::runtime::BoundedJoinExecutionFamily::KeyedHashJoinResidentSubplanPipeline,
     )
 }
 
@@ -148,6 +156,178 @@ pub(super) fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggrega
         context, plan, gpu_inputs, metrics,
     )
     .map_err(attach_mixed_keyed_residual_join_resident_grouped_aggregate_input_execution_family)
+}
+
+pub(super) fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan_inner(context, plan, gpu_inputs, metrics)
+        .map_err(attach_keyed_hash_join_resident_subplan_execution_family)
+}
+
+fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan_inner(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let shape =
+        analyze_keyed_hash_join_resident_subplan_pipeline(plan).map_err(bounded_join_pipeline_rejection_error)?;
+    validate_executable_join_subset(shape.root_join)?;
+    validate_bounded_join_pipeline_stages(&[BoundedJoinPipelineStage::Sort {
+        node_id: shape.final_sort_id,
+        node: shape.final_sort,
+    }])?;
+    validate_bounded_join_pipeline_stages(&shape.supplier_revenue.projection_stages)?;
+    validate_executable_join_subset(shape.supplier_revenue.join)?;
+
+    let supplier_input =
+        shape.supplier_revenue.join.inputs[join_side_index(shape.supplier_revenue.supplier_source_side)];
+    validate_bounded_join_leaf_input_capabilities(plan, supplier_input)?;
+    let supplier_grouped_input =
+        shape.supplier_revenue.join.inputs[join_side_index(shape.supplier_revenue.grouped_revenue_side)];
+    let supplier_grouped_aggregate =
+        BoundedPlan::analyze_projection_wrapped_local_aggregate_subplan(plan, supplier_grouped_input)?;
+    supplier_grouped_aggregate.validate_capabilities()?;
+    let scalar_grouped_aggregate = BoundedPlan::analyze_projection_wrapped_local_aggregate_subplan(
+        plan,
+        shape.scalar_max.grouped_revenue_root_id,
+    )?;
+    scalar_grouped_aggregate.validate_capabilities()?;
+    validate_bounded_join_pipeline_stages(&shape.scalar_max.projection_stages_after_grouped_revenue)?;
+    validate_bounded_join_pipeline_stages(&[BoundedJoinPipelineStage::Aggregate {
+        node_id: shape.scalar_max.aggregate_id,
+        node: shape.scalar_max.aggregate,
+        output_schema: shape.scalar_max.output_schema,
+    }])?;
+
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!(
+            "execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan is called only for bounded policies"
+        );
+    };
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
+    let supplier_revenue = execute_bounded_keyed_hash_join_resident_supplier_revenue_branch(
+        context,
+        plan,
+        &shape.supplier_revenue,
+        &supplier_grouped_aggregate,
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let scalar_max = execute_bounded_keyed_hash_join_resident_scalar_max_branch(
+        context,
+        &shape.scalar_max,
+        &scalar_grouped_aggregate,
+        &mut reservations,
+        metrics,
+    )?;
+    let (left, right) = match shape.supplier_revenue_side {
+        JoinSide::Left => (supplier_revenue, scalar_max),
+        JoinSide::Right => (scalar_max, supplier_revenue),
+    };
+    let committed = execute_bounded_root_join(
+        context,
+        shape.root_join_id,
+        shape.root_join,
+        left,
+        right,
+        &mut reservations,
+        metrics,
+    )?;
+    let committed = execute_final_sort_node_with_retry(
+        context,
+        shape.final_sort_id,
+        shape.final_sort,
+        None,
+        committed,
+        &mut reservations,
+        metrics,
+    )?;
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(handle))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_bounded_keyed_hash_join_resident_supplier_revenue_branch(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    branch: &crate::bounded_support::BoundedKeyedHashJoinResidentSupplierRevenueBranchShape<'_>,
+    grouped_aggregate: &BoundedPlan<'_>,
+    gpu_inputs: &GpuResidentInputMap,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let supplier_input = branch.join.inputs[join_side_index(branch.supplier_source_side)];
+    let supplier = execute_bounded_join_leaf_input(context, plan, supplier_input, gpu_inputs, reservations, metrics)?;
+    let grouped =
+        execute_bounded_projection_wrapped_local_aggregate_input(context, grouped_aggregate, reservations, metrics)?;
+    let (left, right) = match branch.supplier_source_side {
+        JoinSide::Left => (supplier, grouped),
+        JoinSide::Right => (grouped, supplier),
+    };
+    let mut committed =
+        execute_bounded_root_join(context, branch.join_id, branch.join, left, right, reservations, metrics)?;
+    for stage in &branch.projection_stages {
+        committed = execute_bounded_join_pipeline_stage(context, stage, committed, reservations, metrics)?;
+    }
+    Ok(committed)
+}
+
+fn execute_bounded_keyed_hash_join_resident_scalar_max_branch(
+    context: &ExecutionContext,
+    branch: &crate::bounded_support::BoundedKeyedHashJoinResidentScalarMaxBranchShape<'_>,
+    grouped_aggregate: &BoundedPlan<'_>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let grouped =
+        execute_bounded_projection_wrapped_local_aggregate_input(context, grouped_aggregate, reservations, metrics)?;
+    let mut grouped = grouped;
+    for stage in &branch.projection_stages_after_grouped_revenue {
+        grouped = execute_bounded_join_pipeline_stage(context, stage, grouped, reservations, metrics)?;
+    }
+    execute_bounded_join_pipeline_stage(
+        context,
+        &BoundedJoinPipelineStage::Aggregate {
+            node_id: branch.aggregate_id,
+            node: branch.aggregate,
+            output_schema: branch.output_schema,
+        },
+        grouped,
+        reservations,
+        metrics,
+    )
 }
 
 fn execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan_inner(

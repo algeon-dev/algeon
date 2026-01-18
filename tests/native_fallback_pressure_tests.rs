@@ -53,11 +53,13 @@ use datafusion_cudf::{
 };
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
-    "q01", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q16", "q19", "q21",
-    "q17", "q22",
+    "q01", "q03", "q04", "q05", "q06", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q19",
+    "q21", "q17", "q22",
 ];
-const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] =
-    &["q03", "q04", "q05", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q16", "q17", "q19", "q21", "q22"];
+const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &[
+    "q03", "q04", "q05", "q07", "q08", "q09", "q10", "q11", "q12", "q13", "q14", "q15", "q16", "q17", "q19", "q21",
+    "q22",
+];
 
 #[path = "native_fallback_pressure_tests/execution_reports.rs"]
 mod execution_reports;

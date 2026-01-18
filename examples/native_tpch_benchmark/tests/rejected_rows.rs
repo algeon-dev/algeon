@@ -57,48 +57,61 @@ fn benchmark_report_header_and_rejected_rows_are_stable() {
 }
 
 #[test]
-fn benchmark_report_q15_rejected_rows_preserve_lower_level_blocker_facts() {
+fn benchmark_report_q15_accepted_rows_preserve_modeled_contract_facts() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q15".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
-    let bounded_join_reservation_facts = BTreeMap::from([
-        ("bounded_join_execution_status".to_string(), "unsupported_plan_shape".to_string()),
-        ("bounded_join_blocked_join_family".to_string(), "keyed_hash_join_resident_subplan_pipeline".to_string()),
-        ("blocked_reservations".to_string(), "source_read,operator_output,final_sort".to_string()),
-        (
-            "bounded_join_lower_level_blockers".to_string(),
-            "source_contract,aggregate_contract,final_sort_contract".to_string(),
-        ),
-        (
-            "bounded_join_required_lower_level_contract".to_string(),
-            "source_contract,aggregate_contract,final_sort_contract".to_string(),
-        ),
-    ]);
+    let mut bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
+        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect::<BTreeMap<_, _>>();
+    bounded_join_reservation_facts
+        .insert("bounded_join_execution_family".to_string(), "keyed_hash_join_resident_subplan_pipeline".to_string());
+    bounded_join_reservation_facts.insert(
+        "bounded_join_required_shape_contract".to_string(),
+        "sort_root_keyed_inner_hash_join_with_optional_projection_wrapped_keyed_inner_join_and_scalar_revenue_aggregate"
+            .to_string(),
+    );
+    bounded_join_reservation_facts.insert(
+        "bounded_join_contract_modes".to_string(),
+        "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report".to_string(),
+    );
+    bounded_join_reservation_facts.insert(
+        "bounded_join_unresolved_preflight_contracts".to_string(),
+        "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable".to_string(),
+    );
     let expected_bounded_join_facts = expected_key_value_facts(&bounded_join_reservation_facts);
     let planning = NativeDataFusionPlanningRow {
         query_id: "q15".to_string(),
         physical_root: "SortExec".to_string(),
         physical_shape: "SortExec(HashJoinExec)".to_string(),
         native_candidate_shape: Some("SortExec(HashJoinExec)".to_string()),
-        native_candidate_shape_family: Some("sort_hash_join_aggregate".to_string()),
-        outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
-        reason_code: Some("native_bounded_join_unsupported".to_string()),
-        unsupported_category: Some("operator_hashjoin".to_string()),
+        native_candidate_shape_family: Some("sort_hash_join_input".to_string()),
+        outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
+        reason_code: None,
+        unsupported_category: None,
         bounded_join_reservation_facts,
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
-        post_native_plan_root: "SortExec".to_string(),
-        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
-        rejected_before_execution: true,
+        post_native_plan_root: "NativeCudfExec".to_string(),
+        post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+        rejected_before_execution: false,
     };
-    let report =
-        NativeTpchBenchmarkReport { metadata, config, rows: vec![NativeTpchBenchmarkRow::rejected("q15", planning)] };
+    let report = NativeTpchBenchmarkReport {
+        metadata,
+        config,
+        rows: vec![NativeTpchBenchmarkRow::accepted(
+            "q15",
+            planning,
+            Ok(timed_cpu_run("output-fnv1a64:0000000000000015")),
+            Ok(timed_native_run("output-fnv1a64:0000000000000015")),
+        )],
+    };
 
     let text = report.to_tsv();
-    assert!(text.contains(
-        "q15\trejected_before_execution\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"
-    ));
-    assert!(!text.contains("bounded_join_execution_status=enabled"));
+    assert!(text.contains("q15\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone"));
+    assert!(text.contains("bounded_join_execution_status=enabled"));
 
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
@@ -117,24 +130,25 @@ fn benchmark_report_q15_rejected_rows_preserve_lower_level_blocker_facts() {
 
     assert_eq!(fields[0], "q15");
     assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=unsupported_plan_shape"));
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
     assert!(
         fields[bounded_join_facts_index]
-            .contains("bounded_join_blocked_join_family=keyed_hash_join_resident_subplan_pipeline")
+            .contains("bounded_join_execution_family=keyed_hash_join_resident_subplan_pipeline")
     );
-    assert!(fields[bounded_join_facts_index].contains("blocked_reservations=source_read,operator_output,final_sort"));
+    assert!(fields[bounded_join_facts_index].contains("blocked_reservations="));
+    assert!(fields[bounded_join_facts_index].contains("missing_reservations="));
+    assert!(fields[bounded_join_facts_index].contains("bounded_join_lower_level_blockers="));
     assert!(
         fields[bounded_join_facts_index]
-            .contains("bounded_join_lower_level_blockers=source_contract,aggregate_contract,final_sort_contract")
+            .contains("bounded_join_contract_modes=source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report")
     );
     assert!(
-        fields[bounded_join_facts_index].contains(
-            "bounded_join_required_lower_level_contract=source_contract,aggregate_contract,final_sort_contract"
-        )
+        fields[bounded_join_facts_index]
+            .contains("bounded_join_unresolved_preflight_contracts=source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable")
     );
-    assert_eq!(fields[cpu_started_index], "false");
-    assert_eq!(fields[native_started_index], "false");
-    assert_eq!(fields[runtime_outcome_index], "not_started");
-    assert_eq!(fields[parity_status_index], "not_run");
-    assert_eq!(fields[output_fingerprint_index], "not_run");
+    assert_eq!(fields[cpu_started_index], "true");
+    assert_eq!(fields[native_started_index], "true");
+    assert_eq!(fields[runtime_outcome_index], "succeeded");
+    assert_eq!(fields[parity_status_index], "matched");
+    assert_eq!(fields[output_fingerprint_index], "output-fnv1a64:0000000000000015");
 }
