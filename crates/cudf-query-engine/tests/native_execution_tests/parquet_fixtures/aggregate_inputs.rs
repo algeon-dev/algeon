@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn write_q6_lineitem_parquet(path: &Path) -> Arc<Schema> {
+pub(crate) fn write_discounted_lineitem_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("l_quantity", DataType::Decimal128(15, 2), false),
         Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
@@ -205,7 +205,7 @@ pub(crate) fn write_decimal_ratio_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
-pub(crate) fn write_q8_mini_decimal_ratio_parquet(path: &Path) -> Arc<Schema> {
+pub(crate) fn write_market_share_decimal_ratio_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("o_year", DataType::Int32, false),
         Field::new("is_target", DataType::Boolean, false),

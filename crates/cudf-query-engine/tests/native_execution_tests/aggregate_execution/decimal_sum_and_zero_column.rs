@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn bounded_native_query_executes_q6_shaped_decimal_global_sum() {
-    let dir = unique_temp_dir("cudf-query-engine-bounded-native-q6-shaped");
+fn bounded_native_query_executes_filtered_decimal_global_sum() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-filtered-decimal-sum");
     let path = dir.join("lineitem.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_q6_lineitem_parquet(&path);
+    let input_schema = write_discounted_lineitem_parquet(&path);
     let projected_schema =
         Arc::new(Schema::new(vec![Field::new("__cudf_aggregate_arg_0", DataType::Decimal128(38, 4), true)]));
     let aggregated_schema = Arc::new(Schema::new(vec![Field::new("revenue", DataType::Decimal128(38, 4), true)]));

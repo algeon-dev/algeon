@@ -1,15 +1,15 @@
 use super::*;
 
 #[test]
-fn bounded_native_query_executes_q16_like_multi_join_distinct_count_spine() {
+fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spine() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q16-like-multi-join-spine");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-serial-aggregate-multi-join-spine");
     let part_path = dir.join("part.parquet");
     let partsupp_path = dir.join("partsupp.parquet");
     let supplier_path = dir.join("supplier.parquet");
-    let part_schema = write_q16_part_parquet(&runtime, &part_path);
-    let partsupp_schema = write_q16_partsupp_parquet(&runtime, &partsupp_path);
-    let supplier_schema = write_q16_supplier_parquet(&runtime, &supplier_path);
+    let part_schema = write_part_distinct_count_part_parquet(&runtime, &part_path);
+    let partsupp_schema = write_part_distinct_count_partsupp_parquet(&runtime, &partsupp_path);
+    let supplier_schema = write_part_distinct_count_supplier_parquet(&runtime, &supplier_path);
     let join_schema = Arc::new(Schema::new(vec![
         Field::new("ps_suppkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),

@@ -3,13 +3,17 @@ use super::*;
 #[test]
 fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q15-resident-subplan");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-resident-revenue-subplan");
     let supplier_path = dir.join("supplier.parquet");
     let lineitem_path = dir.join("lineitem.parquet");
-    let supplier_schema = write_q15_supplier_parquet(&runtime, &supplier_path);
-    let lineitem_schema = write_q15_lineitem_parquet(&runtime, &lineitem_path);
-    let plan =
-        q15_keyed_hash_join_resident_subplan_plan(&supplier_path, &lineitem_path, &supplier_schema, &lineitem_schema);
+    let supplier_schema = write_resident_revenue_supplier_parquet(&runtime, &supplier_path);
+    let lineitem_schema = write_resident_revenue_lineitem_parquet(&runtime, &lineitem_path);
+    let plan = resident_revenue_keyed_hash_join_subplan_plan(
+        &supplier_path,
+        &lineitem_path,
+        &supplier_schema,
+        &lineitem_schema,
+    );
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
@@ -46,7 +50,7 @@ fn bounded_native_query_executes_keyed_hash_join_resident_subplan_pipeline() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn write_q15_supplier_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+fn write_resident_revenue_supplier_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("s_suppkey", DataType::Int32, false),
         Field::new("s_name", DataType::Utf8, false),
@@ -63,7 +67,7 @@ fn write_q15_supplier_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schem
     schema
 }
 
-fn write_q15_lineitem_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+fn write_resident_revenue_lineitem_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("l_suppkey", DataType::Int32, false),
         Field::new("l_shipdate", DataType::Int32, false),
@@ -82,7 +86,7 @@ fn write_q15_lineitem_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schem
     schema
 }
 
-fn q15_keyed_hash_join_resident_subplan_plan(
+fn resident_revenue_keyed_hash_join_subplan_plan(
     supplier_path: &Path,
     lineitem_path: &Path,
     supplier_schema: &Arc<Schema>,
@@ -110,7 +114,7 @@ fn q15_keyed_hash_join_resident_subplan_plan(
         supplier_schema,
         &["s_suppkey", "s_name"],
     )));
-    let revenue = build_q15_revenue_branch(
+    let revenue = build_resident_revenue_branch(
         &mut builder,
         lineitem_path,
         lineitem_schema,
@@ -146,7 +150,7 @@ fn q15_keyed_hash_join_resident_subplan_plan(
         ),
     );
 
-    let revenue_for_max = build_q15_revenue_aggregate(
+    let revenue_for_max = build_resident_revenue_aggregate(
         &mut builder,
         lineitem_path,
         lineitem_schema,
@@ -194,14 +198,14 @@ fn q15_keyed_hash_join_resident_subplan_plan(
     builder.finish_with_host_sink(output)
 }
 
-fn build_q15_revenue_branch(
+fn build_resident_revenue_branch(
     builder: &mut QueryPlanBuilder,
     lineitem_path: &Path,
     lineitem_schema: &Arc<Schema>,
     revenue_projection_schema: Arc<Schema>,
     revenue_schema: Arc<Schema>,
 ) -> cudf_query_engine::NodeId {
-    let aggregate = build_q15_revenue_aggregate(
+    let aggregate = build_resident_revenue_aggregate(
         builder,
         lineitem_path,
         lineitem_schema,
@@ -214,7 +218,7 @@ fn build_q15_revenue_branch(
     )
 }
 
-fn build_q15_revenue_aggregate(
+fn build_resident_revenue_aggregate(
     builder: &mut QueryPlanBuilder,
     lineitem_path: &Path,
     lineitem_schema: &Arc<Schema>,

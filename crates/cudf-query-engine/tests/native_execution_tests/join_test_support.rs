@@ -127,7 +127,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn q22_like_keyless_conditional_join_input_subplan_plan(
+pub(super) fn keyless_conditional_join_input_subplan_plan(
     lineitem_path: &Path,
     anti_path: &Path,
     threshold_path: &Path,
@@ -203,7 +203,7 @@ pub(super) fn q22_like_keyless_conditional_join_input_subplan_plan(
     if gpu_sink { builder.finish_gpu_resident(sort) } else { builder.finish_with_host_sink(sort) }
 }
 
-pub(super) fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+pub(super) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
     grouped_fact_path: &Path,
     scalar_fact_path: &Path,
     supplier_path: &Path,
@@ -227,14 +227,14 @@ pub(super) fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_pl
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let grouped_partsupp =
-        builder.add_source(SourceNode::LocalParquet(q11_partsupp_source(grouped_fact_path, grouped_fact_schema)));
+    let grouped_partsupp = builder
+        .add_source(SourceNode::LocalParquet(supplier_cost_partsupp_source(grouped_fact_path, grouped_fact_schema)));
     let grouped_supplier =
-        builder.add_source(SourceNode::LocalParquet(q11_supplier_source(supplier_path, supplier_schema)));
+        builder.add_source(SourceNode::LocalParquet(supplier_cost_supplier_source(supplier_path, supplier_schema)));
     let grouped_join = builder.add_join(
         grouped_partsupp,
         grouped_supplier,
-        JoinSpec::new(JoinType::Inner, vec![q11_suppkey_join_key("ps_suppkey", "s_suppkey")])
+        JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
             .with_output_projection(vec![
                 JoinOutputColumn::left(
                     cudf_query_engine::ColumnRef::input(0, "ps_partkey", "ps_partkey"),
@@ -261,14 +261,14 @@ pub(super) fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_pl
         ),
     );
 
-    let scalar_partsupp =
-        builder.add_source(SourceNode::LocalParquet(q11_partsupp_source(scalar_fact_path, scalar_fact_schema)));
+    let scalar_partsupp = builder
+        .add_source(SourceNode::LocalParquet(supplier_cost_partsupp_source(scalar_fact_path, scalar_fact_schema)));
     let scalar_supplier =
-        builder.add_source(SourceNode::LocalParquet(q11_supplier_source(supplier_path, supplier_schema)));
+        builder.add_source(SourceNode::LocalParquet(supplier_cost_supplier_source(supplier_path, supplier_schema)));
     let scalar_join = builder.add_join(
         scalar_partsupp,
         scalar_supplier,
-        JoinSpec::new(JoinType::Inner, vec![q11_suppkey_join_key("ps_suppkey", "s_suppkey")])
+        JoinSpec::new(JoinType::Inner, vec![supplier_cost_suppkey_join_key("ps_suppkey", "s_suppkey")])
             .with_output_projection(vec![JoinOutputColumn::left(
                 cudf_query_engine::ColumnRef::input(0, "qty", "qty"),
                 "qty",
@@ -321,7 +321,7 @@ pub(super) fn q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_pl
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn q11_partsupp_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+pub(super) fn supplier_cost_partsupp_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -329,7 +329,7 @@ pub(super) fn q11_partsupp_source(path: &Path, schema: &Arc<Schema>) -> LocalPar
     )
 }
 
-pub(super) fn q11_supplier_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
+pub(super) fn supplier_cost_supplier_source(path: &Path, schema: &Arc<Schema>) -> LocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
         Arc::clone(schema),
@@ -337,7 +337,7 @@ pub(super) fn q11_supplier_source(path: &Path, schema: &Arc<Schema>) -> LocalPar
     )
 }
 
-pub(super) fn q11_suppkey_join_key(left_name: &str, right_name: &str) -> JoinKey {
+pub(super) fn supplier_cost_suppkey_join_key(left_name: &str, right_name: &str) -> JoinKey {
     JoinKey::new(
         cudf_query_engine::ColumnRef::input(0, left_name, left_name),
         cudf_query_engine::ColumnRef::input(1, right_name, right_name),

@@ -1,13 +1,10 @@
 use super::*;
 
-pub(in crate::bounded_support) fn bounded_join_source_leaf_inputs_compatible(
-    plan: &QueryPlan,
-    join: &JoinNode,
-) -> bool {
+pub(in crate::bounded) fn bounded_join_source_leaf_inputs_compatible(plan: &QueryPlan, join: &JoinNode) -> bool {
     validate_bounded_join_source_leaf_inputs(plan, join).is_ok()
 }
 
-pub(in crate::bounded_support) fn validate_bounded_join_source_leaf_inputs<'a>(
+pub(in crate::bounded) fn validate_bounded_join_source_leaf_inputs<'a>(
     plan: &'a QueryPlan,
     join: &'a JoinNode,
 ) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
@@ -36,7 +33,7 @@ fn validate_bounded_join_source_leaf_input(
     }
 }
 
-pub(in crate::bounded_support) fn validate_bounded_keyless_conditional_join_input_subplan(
+pub(in crate::bounded) fn validate_bounded_keyless_conditional_join_input_subplan(
     plan: &QueryPlan,
     node_id: NodeId,
 ) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
@@ -86,14 +83,14 @@ fn bounded_keyless_conditional_join_input_subplan_join_compatible(join: &JoinNod
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(in crate::bounded_support) enum AggregateOverJoinSubplanInputKind {
+pub(in crate::bounded) enum AggregateOverJoinSubplanInputKind {
     /// The input must be a grouped aggregate over a bounded join subplan.
     Grouped,
     /// The input must be a scalar/global aggregate over a bounded join subplan.
     Scalar,
 }
 
-pub(in crate::bounded_support) fn validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_post_root_pipeline<
+pub(in crate::bounded) fn validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_post_root_pipeline<
     'a,
 >(
     shape: &BoundedJoinPipelineShape<'a>,
@@ -143,9 +140,7 @@ pub(in crate::bounded_support) fn validate_bounded_keyless_conditional_join_aggr
     Ok(())
 }
 
-pub(in crate::bounded_support) fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline<
-    'a,
->(
+pub(in crate::bounded) fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline<'a>(
     shape: &BoundedJoinPipelineShape<'a>,
 ) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
     let [
@@ -167,7 +162,7 @@ pub(in crate::bounded_support) fn validate_mixed_keyed_residual_join_resident_gr
     Ok(())
 }
 
-pub(in crate::bounded_support) fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides<'a>(
+pub(in crate::bounded) fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides<'a>(
     plan: &'a QueryPlan,
     root_join: &'a JoinNode,
     join_subtree_side: JoinSide,
@@ -248,7 +243,7 @@ fn validate_projection_wrapped_grouped_local_parquet_aggregate_input_structural(
     validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(plan, aggregate.input)
 }
 
-pub(in crate::bounded_support) fn validate_projection_wrapped_aggregate_over_join_subplan_input(
+pub(in crate::bounded) fn validate_projection_wrapped_aggregate_over_join_subplan_input(
     plan: &QueryPlan,
     node_id: NodeId,
     kind: AggregateOverJoinSubplanInputKind,
@@ -306,7 +301,7 @@ fn validate_bounded_join_subtree_rooted_at_join(
     }
 }
 
-pub(in crate::bounded_support) fn bounded_join_inputs_include_resident_subplan<'a>(
+pub(in crate::bounded) fn bounded_join_inputs_include_resident_subplan<'a>(
     plan: &'a QueryPlan,
     join: &'a JoinNode,
 ) -> std::result::Result<bool, BoundedJoinPipelineRejection<'a>> {
@@ -380,10 +375,7 @@ fn pipeline_stage_node_id(stage: &BoundedJoinPipelineStage<'_>) -> NodeId {
         | BoundedJoinPipelineStage::Limit { node_id, .. } => *node_id,
     }
 }
-pub(in crate::bounded_support) fn validate_source_filter_projection_leaf_pipeline(
-    plan: &QueryPlan,
-    node_id: NodeId,
-) -> bool {
+pub(in crate::bounded) fn validate_source_filter_projection_leaf_pipeline(plan: &QueryPlan, node_id: NodeId) -> bool {
     let Some(node) = plan.node(node_id) else {
         return false;
     };

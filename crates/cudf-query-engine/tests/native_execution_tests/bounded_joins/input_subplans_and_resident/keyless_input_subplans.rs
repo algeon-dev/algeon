@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident_input_subplans() {
+fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_subplans() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q22-input-subplans");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-keyless-input-subplans");
     let lineitem_path = dir.join("lineitem.parquet");
     let anti_path = dir.join("anti_orders.parquet");
     let threshold_path = dir.join("threshold.parquet");
@@ -21,7 +21,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
         Field::new("threshold", DataType::Int32, true),
     ]));
 
-    let plan = q22_like_keyless_conditional_join_input_subplan_plan(
+    let plan = keyless_conditional_join_input_subplan_plan(
         &lineitem_path,
         &anti_path,
         &threshold_path,
@@ -96,7 +96,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
     assert_eq!(int32_array(batch, 1).values().as_ref(), &[20, 25, 30]);
     assert_eq!(int32_array(batch, 2).values().as_ref(), &[15, 15, 15]);
 
-    let gpu_plan = q22_like_keyless_conditional_join_input_subplan_plan(
+    let gpu_plan = keyless_conditional_join_input_subplan_plan(
         &lineitem_path,
         &anti_path,
         &threshold_path,
@@ -128,7 +128,7 @@ fn bounded_native_query_executes_q22_like_keyless_conditional_join_with_resident
         .build()
         .unwrap();
     let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("constrained Q22 input-subplan pipeline should fail reservation"),
+        Ok(_) => panic!("constrained keyless input-subplan pipeline should fail reservation"),
         Err(error) => error,
     };
     assert_eq!(

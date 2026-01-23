@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy)]
-pub(super) enum Q22InputSubplanVariant {
+pub(super) enum KeylessInputSubplanVariant {
     Admitted,
     GroupedAggregate,
     SortInput,
@@ -17,15 +17,15 @@ mod remaining_topologies;
 mod resident_subplan;
 
 pub(super) use remaining_topologies::{
-    q02_shaped_aggregate_over_join_subplan_topk_plan, q18_shaped_grouped_aggregate_input_post_join_aggregate_topk_plan,
-    q20_shaped_grouped_aggregate_subquery_filter_plan,
+    aggregate_over_join_subplan_topk_plan, resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+    resident_grouped_aggregate_subquery_filter_plan,
 };
 pub(super) use resident_subplan::{
     KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
 };
 
-pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
-    variant: Q22InputSubplanVariant,
+pub(super) fn keyless_conditional_join_input_subplan_plan(
+    variant: KeylessInputSubplanVariant,
 ) -> cudf_query_engine::QueryPlan {
     let lineitem_schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
@@ -49,24 +49,24 @@ pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
 
     let mut builder = QueryPlanBuilder::new();
     let lineitem = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q22-lineitem.parquet",
+        "/tmp/keyless-input-lineitem.parquet",
         Arc::clone(&lineitem_schema),
         vec!["order_id".into(), "qty".into()],
     )));
     let anti_orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q22-anti-orders.parquet",
+        "/tmp/keyless-input-anti-orders.parquet",
         Arc::clone(&orders_schema),
         vec!["order_id".into()],
     )));
     let threshold_source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q22-threshold.parquet",
+        "/tmp/keyless-input-threshold.parquet",
         Arc::clone(&orders_schema),
         vec!["order_id".into()],
     )));
 
-    let nested_join_left = if matches!(variant, Q22InputSubplanVariant::NestedJoinInput) {
+    let nested_join_left = if matches!(variant, KeylessInputSubplanVariant::NestedJoinInput) {
         let extra_orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-            "/tmp/q22-extra-orders.parquet",
+            "/tmp/keyless-input-extra-orders.parquet",
             Arc::clone(&orders_schema),
             vec!["order_id".into()],
         )));
@@ -91,8 +91,11 @@ pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
         lineitem
     };
 
-    let anti_join_type =
-        if matches!(variant, Q22InputSubplanVariant::InnerJoinInput) { JoinType::Inner } else { JoinType::LeftAnti };
+    let anti_join_type = if matches!(variant, KeylessInputSubplanVariant::InnerJoinInput) {
+        JoinType::Inner
+    } else {
+        JoinType::LeftAnti
+    };
     let anti_join = builder.add_join(
         nested_join_left,
         anti_orders,
@@ -110,7 +113,7 @@ pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
         .with_build_side(JoinSide::Right),
         Arc::clone(&left_subplan_schema),
     );
-    let left_input = if matches!(variant, Q22InputSubplanVariant::BareLeftAntiInput) {
+    let left_input = if matches!(variant, KeylessInputSubplanVariant::BareLeftAntiInput) {
         anti_join
     } else {
         builder.add_projection(
@@ -128,7 +131,7 @@ pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
         Arc::clone(&scalar_aggregate_schema),
     );
     let right_input = match variant {
-        Q22InputSubplanVariant::GroupedAggregate => builder.add_aggregate(
+        KeylessInputSubplanVariant::GroupedAggregate => builder.add_aggregate(
             threshold_source,
             AggregateSpec::new(
                 vec![Expr::column("order_id")],
@@ -136,18 +139,18 @@ pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
             ),
             grouped_aggregate_schema,
         ),
-        Q22InputSubplanVariant::SortInput => builder.add_sort(
+        KeylessInputSubplanVariant::SortInput => builder.add_sort(
             scalar_aggregate,
             SortSpec::new(vec![SortExpr::new(Expr::column("threshold"), false, false)]),
             scalar_aggregate_schema,
         ),
-        Q22InputSubplanVariant::LimitInput => {
+        KeylessInputSubplanVariant::LimitInput => {
             builder.add_limit(scalar_aggregate, LimitSpec::fetch(1), scalar_aggregate_schema)
         },
-        Q22InputSubplanVariant::Admitted
-        | Q22InputSubplanVariant::BareLeftAntiInput
-        | Q22InputSubplanVariant::InnerJoinInput
-        | Q22InputSubplanVariant::NestedJoinInput => scalar_aggregate,
+        KeylessInputSubplanVariant::Admitted
+        | KeylessInputSubplanVariant::BareLeftAntiInput
+        | KeylessInputSubplanVariant::InnerJoinInput
+        | KeylessInputSubplanVariant::NestedJoinInput => scalar_aggregate,
     };
 
     let root = builder.add_join(
@@ -170,7 +173,7 @@ pub(super) fn q22_keyless_conditional_join_input_subplan_plan(
     builder.finish_with_host_sink(root)
 }
 
-pub(super) fn q13_shaped_serial_aggregate_spine_plan() -> cudf_query_engine::QueryPlan {
+pub(super) fn serial_aggregate_single_join_spine_plan() -> cudf_query_engine::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![
         Field::new("o_orderkey", DataType::Int32, false),
@@ -192,12 +195,12 @@ pub(super) fn q13_shaped_serial_aggregate_spine_plan() -> cudf_query_engine::Que
 
     let mut builder = QueryPlanBuilder::new();
     let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q13-customers.parquet",
+        "/tmp/serial-aggregate-customers.parquet",
         customer_schema,
         vec!["c_custkey".into()],
     )));
     let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q13-orders.parquet",
+        "/tmp/serial-aggregate-orders.parquet",
         orders_schema,
         vec!["o_orderkey".into(), "o_custkey".into()],
     )));
@@ -253,7 +256,7 @@ pub(super) fn q13_shaped_serial_aggregate_spine_plan() -> cudf_query_engine::Que
     builder.finish_with_host_sink(sort)
 }
 
-pub(super) fn q16_shaped_serial_aggregate_multi_join_spine_plan() -> cudf_query_engine::QueryPlan {
+pub(super) fn serial_aggregate_multi_join_spine_plan() -> cudf_query_engine::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),
         Field::new("p_brand", DataType::Utf8, false),
@@ -292,17 +295,17 @@ pub(super) fn q16_shaped_serial_aggregate_multi_join_spine_plan() -> cudf_query_
 
     let mut builder = QueryPlanBuilder::new();
     let partsupp = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q16-partsupp.parquet",
+        "/tmp/serial-aggregate-partsupp.parquet",
         partsupp_schema,
         vec!["ps_partkey".into(), "ps_suppkey".into()],
     )));
     let part = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q16-part.parquet",
+        "/tmp/serial-aggregate-part.parquet",
         part_schema,
         vec!["p_partkey".into(), "p_brand".into(), "p_type".into(), "p_size".into()],
     )));
     let supplier = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q16-supplier.parquet",
+        "/tmp/serial-aggregate-supplier.parquet",
         supplier_schema,
         vec!["s_suppkey".into()],
     )));
@@ -397,12 +400,12 @@ pub(super) fn single_join_with_aggregate_input_plan(aggregate_side: JoinSide) ->
 
     let mut builder = QueryPlanBuilder::new();
     let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q13-customers.parquet",
+        "/tmp/serial-aggregate-customers.parquet",
         customer_schema,
         vec!["c_custkey".into()],
     )));
     let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        "/tmp/q13-orders.parquet",
+        "/tmp/serial-aggregate-orders.parquet",
         orders_schema,
         vec!["o_orderkey".into(), "o_custkey".into()],
     )));

@@ -335,11 +335,11 @@ fn bounded_native_projection_decimal_division_uses_declared_output_scale() {
 }
 
 #[test]
-fn bounded_native_query_executes_q8_shaped_decimal_sum_ratio_at_output_scale() {
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q8-shaped-decimal-ratio");
+fn bounded_native_query_executes_decimal_sum_ratio_at_output_scale() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-market-share-decimal-ratio");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_q8_mini_decimal_ratio_parquet(&path);
+    let input_schema = write_market_share_decimal_ratio_parquet(&path);
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("o_year", DataType::Int32, false),
         Field::new("target_volume", DataType::Decimal128(38, 8), true),

@@ -39,8 +39,8 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
         .collect()
 }
 
-#[path = "native_contract_tests/bounded_join_support.rs"]
-mod bounded_join_support;
+#[path = "native_contract_tests/bounded_join_admission.rs"]
+mod bounded_join_admission;
 #[path = "native_contract_tests/expr_contracts.rs"]
 mod expr_contracts;
 #[path = "native_contract_tests/plan_contracts.rs"]

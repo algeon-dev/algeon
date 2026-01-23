@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
-    bounded_support::{
+    bounded::{
         BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
         analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
         analyze_bounded_keyless_conditional_join_input_subplan_pipeline,

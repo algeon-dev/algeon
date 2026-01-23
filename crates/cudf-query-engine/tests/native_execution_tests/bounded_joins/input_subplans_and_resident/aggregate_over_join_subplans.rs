@@ -1,22 +1,23 @@
 use super::*;
 
 #[test]
-fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_aggregate_over_join_subplan_inputs() {
+fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_join_subplan_inputs() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-q11-aggregate-over-join-subplan-inputs");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-aggregate-over-join-subplan-inputs");
     let grouped_fact_path = dir.join("grouped_partsupp.parquet");
     let scalar_fact_path = dir.join("scalar_partsupp.parquet");
     let supplier_path = dir.join("supplier.parquet");
-    let grouped_fact_schema = write_q11_partsupp_parquet(
+    let grouped_fact_schema = write_supplier_cost_partsupp_parquet(
         &runtime,
         &grouped_fact_path,
         &[1, 1, 2, 3, 4],
         &[10, 20, 10, 30, 99],
         &[10, 5, 25, 3, 100],
     );
-    let scalar_fact_schema = write_q11_partsupp_parquet(&runtime, &scalar_fact_path, &[8, 9], &[10, 20], &[7, 5]);
-    let supplier_schema = write_q11_supplier_parquet(&runtime, &supplier_path);
-    let plan = q11_like_keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+    let scalar_fact_schema =
+        write_supplier_cost_partsupp_parquet(&runtime, &scalar_fact_path, &[8, 9], &[10, 20], &[7, 5]);
+    let supplier_schema = write_supplier_cost_supplier_parquet(&runtime, &supplier_path);
+    let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         &grouped_fact_path,
         &scalar_fact_path,
         &supplier_path,
@@ -113,7 +114,7 @@ fn bounded_native_query_executes_q11_like_keyless_conditional_join_with_aggregat
         .build()
         .unwrap();
     let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("constrained Q11 aggregate-over-join subplan inputs pipeline should fail reservation"),
+        Ok(_) => panic!("constrained aggregate-over-join subplan inputs pipeline should fail reservation"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
