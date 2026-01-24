@@ -147,11 +147,6 @@ fn bounded_remaining_tpch_topologies_report_structural_blockers_without_admissio
             "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing",
         ),
         (
-            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
-            "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
-            "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing",
-        ),
-        (
             resident_grouped_aggregate_subquery_filter_plan(),
             "multi_join_with_resident_grouped_aggregate_subquery_filter",
             "bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing",
@@ -181,6 +176,42 @@ fn bounded_remaining_tpch_topologies_report_structural_blockers_without_admissio
         assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     }
+}
+
+#[test]
+fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_is_executable() {
+    let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_plan();
+
+    assert!(!plan.has_bounded_executable_root_join());
+    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline());
+    assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("resident grouped aggregate TopK pipeline should produce modeled bounded facts");
+    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
+    assert_eq!(
+        facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk")
+    );
+    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
+    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
+    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
+        value.contains("source_read:modeled")
+            && value.contains("operator_output:modeled")
+            && value.contains("final_sort:modeled")
+    }));
+    assert!(
+        facts
+            .get("bounded_join_contract_modes")
+            .is_some_and(|value| value.contains("final_sort_contract:hard_budgeted_report"))
+    );
 }
 
 #[test]

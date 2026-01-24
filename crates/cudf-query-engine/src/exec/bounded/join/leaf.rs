@@ -480,8 +480,9 @@ fn read_join_leaf_source_chunks_with_scheduler(
             release_join_source_chunks_reverse(reservations, chunks);
             return Err(error);
         }
-        if pending.is_empty() && index + 1 < source_chunks.len() {
-            if let Err(error) = start_next_required_join_leaf_read(
+        if pending.is_empty()
+            && index + 1 < source_chunks.len()
+            && let Err(error) = start_next_required_join_leaf_read(
                 context,
                 source,
                 source_chunks,
@@ -491,10 +492,10 @@ fn read_join_leaf_source_chunks_with_scheduler(
                 &mut pending,
                 &mut next_chunk_index,
                 max_attempts,
-            ) {
-                release_join_source_chunks_reverse(reservations, chunks);
-                return Err(error);
-            }
+            )
+        {
+            release_join_source_chunks_reverse(reservations, chunks);
+            return Err(error);
         }
     }
 

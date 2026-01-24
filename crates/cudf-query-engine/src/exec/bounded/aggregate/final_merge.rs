@@ -77,7 +77,7 @@ fn execute_final_merge_level_attempt(
         }
 
         match execute_final_merge_group_attempt(context, bounded, group, attempt, max_attempts, reservations, metrics) {
-            Ok(partial) => output.push(MergeLevelItem::Merged(partial)),
+            Ok(partial) => output.push(MergeLevelItem::Merged(Box::new(partial))),
             Err(error) => {
                 release_merge_level_items(output, reservations);
                 return Err(error);
@@ -231,7 +231,7 @@ fn merge_final_aggregate_partials(
 }
 
 enum MergeLevelItem {
-    Merged(CommittedPartial),
+    Merged(Box<CommittedPartial>),
     Carry { partial_index: usize },
 }
 
@@ -245,7 +245,7 @@ fn commit_final_merge_level(
 
     for item in level_output {
         match item {
-            MergeLevelItem::Merged(partial) => next_partials.push(partial),
+            MergeLevelItem::Merged(partial) => next_partials.push(*partial),
             MergeLevelItem::Carry { partial_index } => {
                 let partial = partials[partial_index].take().expect("carry index references a source partial");
                 next_partials.push(partial);
@@ -263,6 +263,7 @@ fn commit_final_merge_level(
 fn release_merge_level_items(items: Vec<MergeLevelItem>, reservations: &mut ReservationTracker) {
     for item in items {
         if let MergeLevelItem::Merged(partial) = item {
+            let partial = *partial;
             reservations.release(partial.reservation);
         }
     }

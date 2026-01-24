@@ -14,7 +14,7 @@ pub(in crate::exec) struct ScheduledLocalParquetRead {
 }
 
 enum ScheduledLocalParquetReadState {
-    Ready(ScheduledLocalParquetReadOutput),
+    Ready(Box<ScheduledLocalParquetReadOutput>),
     Running { reservation: ActiveReservation, handle: JoinHandle<ScheduledLocalParquetReadResult> },
 }
 
@@ -63,7 +63,7 @@ impl ScheduledLocalParquetRead {
     ) -> Self {
         Self {
             chunk: output.chunk.clone(),
-            state: ScheduledLocalParquetReadState::Ready(output),
+            state: ScheduledLocalParquetReadState::Ready(Box::new(output)),
             budget_boundary,
             prefetch,
         }
@@ -84,7 +84,7 @@ impl ScheduledLocalParquetRead {
     ) -> Result<ScheduledLocalParquetReadOutput> {
         let ScheduledLocalParquetRead { chunk, state, budget_boundary: _, prefetch: _ } = self;
         let (reservation, handle) = match state {
-            ScheduledLocalParquetReadState::Ready(output) => return Ok(output),
+            ScheduledLocalParquetReadState::Ready(output) => return Ok(*output),
             ScheduledLocalParquetReadState::Running { reservation, handle } => (reservation, handle),
         };
         let wait_timer = Instant::now();
@@ -114,6 +114,7 @@ impl ScheduledLocalParquetRead {
         let ScheduledLocalParquetRead { state, .. } = self;
         let result = match state {
             ScheduledLocalParquetReadState::Ready(output) => {
+                let output = *output;
                 reservations.release(output.reservation);
                 metrics.record_source_read_prefetch_abandoned();
                 return;

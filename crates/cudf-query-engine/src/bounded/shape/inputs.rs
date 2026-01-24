@@ -162,6 +162,33 @@ pub(in crate::bounded) fn validate_mixed_keyed_residual_join_resident_grouped_ag
     Ok(())
 }
 
+pub(in crate::bounded) fn validate_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline<'a>(
+    shape: &BoundedJoinPipelineShape<'a>,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    let [
+        BoundedJoinPipelineStage::Projection { .. },
+        BoundedJoinPipelineStage::Aggregate { node_id: aggregate_id, node: aggregate, .. },
+        BoundedJoinPipelineStage::Projection { .. },
+        BoundedJoinPipelineStage::Sort { .. },
+        BoundedJoinPipelineStage::Limit { .. },
+    ] = shape.stages.as_slice()
+    else {
+        let node_id = shape.stages.first().map(pipeline_stage_node_id).unwrap_or(shape.join_id);
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id,
+            node_kind: "post_root_topk_pipeline",
+        });
+    };
+
+    if aggregate.spec.group_exprs.is_empty() {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: *aggregate_id,
+            node_kind: "scalar_post_root_aggregate",
+        });
+    }
+    Ok(())
+}
+
 pub(in crate::bounded) fn validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides<'a>(
     plan: &'a QueryPlan,
     root_join: &'a JoinNode,
@@ -185,6 +212,32 @@ pub(in crate::bounded) fn validate_mixed_keyed_residual_join_resident_grouped_ag
     if !expr_references_input(predicate, join_side_index(join_subtree_side))
         || !expr_references_input(predicate, join_side_index(grouped_aggregate_side))
     {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    Ok(())
+}
+
+pub(in crate::bounded) fn validate_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_sides<'a>(
+    plan: &'a QueryPlan,
+    root_join: &'a JoinNode,
+    join_subtree_side: JoinSide,
+    grouped_aggregate_side: JoinSide,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    if join_subtree_side != JoinSide::Left || grouped_aggregate_side != JoinSide::Right {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    validate_bounded_multi_join_subtree(plan, root_join.inputs[join_side_index(join_subtree_side)])?;
+    if bounded_join_subtree_join_count(plan, root_join.inputs[join_side_index(join_subtree_side)])? < 2 {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: root_join.inputs[join_side_index(join_subtree_side)],
+            node_kind: "single_join_subtree",
+        });
+    }
+    validate_projection_wrapped_filtered_grouped_local_parquet_aggregate_input_structural(
+        plan,
+        root_join.inputs[join_side_index(grouped_aggregate_side)],
+    )?;
+    if root_join.spec.output_projection.iter().any(|column| column.side != join_subtree_side) {
         return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
     }
     Ok(())
@@ -241,6 +294,62 @@ fn validate_projection_wrapped_grouped_local_parquet_aggregate_input_structural(
         });
     }
     validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(plan, aggregate.input)
+}
+
+fn validate_projection_wrapped_filtered_grouped_local_parquet_aggregate_input_structural(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'_>> {
+    let mut current = node_id;
+    let mut projection_count = 0;
+    loop {
+        let node = plan.node(current).ok_or(BoundedJoinPipelineRejection::MissingNode {
+            node_id: current,
+            message: "bounded hash join resident grouped aggregate input references a missing input",
+        })?;
+        match &node.kind {
+            PlanNode::Projection(projection) => {
+                projection_count += 1;
+                current = projection.input;
+            },
+            PlanNode::Filter(filter) => {
+                current = filter.input;
+            },
+            PlanNode::Aggregate(aggregate) => {
+                if projection_count == 0 {
+                    return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+                        node_id,
+                        node_kind: "bare_grouped_aggregate_input",
+                    });
+                }
+                if aggregate.spec.group_exprs.is_empty() {
+                    return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+                        node_id: current,
+                        node_kind: "scalar_aggregate",
+                    });
+                }
+                return validate_source_filter_projection_leaf_pipeline_rooted_in_local_parquet(plan, aggregate.input);
+            },
+            PlanNode::Source(_) => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+                    node_id: current,
+                    node_kind: "source",
+                });
+            },
+            PlanNode::Join(_) => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id: current, node_kind: "join" });
+            },
+            PlanNode::Sort(_) => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode { node_id: current, node_kind: "sort" });
+            },
+            PlanNode::Limit(_) => {
+                return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+                    node_id: current,
+                    node_kind: "limit",
+                });
+            },
+        }
+    }
 }
 
 pub(in crate::bounded) fn validate_projection_wrapped_aggregate_over_join_subplan_input(

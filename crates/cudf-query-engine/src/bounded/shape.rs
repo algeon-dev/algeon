@@ -7,6 +7,8 @@ pub(super) use inputs::{
     bounded_join_source_leaf_inputs_compatible, validate_bounded_join_source_leaf_inputs,
     validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_post_root_pipeline,
     validate_bounded_keyless_conditional_join_input_subplan,
+    validate_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
+    validate_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_sides,
     validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline,
     validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides,
     validate_projection_wrapped_aggregate_over_join_subplan_input, validate_source_filter_projection_leaf_pipeline,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::bounded::BoundedJoinPipelineStage;
 
 pub(in crate::exec::bounded) type ProjectionStage<'a> = (&'a ProjectionNode, &'a arrow::datatypes::SchemaRef);
 
@@ -249,6 +250,136 @@ impl<'a> BoundedPlan<'a> {
             sort: None,
             limit: None,
         })
+    }
+
+    pub(in crate::exec::bounded) fn analyze_projection_wrapped_local_aggregate_subplan_with_post_stages(
+        plan: &'a QueryPlan,
+        root_id: NodeId,
+    ) -> Result<(Self, Vec<BoundedJoinPipelineStage<'a>>)> {
+        let mut current = root_id;
+        let mut post_aggregate_stages = Vec::new();
+        loop {
+            let node = plan.node(current).ok_or_else(|| {
+                invalid_node_reference(
+                    current,
+                    "bounded resident grouped aggregate input references a missing post-aggregate node",
+                )
+            })?;
+            match &node.kind {
+                PlanNode::Projection(projection) => {
+                    post_aggregate_stages.push(BoundedJoinPipelineStage::Projection {
+                        node_id: current,
+                        node: projection,
+                        output_schema: &node.facts.output_schema,
+                    });
+                    current = projection.input;
+                },
+                PlanNode::Filter(filter) => {
+                    post_aggregate_stages.push(BoundedJoinPipelineStage::Filter { node_id: current, node: filter });
+                    current = filter.input;
+                },
+                PlanNode::Aggregate(_) => break,
+                _ => {
+                    return Err(unsupported_bounded_shape(
+                        "bounded resident grouped aggregate input requires projection/filter stages over a grouped aggregate",
+                        "bounded_join_plan_shape_unsupported",
+                    )
+                    .with_fact("node_id", current)
+                    .with_fact("node_kind", bounded_local_aggregate_subplan_node_kind(&node.kind)));
+                },
+            }
+        }
+        if !post_aggregate_stages.iter().any(|stage| matches!(stage, BoundedJoinPipelineStage::Projection { .. })) {
+            return Err(unsupported_bounded_shape(
+                "bounded resident grouped aggregate input requires a projection-wrapped aggregate",
+                "bounded_join_plan_shape_unsupported",
+            )
+            .with_fact("node_id", root_id)
+            .with_fact("node_kind", "bare_grouped_aggregate_input"));
+        }
+        post_aggregate_stages.reverse();
+
+        let aggregate_id = current;
+        let aggregate_node = plan.node(current).ok_or_else(|| {
+            invalid_node_reference(
+                current,
+                "bounded resident grouped aggregate input references a missing aggregate node",
+            )
+        })?;
+        let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+            unreachable!("loop exits only at aggregate nodes");
+        };
+        if aggregate.spec.group_exprs.is_empty() {
+            return Err(unsupported_bounded_shape(
+                "bounded resident grouped aggregate input requires grouped aggregate state",
+                "bounded_join_plan_shape_unsupported",
+            )
+            .with_fact("node_id", aggregate_id)
+            .with_fact("node_kind", "scalar_aggregate"));
+        }
+        let aggregate_input_node = plan.node(aggregate.input).ok_or_else(|| {
+            invalid_node_reference(
+                aggregate.input,
+                "bounded resident grouped aggregate input references a missing aggregate input node",
+            )
+        })?;
+        current = aggregate.input;
+
+        let post_filter_projections = take_projection_stack(
+            plan,
+            &mut current,
+            "bounded resident grouped aggregate input references a missing aggregate input node",
+        )?;
+
+        let filter = match plan.node(current).map(|node| &node.kind) {
+            Some(PlanNode::Filter(node)) => {
+                current = node.input;
+                Some(node)
+            },
+            _ => None,
+        };
+
+        let pre_filter_projections = take_projection_stack(
+            plan,
+            &mut current,
+            "bounded resident grouped aggregate input references a missing source input node",
+        )?;
+
+        let source_node = plan.node(current).ok_or_else(|| {
+            invalid_node_reference(current, "bounded resident grouped aggregate input references a missing source node")
+        })?;
+        let PlanNode::Source(source_node) = &source_node.kind else {
+            return Err(unsupported_bounded_shape(
+                "bounded resident grouped aggregate input supports only local parquet sources",
+                "non_local_parquet_source",
+            )
+            .with_fact("node_id", current)
+            .with_fact("node_kind", bounded_local_aggregate_subplan_node_kind(&source_node.kind)));
+        };
+        let crate::source::SourceNode::LocalParquet(source) = source_node.as_ref() else {
+            return Err(unsupported_bounded_shape(
+                "bounded resident grouped aggregate input supports only local parquet sources",
+                "non_local_parquet_source",
+            )
+            .with_fact("node_id", current));
+        };
+
+        Ok((
+            Self {
+                source_id: current,
+                source,
+                pre_filter_projections,
+                filter,
+                post_filter_projections,
+                aggregate_id,
+                aggregate_input_schema: &aggregate_input_node.facts.output_schema,
+                aggregate: (aggregate, &aggregate_node.facts.output_schema),
+                post_aggregate_projection: None,
+                sort: None,
+                limit: None,
+            },
+            post_aggregate_stages,
+        ))
     }
 
     pub(in crate::exec::bounded) fn validate_capabilities(&self) -> Result<()> {
