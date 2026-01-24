@@ -820,7 +820,6 @@ dependencies = [
  "datafusion",
  "futures",
  "parquet",
- "serde_json",
  "tokio",
 ]
 

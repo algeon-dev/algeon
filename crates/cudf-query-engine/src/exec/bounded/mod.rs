@@ -56,6 +56,11 @@ pub(super) fn execute_bounded_query_plan(
                 context, plan, gpu_inputs, metrics,
             );
         }
+        if plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline() {
+            return execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan(
+                context, plan, gpu_inputs, metrics,
+            );
+        }
         if plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline() {
             return execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
@@ -195,6 +200,11 @@ fn execute_bounded_generic_query_plan(
         }
         if plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline() {
             return execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan(
+                context, plan, gpu_inputs, metrics,
+            );
+        }
+        if plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline() {
+            return execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
             );
         }
@@ -414,6 +424,7 @@ fn execute_bounded_generic_gpu_resident_source(
     Ok(ResidentGpuFrame { frame, reservation })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_bounded_generic_unary(
     context: &ExecutionContext,
     node_id: NodeId,

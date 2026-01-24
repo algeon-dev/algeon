@@ -9,10 +9,7 @@ async fn tpch_remaining_rejected_queries_expose_bounded_topology_facts() {
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
 
-    for (query_id, expected_family) in [
-        ("q02", "multi_join_with_aggregate_over_join_subplan_topk"),
-        ("q20", "multi_join_with_resident_grouped_aggregate_subquery_filter"),
-    ] {
+    for (query_id, expected_family) in [("q02", "multi_join_with_aggregate_over_join_subplan_topk")] {
         let item = items.iter().find(|item| item.query_id == query_id).expect("TPC-H workload should include query");
         let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &item.input else {
             panic!("{query_id} should produce a physical plan");
@@ -67,6 +64,25 @@ async fn tpch_remaining_rejected_queries_expose_bounded_topology_facts() {
     assert_eq!(
         facts.get("bounded_join_execution_family").map(String::as_str),
         Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk")
+    );
+
+    let q20 = items.iter().find(|item| item.query_id == "q20").expect("TPC-H workload should include q20");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q20.input else {
+        panic!("q20 should produce a physical plan");
+    };
+    let result = lower_physical_plan_to_native(Arc::clone(plan));
+    assert_eq!(result.rewritten_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
+    let native_plan = &result.plans[0];
+    assert!(
+        native_plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
+        "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
+    );
+    let facts = native_plan
+        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .expect("q20 should expose modeled bounded join facts");
+    assert_eq!(
+        facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("multi_join_with_resident_grouped_aggregate_subquery_filter")
     );
 
     fs::remove_dir_all(dir).unwrap();

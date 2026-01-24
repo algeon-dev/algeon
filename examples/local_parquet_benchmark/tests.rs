@@ -7,8 +7,6 @@ use support::*;
 
 #[path = "tests/dataset.rs"]
 mod dataset;
-#[path = "tests/matrix.rs"]
-mod matrix;
 #[path = "tests/planning.rs"]
 mod planning;
 #[path = "tests/reports.rs"]

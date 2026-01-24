@@ -166,39 +166,26 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
         .map(|row| row.query_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(rejected_query_ids, vec!["q02", "q20"]);
+    assert_eq!(rejected_query_ids, vec!["q02"]);
 
-    for (query_id, expected_family, expected_blocker) in [
-        (
-            "q02",
-            "multi_join_with_aggregate_over_join_subplan_topk",
-            "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing",
-        ),
-        (
-            "q20",
-            "multi_join_with_resident_grouped_aggregate_subquery_filter",
-            "bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing",
-        ),
-    ] {
-        let row = planning_row(report, query_id);
-        assert_eq!(
-            row.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
-            Some(expected_family)
-        );
-        assert_eq!(
-            row.bounded_join_reservation_facts.get("bounded_join_shape_blocker").map(String::as_str),
-            Some(expected_blocker)
-        );
-        assert_eq!(
-            row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-            Some("")
-        );
-        assert_eq!(
-            row.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
-            None
-        );
-        assert!(row.rejected_before_execution, "{query_id} should remain rejected before native execution");
-    }
+    let q02 = planning_row(report, "q02");
+    assert_eq!(
+        q02.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        Some("multi_join_with_aggregate_over_join_subplan_topk")
+    );
+    assert_eq!(
+        q02.bounded_join_reservation_facts.get("bounded_join_shape_blocker").map(String::as_str),
+        Some("bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing")
+    );
+    assert_eq!(
+        q02.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
+    assert_eq!(
+        q02.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
+        None
+    );
+    assert!(q02.rejected_before_execution, "q02 should remain rejected before native execution");
 
     let q18 = planning_row(report, "q18");
     assert_eq!(q18.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
@@ -218,6 +205,29 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert_eq!(q18.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str), Some(""));
     assert_eq!(
         q18.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+        Some(
+            "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
+        )
+    );
+
+    let q20 = planning_row(report, "q20");
+    assert_eq!(q20.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q20.reason_code, None);
+    assert_eq!(q20.unsupported_category, None);
+    assert_eq!(q20.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q20.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+    assert_eq!(
+        q20.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
+        Some("multi_join_with_resident_grouped_aggregate_subquery_filter")
+    );
+    assert_eq!(
+        q20.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
+        Some("")
+    );
+    assert_eq!(q20.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(q20.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str), Some(""));
+    assert_eq!(
+        q20.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
         Some(
             "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
         )

@@ -141,7 +141,7 @@ pub(super) fn validate_dataset_layout(
     }
     if dataset_layout.row_group_count <= dataset_layout.file_count {
         return Err(plan_error(format!(
-            "generated Parquet dataset must contain at least one multi-row-group file for the Phase B runtime gate: files={}, row_groups={}, row_group_size={}. Lower CUDF_PARQUET_BENCH_ROW_GROUP_SIZE or increase CUDF_PARQUET_BENCH_ROWS",
+            "generated Parquet dataset must contain at least one multi-row-group file for the direct native Parquet contract: files={}, row_groups={}, row_group_size={}. Lower CUDF_PARQUET_BENCH_ROW_GROUP_SIZE or increase CUDF_PARQUET_BENCH_ROWS",
             dataset_layout.file_count, dataset_layout.row_group_count, config.row_group_size
         )));
     }

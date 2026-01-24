@@ -212,6 +212,9 @@ pub enum BoundedJoinExecutionFamily {
     /// A left-semi keyed root hash join with a resident grouped aggregate input
     /// and post-join grouped aggregate TopK.
     HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
+    /// A semi-filtered multi-join tree with a resident grouped aggregate
+    /// subquery branch and final sort.
+    MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
     /// A final sort over keyed hash joins with resident grouped/scalar revenue
     /// subplans.
     KeyedHashJoinResidentSubplanPipeline,
@@ -240,6 +243,9 @@ impl BoundedJoinExecutionFamily {
             Self::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline => {
                 "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk"
             },
+            Self::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline => {
+                "multi_join_with_resident_grouped_aggregate_subquery_filter"
+            },
             Self::KeyedHashJoinResidentSubplanPipeline => "keyed_hash_join_resident_subplan_pipeline",
         }
     }
@@ -248,7 +254,7 @@ impl BoundedJoinExecutionFamily {
 /// Report-facing catalogue of bounded join execution families.
 ///
 /// Ordering is preserved in CSV facts and tests.
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 12] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 13] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
@@ -260,6 +266,7 @@ pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 12] = [
     BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
     BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
     BoundedJoinExecutionFamily::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
+    BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
     BoundedJoinExecutionFamily::KeyedHashJoinResidentSubplanPipeline,
 ];
 

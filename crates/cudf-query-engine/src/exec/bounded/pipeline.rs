@@ -3,6 +3,7 @@ use crate::bounded::{
     BoundedJoinPipelineRejection, BoundedJoinPipelineStage,
     analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
     analyze_bounded_join_pipeline, analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
+    analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
     analyze_keyed_hash_join_resident_subplan_pipeline,
 };
 
@@ -57,6 +58,13 @@ fn attach_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_ex
     attach_bounded_join_execution_family(
         error,
         crate::runtime::BoundedJoinExecutionFamily::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
+    )
+}
+
+fn attach_multi_join_resident_grouped_aggregate_subquery_filter_execution_family(error: QueryError) -> QueryError {
+    attach_bounded_join_execution_family(
+        error,
+        crate::runtime::BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
     )
 }
 
@@ -190,6 +198,18 @@ pub(super) fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_pl
         .map_err(attach_keyed_hash_join_resident_subplan_execution_family)
 }
 
+pub(super) fn execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan_inner(
+        context, plan, gpu_inputs, metrics,
+    )
+    .map_err(attach_multi_join_resident_grouped_aggregate_subquery_filter_execution_family)
+}
+
 fn execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan_inner(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -263,6 +283,102 @@ fn execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregat
         *final_sort_id,
         final_sort,
         Some(limit),
+        committed,
+        &mut reservations,
+        metrics,
+    )?;
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(handle))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+fn execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan_inner(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let pipeline = analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan)
+        .map_err(bounded_join_pipeline_rejection_error)?;
+    validate_bounded_join_pipeline_stages(&pipeline.stages)?;
+    let [BoundedJoinPipelineStage::Sort { node_id: final_sort_id, node: final_sort }] = pipeline.stages.as_slice()
+    else {
+        return Err(unsupported_bounded_shape(
+            "bounded resident grouped aggregate subquery filter pipeline requires one final sort stage",
+            "bounded_join_plan_shape_unsupported",
+        ));
+    };
+
+    validate_bounded_multi_join_subtree_capabilities(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.output_side)],
+    )?;
+    validate_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter_capabilities(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.subquery_filter_side)],
+    )?;
+    validate_executable_join_subset(pipeline.join)?;
+
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!(
+            "execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan is called only for bounded policies"
+        );
+    };
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
+    let output = execute_bounded_multi_join_subtree(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.output_side)],
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let subquery_filter = execute_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.subquery_filter_side)],
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let (left, right) = match pipeline.output_side {
+        JoinSide::Left => (output, subquery_filter),
+        JoinSide::Right => (subquery_filter, output),
+    };
+    let committed =
+        execute_bounded_root_join(context, pipeline.join_id, pipeline.join, left, right, &mut reservations, metrics)?;
+    let committed = execute_final_sort_node_with_retry(
+        context,
+        *final_sort_id,
+        final_sort,
+        None,
         committed,
         &mut reservations,
         metrics,
@@ -585,6 +701,180 @@ fn execute_bounded_projection_wrapped_local_aggregate_input(
 
     let frame = execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)?;
     execute_post_aggregate_projection(context, bounded, frame, reservations, metrics)
+}
+
+fn execute_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    gpu_inputs: &GpuResidentInputMap,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    if let Ok((bounded, post_aggregate_stages)) =
+        BoundedPlan::analyze_projection_wrapped_local_aggregate_subplan_with_post_stages(plan, node_id)
+    {
+        bounded.validate_capabilities()?;
+        validate_bounded_join_pipeline_stages(&post_aggregate_stages)?;
+        let mut committed =
+            execute_bounded_projection_wrapped_local_aggregate_input(context, &bounded, reservations, metrics)?;
+        for stage in &post_aggregate_stages {
+            committed = execute_bounded_join_pipeline_stage(context, stage, committed, reservations, metrics)?;
+        }
+        return Ok(committed);
+    }
+
+    let node = plan.node(node_id).ok_or_else(|| {
+        invalid_node_reference(node_id, "bounded resident aggregate subquery references a missing node")
+    })?;
+    match &node.kind {
+        PlanNode::Join(join) => {
+            let left = execute_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter(
+                context,
+                plan,
+                join.inputs[0],
+                gpu_inputs,
+                reservations,
+                metrics,
+            )?;
+            let right = execute_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter(
+                context,
+                plan,
+                join.inputs[1],
+                gpu_inputs,
+                reservations,
+                metrics,
+            )?;
+            execute_bounded_root_join(context, node.id, join, left, right, reservations, metrics)
+        },
+        PlanNode::Filter(filter) => {
+            let input = execute_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter(
+                context,
+                plan,
+                filter.input,
+                gpu_inputs,
+                reservations,
+                metrics,
+            )?;
+            execute_bounded_join_pipeline_stage(
+                context,
+                &BoundedJoinPipelineStage::Filter { node_id, node: filter },
+                input,
+                reservations,
+                metrics,
+            )
+        },
+        PlanNode::Projection(projection) => {
+            let input = execute_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter(
+                context,
+                plan,
+                projection.input,
+                gpu_inputs,
+                reservations,
+                metrics,
+            )?;
+            execute_bounded_join_pipeline_stage(
+                context,
+                &BoundedJoinPipelineStage::Projection {
+                    node_id,
+                    node: projection,
+                    output_schema: &node.facts.output_schema,
+                },
+                input,
+                reservations,
+                metrics,
+            )
+        },
+        PlanNode::Source(_) => execute_bounded_join_leaf_input(context, plan, node_id, gpu_inputs, reservations, metrics),
+        PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(unsupported_bounded_shape(
+            "bounded resident grouped aggregate subquery filter execution supports source/filter/projection/join nodes plus one projection-wrapped grouped local aggregate",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("node_kind", bounded_resident_aggregate_subquery_node_kind(&node.kind))),
+    }
+}
+
+fn validate_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter_capabilities(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<()> {
+    if let Ok((bounded, post_aggregate_stages)) =
+        BoundedPlan::analyze_projection_wrapped_local_aggregate_subplan_with_post_stages(plan, node_id)
+    {
+        bounded.validate_capabilities()?;
+        return validate_bounded_join_pipeline_stages(&post_aggregate_stages);
+    }
+
+    let node = plan.node(node_id).ok_or_else(|| {
+        invalid_node_reference(node_id, "bounded resident aggregate subquery references a missing node")
+    })?;
+    match &node.kind {
+        PlanNode::Join(join) => {
+            validate_executable_join_subset(join)?;
+            if !crate::bounded::bounded_multi_join_compatible(join) {
+                return Err(unsupported_bounded_shape(
+                    "bounded resident grouped aggregate subquery filter execution supports reusable hash joins, filtered equality semi/anti joins, and mixed keyed-residual inner, left semi, and left anti joins",
+                    "bounded_join_plan_shape_unsupported",
+                )
+                .with_fact("join_type", join.spec.join_type)
+                .with_fact("build_side", join.spec.build_side)
+                .with_fact("key_count", join.spec.keys.len())
+                .with_fact("residual_predicate", join.spec.residual_predicate.is_some())
+                .with_fact("output_projection_len", join.spec.output_projection.len()));
+            }
+            if join.spec.residual_predicate.is_some() {
+                let residual_columns = residual_input_columns(join)?;
+                lower_join_residual_predicate(context, join, &residual_columns)?;
+            }
+            validate_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter_capabilities(
+                context,
+                plan,
+                join.inputs[0],
+            )?;
+            validate_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter_capabilities(
+                context,
+                plan,
+                join.inputs[1],
+            )
+        },
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => {
+            lower_expr(&filter.predicate)?;
+            validate_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter_capabilities(
+                context,
+                plan,
+                filter.input,
+            )
+        },
+        PlanNode::Projection(projection) => {
+            validate_projection_capability(projection, &node.facts.output_schema)?;
+            validate_bounded_multi_join_subtree_with_resident_grouped_aggregate_subquery_filter_capabilities(
+                context,
+                plan,
+                projection.input,
+            )
+        },
+        PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(unsupported_bounded_shape(
+            "bounded resident grouped aggregate subquery filter execution supports source/filter/projection/join nodes plus one projection-wrapped grouped local aggregate",
+            "bounded_join_plan_shape_unsupported",
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("node_kind", bounded_resident_aggregate_subquery_node_kind(&node.kind))),
+    }
+}
+
+fn bounded_resident_aggregate_subquery_node_kind(node: &PlanNode) -> &'static str {
+    match node {
+        PlanNode::Source(_) => "source",
+        PlanNode::Filter(_) => "filter",
+        PlanNode::Projection(_) => "projection",
+        PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Sort(_) => "sort",
+        PlanNode::Limit(_) => "limit",
+        PlanNode::Join(_) => "join",
+    }
 }
 
 fn join_side_index(side: JoinSide) -> usize {

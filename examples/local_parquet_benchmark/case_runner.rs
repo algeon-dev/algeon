@@ -86,13 +86,11 @@ pub(super) fn benchmark_case_prologue(
     push_line(&mut text, format_args!("batch_size={}", config.batch_size));
     push_line(&mut text, format_args!("row_group_size={}", config.row_group_size));
     push_line(&mut text, format_args!("parquet_row_groups={}", report.dataset_layout.row_group_count));
-    push_line(&mut text, format_args!("minimum_native_gpu_speedup={:.3}", config.minimum_native_gpu_speedup));
     push_line(&mut text, format_args!("native_memory_control_policy={}", config.native_memory_control_policy.as_str()));
     push_line(&mut text, format_args!("benchmark_paths={}", config.benchmark_paths.name()));
     push_line(&mut text, format_args!("compression={}", config.compression.name()));
     push_line(&mut text, format_args!("native_plan_shape={}", config.native_plan_shape.name()));
     push_line(&mut text, format_args!("expected_outcome={}", config.expected_outcome.name()));
-    push_line(&mut text, format_args!("phase_c_decision_matrix_cases={}", phase_c_decision_matrix().len()));
     push_line(&mut text, format_args!("limit={}", config.limit));
     push_line(&mut text, format_args!("warmups={}", config.warmup_iterations));
     push_line(&mut text, format_args!("iterations={}", config.iterations));

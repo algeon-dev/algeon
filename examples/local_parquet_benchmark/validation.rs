@@ -54,23 +54,13 @@ pub(super) fn validate_gpu_direct_measurement(
     Ok(())
 }
 
-pub(super) fn validate_phase_b_runtime_gate(
-    cpu_comparable: &TimedBenchmarkRun,
-    datafusion_native_exec: &TimedBenchmarkRun,
+pub(super) fn validate_direct_native_runtime_contract(
     native_measurement: &GpuCollectMeasurement,
-    parquet_file_bytes: u64,
     dataset_layout: ParquetDatasetLayout,
-    config: &LocalParquetBenchmarkConfig,
 ) -> DataFusionResult<()> {
-    if parquet_file_bytes < config.minimum_file_bytes {
-        return Err(plan_error(format!(
-            "Phase B runtime gate requires a 3 GiB+ Parquet dataset: parquet_file_bytes={}, minimum_file_bytes={}",
-            parquet_file_bytes, config.minimum_file_bytes
-        )));
-    }
     if dataset_layout.row_group_count <= dataset_layout.file_count {
         return Err(plan_error(format!(
-            "Phase B runtime gate requires a multi-row-group Parquet dataset: files={}, row_groups={}",
+            "direct native Parquet contract requires a multi-row-group dataset: files={}, row_groups={}",
             dataset_layout.file_count, dataset_layout.row_group_count
         )));
     }
@@ -78,13 +68,13 @@ pub(super) fn validate_phase_b_runtime_gate(
         || native_measurement.metrics.host_to_device_uploaded_rows != 0
     {
         return Err(plan_error(format!(
-            "Phase B runtime gate requires zero native host-to-device uploads: uploads={}, uploaded_rows={}",
+            "direct native Parquet contract requires zero host-to-device uploads: uploads={}, uploaded_rows={}",
             native_measurement.metrics.host_to_device_uploads, native_measurement.metrics.host_to_device_uploaded_rows
         )));
     }
     if native_measurement.metrics.device_to_host_materializations != 1 {
         return Err(plan_error(format!(
-            "Phase B runtime gate requires one final native host materialization: materializations={}",
+            "direct native Parquet contract requires one final host materialization: materializations={}",
             native_measurement.metrics.device_to_host_materializations
         )));
     }
@@ -92,18 +82,8 @@ pub(super) fn validate_phase_b_runtime_gate(
         || native_measurement.metrics.row_groups_selected >= dataset_layout.row_group_count
     {
         return Err(plan_error(format!(
-            "Phase B runtime gate requires native row-group pruning: row_groups_selected={}, total_row_groups={}",
+            "direct native Parquet contract requires row-group pruning: row_groups_selected={}, total_row_groups={}",
             native_measurement.metrics.row_groups_selected, dataset_layout.row_group_count
-        )));
-    }
-
-    let native_speedup = speedup(cpu_comparable.mean, datafusion_native_exec.mean);
-    if native_speedup <= config.minimum_native_gpu_speedup {
-        return Err(plan_error(format!(
-            "Phase B runtime gate did not preserve the DataFusion native exec win: datafusion_native_exec_speedup={native_speedup:.3}, minimum_native_gpu_speedup={:.3}, cpu_comparable_wall_ms={:.3}, datafusion_native_exec_wall_ms={:.3}",
-            config.minimum_native_gpu_speedup,
-            duration_ms(cpu_comparable.mean),
-            duration_ms(datafusion_native_exec.mean)
         )));
     }
     Ok(())

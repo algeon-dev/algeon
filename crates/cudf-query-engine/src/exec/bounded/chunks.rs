@@ -182,6 +182,7 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunks_ordered(
     read_local_parquet_chunks_with_ordered_scheduler(context, source, chunks, reservations, metrics, boundaries)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -507,6 +508,7 @@ impl OrderedSourceReadQueue {
         Ok(queue)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_with_boundaries(
         context: &ExecutionContext,
         source: &LocalParquetSource,
@@ -569,6 +571,7 @@ impl OrderedSourceReadQueue {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn ensure_current_required_with_boundary(
         &mut self,
         context: &ExecutionContext,
@@ -631,6 +634,7 @@ impl OrderedSourceReadQueue {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn fill_optional_with_boundaries(
         &mut self,
         context: &ExecutionContext,

@@ -199,7 +199,7 @@ pub(super) fn mean_metric_optional_usize(
         total += value as u128;
         count += 1;
     }
-    if count == 0 { None } else { Some((total / count).min(usize::MAX as u128) as usize) }
+    total.checked_div(count).map(|mean| mean.min(usize::MAX as u128) as usize)
 }
 
 pub(super) fn optional_usize_text(value: Option<usize>) -> String {

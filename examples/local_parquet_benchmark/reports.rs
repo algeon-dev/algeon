@@ -186,7 +186,7 @@ pub(super) fn native_source_diagnostics_text(diagnostics: &[datafusion_cudf::Nat
         .iter()
         .map(|diagnostic| {
             format!(
-                "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},schema_mapping={},rejected_features={}",
+                "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
                 diagnostic.format,
                 diagnostic.direct_device_read,
                 diagnostic.file_count,
@@ -200,6 +200,7 @@ pub(super) fn native_source_diagnostics_text(diagnostics: &[datafusion_cudf::Nat
                 diagnostic.byte_range_disposition,
                 diagnostic.partition_column_disposition,
                 diagnostic.zero_column_count_disposition,
+                diagnostic.scan_limit_disposition,
                 diagnostic.schema_mapping_disposition,
                 if diagnostic.rejected_features.is_empty() {
                     "none".to_string()
@@ -237,7 +238,7 @@ impl ExpectedPlanningRejectedReport {
         push_line(&mut text, format_args!("compression={}", self.compression.name()));
         push_line(&mut text, format_args!("native_plan_shape={}", self.native_plan_shape.name()));
         push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
-        push_line(&mut text, format_args!("phase_c_runtime_gate=planning_rejected"));
+        push_line(&mut text, format_args!("bounded_runtime_outcome=planning_rejected"));
         push_line(&mut text, format_args!("native_runtime_executed=false"));
         push_line(&mut text, format_args!("datafusion_native_exec_final_plan_root={}", self.final_plan_root));
         push_native_datafusion_planning_lines(&mut text, "datafusion_native_exec", Some(&self.planning_report));
@@ -266,7 +267,7 @@ pub(super) struct ExpectedResourceFailureReport {
 impl ExpectedResourceFailureReport {
     pub(super) fn to_text(&self) -> String {
         let mut text = String::new();
-        push_line(&mut text, format_args!("case=phase_c_expected_resource_failure"));
+        push_line(&mut text, format_args!("case=local_parquet_expected_resource_failure"));
         push_line(&mut text, format_args!("parquet_file_bytes={}", self.parquet_file_bytes));
         push_line(&mut text, format_args!("parquet_row_groups={}", self.parquet_row_groups));
         push_line(&mut text, format_args!("input_rows={}", self.input_rows));
@@ -274,7 +275,7 @@ impl ExpectedResourceFailureReport {
         push_line(&mut text, format_args!("compression={}", self.compression.name()));
         push_line(&mut text, format_args!("native_plan_shape={}", self.native_plan_shape.name()));
         push_line(&mut text, format_args!("expected_outcome={}", self.expected_outcome.name()));
-        push_line(&mut text, format_args!("phase_c_runtime_gate=expected_resource_failure"));
+        push_line(&mut text, format_args!("bounded_runtime_outcome=expected_resource_failure"));
         push_line(&mut text, format_args!("no_silent_cpu_fallback=true"));
         push_line(&mut text, format_args!("native_runtime_executed=true"));
         push_line(&mut text, format_args!("datafusion_native_exec_final_plan_root={}", self.final_plan_root));
@@ -313,18 +314,6 @@ impl AdapterRuntimeErrorReport {
             facts: adapter_error_facts_tsv(error),
         }
     }
-}
-
-pub(super) fn sanitize_report_value(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-pub(super) fn tsv_escape(value: &str) -> String {
-    sanitize_report_value(value)
-}
-
-pub(super) fn markdown_table_cell(value: &str) -> String {
-    sanitize_report_value(value).replace('|', ";")
 }
 
 pub(super) fn push_line(text: &mut String, args: std::fmt::Arguments<'_>) {

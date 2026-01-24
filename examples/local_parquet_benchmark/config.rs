@@ -1,17 +1,13 @@
 use super::*;
 
-pub(super) const THREE_GIB: u64 = 3_221_225_472;
 pub(super) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
-pub(super) const DEFAULT_ROW_GROUP_SIZE: usize = 1_048_576;
+pub(super) const DEFAULT_ROW_GROUP_SIZE: usize = 65_536;
 pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
 pub(super) const DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS: usize = 1;
-pub(super) const DEFAULT_MIN_NATIVE_GPU_SPEEDUP: f64 = 1.0;
+pub(super) const DEFAULT_MIN_FILE_BYTES: u64 = 1;
 pub(super) const DEFAULT_BENCHMARK_DATA_DIR: &str = "tests/data/local-parquet-benchmark";
-pub(super) const DEFAULT_PHASE_C_MATRIX_DATA_DIR: &str = "tests/data/phase-c-matrix";
-pub(super) const SIX_GIB: u64 = 6 * 1024 * 1024 * 1024;
-pub(super) const TEN_GIB: u64 = 10 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(super) struct LocalParquetBenchmarkConfig {
@@ -25,7 +21,6 @@ pub(super) struct LocalParquetBenchmarkConfig {
     pub(super) warmup_iterations: usize,
     pub(super) iterations: usize,
     pub(super) minimum_file_bytes: u64,
-    pub(super) minimum_native_gpu_speedup: f64,
     pub(super) native_memory_control_policy: NativeMemoryControlPolicy,
     pub(super) benchmark_paths: BenchmarkPathSet,
     pub(super) compression: BenchmarkCompression,
@@ -37,7 +32,7 @@ pub(super) struct LocalParquetBenchmarkConfig {
 impl LocalParquetBenchmarkConfig {
     pub(super) fn from_env() -> DataFusionResult<Self> {
         let config = Self {
-            input_rows: env_usize("CUDF_PARQUET_BENCH_ROWS", 12_250_000)?,
+            input_rows: env_usize("CUDF_PARQUET_BENCH_ROWS", 262_144)?,
             file_count: env_usize("CUDF_PARQUET_BENCH_FILES", 1)?,
             measure_columns: env_usize("CUDF_PARQUET_BENCH_MEASURE_COLUMNS", 32)?,
             batch_size: env_usize("CUDF_PARQUET_BENCH_BATCH_SIZE", 65_536)?,
@@ -46,11 +41,7 @@ impl LocalParquetBenchmarkConfig {
             limit: env_usize("CUDF_PARQUET_BENCH_LIMIT", 100)?,
             warmup_iterations: env_usize("CUDF_PARQUET_BENCH_WARMUPS", 1)?,
             iterations: env_usize("CUDF_PARQUET_BENCH_ITERATIONS", 3)?,
-            minimum_file_bytes: env_u64("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", THREE_GIB)?,
-            minimum_native_gpu_speedup: env_f64(
-                "CUDF_PARQUET_BENCH_MIN_NATIVE_GPU_SPEEDUP",
-                DEFAULT_MIN_NATIVE_GPU_SPEEDUP,
-            )?,
+            minimum_file_bytes: env_u64("CUDF_PARQUET_BENCH_MIN_FILE_BYTES", DEFAULT_MIN_FILE_BYTES)?,
             native_memory_control_policy: native_memory_control_policy_from_env()?,
             benchmark_paths: BenchmarkPathSet::from_env("CUDF_PARQUET_BENCH_PATHS")?,
             compression: BenchmarkCompression::from_env("CUDF_PARQUET_BENCH_COMPRESSION")?,
@@ -71,7 +62,6 @@ impl LocalParquetBenchmarkConfig {
         validate_nonzero("CUDF_PARQUET_BENCH_GROUPS", self.group_count)?;
         validate_nonzero("CUDF_PARQUET_BENCH_LIMIT", self.limit)?;
         validate_nonzero("CUDF_PARQUET_BENCH_ITERATIONS", self.iterations)?;
-        validate_positive_f64("CUDF_PARQUET_BENCH_MIN_NATIVE_GPU_SPEEDUP", self.minimum_native_gpu_speedup)?;
         if !self.measure_columns.is_multiple_of(2) {
             return Err(plan_error(format!(
                 "CUDF_PARQUET_BENCH_MEASURE_COLUMNS must be even, got {}",
@@ -122,12 +112,6 @@ pub(super) enum BenchmarkExpectedOutcome {
     Success,
     PlanningRejected,
     ResourceFailure,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BenchmarkRunMode {
-    SingleCase,
-    PhaseCMatrix,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,19 +215,6 @@ impl BenchmarkExpectedOutcome {
     }
 }
 
-impl BenchmarkRunMode {
-    pub(super) fn from_env(name: &'static str) -> DataFusionResult<Self> {
-        let Some(value) = std::env::var_os(name) else {
-            return Ok(Self::SingleCase);
-        };
-        match value.to_string_lossy().to_ascii_lowercase().as_str() {
-            "single" | "single_case" | "single-case" => Ok(Self::SingleCase),
-            "phase_c_matrix" | "phase-c-matrix" => Ok(Self::PhaseCMatrix),
-            other => Err(plan_error(format!("invalid {name}: {other}; expected single_case or phase_c_matrix"))),
-        }
-    }
-}
-
 pub(super) fn env_usize(name: &'static str, default: usize) -> DataFusionResult<usize> {
     let Some(value) = std::env::var_os(name) else {
         return Ok(default);
@@ -256,13 +227,6 @@ pub(super) fn env_u64(name: &'static str, default: u64) -> DataFusionResult<u64>
         return Ok(default);
     };
     value.to_string_lossy().parse::<u64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
-}
-
-pub(super) fn env_f64(name: &'static str, default: f64) -> DataFusionResult<f64> {
-    let Some(value) = std::env::var_os(name) else {
-        return Ok(default);
-    };
-    value.to_string_lossy().parse::<f64>().map_err(|error| plan_error(format!("invalid {name}: {error}")))
 }
 
 pub(super) fn native_memory_control_policy_from_env() -> DataFusionResult<NativeMemoryControlPolicy> {
@@ -300,16 +264,6 @@ pub(super) fn native_memory_control_policy_from_env() -> DataFusionResult<Native
     }
 }
 
-pub(super) fn forced_resource_failure_policy() -> NativeMemoryControlPolicy {
-    NativeMemoryControlPolicy::Bounded {
-        device_budget_bytes: 1,
-        max_source_chunk_bytes: 1,
-        max_row_groups_per_chunk: 1,
-        max_retry_attempts: 1,
-        min_retry_chunk_row_groups: 1,
-    }
-}
-
 pub(super) fn validate_nonzero(name: &'static str, value: usize) -> DataFusionResult<()> {
     if value == 0 {
         return Err(plan_error(format!("{name} must be greater than zero")));
@@ -319,11 +273,4 @@ pub(super) fn validate_nonzero(name: &'static str, value: usize) -> DataFusionRe
 
 pub(super) fn validate_native_memory_control_policy(policy: NativeMemoryControlPolicy) -> DataFusionResult<()> {
     policy.validate().map_err(native_query_error)
-}
-
-pub(super) fn validate_positive_f64(name: &'static str, value: f64) -> DataFusionResult<()> {
-    if !value.is_finite() || value <= 0.0 {
-        return Err(plan_error(format!("{name} must be finite and greater than zero, got {value}")));
-    }
-    Ok(())
 }

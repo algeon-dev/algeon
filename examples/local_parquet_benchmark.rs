@@ -68,8 +68,6 @@ mod dataset;
 mod errors;
 #[path = "local_parquet_benchmark/execution.rs"]
 mod execution;
-#[path = "local_parquet_benchmark/matrix.rs"]
-mod matrix;
 #[path = "local_parquet_benchmark/metrics.rs"]
 mod metrics;
 #[path = "local_parquet_benchmark/probes.rs"]
@@ -86,7 +84,6 @@ use config::*;
 use dataset::*;
 use errors::*;
 use execution::*;
-use matrix::*;
 use metrics::*;
 use probes::*;
 use reports::*;
@@ -95,27 +92,12 @@ use workload::*;
 
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
-    let run_mode = BenchmarkRunMode::from_env("CUDF_PARQUET_BENCH_RUN")?;
     let config = LocalParquetBenchmarkConfig::from_env()?;
 
-    match run_mode {
-        BenchmarkRunMode::SingleCase => {
-            let report = run_configured_benchmark_case(&config).await?;
-            print!("{}", benchmark_case_prologue(&report, &config));
-            println!();
-            print!("{}", report.report.to_text());
-        },
-        BenchmarkRunMode::PhaseCMatrix => {
-            let report = run_phase_c_matrix(&config).await?;
-            print!("{}", report.to_text());
-            if !report.decision_gate_pass() {
-                return Err(plan_error(format!(
-                    "Phase C DataFusion native exec matrix decision gate failed: unexpected_outcomes={}",
-                    report.unexpected_outcome_count()
-                )));
-            }
-        },
-    }
+    let report = run_configured_benchmark_case(&config).await?;
+    print!("{}", benchmark_case_prologue(&report, &config));
+    println!();
+    print!("{}", report.report.to_text());
 
     Ok(())
 }
