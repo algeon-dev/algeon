@@ -1,5 +1,8 @@
 use super::*;
 
+// Phase A keeps this as a legacy transitional recognizer for the existing
+// resident-subplan family. The role-name checks below must not be copied into
+// new families; Phase B.5 decomposes this topology into dataflow contracts.
 pub(crate) fn analyze_keyed_hash_join_resident_subplan_pipeline(
     plan: &QueryPlan,
 ) -> std::result::Result<BoundedKeyedHashJoinResidentSubplanPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {

@@ -44,8 +44,12 @@ use shape::{
     validate_projection_wrapped_aggregate_over_join_subplan_input, validate_source_filter_projection_leaf_pipeline,
 };
 
-/// Bounded join admission result, ordered from the narrowest root shape to
-/// progressively broader bounded pipeline families.
+/// Transitional bounded join admission result, ordered from the narrowest root
+/// shape to progressively broader bounded pipeline families.
+///
+/// These variants are Phase A topology families, not the long-term admission
+/// model. New variants must be structural and must not depend on query ids,
+/// table names, column names, literal constants, file paths, or SQL text.
 pub(crate) enum BoundedJoinPlanSupport {
     /// The sink input is one supported root join with source/filter/projection
     /// leaf inputs.
