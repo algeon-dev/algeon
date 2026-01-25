@@ -16,6 +16,7 @@ pub(in crate::bounded_join_admission) enum AggregateOverJoinSubplanTopKVariant {
     MissingFetchLimit,
     ScalarAggregateSubplan,
     ShallowMultiJoinSide,
+    UnsupportedPostRootProjectionExpression,
 }
 
 fn aggregate_over_join_subplan_topk_plan_inner(
@@ -34,7 +35,8 @@ fn aggregate_over_join_subplan_topk_plan_inner(
         AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => ab,
         AggregateOverJoinSubplanTopKVariant::Admitted
         | AggregateOverJoinSubplanTopKVariant::MissingFetchLimit
-        | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan => {
+        | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan
+        | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression => {
             let abc = join(&mut builder, ab, c, "abc");
             join(&mut builder, abc, d, "left_tree")
         },
@@ -46,13 +48,22 @@ fn aggregate_over_join_subplan_topk_plan_inner(
         },
         AggregateOverJoinSubplanTopKVariant::Admitted
         | AggregateOverJoinSubplanTopKVariant::MissingFetchLimit
+        | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression
         | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => {
             grouped_aggregate(&mut builder, aggregate_join_input)
         },
     };
     let aggregate_projection = project_key_value(&mut builder, aggregate);
     let root = join(&mut builder, left_tree, aggregate_projection, "root");
-    let projection = project_key_value(&mut builder, root);
+    let projection = if matches!(variant, AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression)
+    {
+        builder.add_projection(
+            root,
+            projection_outputs(vec![Expr::column("k"), Expr::case(Vec::new(), Expr::column("v"))], key_value_schema()),
+        )
+    } else {
+        project_key_value(&mut builder, root)
+    };
     let sort = builder.add_sort(
         projection,
         SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
@@ -62,7 +73,8 @@ fn aggregate_over_join_subplan_topk_plan_inner(
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit => builder.finish_with_host_sink(sort),
         AggregateOverJoinSubplanTopKVariant::Admitted
         | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan
-        | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => {
+        | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide
+        | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression => {
             let limit = builder.add_limit(sort, LimitSpec::fetch(100), key_value_schema());
             builder.finish_with_host_sink(limit)
         },

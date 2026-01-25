@@ -101,7 +101,7 @@ impl QueryPlan {
     /// Returns true when the plan matches the supported multi-join plus
     /// aggregate-over-join subplan TopK pipeline.
     pub fn has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool {
-        analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(self).is_ok()
+        crate::capability::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported keyed-residual join

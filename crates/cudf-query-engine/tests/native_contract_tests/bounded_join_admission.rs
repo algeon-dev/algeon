@@ -952,6 +952,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
 #[test]
 fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() {
     let plan = aggregate_over_join_subplan_topk_plan();
+    let analysis = plan.capability_analysis();
 
     assert!(!plan.has_bounded_executable_root_join());
     assert!(!plan.has_bounded_executable_join_pipeline());
@@ -959,8 +960,32 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
     assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.has_bounded_executable_multi_join_pipeline());
     assert!(plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    assert!(analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::MultiJoinAggregateOverJoinSubplanTopKPipeline)
+    );
     assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
+    assert!(analysis.edges.iter().any(|edge| {
+        matches!(edge.input_role, InputRole::JoinBuildInput { .. })
+            && edge.reservation_requirements.iter().any(|requirement| {
+                requirement.kind == ReservationKind::BuildSide
+                    && requirement.status == ContractStatus::Modeled
+                    && requirement.quality == ContractQuality::ExactPreflight
+            })
+    }));
+    assert!(
+        analysis
+            .invariants
+            .iter()
+            .any(|invariant| matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. }))
+    );
+    assert!(analysis.requirements.iter().any(|requirement| {
+        requirement.kind == ReservationKind::FinalSort
+            && requirement.status == ContractStatus::Modeled
+            && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+    }));
 
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
@@ -987,11 +1012,29 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
 }
 
 #[test]
+fn bounded_multi_join_aggregate_over_join_subplan_topk_preserves_node_failure_locality() {
+    let plan = aggregate_over_join_subplan_topk_variant_plan(
+        AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(!plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    let CapabilityDecision::Rejected { reason, facts } =
+        &analysis.multi_join_aggregate_over_join_subplan_topk_admission
+    else {
+        panic!("unsupported projection expression should reject aggregate-over-join TopK admission");
+    };
+    assert_eq!(*reason, "unsupported_projection_expression_capability");
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("case"));
+}
+
+#[test]
 fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_recognizer_stays_narrow() {
     for variant in [
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit,
         AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan,
         AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide,
+        AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression,
     ] {
         let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
 
@@ -1002,6 +1045,14 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_recognizer_stays
         assert!(
             plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
             "{variant:?} should remain rejected with bounded unsupported-shape facts"
+        );
+        let facts = plan
+            .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
+            .expect("rejected aggregate-over-join TopK variant should produce facts");
+        assert_ne!(
+            facts.get("bounded_join_blocked_join_family").map(String::as_str),
+            Some("multi_join_with_aggregate_over_join_subplan_topk"),
+            "{variant:?} must not be classified as the blocked aggregate-over-join TopK family"
         );
     }
 }
