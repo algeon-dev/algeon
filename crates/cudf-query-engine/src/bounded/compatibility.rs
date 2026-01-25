@@ -1,6 +1,19 @@
 use crate::plan::{JoinNode, JoinSide, JoinType};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Node-local bounded join capability.
+///
+/// This is the Phase C-compatible extraction of the reusable join predicates
+/// that the transitional bounded family recognizers still compose today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum BoundedJoinNodeCapability {
+    KeyedHash,
+    KeyedFilteredSemiAnti,
+    KeylessConditional(BoundedKeylessConditionalJoinType),
+    ProjectedCross,
+    KeyedResidualMixed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BoundedKeylessConditionalJoinType {
     Inner,
     Left,
@@ -28,6 +41,42 @@ impl BoundedKeylessConditionalJoinType {
             JoinType::LeftSemi | JoinType::LeftAnti => None,
         }
     }
+}
+
+pub(crate) fn bounded_root_join_node_capability(join: &JoinNode) -> Option<BoundedJoinNodeCapability> {
+    if bounded_root_hash_join_compatible(join) {
+        return Some(BoundedJoinNodeCapability::KeyedHash);
+    }
+    if bounded_root_filtered_join_compatible(join) {
+        return Some(BoundedJoinNodeCapability::KeyedFilteredSemiAnti);
+    }
+    if let Some(join_type) = BoundedKeylessConditionalJoinType::try_from_join(join) {
+        return Some(BoundedJoinNodeCapability::KeylessConditional(join_type));
+    }
+    if bounded_root_projected_cross_join_compatible(join) {
+        return Some(BoundedJoinNodeCapability::ProjectedCross);
+    }
+    if bounded_root_mixed_join_compatible(join) {
+        return Some(BoundedJoinNodeCapability::KeyedResidualMixed);
+    }
+    None
+}
+
+pub(crate) fn bounded_multi_join_node_capability(join: &JoinNode) -> Option<BoundedJoinNodeCapability> {
+    if bounded_root_hash_join_compatible(join) {
+        return Some(BoundedJoinNodeCapability::KeyedHash);
+    }
+    if bounded_root_filtered_join_compatible(join) {
+        return Some(BoundedJoinNodeCapability::KeyedFilteredSemiAnti);
+    }
+    if bounded_multi_join_mixed_keyed_residual_compatible(join) {
+        return Some(BoundedJoinNodeCapability::KeyedResidualMixed);
+    }
+    None
+}
+
+pub(crate) fn bounded_join_node_capability(join: &JoinNode) -> Option<BoundedJoinNodeCapability> {
+    bounded_root_join_node_capability(join).or_else(|| bounded_multi_join_node_capability(join))
 }
 
 pub(crate) fn bounded_root_hash_join_compatible(join: &JoinNode) -> bool {
@@ -106,17 +155,11 @@ pub(crate) fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggre
 }
 
 pub(crate) fn bounded_root_join_compatible(join: &JoinNode) -> bool {
-    bounded_root_hash_join_compatible(join)
-        || bounded_root_filtered_join_compatible(join)
-        || bounded_root_keyless_conditional_join_compatible(join)
-        || bounded_root_projected_cross_join_compatible(join)
-        || bounded_root_mixed_join_compatible(join)
+    bounded_root_join_node_capability(join).is_some()
 }
 
 pub(crate) fn bounded_multi_join_compatible(join: &JoinNode) -> bool {
-    bounded_root_hash_join_compatible(join)
-        || bounded_root_filtered_join_compatible(join)
-        || bounded_multi_join_mixed_keyed_residual_compatible(join)
+    bounded_multi_join_node_capability(join).is_some()
 }
 
 pub(crate) fn bounded_multi_join_mixed_keyed_residual_compatible(join: &JoinNode) -> bool {

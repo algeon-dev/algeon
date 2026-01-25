@@ -150,6 +150,71 @@ fn bounded_capability_analysis_runs_as_side_channel_for_multi_join_pipeline() {
 }
 
 #[test]
+fn bounded_capability_analysis_extracts_node_capabilities_for_root_join() {
+    let plan = simple_root_join_plan();
+
+    assert!(plan.has_bounded_executable_root_join());
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
+    assert!(!analysis.has_rejections());
+    assert_eq!(analysis.nodes.len(), 3);
+    assert!(
+        analysis
+            .nodes
+            .iter()
+            .filter(|node| {
+                matches!(node.operator, NodeOperator::Source { format: SourceFormatCapability::LocalParquet })
+                    && node.executable == CapabilityDecision::Satisfied
+            })
+            .count()
+            == 2
+    );
+    assert!(analysis.nodes.iter().any(|node| {
+        matches!(
+            node.operator,
+            NodeOperator::Join {
+                join_type: JoinType::Inner,
+                key_count: 1,
+                residual: ResidualRequirement::None,
+                build_side: JoinSide::Right,
+            }
+        ) && node.executable == CapabilityDecision::Satisfied
+    }));
+}
+
+#[test]
+fn bounded_capability_analysis_extracts_node_capabilities_for_single_join_post_root_pipeline() {
+    let plan = serial_aggregate_single_join_spine_plan();
+
+    assert!(plan.has_bounded_executable_join_pipeline());
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
+    );
+    assert!(!analysis.has_rejections());
+    assert!(analysis.nodes.iter().any(|node| {
+        matches!(
+            node.operator,
+            NodeOperator::Aggregate { grouping: cudf_query_engine::capability::AggregateGrouping::Grouped, .. }
+        ) && node.executable == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.nodes.iter().any(|node| {
+        matches!(node.operator, NodeOperator::Sort { ordering: OrderingRequirement::Required })
+            && node.executable == CapabilityDecision::Satisfied
+    }));
+    assert!(
+        analysis
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.operator, NodeOperator::Projection))
+            .all(|node| node.executable == CapabilityDecision::Satisfied)
+    );
+}
+
+#[test]
 fn bounded_capability_analysis_preserves_status_quality_separation() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
@@ -179,6 +244,87 @@ fn bounded_capability_analysis_preserves_status_quality_separation() {
 }
 
 #[test]
+fn bounded_capability_analysis_classifies_phase2_reservation_scopes() {
+    let plan =
+        keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
+    let analysis = plan.capability_analysis();
+    let requirements = analysis.compatibility_reservation_requirements();
+
+    let requirement_scope = |kind| {
+        requirements
+            .iter()
+            .find(|requirement| requirement.kind == kind)
+            .unwrap_or_else(|| panic!("missing compatibility reservation requirement for {kind}"))
+            .scope
+    };
+
+    assert_eq!(requirement_scope(ReservationKind::SourceRead), ReservationRequirementScope::Edge);
+    assert_eq!(requirement_scope(ReservationKind::OperatorOutput), ReservationRequirementScope::Node);
+    assert_eq!(requirement_scope(ReservationKind::BuildSide), ReservationRequirementScope::Edge);
+    assert_eq!(requirement_scope(ReservationKind::HashTable), ReservationRequirementScope::Node);
+    assert_eq!(requirement_scope(ReservationKind::ProbeSide), ReservationRequirementScope::Edge);
+    assert_eq!(requirement_scope(ReservationKind::FilteredProbeState), ReservationRequirementScope::Node);
+    assert_eq!(requirement_scope(ReservationKind::MixedSizeData), ReservationRequirementScope::Node);
+    assert_eq!(requirement_scope(ReservationKind::GatherMap), ReservationRequirementScope::Edge);
+    assert_eq!(requirement_scope(ReservationKind::JoinOutput), ReservationRequirementScope::Edge);
+    assert_eq!(requirement_scope(ReservationKind::FinalSort), ReservationRequirementScope::Edge);
+    assert_eq!(requirement_scope(ReservationKind::Materialization), ReservationRequirementScope::Edge);
+}
+
+#[test]
+fn bounded_capability_analysis_decomposes_probe_side_into_edge_and_build_before_probe_invariant() {
+    let plan = serial_aggregate_multi_join_spine_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.edges.iter().any(|edge| {
+        matches!(edge.input_role, InputRole::JoinProbeInput { .. })
+            && edge.reservation_requirements.iter().any(|requirement| {
+                requirement.kind == ReservationKind::ProbeSide
+                    && requirement.scope == ReservationRequirementScope::Edge
+                    && requirement.status == ContractStatus::Modeled
+                    && requirement.quality == ContractQuality::QueryEngineOwnedOrdering
+            })
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::BuildBeforeProbe { .. })
+            && invariant.required_schedule == ScheduleConstraint::BuildBeforeProbe
+    }));
+    assert!(
+        analysis.compatibility_reservation_requirements_csv().contains(
+            "probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path"
+        ),
+        "legacy probe_side fact should be projected from the probe edge plus BuildBeforeProbe invariant"
+    );
+}
+
+#[test]
+fn bounded_capability_analysis_projects_existing_reservation_fact_vocabulary() {
+    let plan =
+        keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
+    let analysis = plan.capability_analysis();
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("keyed hash join resident subplan pipeline should produce modeled facts");
+
+    assert_eq!(
+        Some(analysis.compatibility_reservation_kinds_csv().as_str()),
+        facts.get("bounded_join_reservation_kinds").map(String::as_str)
+    );
+    assert_eq!(
+        Some(analysis.compatibility_reservation_statuses_csv().as_str()),
+        facts.get("bounded_join_reservation_statuses").map(String::as_str)
+    );
+    assert_eq!(
+        Some(analysis.compatibility_reservation_requirements_csv().as_str()),
+        facts.get("bounded_join_reservation_requirements").map(String::as_str)
+    );
+    assert_eq!(
+        Some(analysis.compatibility_modeled_reservations_csv().as_str()),
+        facts.get("modeled_reservations").map(String::as_str)
+    );
+}
+
+#[test]
 fn bounded_capability_analysis_can_reject_node_capabilities_without_family_projection() {
     let plan = unsupported_cross_key_join_plan();
     let analysis = plan.capability_analysis();
@@ -196,6 +342,47 @@ fn bounded_capability_analysis_can_reject_node_capabilities_without_family_proje
     assert_eq!(*reason, "unsupported_join_node_capability");
     assert_eq!(facts.get("join_type").map(String::as_str), Some("cross"));
     assert_eq!(facts.get("key_count").map(String::as_str), Some("1"));
+}
+
+#[test]
+fn bounded_capability_analysis_rejects_unsupported_filter_expression_as_node_capability() {
+    let plan = single_join_pipeline_with_empty_in_list_filter_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
+    );
+    let rejected_filter = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Filter))
+        .expect("plan should contain a filter node");
+    let CapabilityDecision::Rejected { reason, facts } = &rejected_filter.executable else {
+        panic!("empty IN-list filter should be rejected as a node capability");
+    };
+    assert_eq!(*reason, "unsupported_filter_expression_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("in_list_must_not_be_empty"));
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("in_list"));
+}
+
+#[test]
+fn bounded_capability_analysis_rejects_unsupported_join_residual_expression_as_node_capability() {
+    let plan = root_join_with_like_residual_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
+    let rejected_join = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
+        .expect("plan should contain a join node");
+    let CapabilityDecision::Rejected { reason, facts } = &rejected_join.executable else {
+        panic!("LIKE residual should be rejected as a node capability");
+    };
+    assert_eq!(*reason, "unsupported_join_residual_expression_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("join_residual_expression_family_not_supported"));
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
 }
 
 fn unsupported_cross_key_join_plan() -> cudf_query_engine::QueryPlan {
@@ -228,6 +415,90 @@ fn unsupported_cross_key_join_plan() -> cudf_query_engine::QueryPlan {
             JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key"),
             JoinOutputColumn::right(ColumnRef::input(1, "r_key", "r_key"), "r_key"),
         ]),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn simple_root_join_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-left.parquet",
+        left_schema,
+        vec!["l_key".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-right.parquet",
+        right_schema,
+        vec!["r_key".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key")])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn single_join_pipeline_with_empty_in_list_filter_plan() -> cudf_query_engine::QueryPlan {
+    let base = simple_root_join_plan();
+    let root = base.root_id();
+    let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    for node in base.nodes() {
+        match &node.kind {
+            PlanNode::Source(source) => {
+                builder.add_source((**source).clone());
+            },
+            PlanNode::Join(join) => {
+                builder.add_join(join.inputs[0], join.inputs[1], join.spec.clone(), Arc::clone(&output_schema));
+            },
+            _ => unreachable!("simple root plan only contains sources and one join"),
+        }
+    }
+    let filter = builder.add_filter(root, Expr::in_list(Expr::column("l_key"), Vec::new()), Arc::clone(&output_schema));
+    builder.finish_with_host_sink(filter)
+}
+
+fn root_join_with_like_residual_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("l_key", DataType::Int32, false),
+        Field::new("l_text", DataType::Utf8, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-residual-left.parquet",
+        left_schema,
+        vec!["l_key".into(), "l_text".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/root-residual-right.parquet",
+        right_schema,
+        vec!["r_key".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "l_key", "l_key"), ColumnRef::input(1, "r_key", "r_key"))],
+        )
+        .with_residual_predicate(Expr::like(Expr::input_column(0, "l_text", "l_text"), "%promo%"))
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "l_key", "l_key"), "l_key")])
+        .with_build_side(JoinSide::Right),
         output_schema,
     );
     builder.finish_with_host_sink(join)
