@@ -4,9 +4,11 @@ use super::*;
 pub(in crate::bounded_join_admission) enum KeyedHashJoinResidentSubplanPipelineVariant {
     BlockedFamily,
     ResidualRootJoin,
+    UnsupportedRootResidualExpression,
     SortBelowRoot,
     ScalarAggregateNotMax,
     GroupedAggregateNotSum,
+    StructurallyEquivalentGroupedAggregate,
 }
 
 pub(in crate::bounded_join_admission) fn keyed_hash_join_resident_subplan_pipeline_plan(
@@ -55,18 +57,25 @@ pub(in crate::bounded_join_admission) fn keyed_hash_join_resident_subplan_pipeli
         Arc::clone(&supplier_schema),
         vec!["s_suppkey".into(), "s_name".into()],
     )));
-    let revenue = build_resident_subplan_revenue_branch(
+    let revenue = build_resident_subplan_revenue_aggregate(
         &mut builder,
-        "left",
+        "shared",
         matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::SortBelowRoot),
         Arc::clone(&lineitem_schema),
         Arc::clone(&revenue_projection_schema),
         Arc::clone(&revenue_schema),
         grouped_revenue_function,
     );
+    let revenue_for_supplier = builder.add_projection(
+        revenue,
+        projection_outputs(
+            vec![Expr::column("supplier_no"), Expr::column("total_revenue")],
+            Arc::clone(&revenue_schema),
+        ),
+    );
     let supplier_revenue = builder.add_join(
         supplier,
-        revenue,
+        revenue_for_supplier,
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(
@@ -90,15 +99,20 @@ pub(in crate::bounded_join_admission) fn keyed_hash_join_resident_subplan_pipeli
         ),
     );
 
-    let revenue_for_max = build_resident_subplan_revenue_aggregate(
-        &mut builder,
-        "right",
-        false,
-        lineitem_schema,
-        revenue_projection_schema,
-        Arc::clone(&revenue_schema),
-        grouped_revenue_function,
-    );
+    let revenue_for_max =
+        if matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::StructurallyEquivalentGroupedAggregate) {
+            build_resident_subplan_revenue_aggregate(
+                &mut builder,
+                "duplicate",
+                false,
+                lineitem_schema,
+                revenue_projection_schema,
+                Arc::clone(&revenue_schema),
+                grouped_revenue_function,
+            )
+        } else {
+            revenue
+        };
     let revenue_for_max = builder.add_projection(
         revenue_for_max,
         projection_outputs(vec![Expr::column("total_revenue")], Arc::clone(&scalar_revenue_input_schema)),
@@ -131,6 +145,18 @@ pub(in crate::bounded_join_admission) fn keyed_hash_join_resident_subplan_pipeli
             BinaryOp::Gt,
             Expr::literal(LiteralValue::Int32(0)),
         ));
+    } else if matches!(variant, KeyedHashJoinResidentSubplanPipelineVariant::UnsupportedRootResidualExpression) {
+        root_spec = root_spec.with_residual_predicate(Expr::case(
+            vec![CaseWhen::new(
+                Expr::binary(
+                    Expr::input_column(0, "s_suppkey", "s_suppkey"),
+                    BinaryOp::Gt,
+                    Expr::literal(LiteralValue::Int32(0)),
+                ),
+                Expr::literal(LiteralValue::Boolean(true)),
+            )],
+            Expr::literal(LiteralValue::Boolean(false)),
+        ));
     }
     let root = builder.add_join(supplier_revenue, max_revenue, root_spec, Arc::clone(&supplier_revenue_schema));
     let output = builder.add_sort(
@@ -139,30 +165,6 @@ pub(in crate::bounded_join_admission) fn keyed_hash_join_resident_subplan_pipeli
         supplier_revenue_schema,
     );
     builder.finish_with_host_sink(output)
-}
-
-fn build_resident_subplan_revenue_branch(
-    builder: &mut QueryPlanBuilder,
-    label: &str,
-    sort_below_root: bool,
-    lineitem_schema: Arc<Schema>,
-    revenue_projection_schema: Arc<Schema>,
-    revenue_schema: Arc<Schema>,
-    aggregate_function: AggregateFunction,
-) -> cudf_query_engine::NodeId {
-    let aggregate = build_resident_subplan_revenue_aggregate(
-        builder,
-        label,
-        sort_below_root,
-        lineitem_schema,
-        revenue_projection_schema,
-        Arc::clone(&revenue_schema),
-        aggregate_function,
-    );
-    builder.add_projection(
-        aggregate,
-        projection_outputs(vec![Expr::column("supplier_no"), Expr::column("total_revenue")], revenue_schema),
-    )
 }
 
 fn build_resident_subplan_revenue_aggregate(

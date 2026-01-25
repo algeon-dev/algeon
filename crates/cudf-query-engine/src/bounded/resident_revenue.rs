@@ -8,7 +8,11 @@ pub(crate) fn analyze_keyed_hash_join_resident_subplan_pipeline(
 ) -> std::result::Result<BoundedKeyedHashJoinResidentSubplanPipelineShape<'_>, BoundedJoinPipelineRejection<'_>> {
     let (final_sort_id, final_sort, root_join_id) = final_sort_root_join_input(plan)?;
     let counts = reachable_node_kind_counts(plan);
-    if counts.joins != 2 || counts.aggregates != 3 || counts.sorts != 1 || counts.limits != 0 {
+    if counts.joins != 2
+        || (counts.aggregates != 2 && counts.aggregates != 3)
+        || counts.sorts != 1
+        || counts.limits != 0
+    {
         return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
             node_id: plan.sink().input(),
             node_kind: "keyed_hash_join_resident_subplan_pipeline_reachable_counts",

@@ -339,10 +339,17 @@ pub enum EdgeContractKind {
     ResidentAggregateInput,
     JoinBuildInput { side: JoinSide },
     JoinProbeInput { side: JoinSide },
+    SharedProducer { identity: SharedProducerIdentity },
     ResidentFrameFlow,
     JoinMaterialization,
     SortInput,
     ExplicitSinkMaterialization,
+}
+
+/// Identity proof used for resident producers with multiple consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SharedProducerIdentity {
+    SameNodeIdAfterCse,
 }
 
 /// Consumer endpoint for an edge.
@@ -407,6 +414,7 @@ pub enum SubgraphInvariantKind {
     SharedResidentSubplan,
     AggregateDerivesFromSharedProducer,
     FinalBarrierOrder,
+    PostRootStageOrder { root_join_id: NodeId },
     ProjectionTransparentResidency,
     ResidualUsesBothInputs { join_id: NodeId },
     ResidentLifetimeDominatesConsumers,
@@ -456,6 +464,9 @@ pub struct CapabilityAnalysis {
     pub invariants: Vec<SubgraphInvariant>,
     pub requirements: Vec<ReservationRequirement>,
     pub closed_multi_join_subgraph_admission: CapabilityDecision,
+    pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
+    pub hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission: CapabilityDecision,
+    pub keyed_hash_join_resident_subplan_admission: CapabilityDecision,
     pub compatibility_family_projection: Option<CompatibilityFamilyProjection>,
 }
 
@@ -468,6 +479,19 @@ impl CapabilityAnalysis {
 
     pub fn admits_closed_multi_join_subgraph(&self) -> bool {
         self.closed_multi_join_subgraph_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
+        self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(&self) -> bool {
+        self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission
+            == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
+        self.keyed_hash_join_resident_subplan_admission == CapabilityDecision::Satisfied
     }
 
     pub fn compatibility_reservation_requirements(&self) -> Vec<ReservationRequirement> {
@@ -550,19 +574,116 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
     let mut edges =
         plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
     edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
 
     let invariants = analyze_invariants(plan, &edges);
     let requirements = collect_requirements(&nodes, &edges);
     let closed_multi_join_subgraph_admission =
         analyze_closed_multi_join_subgraph_admission(plan, &nodes, &edges, &invariants);
+    let mixed_keyed_residual_join_resident_grouped_aggregate_input_admission =
+        analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input_admission(plan, &nodes, &edges, &invariants);
+    let hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission =
+        analyze_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission(
+            plan,
+            &nodes,
+            &edges,
+            &invariants,
+        );
+    let keyed_hash_join_resident_subplan_admission =
+        analyze_keyed_hash_join_resident_subplan_admission(plan, &nodes, &edges, &invariants);
     CapabilityAnalysis {
         nodes,
         edges,
         invariants,
         requirements,
         closed_multi_join_subgraph_admission,
+        mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
+        hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+        keyed_hash_join_resident_subplan_admission,
         compatibility_family_projection: compatibility_family_projection(plan),
     }
+}
+
+/// Runs the closed multi-join proof without compatibility-family projection.
+///
+/// Bounded admission uses this helper during the Phase 6 migration. Keeping it
+/// projection-free avoids routing capability-based admission back through the
+/// transitional family catalogue.
+pub(crate) fn closed_multi_join_subgraph_admission_decision(plan: &QueryPlan) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_closed_multi_join_subgraph_admission(plan, &nodes, &edges, &invariants)
+}
+
+pub(crate) fn admits_closed_multi_join_subgraph(plan: &QueryPlan) -> bool {
+    closed_multi_join_subgraph_admission_decision(plan) == CapabilityDecision::Satisfied
+}
+
+/// Runs the mixed residual/resident grouped-aggregate proof without
+/// compatibility-family projection.
+pub(crate) fn mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision(
+    plan: &QueryPlan,
+) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input_admission(plan, &nodes, &edges, &invariants)
+}
+
+pub(crate) fn admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan: &QueryPlan) -> bool {
+    mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision(plan) == CapabilityDecision::Satisfied
+}
+
+/// Runs the resident grouped-aggregate TopK proof without compatibility-family
+/// projection.
+pub(crate) fn hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision(
+    plan: &QueryPlan,
+) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission(
+        plan,
+        &nodes,
+        &edges,
+        &invariants,
+    )
+}
+
+pub(crate) fn admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(
+    plan: &QueryPlan,
+) -> bool {
+    hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision(plan)
+        == CapabilityDecision::Satisfied
+}
+
+/// Runs the keyed hash join resident-subplan proof without compatibility-family
+/// projection.
+pub(crate) fn keyed_hash_join_resident_subplan_admission_decision(plan: &QueryPlan) -> CapabilityDecision {
+    let nodes = plan.nodes().iter().map(|node| analyze_node(plan, node)).collect::<Vec<_>>();
+    let mut edges =
+        plan.nodes().iter().flat_map(|node| analyze_input_edges(plan, node.id, &node.kind)).collect::<Vec<_>>();
+    edges.push(analyze_sink_edge(plan));
+    mark_shared_producer_edge_contracts(plan, &mut edges);
+
+    let invariants = analyze_invariants(plan, &edges);
+    analyze_keyed_hash_join_resident_subplan_admission(plan, &nodes, &edges, &invariants)
+}
+
+pub(crate) fn admits_keyed_hash_join_resident_subplan_pipeline(plan: &QueryPlan) -> bool {
+    keyed_hash_join_resident_subplan_admission_decision(plan) == CapabilityDecision::Satisfied
 }
 
 fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {
@@ -1372,6 +1493,32 @@ fn analyze_sink_edge(plan: &QueryPlan) -> EdgeContract {
     }
 }
 
+fn mark_shared_producer_edge_contracts(plan: &QueryPlan, edges: &mut [EdgeContract]) {
+    let Ok(reachable) = collect_reachable_node_ids(plan) else {
+        return;
+    };
+    let consumers = consumer_nodes_for_reachable(plan, &reachable);
+    for (producer, producer_consumers) in consumers {
+        if producer_consumers.len() <= 1 {
+            continue;
+        }
+        for edge in edges.iter_mut().filter(|edge| {
+            edge.producer == producer
+                && matches!(edge.consumer, EdgeConsumer::Node(consumer) if producer_consumers.contains(&consumer))
+        }) {
+            if !edge.contract_kinds.iter().any(|kind| {
+                matches!(
+                    kind,
+                    EdgeContractKind::SharedProducer { identity: SharedProducerIdentity::SameNodeIdAfterCse }
+                )
+            }) {
+                edge.contract_kinds
+                    .push(EdgeContractKind::SharedProducer { identity: SharedProducerIdentity::SameNodeIdAfterCse });
+            }
+        }
+    }
+}
+
 fn csv_join<I, T>(values: I) -> String
 where
     I: IntoIterator<Item = T>,
@@ -1425,6 +1572,8 @@ fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphI
     append_aggregate_derivation_invariants(plan, &mut invariants);
     append_projection_transparent_residency_invariants(plan, &mut invariants);
     append_final_barrier_order_invariants(plan, &mut invariants);
+    append_mixed_residual_post_root_stage_order_invariant(plan, &mut invariants);
+    append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(plan, &mut invariants);
 
     if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
         let invariant_id = InvariantId(invariants.len());
@@ -1567,6 +1716,51 @@ fn append_final_barrier_order_invariants(plan: &QueryPlan, invariants: &mut Vec<
     }
 }
 
+fn append_mixed_residual_post_root_stage_order_invariant(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    let Ok(shape) = mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(plan) else {
+        return;
+    };
+    let invariant_id = InvariantId(invariants.len());
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
+        nodes: vec![
+            shape.root_join_id,
+            shape.post_root_projection_id,
+            shape.post_root_aggregate_id,
+            shape.final_projection_id,
+        ],
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
+fn append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(
+    plan: &QueryPlan,
+    invariants: &mut Vec<SubgraphInvariant>,
+) {
+    let Ok(shape) = hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(plan) else {
+        return;
+    };
+    let invariant_id = InvariantId(invariants.len());
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
+        nodes: vec![
+            shape.root_join_id,
+            shape.post_root_projection_id,
+            shape.post_root_aggregate_id,
+            shape.final_projection_id,
+            shape.final_sort_id,
+            shape.final_limit_id,
+        ],
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
 fn analyze_closed_multi_join_subgraph_admission(
     plan: &QueryPlan,
     nodes: &[NodeCapability],
@@ -1611,19 +1805,185 @@ fn analyze_closed_multi_join_subgraph_admission(
     CapabilityDecision::Satisfied
 }
 
+fn analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let shape = match mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(plan) {
+        Ok(shape) => shape,
+        Err(decision) => return decision,
+    };
+    for kind in [
+        InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
+        InvariantSelector::ResidualUsesBothInputs { join_id: shape.root_join_id },
+        InvariantSelector::ProjectionTransparentResidency {
+            peeled_producer: shape.join_subtree_root_id,
+            projection_id: shape.join_subtree_projection_id,
+        },
+        InvariantSelector::ProjectionTransparentResidency {
+            peeled_producer: shape.grouped_aggregate_id,
+            projection_id: shape.grouped_aggregate_projection_id,
+        },
+        InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
+    ] {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_mixed_residual_resident_grouped_aggregate_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn analyze_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let shape = match hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(plan) {
+        Ok(shape) => shape,
+        Err(decision) => return decision,
+    };
+    for kind in [
+        InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
+        InvariantSelector::ProjectionTransparentResidency {
+            peeled_producer: shape.grouped_aggregate_id,
+            projection_id: shape.grouped_aggregate_projection_id,
+        },
+        InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
+        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
+        InvariantSelector::TopologicalBuildProbeSchedule,
+        InvariantSelector::ResidentLifetimeDominatesConsumers,
+    ] {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_hash_join_resident_grouped_aggregate_topk_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
+fn analyze_keyed_hash_join_resident_subplan_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+    invariants: &[SubgraphInvariant],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    let shape = match keyed_hash_join_resident_subplan_shape_decision(plan) {
+        Ok(shape) => shape,
+        Err(decision) => return decision,
+    };
+    for kind in [
+        InvariantSelector::BuildBeforeProbe { join_id: shape.joined_grouped_branch_join_id },
+        InvariantSelector::BuildBeforeProbe { join_id: shape.root_join_id },
+        InvariantSelector::SharedResidentSubplan { producer: shape.shared_grouped_aggregate_id },
+        InvariantSelector::AggregateDerivesFromSharedProducer {
+            shared_producer: shape.shared_grouped_aggregate_id,
+            aggregate_id: shape.scalar_aggregate_id,
+        },
+        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
+        InvariantSelector::ResidentLifetimeDominatesConsumers,
+    ] {
+        match solved_invariant_decision(invariants, kind) {
+            Some(CapabilityDecision::Satisfied) => {},
+            Some(CapabilityDecision::Rejected { reason, facts }) => {
+                return CapabilityDecision::Rejected { reason: *reason, facts: facts.clone() };
+            },
+            Some(CapabilityDecision::Conditional { waiting_on }) => {
+                return CapabilityDecision::Conditional { waiting_on: waiting_on.clone() };
+            },
+            None => {
+                return CapabilityDecision::rejected(
+                    "missing_keyed_hash_resident_subplan_invariant",
+                    [("invariant", kind.as_str().to_string())],
+                );
+            },
+        }
+    }
+    CapabilityDecision::Satisfied
+}
+
 #[derive(Debug, Clone, Copy)]
 enum InvariantSelector {
+    BuildBeforeProbe { join_id: NodeId },
     TopologicalBuildProbeSchedule,
     ResidentLifetimeDominatesConsumers,
     ClosedJoinSubtree,
+    SharedResidentSubplan { producer: NodeId },
+    AggregateDerivesFromSharedProducer { shared_producer: NodeId, aggregate_id: NodeId },
+    FinalBarrierOrder { sort_id: NodeId },
+    PostRootStageOrder { root_join_id: NodeId },
+    ProjectionTransparentResidency { peeled_producer: NodeId, projection_id: NodeId },
+    ResidualUsesBothInputs { join_id: NodeId },
 }
 
 impl InvariantSelector {
     const fn as_str(self) -> &'static str {
         match self {
+            Self::BuildBeforeProbe { .. } => "build_before_probe",
             Self::TopologicalBuildProbeSchedule => "topological_build_probe_schedule",
             Self::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
             Self::ClosedJoinSubtree => "closed_join_subtree",
+            Self::SharedResidentSubplan { .. } => "shared_resident_subplan",
+            Self::AggregateDerivesFromSharedProducer { .. } => "aggregate_derives_from_shared_producer",
+            Self::FinalBarrierOrder { .. } => "final_barrier_order",
+            Self::PostRootStageOrder { .. } => "post_root_stage_order",
+            Self::ProjectionTransparentResidency { .. } => "projection_transparent_residency",
+            Self::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
         }
     }
 }
@@ -1636,6 +1996,10 @@ fn solved_invariant_decision(
         .iter()
         .find(|invariant| match (&invariant.kind, selector) {
             (
+                SubgraphInvariantKind::BuildBeforeProbe { join_id: left },
+                InvariantSelector::BuildBeforeProbe { join_id: right },
+            ) => *left == right,
+            (
                 SubgraphInvariantKind::TopologicalBuildProbeSchedule,
                 InvariantSelector::TopologicalBuildProbeSchedule,
             ) => true,
@@ -1644,6 +2008,31 @@ fn solved_invariant_decision(
                 InvariantSelector::ResidentLifetimeDominatesConsumers,
             ) => true,
             (SubgraphInvariantKind::ClosedJoinSubtree { .. }, InvariantSelector::ClosedJoinSubtree) => true,
+            (SubgraphInvariantKind::SharedResidentSubplan, InvariantSelector::SharedResidentSubplan { producer }) => {
+                invariant.nodes.first().is_some_and(|node| *node == producer)
+            },
+            (
+                SubgraphInvariantKind::AggregateDerivesFromSharedProducer,
+                InvariantSelector::AggregateDerivesFromSharedProducer { shared_producer, aggregate_id },
+            ) => {
+                invariant.nodes.first().is_some_and(|node| *node == shared_producer)
+                    && invariant.nodes.last().is_some_and(|node| *node == aggregate_id)
+            },
+            (SubgraphInvariantKind::FinalBarrierOrder, InvariantSelector::FinalBarrierOrder { sort_id }) => {
+                invariant.nodes.last().is_some_and(|node| *node == sort_id)
+            },
+            (
+                SubgraphInvariantKind::PostRootStageOrder { root_join_id: left },
+                InvariantSelector::PostRootStageOrder { root_join_id: right },
+            ) => *left == right,
+            (
+                SubgraphInvariantKind::ProjectionTransparentResidency,
+                InvariantSelector::ProjectionTransparentResidency { peeled_producer, projection_id },
+            ) => invariant.nodes.as_slice() == [peeled_producer, projection_id],
+            (
+                SubgraphInvariantKind::ResidualUsesBothInputs { join_id: left },
+                InvariantSelector::ResidualUsesBothInputs { join_id: right },
+            ) => *left == right,
             _ => false,
         })
         .map(|invariant| &invariant.decision)
@@ -1683,6 +2072,1169 @@ fn first_reachable_edge_rejection(edges: &[EdgeContract], reachable: &BTreeSet<N
             _ => None,
         }
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MixedResidualResidentGroupedAggregateInputShape {
+    root_join_id: NodeId,
+    join_subtree_root_id: NodeId,
+    join_subtree_projection_id: NodeId,
+    grouped_aggregate_id: NodeId,
+    grouped_aggregate_projection_id: NodeId,
+    post_root_projection_id: NodeId,
+    post_root_aggregate_id: NodeId,
+    final_projection_id: NodeId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape {
+    root_join_id: NodeId,
+    grouped_aggregate_id: NodeId,
+    grouped_aggregate_projection_id: NodeId,
+    post_root_projection_id: NodeId,
+    post_root_aggregate_id: NodeId,
+    final_projection_id: NodeId,
+    final_sort_id: NodeId,
+    final_limit_id: NodeId,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KeyedHashJoinResidentSubplanShape {
+    final_sort_id: NodeId,
+    root_join_id: NodeId,
+    joined_grouped_branch_join_id: NodeId,
+    shared_grouped_aggregate_id: NodeId,
+    scalar_aggregate_id: NodeId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutputLineage {
+    SourceField {
+        source_id: NodeId,
+        field_index: usize,
+    },
+    AggregateGroup {
+        aggregate_id: NodeId,
+        group_index: usize,
+    },
+    AggregateMeasure {
+        aggregate_id: NodeId,
+        aggr_index: usize,
+        function: AggregateFunction,
+    },
+    ScalarAggregateMeasure {
+        aggregate_id: NodeId,
+        aggr_index: usize,
+        function: AggregateFunction,
+        input: Box<OutputLineage>,
+    },
+    Derived {
+        node_id: NodeId,
+        field_index: usize,
+    },
+}
+
+fn mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(
+    plan: &QueryPlan,
+) -> Result<MixedResidualResidentGroupedAggregateInputShape, CapabilityDecision> {
+    let final_projection_id = plan.sink().input();
+    let final_projection_input = projection_input(
+        plan,
+        final_projection_id,
+        "post_root_stage_order_requires_final_projection",
+        "final_projection",
+    )?;
+
+    let post_root_aggregate_id = final_projection_input;
+    let post_root_aggregate_input =
+        scalar_aggregate_input(plan, post_root_aggregate_id, "post_root_stage_order_requires_scalar_aggregate")?;
+
+    let post_root_projection_id = post_root_aggregate_input;
+    let root_join_id = projection_input(
+        plan,
+        post_root_projection_id,
+        "post_root_stage_order_requires_projection_before_scalar_aggregate",
+        "pre_aggregate_projection",
+    )?;
+
+    let root_join = require_join_node(plan, root_join_id, "post_root_stage_order_requires_root_join_below_projection")?;
+    if root_join.spec.join_type != JoinType::Inner
+        || root_join.spec.keys.is_empty()
+        || root_join.spec.residual_predicate.is_none()
+        || root_join.spec.output_projection.is_empty()
+    {
+        return Err(CapabilityDecision::rejected(
+            "root_join_requires_inner_keyed_residual",
+            [
+                ("node_id", root_join_id.to_string()),
+                ("join_type", root_join.spec.join_type.to_string()),
+                ("key_count", root_join.spec.keys.len().to_string()),
+                ("has_residual", root_join.spec.residual_predicate.is_some().to_string()),
+                ("output_projection_count", root_join.spec.output_projection.len().to_string()),
+            ],
+        ));
+    }
+
+    let join_subtree_side = projected_output_side(root_join, root_join_id)?;
+    let grouped_aggregate_side = opposite_join_side(join_subtree_side);
+    if root_join.spec.build_side != grouped_aggregate_side {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_must_be_join_build_side",
+            [
+                ("node_id", root_join_id.to_string()),
+                ("build_side", root_join.spec.build_side.to_string()),
+                ("grouped_aggregate_side", grouped_aggregate_side.to_string()),
+            ],
+        ));
+    }
+
+    let join_subtree_input = root_join.inputs[join_side_index(join_subtree_side)];
+    let (join_subtree_root_id, join_subtree_projection_id) =
+        projection_wrapped_join_subtree_root(plan, join_subtree_input)?;
+
+    let grouped_aggregate_input = root_join.inputs[join_side_index(grouped_aggregate_side)];
+    let (grouped_aggregate_id, grouped_aggregate_projection_id) =
+        projection_wrapped_grouped_local_parquet_aggregate_root(plan, grouped_aggregate_input)?;
+
+    Ok(MixedResidualResidentGroupedAggregateInputShape {
+        root_join_id,
+        join_subtree_root_id,
+        join_subtree_projection_id,
+        grouped_aggregate_id,
+        grouped_aggregate_projection_id,
+        post_root_projection_id,
+        post_root_aggregate_id,
+        final_projection_id,
+    })
+}
+
+fn keyed_hash_join_resident_subplan_shape_decision(
+    plan: &QueryPlan,
+) -> Result<KeyedHashJoinResidentSubplanShape, CapabilityDecision> {
+    let final_sort_id = plan.sink().input();
+    let final_sort_node = plan.node(final_sort_id).ok_or_else(|| {
+        CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_missing_node",
+            [("node_id", final_sort_id.to_string())],
+        )
+    })?;
+    let PlanNode::Sort(final_sort) = &final_sort_node.kind else {
+        return Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_requires_final_sort",
+            [
+                ("node_id", final_sort_id.to_string()),
+                ("operator", node_operator_fact(&final_sort_node.kind).to_string()),
+            ],
+        ));
+    };
+    let [sort_expr] = final_sort.spec.expressions.as_slice() else {
+        return Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_requires_single_final_sort_key",
+            [("node_id", final_sort_id.to_string()), ("sort_key_count", final_sort.spec.expressions.len().to_string())],
+        ));
+    };
+    if sort_expr.descending {
+        return Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_requires_ascending_final_sort",
+            [("node_id", final_sort_id.to_string())],
+        ));
+    }
+
+    let root_join_id = final_sort.input;
+    let root_join =
+        generic_join_node(plan, root_join_id, "keyed_hash_resident_subplan_requires_root_join_below_final_sort")?;
+    require_keyed_inner_hash_join_without_residual(root_join_id, root_join, "keyed_hash_resident_subplan_root_join")?;
+    let _ = column_expr_lineage(
+        plan,
+        root_join_id,
+        &sort_expr.expr,
+        "keyed_hash_resident_subplan_final_sort_key_must_resolve_to_root_output",
+    )?;
+
+    let joined_grouped_branch_side =
+        output_projection_single_side(root_join, root_join_id, "keyed_hash_resident_subplan_root_output_side")?;
+    let scalar_max_side = opposite_join_side(joined_grouped_branch_side);
+    let joined_grouped_branch_input = root_join.inputs[join_side_index(joined_grouped_branch_side)];
+    let scalar_max_input = root_join.inputs[join_side_index(scalar_max_side)];
+
+    let joined_grouped_branch = keyed_hash_joined_grouped_branch_shape_decision(plan, joined_grouped_branch_input)?;
+    let scalar_max = keyed_hash_scalar_max_branch_shape_decision(plan, scalar_max_input)?;
+    if joined_grouped_branch.grouped_aggregate_id != scalar_max.shared_grouped_aggregate_id {
+        return Err(CapabilityDecision::rejected(
+            "resident_subplan_requires_same_node_id_after_cse",
+            [
+                ("joined_branch_grouped_aggregate", joined_grouped_branch.grouped_aggregate_id.to_string()),
+                ("scalar_grouped_aggregate", scalar_max.shared_grouped_aggregate_id.to_string()),
+                ("identity", "same_node_id_after_cse".to_string()),
+            ],
+        ));
+    }
+
+    let shared_measure = OutputLineage::AggregateMeasure {
+        aggregate_id: joined_grouped_branch.grouped_aggregate_id,
+        aggr_index: 0,
+        function: AggregateFunction::Sum,
+    };
+    let joined_branch_key_lineage = join_key_lineage_for_side(plan, root_join, joined_grouped_branch_side)?;
+    if joined_branch_key_lineage != shared_measure {
+        return Err(CapabilityDecision::rejected(
+            "root_join_key_requires_shared_grouped_aggregate_measure",
+            [("root_join_id", root_join_id.to_string())],
+        ));
+    }
+    let scalar_key_lineage = join_key_lineage_for_side(plan, root_join, scalar_max_side)?;
+    let expected_scalar_lineage = OutputLineage::ScalarAggregateMeasure {
+        aggregate_id: scalar_max.aggregate_id,
+        aggr_index: 0,
+        function: AggregateFunction::Max,
+        input: Box::new(shared_measure),
+    };
+    if scalar_key_lineage != expected_scalar_lineage {
+        return Err(CapabilityDecision::rejected(
+            "root_join_key_requires_scalar_max_of_shared_grouped_aggregate_measure",
+            [("root_join_id", root_join_id.to_string()), ("scalar_aggregate_id", scalar_max.aggregate_id.to_string())],
+        ));
+    }
+
+    Ok(KeyedHashJoinResidentSubplanShape {
+        final_sort_id,
+        root_join_id,
+        joined_grouped_branch_join_id: joined_grouped_branch.join_id,
+        shared_grouped_aggregate_id: joined_grouped_branch.grouped_aggregate_id,
+        scalar_aggregate_id: scalar_max.aggregate_id,
+    })
+}
+
+fn hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(
+    plan: &QueryPlan,
+) -> Result<HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape, CapabilityDecision> {
+    let final_limit_id = plan.sink().input();
+    let final_sort_id =
+        limit_input(plan, final_limit_id, "hash_resident_grouped_aggregate_topk_requires_final_limit", "final_limit")?;
+    let final_projection_id =
+        sort_input(plan, final_sort_id, "hash_resident_grouped_aggregate_topk_requires_final_sort", "final_sort")?;
+    let post_root_aggregate_id = projection_input_with_missing_reason(
+        plan,
+        final_projection_id,
+        "hash_resident_grouped_aggregate_topk_missing_node",
+        "hash_resident_grouped_aggregate_topk_requires_projection_before_sort",
+        "final_projection",
+    )?;
+    let post_root_aggregate_input =
+        grouped_aggregate_input(plan, post_root_aggregate_id, "post_join_topk_requires_grouped_aggregate")?;
+    let post_root_projection_id = post_root_aggregate_input;
+    let root_join_id = projection_input_with_missing_reason(
+        plan,
+        post_root_projection_id,
+        "hash_resident_grouped_aggregate_topk_missing_node",
+        "post_join_topk_requires_projection_before_grouped_aggregate",
+        "pre_aggregate_projection",
+    )?;
+
+    let root_join = generic_join_node(plan, root_join_id, "post_join_topk_requires_root_join_below_projection")?;
+    require_left_semi_keyed_hash_join_with_right_build(root_join_id, root_join)?;
+
+    let join_subtree_root_id = root_join.inputs[join_side_index(JoinSide::Left)];
+    let mut join_count = 0;
+    validate_bounded_join_subtree_for_capability(plan, join_subtree_root_id, &mut join_count)?;
+    if join_count < 2 {
+        return Err(CapabilityDecision::rejected(
+            "hash_resident_grouped_aggregate_topk_requires_multi_join_subtree",
+            [("node_id", join_subtree_root_id.to_string()), ("join_count", join_count.to_string())],
+        ));
+    }
+
+    let grouped_aggregate_input = root_join.inputs[join_side_index(JoinSide::Right)];
+    let (grouped_aggregate_id, grouped_aggregate_projection_id) =
+        projection_or_filter_wrapped_grouped_local_parquet_aggregate_root(plan, grouped_aggregate_input)?;
+
+    Ok(HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape {
+        root_join_id,
+        grouped_aggregate_id,
+        grouped_aggregate_projection_id,
+        post_root_projection_id,
+        post_root_aggregate_id,
+        final_projection_id,
+        final_sort_id,
+        final_limit_id,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KeyedHashJoinedGroupedBranchShape {
+    join_id: NodeId,
+    grouped_aggregate_id: NodeId,
+}
+
+fn keyed_hash_joined_grouped_branch_shape_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<KeyedHashJoinedGroupedBranchShape, CapabilityDecision> {
+    let (join_id, _) = peel_projection_chain_ids_for_shape(plan, node_id)?;
+    let join = generic_join_node(plan, join_id, "keyed_hash_resident_subplan_requires_joined_grouped_branch_join")?;
+    require_keyed_inner_hash_join_without_residual(
+        join_id,
+        join,
+        "keyed_hash_resident_subplan_joined_grouped_branch_join",
+    )?;
+
+    for grouped_side in [JoinSide::Left, JoinSide::Right] {
+        let grouped_input = join.inputs[join_side_index(grouped_side)];
+        let Ok(grouped_aggregate_id) = projection_wrapped_grouped_sum_local_parquet_aggregate_root(plan, grouped_input)
+        else {
+            continue;
+        };
+        let source_side = opposite_join_side(grouped_side);
+        validate_local_parquet_leaf_pipeline_for_keyed_hash_resident_subplan(
+            plan,
+            join.inputs[join_side_index(source_side)],
+        )?;
+        let grouped_key_lineage = join_key_lineage_for_side(plan, join, grouped_side)?;
+        let expected_group_lineage =
+            OutputLineage::AggregateGroup { aggregate_id: grouped_aggregate_id, group_index: 0 };
+        if grouped_key_lineage != expected_group_lineage {
+            return Err(CapabilityDecision::rejected(
+                "joined_grouped_branch_join_key_requires_grouped_aggregate_group_key",
+                [("join_id", join_id.to_string()), ("grouped_aggregate_id", grouped_aggregate_id.to_string())],
+            ));
+        }
+        return Ok(KeyedHashJoinedGroupedBranchShape { join_id, grouped_aggregate_id });
+    }
+    Err(CapabilityDecision::rejected(
+        "joined_grouped_branch_requires_projection_wrapped_grouped_aggregate_input",
+        [("join_id", join_id.to_string())],
+    ))
+}
+
+#[derive(Debug, Clone, Copy)]
+struct KeyedHashScalarMaxBranchShape {
+    aggregate_id: NodeId,
+    shared_grouped_aggregate_id: NodeId,
+}
+
+fn keyed_hash_scalar_max_branch_shape_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<KeyedHashScalarMaxBranchShape, CapabilityDecision> {
+    let node = plan.node(node_id).ok_or_else(|| {
+        CapabilityDecision::rejected("keyed_hash_resident_subplan_missing_node", [("node_id", node_id.to_string())])
+    })?;
+    let PlanNode::Aggregate(aggregate) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            "scalar_max_branch_requires_scalar_aggregate",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    if !aggregate.spec.group_exprs.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            "scalar_max_branch_requires_scalar_aggregate",
+            [("node_id", node_id.to_string()), ("group_expr_count", aggregate.spec.group_exprs.len().to_string())],
+        ));
+    }
+    let [aggregate_expr] = aggregate.spec.aggr_exprs.as_slice() else {
+        return Err(CapabilityDecision::rejected(
+            "scalar_max_branch_requires_single_max_aggregate",
+            [("node_id", node_id.to_string()), ("aggregate_expr_count", aggregate.spec.aggr_exprs.len().to_string())],
+        ));
+    };
+    if aggregate_expr.function != AggregateFunction::Max {
+        return Err(CapabilityDecision::rejected(
+            "scalar_max_branch_requires_max_aggregate",
+            [("node_id", node_id.to_string()), ("function", format!("{:?}", aggregate_expr.function))],
+        ));
+    }
+    let (shared_grouped_aggregate_id, projection_ids) = peel_projection_chain_ids_for_shape(plan, aggregate.input)?;
+    if projection_ids.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            "scalar_max_branch_requires_projection_wrapped_grouped_aggregate_input",
+            [("node_id", aggregate.input.to_string())],
+        ));
+    }
+    projection_wrapped_grouped_sum_local_parquet_aggregate_root(plan, aggregate.input)?;
+    let aggregate_input_lineage = expression_lineage_for_input(plan, aggregate.input, &aggregate_expr.expr)?;
+    let expected_lineage = OutputLineage::AggregateMeasure {
+        aggregate_id: shared_grouped_aggregate_id,
+        aggr_index: 0,
+        function: AggregateFunction::Sum,
+    };
+    if aggregate_input_lineage != expected_lineage {
+        return Err(CapabilityDecision::rejected(
+            "scalar_max_branch_requires_max_over_shared_grouped_aggregate_measure",
+            [
+                ("aggregate_id", node_id.to_string()),
+                ("shared_grouped_aggregate_id", shared_grouped_aggregate_id.to_string()),
+            ],
+        ));
+    }
+    Ok(KeyedHashScalarMaxBranchShape { aggregate_id: node_id, shared_grouped_aggregate_id })
+}
+
+fn projection_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+    role: &'static str,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "mixed_residual_resident_aggregate_missing_node",
+            [("node_id", node_id.to_string()), ("role", role.to_string())],
+        ));
+    };
+    let PlanNode::Projection(projection) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("role", role.to_string()),
+                ("operator", node_operator_fact(&node.kind).to_string()),
+            ],
+        ));
+    };
+    Ok(projection.input)
+}
+
+fn projection_input_with_missing_reason(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    missing_reason: &'static str,
+    reason: &'static str,
+    role: &'static str,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            missing_reason,
+            [("node_id", node_id.to_string()), ("role", role.to_string())],
+        ));
+    };
+    let PlanNode::Projection(projection) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("role", role.to_string()),
+                ("operator", node_operator_fact(&node.kind).to_string()),
+            ],
+        ));
+    };
+    Ok(projection.input)
+}
+
+fn limit_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+    role: &'static str,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "hash_resident_grouped_aggregate_topk_missing_node",
+            [("node_id", node_id.to_string()), ("role", role.to_string())],
+        ));
+    };
+    let PlanNode::Limit(limit) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("role", role.to_string()),
+                ("operator", node_operator_fact(&node.kind).to_string()),
+            ],
+        ));
+    };
+    Ok(limit.input)
+}
+
+fn sort_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+    role: &'static str,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "hash_resident_grouped_aggregate_topk_missing_node",
+            [("node_id", node_id.to_string()), ("role", role.to_string())],
+        ));
+    };
+    let PlanNode::Sort(sort) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("role", role.to_string()),
+                ("operator", node_operator_fact(&node.kind).to_string()),
+            ],
+        ));
+    };
+    Ok(sort.input)
+}
+
+fn scalar_aggregate_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "mixed_residual_resident_aggregate_missing_node",
+            [("node_id", node_id.to_string()), ("role", "post_root_aggregate".to_string())],
+        ));
+    };
+    let PlanNode::Aggregate(aggregate) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    if !aggregate.spec.group_exprs.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("operator", "aggregate".to_string()),
+                ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
+            ],
+        ));
+    }
+    Ok(aggregate.input)
+}
+
+fn grouped_aggregate_input(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "hash_resident_grouped_aggregate_topk_missing_node",
+            [("node_id", node_id.to_string()), ("role", "post_root_aggregate".to_string())],
+        ));
+    };
+    let PlanNode::Aggregate(aggregate) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    if aggregate.spec.group_exprs.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("node_id", node_id.to_string()),
+                ("operator", "aggregate".to_string()),
+                ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
+            ],
+        ));
+    }
+    Ok(aggregate.input)
+}
+
+fn require_join_node<'a>(
+    plan: &'a QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+) -> Result<&'a JoinNode, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "mixed_residual_resident_aggregate_missing_node",
+            [("node_id", node_id.to_string()), ("role", "root_join".to_string())],
+        ));
+    };
+    let PlanNode::Join(join) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    Ok(join)
+}
+
+fn projected_output_side(join: &JoinNode, join_id: NodeId) -> Result<JoinSide, CapabilityDecision> {
+    let Some(first) = join.spec.output_projection.first().map(|column| column.side) else {
+        return Err(CapabilityDecision::rejected(
+            "root_join_output_projection_requires_projected_columns",
+            [("node_id", join_id.to_string())],
+        ));
+    };
+    if join.spec.output_projection.iter().any(|column| column.side != first) {
+        return Err(CapabilityDecision::rejected(
+            "root_join_output_projection_requires_join_subtree_side_only",
+            [("node_id", join_id.to_string()), ("output_projection_side", "mixed".to_string())],
+        ));
+    }
+    Ok(first)
+}
+
+fn output_projection_single_side(
+    join: &JoinNode,
+    join_id: NodeId,
+    reason: &'static str,
+) -> Result<JoinSide, CapabilityDecision> {
+    let Some(first) = join.spec.output_projection.first().map(|column| column.side) else {
+        return Err(CapabilityDecision::rejected(reason, [("node_id", join_id.to_string())]));
+    };
+    if join.spec.output_projection.iter().any(|column| column.side != first) {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [("node_id", join_id.to_string()), ("output_projection_side", "mixed".to_string())],
+        ));
+    }
+    Ok(first)
+}
+
+fn projection_wrapped_join_subtree_root(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(NodeId, NodeId), CapabilityDecision> {
+    let (subtree_root, projections) = peel_projection_chain_ids_for_shape(plan, node_id)?;
+    let Some(projection_id) = projections.first().copied() else {
+        return Err(CapabilityDecision::rejected(
+            "join_subtree_input_requires_projection_wrapped_join_subtree",
+            [("node_id", node_id.to_string()), ("operator", node_kind_for_fact(plan, node_id))],
+        ));
+    };
+
+    let mut join_count = 0;
+    validate_bounded_join_subtree_for_capability(plan, subtree_root, &mut join_count)?;
+    if join_count == 0 {
+        return Err(CapabilityDecision::rejected(
+            "join_subtree_input_requires_join_subtree",
+            [("node_id", subtree_root.to_string()), ("operator", node_kind_for_fact(plan, subtree_root))],
+        ));
+    }
+    Ok((subtree_root, projection_id))
+}
+
+fn projection_wrapped_grouped_local_parquet_aggregate_root(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(NodeId, NodeId), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_missing_projection",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    let PlanNode::Projection(projection) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_requires_projection_wrapped_grouped_aggregate",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    let aggregate_id = projection.input;
+    let Some(aggregate_node) = plan.node(aggregate_id) else {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_missing_aggregate",
+            [("node_id", aggregate_id.to_string())],
+        ));
+    };
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_requires_grouped_aggregate",
+            [("node_id", aggregate_id.to_string()), ("operator", node_operator_fact(&aggregate_node.kind).to_string())],
+        ));
+    };
+    if aggregate.spec.group_exprs.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_requires_grouped_aggregate",
+            [("node_id", aggregate_id.to_string()), ("group_expr_count", "0".to_string())],
+        ));
+    }
+    validate_local_parquet_leaf_pipeline_for_capability(plan, aggregate.input)?;
+    Ok((aggregate_id, node_id))
+}
+
+fn projection_wrapped_grouped_sum_local_parquet_aggregate_root(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<NodeId, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "projection_wrapped_grouped_sum_aggregate_missing_projection",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    let PlanNode::Projection(projection) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            "projection_wrapped_grouped_sum_aggregate_requires_projection",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    let aggregate_id = projection.input;
+    let Some(aggregate_node) = plan.node(aggregate_id) else {
+        return Err(CapabilityDecision::rejected(
+            "projection_wrapped_grouped_sum_aggregate_missing_aggregate",
+            [("node_id", aggregate_id.to_string())],
+        ));
+    };
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
+        return Err(CapabilityDecision::rejected(
+            "projection_wrapped_grouped_sum_aggregate_requires_grouped_aggregate",
+            [("node_id", aggregate_id.to_string()), ("operator", node_operator_fact(&aggregate_node.kind).to_string())],
+        ));
+    };
+    if aggregate.spec.group_exprs.len() != 1 || aggregate.spec.aggr_exprs.len() != 1 {
+        return Err(CapabilityDecision::rejected(
+            "projection_wrapped_grouped_sum_aggregate_requires_single_group_and_measure",
+            [
+                ("node_id", aggregate_id.to_string()),
+                ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
+                ("aggregate_expr_count", aggregate.spec.aggr_exprs.len().to_string()),
+            ],
+        ));
+    }
+    if aggregate.spec.aggr_exprs[0].function != AggregateFunction::Sum {
+        return Err(CapabilityDecision::rejected(
+            "projection_wrapped_grouped_sum_aggregate_requires_sum",
+            [
+                ("node_id", aggregate_id.to_string()),
+                ("function", format!("{:?}", aggregate.spec.aggr_exprs[0].function)),
+            ],
+        ));
+    }
+    validate_local_parquet_leaf_pipeline_for_keyed_hash_resident_subplan(plan, aggregate.input)?;
+    Ok(aggregate_id)
+}
+
+fn projection_or_filter_wrapped_grouped_local_parquet_aggregate_root(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(NodeId, NodeId), CapabilityDecision> {
+    let mut current = node_id;
+    let mut first_projection_id = None;
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return Err(CapabilityDecision::rejected(
+                "resident_grouped_aggregate_topk_input_cycle",
+                [("node_id", current.to_string())],
+            ));
+        }
+        let Some(node) = plan.node(current) else {
+            return Err(CapabilityDecision::rejected(
+                "resident_grouped_aggregate_topk_input_missing_node",
+                [("node_id", current.to_string())],
+            ));
+        };
+        match &node.kind {
+            PlanNode::Projection(projection) => {
+                first_projection_id.get_or_insert(current);
+                current = projection.input;
+            },
+            PlanNode::Filter(filter) => current = filter.input,
+            PlanNode::Aggregate(aggregate) => {
+                let Some(projection_id) = first_projection_id else {
+                    return Err(CapabilityDecision::rejected(
+                        "resident_grouped_aggregate_topk_input_requires_projection_wrapped_grouped_aggregate",
+                        [("node_id", node_id.to_string())],
+                    ));
+                };
+                if aggregate.spec.group_exprs.is_empty() {
+                    return Err(CapabilityDecision::rejected(
+                        "resident_grouped_aggregate_topk_input_requires_grouped_aggregate",
+                        [("node_id", current.to_string()), ("group_expr_count", "0".to_string())],
+                    ));
+                }
+                validate_local_parquet_leaf_pipeline_for_capability(plan, aggregate.input)?;
+                return Ok((current, projection_id));
+            },
+            PlanNode::Source(_) | PlanNode::Join(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
+                return Err(CapabilityDecision::rejected(
+                    "resident_grouped_aggregate_topk_input_requires_grouped_aggregate",
+                    [("node_id", current.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+                ));
+            },
+        }
+    }
+}
+
+fn peel_projection_chain_ids_for_shape(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(NodeId, Vec<NodeId>), CapabilityDecision> {
+    let mut current = node_id;
+    let mut projections = Vec::new();
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return Err(CapabilityDecision::rejected("projection_chain_cycle", [("node_id", current.to_string())]));
+        }
+        let Some(node) = plan.node(current) else {
+            return Err(CapabilityDecision::rejected(
+                "projection_chain_missing_node",
+                [("node_id", current.to_string())],
+            ));
+        };
+        let PlanNode::Projection(projection) = &node.kind else {
+            return Ok((current, projections));
+        };
+        projections.push(current);
+        current = projection.input;
+    }
+}
+
+fn validate_bounded_join_subtree_for_capability(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    join_count: &mut usize,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "join_subtree_input_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Join(join) => {
+            if bounded_multi_join_node_capability(join).is_none() {
+                return Err(CapabilityDecision::rejected(
+                    "join_subtree_input_unsupported_join",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("join_type", join.spec.join_type.to_string()),
+                        ("key_count", join.spec.keys.len().to_string()),
+                        ("has_residual", join.spec.residual_predicate.is_some().to_string()),
+                        ("build_side", join.spec.build_side.to_string()),
+                    ],
+                ));
+            }
+            *join_count += 1;
+            validate_bounded_join_subtree_for_capability(plan, join.inputs[0], join_count)?;
+            validate_bounded_join_subtree_for_capability(plan, join.inputs[1], join_count)
+        },
+        PlanNode::Source(_) => Ok(()),
+        PlanNode::Filter(filter) => validate_bounded_join_subtree_for_capability(plan, filter.input, join_count),
+        PlanNode::Projection(projection) => {
+            validate_bounded_join_subtree_for_capability(plan, projection.input, join_count)
+        },
+        PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(CapabilityDecision::rejected(
+            "join_subtree_input_unsupported_node",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
+    }
+}
+
+fn validate_local_parquet_leaf_pipeline_for_capability(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_missing_leaf_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)) => Ok(()),
+        PlanNode::Source(_) => Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_requires_local_parquet_source",
+            [("node_id", node_id.to_string()), ("source_format", "gpu_resident".to_string())],
+        )),
+        PlanNode::Filter(filter) => validate_local_parquet_leaf_pipeline_for_capability(plan, filter.input),
+        PlanNode::Projection(projection) => validate_local_parquet_leaf_pipeline_for_capability(plan, projection.input),
+        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
+            Err(CapabilityDecision::rejected(
+                "resident_grouped_aggregate_input_requires_source_filter_projection_leaf",
+                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+            ))
+        },
+    }
+}
+
+fn validate_local_parquet_leaf_pipeline_for_keyed_hash_resident_subplan(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<(), CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_leaf_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    match &node.kind {
+        PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_)) => Ok(()),
+        PlanNode::Source(_) => Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_leaf_requires_local_parquet_source",
+            [("node_id", node_id.to_string()), ("source_format", "gpu_resident".to_string())],
+        )),
+        PlanNode::Filter(filter) => {
+            validate_local_parquet_leaf_pipeline_for_keyed_hash_resident_subplan(plan, filter.input)
+        },
+        PlanNode::Projection(projection) => {
+            validate_local_parquet_leaf_pipeline_for_keyed_hash_resident_subplan(plan, projection.input)
+        },
+        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
+            Err(CapabilityDecision::rejected(
+                "keyed_hash_resident_subplan_leaf_requires_source_filter_projection",
+                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+            ))
+        },
+    }
+}
+
+fn generic_join_node<'a>(
+    plan: &'a QueryPlan,
+    node_id: NodeId,
+    reason: &'static str,
+) -> Result<&'a JoinNode, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_missing_node",
+            [("node_id", node_id.to_string())],
+        ));
+    };
+    let PlanNode::Join(join) = &node.kind else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        ));
+    };
+    Ok(join)
+}
+
+fn require_keyed_inner_hash_join_without_residual(
+    join_id: NodeId,
+    join: &JoinNode,
+    reason: &'static str,
+) -> Result<(), CapabilityDecision> {
+    if join.spec.join_type == JoinType::Inner
+        && join.spec.keys.len() == 1
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+    {
+        return Ok(());
+    }
+    Err(CapabilityDecision::rejected(
+        reason,
+        [
+            ("node_id", join_id.to_string()),
+            ("join_type", join.spec.join_type.to_string()),
+            ("key_count", join.spec.keys.len().to_string()),
+            ("has_residual", join.spec.residual_predicate.is_some().to_string()),
+            ("output_projection_count", join.spec.output_projection.len().to_string()),
+        ],
+    ))
+}
+
+fn require_left_semi_keyed_hash_join_with_right_build(
+    join_id: NodeId,
+    join: &JoinNode,
+) -> Result<(), CapabilityDecision> {
+    if join.spec.join_type == JoinType::LeftSemi
+        && join.spec.build_side == JoinSide::Right
+        && !join.spec.keys.is_empty()
+        && join.spec.residual_predicate.is_none()
+        && !join.spec.output_projection.is_empty()
+        && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+    {
+        return Ok(());
+    }
+    Err(CapabilityDecision::rejected(
+        "hash_resident_grouped_aggregate_topk_requires_left_semi_keyed_hash_join",
+        [
+            ("node_id", join_id.to_string()),
+            ("join_type", join.spec.join_type.to_string()),
+            ("key_count", join.spec.keys.len().to_string()),
+            ("has_residual", join.spec.residual_predicate.is_some().to_string()),
+            ("build_side", join.spec.build_side.to_string()),
+            ("output_projection_count", join.spec.output_projection.len().to_string()),
+            (
+                "projects_only_left",
+                join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left).to_string(),
+            ),
+        ],
+    ))
+}
+
+fn join_key_lineage_for_side(
+    plan: &QueryPlan,
+    join: &JoinNode,
+    side: JoinSide,
+) -> Result<OutputLineage, CapabilityDecision> {
+    let [key] = join.spec.keys.as_slice() else {
+        return Err(CapabilityDecision::rejected(
+            "join_key_lineage_requires_single_key",
+            [("key_count", join.spec.keys.len().to_string())],
+        ));
+    };
+    let input_id = join.inputs[join_side_index(side)];
+    let column = match side {
+        JoinSide::Left => &key.left,
+        JoinSide::Right => &key.right,
+    };
+    let field_index = resolve_column_field_index(plan, input_id, column, "join_key_lineage_column_resolution")?;
+    output_lineage(plan, input_id, field_index)
+}
+
+fn column_expr_lineage(
+    plan: &QueryPlan,
+    input_id: NodeId,
+    expr: &Expr,
+    reason: &'static str,
+) -> Result<OutputLineage, CapabilityDecision> {
+    match expr {
+        Expr::Column(column) => {
+            let field_index = resolve_column_field_index(plan, input_id, column, reason)?;
+            output_lineage(plan, input_id, field_index)
+        },
+        Expr::Alias { expr, .. } => column_expr_lineage(plan, input_id, expr, reason),
+        _ => Err(CapabilityDecision::rejected(reason, [("expression_family", expr_family(expr).to_string())])),
+    }
+}
+
+fn expression_lineage_for_input(
+    plan: &QueryPlan,
+    input_id: NodeId,
+    expr: &Expr,
+) -> Result<OutputLineage, CapabilityDecision> {
+    column_expr_lineage(plan, input_id, expr, "expression_lineage_requires_resolved_input_column")
+}
+
+fn output_lineage(plan: &QueryPlan, node_id: NodeId, field_index: usize) -> Result<OutputLineage, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "output_lineage_missing_node",
+            [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
+        ));
+    };
+    if field_index >= node.output_schema().fields().len() {
+        return Err(CapabilityDecision::rejected(
+            "output_lineage_field_index_out_of_range",
+            [
+                ("node_id", node_id.to_string()),
+                ("field_index", field_index.to_string()),
+                ("field_count", node.output_schema().fields().len().to_string()),
+            ],
+        ));
+    }
+    match &node.kind {
+        PlanNode::Source(_) => Ok(OutputLineage::SourceField { source_id: node_id, field_index }),
+        PlanNode::Filter(filter) => output_lineage(plan, filter.input, field_index),
+        PlanNode::Sort(sort) => output_lineage(plan, sort.input, field_index),
+        PlanNode::Limit(limit) => output_lineage(plan, limit.input, field_index),
+        PlanNode::Projection(projection) => {
+            let Some(output) = projection.outputs.get(field_index) else {
+                return Err(CapabilityDecision::rejected(
+                    "output_lineage_projection_field_index_out_of_range",
+                    [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
+                ));
+            };
+            match &output.expr {
+                Expr::Column(column) => {
+                    let input_field = resolve_column_field_index(
+                        plan,
+                        projection.input,
+                        column,
+                        "output_lineage_projection_column_resolution",
+                    )?;
+                    output_lineage(plan, projection.input, input_field)
+                },
+                Expr::Alias { expr, .. } => expression_lineage_for_input(plan, projection.input, expr),
+                _ => Ok(OutputLineage::Derived { node_id, field_index }),
+            }
+        },
+        PlanNode::Aggregate(aggregate) => {
+            let group_count = aggregate.spec.group_exprs.len();
+            if field_index < group_count {
+                return Ok(OutputLineage::AggregateGroup { aggregate_id: node_id, group_index: field_index });
+            }
+            let aggr_index = field_index - group_count;
+            let Some(aggregate_expr) = aggregate.spec.aggr_exprs.get(aggr_index) else {
+                return Err(CapabilityDecision::rejected(
+                    "output_lineage_aggregate_field_index_out_of_range",
+                    [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
+                ));
+            };
+            if group_count == 0 {
+                let input = Box::new(expression_lineage_for_input(plan, aggregate.input, &aggregate_expr.expr)?);
+                Ok(OutputLineage::ScalarAggregateMeasure {
+                    aggregate_id: node_id,
+                    aggr_index,
+                    function: aggregate_expr.function,
+                    input,
+                })
+            } else {
+                Ok(OutputLineage::AggregateMeasure {
+                    aggregate_id: node_id,
+                    aggr_index,
+                    function: aggregate_expr.function,
+                })
+            }
+        },
+        PlanNode::Join(join) => {
+            let Some(output) = join.spec.output_projection.get(field_index) else {
+                return Err(CapabilityDecision::rejected(
+                    "output_lineage_join_projection_index_out_of_range",
+                    [("node_id", node_id.to_string()), ("field_index", field_index.to_string())],
+                ));
+            };
+            let input_id = join.inputs[join_side_index(output.side)];
+            let input_field = resolve_column_field_index(
+                plan,
+                input_id,
+                &output.column,
+                "output_lineage_join_output_column_resolution",
+            )?;
+            output_lineage(plan, input_id, input_field)
+        },
+    }
+}
+
+fn resolve_column_field_index(
+    plan: &QueryPlan,
+    input_id: NodeId,
+    column: &crate::expr::ColumnRef,
+    reason: &'static str,
+) -> Result<usize, CapabilityDecision> {
+    let Some(node) = plan.node(input_id) else {
+        return Err(CapabilityDecision::rejected(reason, [("input_id", input_id.to_string())]));
+    };
+    let mut matches = node
+        .output_schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| (field.name() == column.name()).then_some(index));
+    let Some(index) = matches.next() else {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("input_id", input_id.to_string()),
+                ("field_count", node.output_schema().fields().len().to_string()),
+                ("resolution", "missing".to_string()),
+            ],
+        ));
+    };
+    if matches.next().is_some() {
+        return Err(CapabilityDecision::rejected(
+            reason,
+            [
+                ("input_id", input_id.to_string()),
+                ("field_count", node.output_schema().fields().len().to_string()),
+                ("resolution", "ambiguous".to_string()),
+            ],
+        ));
+    }
+    Ok(index)
+}
+
+fn node_kind_for_fact(plan: &QueryPlan, node_id: NodeId) -> String {
+    plan.node(node_id).map(|node| node_operator_fact(&node.kind).to_string()).unwrap_or_else(|| "missing".to_string())
+}
+
+const fn join_side_index(side: JoinSide) -> usize {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
+    }
+}
+
+const fn opposite_join_side(side: JoinSide) -> JoinSide {
+    match side {
+        JoinSide::Left => JoinSide::Right,
+        JoinSide::Right => JoinSide::Left,
+    }
 }
 
 fn closed_multi_join_subgraph_structure_decision(plan: &QueryPlan) -> CapabilityDecision {

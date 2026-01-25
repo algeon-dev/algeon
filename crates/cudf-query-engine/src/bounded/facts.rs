@@ -181,7 +181,7 @@ pub(crate) fn bounded_join_modeled_facts(
     boundary_policy: ExecutionBoundaryPolicy,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.facts(boundary_policy);
-    if analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok() {
+    if crate::capability::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
         facts.insert(
             "bounded_join_execution_family",
             MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_FAMILY.to_string(),
@@ -222,7 +222,7 @@ pub(crate) fn bounded_join_modeled_facts(
             MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS.to_string(),
         );
         facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if analyze_keyed_hash_join_resident_subplan_pipeline(plan).is_ok() {
+    } else if crate::capability::admits_keyed_hash_join_resident_subplan_pipeline(plan) {
         facts.insert("bounded_join_execution_family", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_FAMILY.to_string());
         facts.insert(
             "bounded_join_required_shape_contract",
@@ -294,8 +294,9 @@ pub(crate) fn bounded_join_modeled_facts(
             MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_MODELED_RESERVATIONS.to_string(),
         );
         facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan).is_ok()
-    {
+    } else if crate::capability::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(
+        plan,
+    ) {
         facts.insert(
             "bounded_join_execution_family",
             HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY.to_string(),
@@ -381,7 +382,7 @@ pub(crate) fn bounded_join_modeled_facts(
 }
 
 fn matches_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan: &QueryPlan) -> bool {
-    analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok()
+    crate::capability::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan)
 }
 
 fn insert_structural_topology_blocker(
@@ -412,15 +413,7 @@ fn matches_multi_join_aggregate_over_join_subplan_topk(plan: &QueryPlan) -> bool
 }
 
 fn matches_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk(plan: &QueryPlan) -> bool {
-    let Some(root_join_id) = final_sort_projection_post_join_aggregate_root_join(plan) else {
-        return false;
-    };
-    let Some(root_join) = join_node(plan, root_join_id) else {
-        return false;
-    };
-    keyed_hash_join(root_join)
-        && root_join.inputs.iter().any(|input| contains_grouped_aggregate_without_join_input(plan, *input))
-        && root_join.inputs.iter().any(|input| bounded_join_subtree_join_count(plan, *input).unwrap_or_default() >= 2)
+    crate::capability::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan)
 }
 
 fn matches_multi_join_resident_grouped_aggregate_subquery_filter(plan: &QueryPlan) -> bool {
@@ -441,14 +434,6 @@ fn final_sort_projection_root_join(plan: &QueryPlan) -> Option<NodeId> {
     let (node_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
     join_node(plan, node_id)?;
     Some(node_id)
-}
-
-fn final_sort_projection_post_join_aggregate_root_join(plan: &QueryPlan) -> Option<NodeId> {
-    let (aggregate_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
-    let aggregate = aggregate_node(plan, aggregate_id)?;
-    let (join_id, _) = peel_projection_chain(plan, aggregate.input, 1)?;
-    join_node(plan, join_id)?;
-    Some(join_id)
 }
 
 fn final_sort_root_join(plan: &QueryPlan) -> Option<NodeId> {

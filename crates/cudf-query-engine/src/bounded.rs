@@ -1,6 +1,12 @@
 use arrow::datatypes::SchemaRef;
 
 use crate::{
+    capability::{
+        CapabilityDecision, closed_multi_join_subgraph_admission_decision,
+        hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision,
+        keyed_hash_join_resident_subplan_admission_decision,
+        mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision,
+    },
     expr::{AggregateFunction, ColumnQualifier, ColumnRef, Expr},
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, ProjectionNode,
@@ -228,22 +234,42 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
     if analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan).is_ok() {
         return BoundedJoinPlanSupport::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline;
     }
-    if analyze_bounded_multi_join_pipeline(plan).is_ok() {
+    if closed_multi_join_subgraph_admission_decision(plan) == CapabilityDecision::Satisfied {
+        debug_assert!(
+            analyze_bounded_multi_join_pipeline(plan).is_ok(),
+            "capability-admitted multi-join plans must remain extractable by the transitional executor shape recognizer",
+        );
         return BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline;
     }
     if analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(plan).is_ok() {
         return BoundedJoinPlanSupport::MultiJoinAggregateOverJoinSubplanTopKPipeline;
     }
-    if analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok() {
+    if mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision(plan)
+        == CapabilityDecision::Satisfied
+    {
+        debug_assert!(
+            analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok(),
+            "capability-admitted mixed residual resident grouped-aggregate plans must remain extractable by the transitional executor shape recognizer",
+        );
         return BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline;
     }
-    if analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan).is_ok() {
+    if hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision(plan)
+        == CapabilityDecision::Satisfied
+    {
+        debug_assert!(
+            analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan).is_ok(),
+            "capability-admitted resident grouped-aggregate TopK plans must remain extractable by the transitional executor shape recognizer",
+        );
         return BoundedJoinPlanSupport::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline;
     }
     if analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan).is_ok() {
         return BoundedJoinPlanSupport::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline;
     }
-    if analyze_keyed_hash_join_resident_subplan_pipeline(plan).is_ok() {
+    if keyed_hash_join_resident_subplan_admission_decision(plan) == CapabilityDecision::Satisfied {
+        debug_assert!(
+            analyze_keyed_hash_join_resident_subplan_pipeline(plan).is_ok(),
+            "capability-admitted keyed hash resident-subplan plans must remain extractable by the transitional executor shape recognizer",
+        );
         return BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline;
     }
     BoundedJoinPlanSupport::Unsupported
