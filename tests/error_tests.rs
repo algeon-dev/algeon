@@ -23,31 +23,31 @@ fn error_code_projections_are_stable_policy_contracts() {
 #[test]
 fn error_keeps_machine_code_operation_and_context_facts() {
     let error = Error::new(
-        ErrorCode::GpuCandidateRejected,
-        "datafusion_cudf.optimize_plan",
-        "GPU candidate rejected by adapter policy",
+        ErrorCode::NativeCandidateRejected,
+        "datafusion_cudf.native.optimize_plan",
+        "cuDF native candidate rejected by adapter policy",
     )
-    .with_fact("fallback_reason", "insufficient_island_size")
-    .with_fact("candidate_shape", "FilterExec(child)");
+    .with_fact("fallback_reason", "unsupported_expression")
+    .with_fact("candidate_shape", "SortExec(fetch)(AggregateExec(LocalParquetScan))");
 
-    assert_eq!(error.code(), ErrorCode::GpuCandidateRejected);
+    assert_eq!(error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(error.kind(), ErrorKind::Planning);
     assert_eq!(error.status(), ErrorStatus::Permanent);
-    assert_eq!(error.operation(), "datafusion_cudf.optimize_plan");
-    assert_eq!(error.fact_value("fallback_reason"), Some("insufficient_island_size"));
+    assert_eq!(error.operation(), "datafusion_cudf.native.optimize_plan");
+    assert_eq!(error.fact_value("fallback_reason"), Some("unsupported_expression"));
 
     let display = error.to_string();
-    assert!(display.contains("code=gpu_candidate_rejected"));
-    assert!(display.contains("operation=datafusion_cudf.optimize_plan"));
-    assert!(display.contains("fallback_reason=insufficient_island_size"));
+    assert!(display.contains("code=native_candidate_rejected"));
+    assert!(display.contains("operation=datafusion_cudf.native.optimize_plan"));
+    assert!(display.contains("fallback_reason=unsupported_expression"));
 }
 
 #[test]
 fn datafusion_conversion_preserves_typed_adapter_error() {
     let error = Error::new(
         ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.gpu_island.try_new",
-        "cannot build GPU island from physical plan",
+        "datafusion_cudf.native.try_new",
+        "cannot build native cuDF execution plan",
     )
     .with_fact("plan_node", "EmptyExec");
 

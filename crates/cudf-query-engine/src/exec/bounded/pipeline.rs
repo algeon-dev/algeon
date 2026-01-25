@@ -3,6 +3,7 @@ use crate::bounded::{
     BoundedJoinPipelineRejection, BoundedJoinPipelineStage,
     analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
     analyze_bounded_join_pipeline, analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
+    analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline,
     analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
     analyze_keyed_hash_join_resident_subplan_pipeline,
 };
@@ -11,8 +12,11 @@ mod keyless;
 mod stages;
 
 use keyless::{
+    AggregateOverJoinSubplanExecutionKind,
     execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan_inner,
     execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan_inner,
+    execute_bounded_projection_wrapped_aggregate_over_join_subplan_input,
+    validate_bounded_projection_wrapped_aggregate_over_join_subplan_input_capabilities,
 };
 pub(super) use stages::{execute_bounded_join_pipeline_stage, validate_bounded_join_pipeline_stages};
 
@@ -65,6 +69,13 @@ fn attach_multi_join_resident_grouped_aggregate_subquery_filter_execution_family
     attach_bounded_join_execution_family(
         error,
         crate::runtime::BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
+    )
+}
+
+fn attach_multi_join_aggregate_over_join_subplan_topk_execution_family(error: QueryError) -> QueryError {
+    attach_bounded_join_execution_family(
+        error,
+        crate::runtime::BoundedJoinExecutionFamily::MultiJoinAggregateOverJoinSubplanTopKPipeline,
     )
 }
 
@@ -186,6 +197,18 @@ pub(super) fn execute_bounded_hash_join_resident_grouped_aggregate_input_post_jo
         context, plan, gpu_inputs, metrics,
     )
     .map_err(attach_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_execution_family)
+}
+
+pub(super) fn execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan_inner(
+        context, plan, gpu_inputs, metrics,
+    )
+    .map_err(attach_multi_join_aggregate_over_join_subplan_topk_execution_family)
 }
 
 pub(super) fn execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan(
@@ -379,6 +402,112 @@ fn execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipelin
         *final_sort_id,
         final_sort,
         None,
+        committed,
+        &mut reservations,
+        metrics,
+    )?;
+
+    match plan.sink() {
+        ResultSink::GpuResident { .. } => {
+            let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    reservations.release(committed.reservation);
+                    return Err(error);
+                },
+            };
+            reservations.release(committed.reservation);
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::GpuResident(handle))
+        },
+        ResultSink::HostArrow { schema, .. } => {
+            let output = materialize_bounded_to_host(
+                context,
+                committed,
+                plan.sink().input(),
+                plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
+                schema,
+                &mut reservations,
+                metrics,
+            )?;
+            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            Ok(QueryOutput::HostArrow(output))
+        },
+    }
+}
+
+fn execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan_inner(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<QueryOutput> {
+    let pipeline = analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(plan)
+        .map_err(bounded_join_pipeline_rejection_error)?;
+    validate_bounded_join_pipeline_stages(&pipeline.stages)?;
+    let [
+        post_join_stages @ ..,
+        BoundedJoinPipelineStage::Sort { node_id: final_sort_id, node: final_sort },
+        BoundedJoinPipelineStage::Limit { node: limit, .. },
+    ] = pipeline.stages.as_slice()
+    else {
+        return Err(unsupported_bounded_shape(
+            "bounded multi-join aggregate-over-join TopK pipeline requires final sort and limit stages",
+            "bounded_join_plan_shape_unsupported",
+        ));
+    };
+
+    validate_bounded_multi_join_subtree_capabilities(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.multi_join_side)],
+    )?;
+    validate_bounded_projection_wrapped_aggregate_over_join_subplan_input_capabilities(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.aggregate_over_join_side)],
+        AggregateOverJoinSubplanExecutionKind::Grouped,
+    )?;
+    validate_executable_join_subset(pipeline.join)?;
+
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        unreachable!(
+            "execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan is called only for bounded policies"
+        );
+    };
+    let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
+    let multi_join = execute_bounded_multi_join_subtree(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.multi_join_side)],
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let aggregate_over_join = execute_bounded_projection_wrapped_aggregate_over_join_subplan_input(
+        context,
+        plan,
+        pipeline.join.inputs[join_side_index(pipeline.aggregate_over_join_side)],
+        AggregateOverJoinSubplanExecutionKind::Grouped,
+        gpu_inputs,
+        &mut reservations,
+        metrics,
+    )?;
+    let (left, right) = match pipeline.multi_join_side {
+        JoinSide::Left => (multi_join, aggregate_over_join),
+        JoinSide::Right => (aggregate_over_join, multi_join),
+    };
+    let mut committed =
+        execute_bounded_root_join(context, pipeline.join_id, pipeline.join, left, right, &mut reservations, metrics)?;
+
+    for stage in post_join_stages {
+        committed = execute_bounded_join_pipeline_stage(context, stage, committed, &mut reservations, metrics)?;
+    }
+    let committed = execute_final_sort_node_with_retry(
+        context,
+        *final_sort_id,
+        final_sort,
+        Some(limit),
         committed,
         &mut reservations,
         metrics,

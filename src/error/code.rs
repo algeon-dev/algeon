@@ -9,8 +9,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
-    /// The optimizer intentionally rejected a GPU candidate.
-    GpuCandidateRejected,
+    /// The optimizer intentionally rejected a native candidate.
+    NativeCandidateRejected,
     /// A physical operator is unsupported by the GPU/native adapter path.
     UnsupportedOperator,
     /// A physical expression or expression form is unsupported.
@@ -57,7 +57,7 @@ pub enum ErrorCode {
 impl ErrorCode {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::GpuCandidateRejected => "gpu_candidate_rejected",
+            Self::NativeCandidateRejected => "native_candidate_rejected",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
             Self::UnsupportedType => "unsupported_type",
@@ -169,7 +169,7 @@ impl fmt::Display for ErrorStatus {
 /// failures without depending on every code variant.
 pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     match code {
-        ErrorCode::GpuCandidateRejected | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
+        ErrorCode::NativeCandidateRejected | ErrorCode::InvalidExecutionPlan => ErrorKind::Planning,
         ErrorCode::UnsupportedOperator | ErrorCode::UnsupportedExpression | ErrorCode::UnsupportedType => {
             ErrorKind::Unsupported
         },
@@ -197,7 +197,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
             ErrorStatus::Temporary
         },
         ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
-        ErrorCode::GpuCandidateRejected
+        ErrorCode::NativeCandidateRejected
         | ErrorCode::UnsupportedOperator
         | ErrorCode::UnsupportedExpression
         | ErrorCode::UnsupportedType

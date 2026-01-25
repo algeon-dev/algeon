@@ -37,6 +37,8 @@ use shape::{
     validate_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_sides,
     validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_post_root_pipeline,
     validate_mixed_keyed_residual_join_resident_grouped_aggregate_input_sides,
+    validate_multi_join_aggregate_over_join_subplan_topk_pipeline,
+    validate_multi_join_aggregate_over_join_subplan_topk_sides,
     validate_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
     validate_multi_join_resident_grouped_aggregate_subquery_filter_sides,
     validate_projection_wrapped_aggregate_over_join_subplan_input, validate_source_filter_projection_leaf_pipeline,
@@ -58,6 +60,10 @@ pub(crate) enum BoundedJoinPlanSupport {
     KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
     /// A supported multi-join subtree followed by a post-root unary pipeline.
     MultiJoinTreePostRootPipeline,
+    /// A keyed root hash join whose inputs are a bounded multi-join subtree and
+    /// a projection-wrapped grouped aggregate over a bounded join subplan,
+    /// followed by projection and final TopK.
+    MultiJoinAggregateOverJoinSubplanTopKPipeline,
     /// A keyed residual root join whose inputs are a bounded join subtree and a
     /// projection-wrapped grouped local-Parquet aggregate, followed by a
     /// projection/global-aggregate/projection post-root pipeline.
@@ -108,6 +114,17 @@ pub(crate) struct BoundedHashJoinResidentGroupedAggregateInputPostJoinAggregateT
     pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
     pub(crate) join_subtree_side: JoinSide,
     pub(crate) grouped_aggregate_side: JoinSide,
+}
+
+/// Normalized shape for a multi-join tree filtered by a grouped aggregate over
+/// another bounded join subplan, followed by final TopK. Admission is
+/// structural and intentionally independent of table names or query ids.
+pub(crate) struct BoundedMultiJoinAggregateOverJoinSubplanTopKPipelineShape<'a> {
+    pub(crate) join_id: NodeId,
+    pub(crate) join: &'a JoinNode,
+    pub(crate) stages: Vec<BoundedJoinPipelineStage<'a>>,
+    pub(crate) multi_join_side: JoinSide,
+    pub(crate) aggregate_over_join_side: JoinSide,
 }
 
 /// Normalized shape for a multi-join tree filtered by a resident grouped
@@ -197,35 +214,34 @@ pub(crate) fn analyze_bounded_join_plan_support(plan: &QueryPlan) -> BoundedJoin
         return BoundedJoinPlanSupport::RootJoin;
     }
 
-    match analyze_bounded_join_pipeline(plan) {
-        Ok(_) => BoundedJoinPlanSupport::SingleJoinPostRootPipeline,
-        Err(_) => {
-            match analyze_bounded_keyless_conditional_join_input_subplan_pipeline(plan) {
-                Ok(_) => BoundedJoinPlanSupport::KeylessConditionalJoinInputSubplanPipeline,
-                Err(_) => {
-                    match analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan) {
-                    Ok(_) => BoundedJoinPlanSupport::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
-                    Err(_) => match analyze_bounded_multi_join_pipeline(plan) {
-                        Ok(_) => BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline,
-                        Err(_) => match analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
-                            Ok(_) => BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
-                            Err(_) => match analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan) {
-                                Ok(_) => BoundedJoinPlanSupport::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
-                                Err(_) => match analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan) {
-                                    Ok(_) => BoundedJoinPlanSupport::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
-                                    Err(_) => match analyze_keyed_hash_join_resident_subplan_pipeline(plan) {
-                                        Ok(_) => BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline,
-                                        Err(_) => BoundedJoinPlanSupport::Unsupported,
-                                    },
-                                },
-                            },
-                        },
-                    },
-                }
-                },
-            }
-        },
+    if analyze_bounded_join_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::SingleJoinPostRootPipeline;
     }
+    if analyze_bounded_keyless_conditional_join_input_subplan_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::KeylessConditionalJoinInputSubplanPipeline;
+    }
+    if analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline;
+    }
+    if analyze_bounded_multi_join_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::MultiJoinTreePostRootPipeline;
+    }
+    if analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::MultiJoinAggregateOverJoinSubplanTopKPipeline;
+    }
+    if analyze_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline;
+    }
+    if analyze_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline;
+    }
+    if analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline;
+    }
+    if analyze_keyed_hash_join_resident_subplan_pipeline(plan).is_ok() {
+        return BoundedJoinPlanSupport::KeyedHashJoinResidentSubplanPipeline;
+    }
+    BoundedJoinPlanSupport::Unsupported
 }
 
 pub(crate) fn analyze_bounded_join_pipeline(
@@ -305,6 +321,33 @@ pub(crate) fn analyze_bounded_hash_join_resident_grouped_aggregate_input_post_jo
         stages: shape.stages,
         join_subtree_side: JoinSide::Left,
         grouped_aggregate_side: JoinSide::Right,
+    })
+}
+
+pub(crate) fn analyze_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline(
+    plan: &QueryPlan,
+) -> std::result::Result<BoundedMultiJoinAggregateOverJoinSubplanTopKPipelineShape<'_>, BoundedJoinPipelineRejection<'_>>
+{
+    let shape = analyze_bounded_join_pipeline_shape(plan, false)?;
+    validate_multi_join_aggregate_over_join_subplan_topk_pipeline(&shape)?;
+    if validate_multi_join_aggregate_over_join_subplan_topk_sides(plan, shape.join, JoinSide::Left, JoinSide::Right)
+        .is_ok()
+    {
+        return Ok(BoundedMultiJoinAggregateOverJoinSubplanTopKPipelineShape {
+            join_id: shape.join_id,
+            join: shape.join,
+            stages: shape.stages,
+            multi_join_side: JoinSide::Left,
+            aggregate_over_join_side: JoinSide::Right,
+        });
+    }
+    validate_multi_join_aggregate_over_join_subplan_topk_sides(plan, shape.join, JoinSide::Right, JoinSide::Left)?;
+    Ok(BoundedMultiJoinAggregateOverJoinSubplanTopKPipelineShape {
+        join_id: shape.join_id,
+        join: shape.join,
+        stages: shape.stages,
+        multi_join_side: JoinSide::Right,
+        aggregate_over_join_side: JoinSide::Left,
     })
 }
 

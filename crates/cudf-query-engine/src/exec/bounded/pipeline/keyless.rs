@@ -7,6 +7,7 @@ use unary::{
     execute_bounded_keyless_conditional_join_input_subplan_projection,
     execute_bounded_keyless_conditional_join_input_subplan_unary,
 };
+pub(super) use validate::validate_bounded_projection_wrapped_aggregate_over_join_subplan_input_capabilities;
 use validate::{
     bounded_keyless_conditional_join_input_subplan_node_kind,
     validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_capabilities,
@@ -102,13 +103,13 @@ pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subpl
         context,
         plan,
         pipeline.join.inputs[0],
-        AggregateOverJoinSubplanInputKind::Grouped,
+        AggregateOverJoinSubplanExecutionKind::Grouped,
     )?;
     validate_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_capabilities(
         context,
         plan,
         pipeline.join.inputs[1],
-        AggregateOverJoinSubplanInputKind::Scalar,
+        AggregateOverJoinSubplanExecutionKind::Scalar,
     )?;
     validate_executable_join_subset(pipeline.join)?;
     let residual_columns = residual_input_columns(pipeline.join)?;
@@ -120,20 +121,20 @@ pub(super) fn execute_bounded_keyless_conditional_join_aggregate_over_join_subpl
         );
     };
     let mut reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
-    let left = execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
+    let left = execute_bounded_projection_wrapped_aggregate_over_join_subplan_input(
         context,
         plan,
         pipeline.join.inputs[0],
-        AggregateOverJoinSubplanInputKind::Grouped,
+        AggregateOverJoinSubplanExecutionKind::Grouped,
         gpu_inputs,
         &mut reservations,
         metrics,
     )?;
-    let right = execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
+    let right = execute_bounded_projection_wrapped_aggregate_over_join_subplan_input(
         context,
         plan,
         pipeline.join.inputs[1],
-        AggregateOverJoinSubplanInputKind::Scalar,
+        AggregateOverJoinSubplanExecutionKind::Scalar,
         gpu_inputs,
         &mut reservations,
         metrics,
@@ -195,7 +196,7 @@ impl<'a> BoundedKeylessConditionalJoinAggregateOverJoinSubplanInputsPipelinePlan
 }
 
 #[derive(Debug, Clone, Copy)]
-enum AggregateOverJoinSubplanInputKind {
+pub(super) enum AggregateOverJoinSubplanExecutionKind {
     /// Execute and validate a grouped aggregate over a bounded join subplan.
     Grouped,
     /// Execute and validate a scalar/global aggregate over a bounded join subplan.
@@ -337,11 +338,11 @@ fn execute_bounded_keyless_conditional_join_input_subplan_inner(
     }
 }
 
-fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
+pub(super) fn execute_bounded_projection_wrapped_aggregate_over_join_subplan_input(
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    kind: AggregateOverJoinSubplanInputKind,
+    kind: AggregateOverJoinSubplanExecutionKind,
     gpu_inputs: &GpuResidentInputMap,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -385,10 +386,10 @@ fn execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs(
         metrics,
     )?;
     let (aggregate_stage, aggregate_output_boundary) = match kind {
-        AggregateOverJoinSubplanInputKind::Grouped => {
+        AggregateOverJoinSubplanExecutionKind::Grouped => {
             ("join_input_subplan_grouped_aggregate", "join_input_subplan_grouped_aggregate_output")
         },
-        AggregateOverJoinSubplanInputKind::Scalar => {
+        AggregateOverJoinSubplanExecutionKind::Scalar => {
             ("join_input_subplan_global_aggregate", "join_input_subplan_global_aggregate_output")
         },
     };

@@ -243,6 +243,57 @@ pub(in crate::bounded) fn validate_hash_join_resident_grouped_aggregate_input_po
     Ok(())
 }
 
+pub(in crate::bounded) fn validate_multi_join_aggregate_over_join_subplan_topk_pipeline<'a>(
+    shape: &BoundedJoinPipelineShape<'a>,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    let [
+        BoundedJoinPipelineStage::Projection { .. },
+        BoundedJoinPipelineStage::Sort { .. },
+        BoundedJoinPipelineStage::Limit { .. },
+    ] = shape.stages.as_slice()
+    else {
+        let node_id = shape.stages.first().map(pipeline_stage_node_id).unwrap_or(shape.join_id);
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id,
+            node_kind: "projection_topk_pipeline",
+        });
+    };
+
+    if shape.join.spec.join_type != JoinType::Inner
+        || shape.join.spec.keys.is_empty()
+        || shape.join.spec.residual_predicate.is_some()
+        || shape.join.spec.output_projection.is_empty()
+    {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: shape.join });
+    }
+    Ok(())
+}
+
+pub(in crate::bounded) fn validate_multi_join_aggregate_over_join_subplan_topk_sides<'a>(
+    plan: &'a QueryPlan,
+    root_join: &'a JoinNode,
+    multi_join_side: JoinSide,
+    aggregate_over_join_side: JoinSide,
+) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {
+    let multi_join_input = root_join.inputs[join_side_index(multi_join_side)];
+    validate_bounded_multi_join_subtree(plan, multi_join_input)?;
+    if bounded_join_subtree_join_count(plan, multi_join_input)? < 3 {
+        return Err(BoundedJoinPipelineRejection::UnsupportedShapeNode {
+            node_id: multi_join_input,
+            node_kind: "shallow_multi_join_side",
+        });
+    }
+    validate_projection_wrapped_aggregate_over_join_subplan_input(
+        plan,
+        root_join.inputs[join_side_index(aggregate_over_join_side)],
+        AggregateOverJoinSubplanInputKind::Grouped,
+    )?;
+    if root_join.spec.output_projection.iter().any(|column| column.side != multi_join_side) {
+        return Err(BoundedJoinPipelineRejection::UnsupportedJoin { join: root_join });
+    }
+    Ok(())
+}
+
 pub(in crate::bounded) fn validate_multi_join_resident_grouped_aggregate_subquery_filter_pipeline<'a>(
     shape: &BoundedJoinPipelineShape<'a>,
 ) -> std::result::Result<(), BoundedJoinPipelineRejection<'a>> {

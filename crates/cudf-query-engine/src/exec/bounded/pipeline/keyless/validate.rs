@@ -75,7 +75,16 @@ pub(super) fn validate_bounded_keyless_conditional_join_aggregate_over_join_subp
     context: &ExecutionContext,
     plan: &QueryPlan,
     node_id: NodeId,
-    kind: AggregateOverJoinSubplanInputKind,
+    kind: AggregateOverJoinSubplanExecutionKind,
+) -> Result<()> {
+    validate_bounded_projection_wrapped_aggregate_over_join_subplan_input_capabilities(context, plan, node_id, kind)
+}
+
+pub(in crate::exec::bounded::pipeline) fn validate_bounded_projection_wrapped_aggregate_over_join_subplan_input_capabilities(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    kind: AggregateOverJoinSubplanExecutionKind,
 ) -> Result<()> {
     let projection_node = plan.node(node_id).ok_or_else(|| {
         invalid_node_reference(
@@ -108,7 +117,7 @@ pub(super) fn validate_bounded_keyless_conditional_join_aggregate_over_join_subp
         .with_fact("node_kind", bounded_keyless_conditional_join_input_subplan_node_kind(&aggregate_node.kind)));
     };
     match kind {
-        AggregateOverJoinSubplanInputKind::Grouped if aggregate.spec.group_exprs.is_empty() => {
+        AggregateOverJoinSubplanExecutionKind::Grouped if aggregate.spec.group_exprs.is_empty() => {
             return Err(unsupported_bounded_shape(
                 "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires grouped aggregate on the left input",
                 "bounded_join_plan_shape_unsupported",
@@ -116,7 +125,7 @@ pub(super) fn validate_bounded_keyless_conditional_join_aggregate_over_join_subp
             .with_fact("node_id", projection.input)
             .with_fact("node_kind", "scalar_aggregate"));
         },
-        AggregateOverJoinSubplanInputKind::Scalar if !aggregate.spec.group_exprs.is_empty() => {
+        AggregateOverJoinSubplanExecutionKind::Scalar if !aggregate.spec.group_exprs.is_empty() => {
             return Err(unsupported_bounded_shape(
                 "bounded keyless conditional join aggregate-over-join subplan inputs pipeline execution requires scalar/global aggregate on the right input",
                 "bounded_join_plan_shape_unsupported",
@@ -124,7 +133,7 @@ pub(super) fn validate_bounded_keyless_conditional_join_aggregate_over_join_subp
             .with_fact("node_id", projection.input)
             .with_fact("node_kind", "grouped_aggregate"));
         },
-        AggregateOverJoinSubplanInputKind::Grouped | AggregateOverJoinSubplanInputKind::Scalar => {},
+        AggregateOverJoinSubplanExecutionKind::Grouped | AggregateOverJoinSubplanExecutionKind::Scalar => {},
     }
     validate_aggregate_capability(aggregate, &aggregate_node.facts.output_schema)?;
     validate_bounded_aggregate_over_join_subplan_inputs_join_subplan_capabilities(context, plan, aggregate.input)

@@ -46,6 +46,11 @@ pub(super) fn execute_bounded_query_plan(
         if plan.has_bounded_executable_multi_join_pipeline() {
             return execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
         }
+        if plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline() {
+            return execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan(
+                context, plan, gpu_inputs, metrics,
+            );
+        }
         if plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline() {
             return execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(
                 context, plan, gpu_inputs, metrics,
@@ -192,6 +197,11 @@ fn execute_bounded_generic_query_plan(
         }
         if plan.has_bounded_executable_multi_join_pipeline() {
             return execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics);
+        }
+        if plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline() {
+            return execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan(
+                context, plan, gpu_inputs, metrics,
+            );
         }
         if plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline() {
             return execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(

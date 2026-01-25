@@ -166,26 +166,35 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         .filter(|row| row.outcome == NativeDataFusionPlanningOutcome::RejectedBeforeExecution)
         .map(|row| row.query_id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(rejected_query_ids, vec!["q02"]);
+    assert!(rejected_query_ids.is_empty(), "all TPC-H planning rows should now be native-admitted");
 
     let q02 = planning_row(report, "q02");
+    assert_eq!(q02.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q02.reason_code, None);
+    assert_eq!(q02.unsupported_category, None);
+    assert_eq!(q02.post_native_plan_root, "NativeCudfExec");
+    assert_eq!(q02.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert_eq!(
-        q02.bounded_join_reservation_facts.get("bounded_join_blocked_join_family").map(String::as_str),
+        q02.bounded_join_reservation_facts.get("bounded_join_execution_family").map(String::as_str),
         Some("multi_join_with_aggregate_over_join_subplan_topk")
     );
     assert_eq!(
-        q02.bounded_join_reservation_facts.get("bounded_join_shape_blocker").map(String::as_str),
-        Some("bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing")
+        q02.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
+        Some(
+            "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report"
+        )
     );
     assert_eq!(
         q02.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
         Some("")
     );
+    assert_eq!(q02.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(q02.bounded_join_reservation_facts.get("missing_reservations").map(String::as_str), Some(""));
     assert_eq!(
         q02.bounded_join_reservation_facts.get("bounded_join_required_lower_level_contract").map(String::as_str),
         None
     );
-    assert!(q02.rejected_before_execution, "q02 should remain rejected before native execution");
+    assert!(!q02.rejected_before_execution, "q02 should be replaced by native execution");
 
     let q18 = planning_row(report, "q18");
     assert_eq!(q18.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);

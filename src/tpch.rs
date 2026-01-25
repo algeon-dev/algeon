@@ -30,9 +30,9 @@ use dataset::resolve_tpch_table_path;
 
 pub use crate::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
 use crate::{
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
+    NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
 };
 
 mod dataset;
@@ -237,10 +237,9 @@ pub async fn tpch_datafusion_planning_workload_items(
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let optimizer_config = tpch_native_optimizer_config();
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;
@@ -283,10 +282,9 @@ pub async fn tpch_datafusion_execution_workload_items(
 ) -> TpchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     let optimizer_config = tpch_native_optimizer_config();
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let gpu_island_rule = Arc::new(CudfPhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native_and_gpu_island_rules(Arc::clone(&native_rule), gpu_island_rule)
+        .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;

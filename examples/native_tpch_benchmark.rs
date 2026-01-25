@@ -15,12 +15,11 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfPhysicalOptimizerRule, CudfSessionStateBuilderExt,
-    Error as AdapterError, GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, TPCH_QUERIES, TPCH_TABLES,
-    TpchDatasetMetadata, TpchQuery, TpchWorkloadError, describe_tpch_dataset_with_content_fingerprint,
-    prepare_tpch_report_dataset, tpch_report_session_config,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
+    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
+    NativeDataFusionRuntimeOutcome, TPCH_QUERIES, TPCH_TABLES, TpchDatasetMetadata, TpchQuery, TpchWorkloadError,
+    describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, tpch_report_session_config,
 };
 
 #[path = "native_tpch_benchmark/case_runner.rs"]

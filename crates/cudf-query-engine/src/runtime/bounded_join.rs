@@ -206,6 +206,9 @@ pub enum BoundedJoinExecutionFamily {
     MultiJoinReusableHashPipeline,
     /// A multi-join tree that may include keyed residual inner/semi/anti joins.
     MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
+    /// A multi-join tree filtered by a grouped aggregate over another bounded
+    /// join subplan, followed by projection and final TopK.
+    MultiJoinAggregateOverJoinSubplanTopKPipeline,
     /// A keyed residual root join whose inputs are a bounded join subtree and a
     /// projection-wrapped grouped local-Parquet aggregate.
     MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
@@ -237,6 +240,7 @@ impl BoundedJoinExecutionFamily {
             Self::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline => {
                 "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
             },
+            Self::MultiJoinAggregateOverJoinSubplanTopKPipeline => "multi_join_with_aggregate_over_join_subplan_topk",
             Self::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline => {
                 "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"
             },
@@ -254,7 +258,7 @@ impl BoundedJoinExecutionFamily {
 /// Report-facing catalogue of bounded join execution families.
 ///
 /// Ordering is preserved in CSV facts and tests.
-pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 13] = [
+pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 14] = [
     BoundedJoinExecutionFamily::RootReusableHashJoin,
     BoundedJoinExecutionFamily::RootFilteredSemiAntiJoin,
     BoundedJoinExecutionFamily::KeylessConditionalJoin,
@@ -264,6 +268,7 @@ pub const BOUNDED_JOIN_EXECUTION_FAMILIES: [BoundedJoinExecutionFamily; 13] = [
     BoundedJoinExecutionFamily::RootMixedKeyedResidualJoin,
     BoundedJoinExecutionFamily::MultiJoinReusableHashPipeline,
     BoundedJoinExecutionFamily::MultiJoinMixedKeyedResidualInnerLeftSemiLeftAntiPipeline,
+    BoundedJoinExecutionFamily::MultiJoinAggregateOverJoinSubplanTopKPipeline,
     BoundedJoinExecutionFamily::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
     BoundedJoinExecutionFamily::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
     BoundedJoinExecutionFamily::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
