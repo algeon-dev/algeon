@@ -216,10 +216,11 @@ fn bounded_capability_analysis_extracts_node_capabilities_for_single_join_post_r
 }
 
 #[test]
-fn bounded_root_and_single_join_phase8_remain_simple_capability_projections() {
+fn bounded_root_and_single_join_phase9_admission_uses_capability_execution_path() {
     let root = simple_root_join_plan();
     let root_analysis = root.capability_analysis();
     assert!(root.has_bounded_executable_root_join());
+    assert_eq!(root_analysis.bounded_join_execution_path(), Some(BoundedJoinExecutionPath::RootJoin));
     assert_eq!(root_analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
     assert!(!root_analysis.admits_closed_multi_join_subgraph());
     assert!(!root_analysis.admits_keyless_conditional_join_input_subplan_pipeline());
@@ -227,6 +228,10 @@ fn bounded_root_and_single_join_phase8_remain_simple_capability_projections() {
     let single = serial_aggregate_single_join_spine_plan();
     let single_analysis = single.capability_analysis();
     assert!(single.has_bounded_executable_join_pipeline());
+    assert_eq!(
+        single_analysis.bounded_join_execution_path(),
+        Some(BoundedJoinExecutionPath::SingleJoinPostRootPipeline)
+    );
     assert_eq!(
         single_analysis.compatibility_family_projection,
         Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
@@ -515,6 +520,7 @@ fn bounded_capability_analysis_rejects_unsupported_filter_expression_as_node_cap
     let plan = single_join_pipeline_with_empty_in_list_filter_plan();
     let analysis = plan.capability_analysis();
 
+    assert_eq!(analysis.bounded_join_execution_path(), None);
     assert_eq!(
         analysis.compatibility_family_projection,
         Some(CompatibilityFamilyProjection::SingleJoinPostRootPipeline)
@@ -537,6 +543,7 @@ fn bounded_capability_analysis_rejects_unsupported_join_residual_expression_as_n
     let plan = root_join_with_like_residual_plan();
     let analysis = plan.capability_analysis();
 
+    assert_eq!(analysis.bounded_join_execution_path(), None);
     assert_eq!(analysis.compatibility_family_projection, Some(CompatibilityFamilyProjection::RootJoin));
     let rejected_join = analysis
         .nodes

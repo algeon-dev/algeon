@@ -1,5 +1,47 @@
 use super::{graph::*, model::*, shape::*, *};
 
+pub(super) fn analyze_root_join_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    match root_join_shape_decision(plan) {
+        Ok(()) => CapabilityDecision::Satisfied,
+        Err(decision) => decision,
+    }
+}
+
+pub(super) fn analyze_single_join_post_root_pipeline_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    match single_join_post_root_pipeline_shape_decision(plan) {
+        Ok(()) => CapabilityDecision::Satisfied,
+        Err(decision) => decision,
+    }
+}
+
 pub(super) fn analyze_closed_multi_join_subgraph_admission(
     plan: &QueryPlan,
     nodes: &[NodeCapability],

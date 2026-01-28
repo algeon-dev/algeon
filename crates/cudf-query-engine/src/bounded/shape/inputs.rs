@@ -1,9 +1,5 @@
 use super::*;
 
-pub(in crate::bounded) fn bounded_join_source_leaf_inputs_compatible(plan: &QueryPlan, join: &JoinNode) -> bool {
-    validate_bounded_join_source_leaf_inputs(plan, join).is_ok()
-}
-
 pub(in crate::bounded) fn validate_bounded_join_source_leaf_inputs<'a>(
     plan: &'a QueryPlan,
     join: &'a JoinNode,

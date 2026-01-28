@@ -4,7 +4,6 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 
 use crate::{
     bounded::{
-        BoundedJoinPlanSupport, analyze_bounded_join_pipeline, analyze_bounded_join_plan_support,
         bounded_join_modeled_facts, bounded_join_unsupported_shape_facts, bounded_root_filtered_join_compatible,
         bounded_root_hash_join_compatible, bounded_root_join_compatible,
         bounded_root_keyless_conditional_join_compatible, bounded_root_mixed_join_compatible,

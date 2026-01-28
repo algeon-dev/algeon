@@ -438,13 +438,33 @@ pub enum ResidentResource {
     JoinProbeInput { join_id: NodeId, input: NodeId },
 }
 
-/// Transitional family projection for report/executor compatibility.
+/// Transitional family projection for report compatibility.
 ///
 /// This is deliberately separate from the node, edge, and invariant primitives:
-/// admission should migrate toward capability proofs, while legacy reports and
-/// dispatch can continue projecting a family name during the transition.
+/// admission is capability-owned, while legacy reports can continue projecting
+/// a family name during the transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompatibilityFamilyProjection {
+    RootJoin,
+    SingleJoinPostRootPipeline,
+    KeylessConditionalJoinInputSubplanPipeline,
+    KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline,
+    MultiJoinTreePostRootPipeline,
+    MultiJoinAggregateOverJoinSubplanTopKPipeline,
+    MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline,
+    HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline,
+    MultiJoinResidentGroupedAggregateSubqueryFilterPipeline,
+    KeyedHashJoinResidentSubplanPipeline,
+}
+
+/// Capability-selected bounded join executor path.
+///
+/// This is the execution-facing result of capability admission. It intentionally
+/// lives outside the node/edge/invariant primitives: the primitives prove what
+/// the plan can do, then this path selects the current executor implementation
+/// that can realize that proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum BoundedJoinExecutionPath {
     RootJoin,
     SingleJoinPostRootPipeline,
     KeylessConditionalJoinInputSubplanPipeline,
@@ -468,13 +488,15 @@ pub struct CompatibilityRejectionProjection {
     pub facts: BTreeMap<&'static str, String>,
 }
 
-/// Side-channel capability analysis for one lowered native query plan.
+/// Capability analysis for one lowered native query plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityAnalysis {
     pub nodes: Vec<NodeCapability>,
     pub edges: Vec<EdgeContract>,
     pub invariants: Vec<SubgraphInvariant>,
     pub requirements: Vec<ReservationRequirement>,
+    pub root_join_admission: CapabilityDecision,
+    pub single_join_post_root_pipeline_admission: CapabilityDecision,
     pub closed_multi_join_subgraph_admission: CapabilityDecision,
     pub multi_join_aggregate_over_join_subplan_topk_admission: CapabilityDecision,
     pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
@@ -495,6 +517,14 @@ impl CapabilityAnalysis {
 
     pub fn admits_closed_multi_join_subgraph(&self) -> bool {
         self.closed_multi_join_subgraph_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_root_join(&self) -> bool {
+        self.root_join_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn admits_single_join_post_root_pipeline(&self) -> bool {
+        self.single_join_post_root_pipeline_admission == CapabilityDecision::Satisfied
     }
 
     pub fn admits_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool {
@@ -524,6 +554,32 @@ impl CapabilityAnalysis {
 
     pub fn admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool {
         self.multi_join_resident_grouped_aggregate_subquery_filter_admission == CapabilityDecision::Satisfied
+    }
+
+    pub fn bounded_join_execution_path(&self) -> Option<BoundedJoinExecutionPath> {
+        if self.admits_root_join() {
+            Some(BoundedJoinExecutionPath::RootJoin)
+        } else if self.admits_single_join_post_root_pipeline() {
+            Some(BoundedJoinExecutionPath::SingleJoinPostRootPipeline)
+        } else if self.admits_keyless_conditional_join_input_subplan_pipeline() {
+            Some(BoundedJoinExecutionPath::KeylessConditionalJoinInputSubplanPipeline)
+        } else if self.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline() {
+            Some(BoundedJoinExecutionPath::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline)
+        } else if self.admits_closed_multi_join_subgraph() {
+            Some(BoundedJoinExecutionPath::MultiJoinTreePostRootPipeline)
+        } else if self.admits_multi_join_aggregate_over_join_subplan_topk_pipeline() {
+            Some(BoundedJoinExecutionPath::MultiJoinAggregateOverJoinSubplanTopKPipeline)
+        } else if self.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline() {
+            Some(BoundedJoinExecutionPath::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
+        } else if self.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline() {
+            Some(BoundedJoinExecutionPath::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline)
+        } else if self.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline() {
+            Some(BoundedJoinExecutionPath::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline)
+        } else if self.admits_keyed_hash_join_resident_subplan_pipeline() {
+            Some(BoundedJoinExecutionPath::KeyedHashJoinResidentSubplanPipeline)
+        } else {
+            None
+        }
     }
 
     pub fn compatibility_reservation_requirements(&self) -> Vec<ReservationRequirement> {
@@ -608,6 +664,8 @@ impl CapabilityAnalysis {
             })
             .or_else(|| {
                 [
+                    &self.root_join_admission,
+                    &self.single_join_post_root_pipeline_admission,
                     &self.closed_multi_join_subgraph_admission,
                     &self.multi_join_aggregate_over_join_subplan_topk_admission,
                     &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,

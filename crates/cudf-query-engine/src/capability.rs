@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     bounded::{
-        BoundedJoinNodeCapability, BoundedJoinPlanSupport, BoundedKeylessConditionalJoinType,
-        analyze_bounded_join_plan_support, bounded_join_node_capability, bounded_multi_join_node_capability,
-        bounded_root_filtered_join_compatible, bounded_root_hash_join_compatible,
+        BoundedJoinNodeCapability, BoundedKeylessConditionalJoinType, bounded_join_node_capability,
+        bounded_multi_join_node_capability, bounded_root_filtered_join_compatible, bounded_root_hash_join_compatible,
+        bounded_root_join_compatible,
     },
     error::QueryError,
     exec::validate_local_parquet_source,
@@ -36,18 +36,11 @@ pub(crate) use entry::{
     admits_keyless_conditional_join_input_subplan_pipeline,
     admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
     admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
-    admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
-    closed_multi_join_subgraph_admission_decision,
-    hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission_decision,
-    keyed_hash_join_resident_subplan_admission_decision,
-    keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_decision,
-    keyless_conditional_join_input_subplan_admission_decision,
-    mixed_keyed_residual_join_resident_grouped_aggregate_input_admission_decision,
-    multi_join_aggregate_over_join_subplan_topk_admission_decision,
-    multi_join_resident_grouped_aggregate_subquery_filter_admission_decision,
+    admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline, admits_root_join,
+    admits_single_join_post_root_pipeline,
 };
 pub use model::{
-    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CompatibilityFamilyProjection,
+    AggregateGrouping, BoundedJoinExecutionPath, CapabilityAnalysis, CapabilityDecision, CompatibilityFamilyProjection,
     CompatibilityRejectionProjection, ConstraintRef, ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer,
     EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement,
     ProducedProperty, RequiredProperty, ReservationRequirement, ReservationRequirementScope, ResidentResource,
