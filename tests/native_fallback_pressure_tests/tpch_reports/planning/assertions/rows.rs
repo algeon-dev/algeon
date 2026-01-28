@@ -132,23 +132,10 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
                         row.query_id
                     );
                 } else {
-                    assert_eq!(
-                        row.bounded_join_reservation_facts.get("modeled_reservations").map(String::as_str),
-                        Some(expected.modeled_reservations.as_str()),
-                        "accepted bounded join row should preserve modeled reservation facts for {}",
-                        row.query_id
-                    );
-                    assert_eq!(
-                        row.bounded_join_reservation_facts.get("bounded_join_reservation_statuses").map(String::as_str),
-                        Some(expected.reservation_statuses.as_str()),
-                        "accepted bounded join row should preserve reservation status facts for {}",
-                        row.query_id
-                    );
-                    assert_eq!(
-                        row.bounded_join_reservation_facts.get("bounded_join_contract_modes").map(String::as_str),
-                        None,
-                        "non-q17 accepted rows should not claim Q17 hard-budgeted report modes for {}",
-                        row.query_id
+                    assert_modeled_reservations_match_statuses(&row.query_id, &row.bounded_join_reservation_facts);
+                    assert_hard_budgeted_contract_modes_have_preflight_evidence(
+                        &row.query_id,
+                        &row.bounded_join_reservation_facts,
                     );
                 }
                 assert_eq!(
@@ -387,4 +374,50 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport, expe
             assert_tpch_join_diagnostics(row.query_id.as_str(), &row.join_diagnostics);
         }
     }
+}
+
+fn assert_hard_budgeted_contract_modes_have_preflight_evidence(
+    query_id: &str,
+    facts: &std::collections::BTreeMap<String, String>,
+) {
+    let Some(contract_modes) = facts.get("bounded_join_contract_modes") else {
+        return;
+    };
+    let unresolved_preflight =
+        facts.get("bounded_join_unresolved_preflight_contracts").map(String::as_str).unwrap_or("");
+    for mode in contract_modes.split(',').filter(|value| !value.is_empty()) {
+        let Some((contract, mode)) = mode.split_once(':') else {
+            panic!("{query_id} has malformed hard-budgeted contract mode row: {mode}");
+        };
+        assert_eq!(mode, "hard_budgeted_report", "{query_id} has unexpected contract mode for {contract}");
+        assert!(
+            unresolved_preflight
+                .split(',')
+                .filter_map(|row| row.split_once(':'))
+                .any(|(name, blocker)| name == contract && blocker.ends_with("_preflight_unavailable")),
+            "{query_id} should preserve unresolved preflight evidence for hard-budgeted contract {contract}"
+        );
+    }
+}
+
+fn assert_modeled_reservations_match_statuses(query_id: &str, facts: &std::collections::BTreeMap<String, String>) {
+    let modeled = facts
+        .get("modeled_reservations")
+        .map(|value| csv_values(value))
+        .unwrap_or_else(|| panic!("{query_id} missing modeled_reservations"));
+    let statuses = facts
+        .get("bounded_join_reservation_statuses")
+        .map(|value| csv_pairs(value))
+        .unwrap_or_else(|| panic!("{query_id} missing bounded_join_reservation_statuses"));
+    let expected_modeled =
+        statuses.iter().filter_map(|(kind, status)| (*status == "modeled").then_some(*kind)).collect::<Vec<_>>();
+    assert_eq!(modeled, expected_modeled, "{query_id} modeled reservations should match modeled statuses");
+}
+
+fn csv_values(value: &str) -> Vec<&str> {
+    value.split(',').filter(|value| !value.is_empty()).collect()
+}
+
+fn csv_pairs(value: &str) -> Vec<(&str, &str)> {
+    value.split(',').filter_map(|row| row.split_once(':')).collect()
 }

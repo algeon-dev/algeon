@@ -74,23 +74,24 @@ impl QueryPlan {
     /// Returns true when the plan matches the bounded single-root join executor.
     pub fn has_bounded_executable_root_join(&self) -> bool {
         matches!(analyze_bounded_join_plan_support(self), BoundedJoinPlanSupport::RootJoin)
+            && self.has_capability_report_projection()
     }
 
     /// Returns true when the plan matches a supported bounded join pipeline.
     pub fn has_bounded_executable_join_pipeline(&self) -> bool {
-        analyze_bounded_join_pipeline(self).is_ok()
+        analyze_bounded_join_pipeline(self).is_ok() && self.has_capability_report_projection()
     }
 
     /// Returns true when the plan matches the supported keyless conditional join
     /// input-subplan pipeline.
     pub fn has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(&self) -> bool {
-        analyze_bounded_keyless_conditional_join_input_subplan_pipeline(self).is_ok()
+        crate::capability::admits_keyless_conditional_join_input_subplan_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported aggregate-over-keyless
     /// conditional join subplan pipeline.
     pub fn has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool {
-        analyze_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(self).is_ok()
+        crate::capability::admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported bounded multi-join pipeline.
@@ -121,7 +122,7 @@ impl QueryPlan {
     /// Returns true when the plan matches the supported multi-join resident
     /// grouped aggregate subquery filter pipeline.
     pub fn has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool {
-        analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(self).is_ok()
+        crate::capability::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(self)
     }
 
     /// Returns true when the plan matches the supported keyed hash join
@@ -138,19 +139,7 @@ impl QueryPlan {
         &self,
         boundary_policy: ExecutionBoundaryPolicy,
     ) -> Option<BTreeMap<&'static str, String>> {
-        if self.contains_join()
-            && !self.has_bounded_executable_root_join()
-            && !self.has_bounded_executable_join_pipeline()
-            && !self.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline()
-            && !self.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
-            && !self.has_bounded_executable_multi_join_pipeline()
-            && !self.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline()
-            && !self.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-            && !self
-                .has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
-            && !self.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
-            && !self.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline()
-        {
+        if self.contains_join() && !self.has_capability_report_projection() {
             Some(bounded_join_unsupported_shape_facts(self, boundary_policy))
         } else {
             None
@@ -162,7 +151,13 @@ impl QueryPlan {
         &self,
         boundary_policy: ExecutionBoundaryPolicy,
     ) -> Option<BTreeMap<&'static str, String>> {
-        self.contains_join().then(|| bounded_join_modeled_facts(self, boundary_policy))
+        (self.contains_join() && self.has_capability_report_projection())
+            .then(|| bounded_join_modeled_facts(self, boundary_policy))
+    }
+
+    fn has_capability_report_projection(&self) -> bool {
+        let analysis = self.capability_analysis();
+        crate::capability::CompatibilityReportProjection::from_analysis(&analysis).is_some()
     }
 
     /// Returns nodes that are not reachable from the explicit sink input.

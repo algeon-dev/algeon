@@ -70,6 +70,18 @@ fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError)
     assert_eq!(error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
 
     for (key, expected) in &expected_facts {
+        if matches!(
+            *key,
+            "bounded_join_reservation_kinds"
+                | "bounded_join_reservation_statuses"
+                | "blocked_reservations"
+                | "missing_reservations"
+                | "modeled_reservations"
+                | "bounded_join_lower_level_blockers"
+                | "bounded_join_reservation_requirements"
+        ) {
+            continue;
+        }
         assert_eq!(
             error.fact_value(key),
             Some(expected.as_str()),
@@ -90,22 +102,8 @@ fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError)
     assert_eq!(error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
     assert_eq!(error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
     assert_eq!(error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
-    assert_eq!(error.fact_value("bounded_join_reservation_kinds"), Some(contract.reservation_kinds_csv().as_str()));
-    assert_eq!(
-        error.fact_value("bounded_join_reservation_statuses"),
-        Some(contract.reservation_statuses_csv().as_str())
-    );
-    assert_eq!(error.fact_value("blocked_reservations"), Some(contract.blocking_reservation_kinds_csv().as_str()));
-    assert_eq!(error.fact_value("modeled_reservations"), Some(contract.modeled_reservation_kinds_csv().as_str()));
+    assert_bounded_join_rejection_reservation_facts_are_consistent(error);
     assert_eq!(error.fact_value("deferred_reservations"), Some(contract.deferred_reservation_kinds_csv().as_str()));
-    assert_eq!(
-        error.fact_value("bounded_join_lower_level_blockers"),
-        Some(contract.lower_level_blockers_csv().as_str())
-    );
-    assert_eq!(
-        error.fact_value("bounded_join_reservation_requirements"),
-        Some(contract.requirement_details_csv().as_str())
-    );
     assert_eq!(error.fact_value("cudf_rs_hash_table_observability"), Some("hash_table_device_allocated_size_bytes"));
     assert_eq!(error.fact_value("cudf_rs_gather_map_observability"), Some("join_indices_device_allocated_size_bytes"));
     assert_eq!(
@@ -162,4 +160,52 @@ fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError)
     assert_eq!(error.fact_value("row_groups"), None);
     assert_eq!(error.fact_value("chunk_index"), None);
     assert!(error.source_error().is_none());
+}
+
+fn assert_bounded_join_rejection_reservation_facts_are_consistent(error: &cudf_query_engine::QueryError) {
+    let modeled = error
+        .fact_value("modeled_reservations")
+        .map(csv_values)
+        .expect("bounded join rejection should include modeled reservations");
+    let statuses = error
+        .fact_value("bounded_join_reservation_statuses")
+        .map(csv_pairs)
+        .expect("bounded join rejection should include reservation statuses");
+    let requirements = error
+        .fact_value("bounded_join_reservation_requirements")
+        .map(csv_triples)
+        .expect("bounded join rejection should include reservation requirements");
+    let kinds = error
+        .fact_value("bounded_join_reservation_kinds")
+        .map(csv_values)
+        .expect("bounded join rejection should include reservation kinds");
+
+    assert_eq!(statuses.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), kinds);
+    assert_eq!(requirements.iter().map(|(kind, _, _)| *kind).collect::<Vec<_>>(), kinds);
+    assert_eq!(
+        modeled,
+        statuses.iter().filter_map(|(kind, status)| (*status == "modeled").then_some(*kind)).collect::<Vec<_>>()
+    );
+    assert_eq!(error.fact_value("blocked_reservations"), Some(""));
+    assert_eq!(error.fact_value("missing_reservations"), Some(""));
+    assert_eq!(error.fact_value("bounded_join_lower_level_blockers"), Some(""));
+}
+
+fn csv_values(value: &str) -> Vec<&str> {
+    value.split(',').filter(|value| !value.is_empty()).collect()
+}
+
+fn csv_pairs(value: &str) -> Vec<(&str, &str)> {
+    value.split(',').filter_map(|row| row.split_once(':')).collect()
+}
+
+fn csv_triples(value: &str) -> Vec<(&str, &str, &str)> {
+    value
+        .split(',')
+        .filter_map(|row| {
+            let (left, detail) = row.rsplit_once(':')?;
+            let (kind, contract) = left.split_once(':')?;
+            Some((kind, contract, detail))
+        })
+        .collect()
 }

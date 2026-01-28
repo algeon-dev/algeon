@@ -11,7 +11,6 @@ use rows::assert_planning_rows;
 pub(super) struct PlanningReportExpectations {
     execution_families: String,
     modeled_reservations: String,
-    reservation_statuses: String,
     supported_shape: String,
     mixed_capability_detail: &'static str,
     mixed_multi_join_capability: &'static str,
@@ -28,7 +27,6 @@ impl PlanningReportExpectations {
         Self {
             execution_families: contract.execution_families_csv(),
             modeled_reservations: contract.modeled_reservation_kinds_csv(),
-            reservation_statuses: contract.reservation_statuses_csv(),
             supported_shape: contract.supported_shape_requirement(),
             mixed_capability_detail: "mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti",
             mixed_multi_join_capability: "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline",

@@ -2,22 +2,6 @@ use std::collections::BTreeMap;
 
 use super::*;
 use crate::runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy};
-
-const SOURCE_AGGREGATE_HARD_BUDGETED_CONTRACT_MODES: &str =
-    "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report";
-const SOURCE_AGGREGATE_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable";
-const SOURCE_AGGREGATE_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows";
-
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_FAMILY: &str = "keyed_hash_join_resident_subplan_pipeline";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_SHAPE_CONTRACT: &str =
-    "sort_root_keyed_inner_hash_join_with_optional_projection_wrapped_keyed_inner_join_and_scalar_aggregate_branch";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_CONTRACT_MODES: &str = "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows,final_sort_contract:allocator_high_water_bytes+retained_sort_order_bytes+materialized_output_bytes+output_rows";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,final_sort:modeled,materialization:modeled";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,final_sort:final_sort_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
-const KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_FAMILY: &str =
     "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKER: &str =
@@ -25,12 +9,6 @@ const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKE
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_SHAPE_CONTRACT: &str = "projected_global_aggregate_over_keyed_residual_inner_hash_join_with_projection_wrapped_join_subtree_and_projection_wrapped_grouped_local_parquet_aggregate_input";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_LOWER_LEVEL_CONTRACT: &str =
     "source_contract,aggregate_contract";
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_MODES: &str =
-    SOURCE_AGGREGATE_HARD_BUDGETED_CONTRACT_MODES;
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_UNRESOLVED_PREFLIGHT_CONTRACTS: &str =
-    SOURCE_AGGREGATE_UNRESOLVED_PREFLIGHT_CONTRACTS;
-const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_REPORT_FIELDS: &str =
-    SOURCE_AGGREGATE_CONTRACT_REPORT_FIELDS;
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKED_RESERVATIONS: &str = "";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,materialization:modeled";
@@ -40,44 +18,24 @@ const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY: &str = "multi_join_wit
 const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_BLOCKER: &str =
     "bounded_multi_join_aggregate_over_join_subplan_topk_executor_missing";
 const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_root_hash_join_with_multi_join_input_and_projection_wrapped_aggregate_over_join_subplan_input";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_CONTRACT_MODES: &str = "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows,final_sort_contract:allocator_high_water_bytes+retained_sort_order_bytes+materialized_output_bytes+output_rows";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,final_sort:modeled,materialization:modeled";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,final_sort:final_sort_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
-const MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
 const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY: &str =
     "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk";
 const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_BLOCKER: &str =
     "bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_executor_missing";
 const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT: &str = "final_topk_over_projection_over_grouped_aggregate_over_hash_join_with_grouped_aggregate_input_and_multi_join_input";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_MODES: &str = "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows,final_sort_contract:allocator_high_water_bytes+retained_sort_order_bytes+materialized_output_bytes+output_rows";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,final_sort:modeled,materialization:modeled";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,final_sort:final_sort_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
-const HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
 const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY: &str =
     "multi_join_with_resident_grouped_aggregate_subquery_filter";
 const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_BLOCKER: &str =
     "bounded_multi_join_resident_grouped_aggregate_subquery_filter_executor_missing";
 const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_SHAPE_CONTRACT: &str =
     "final_sort_over_multi_join_tree_with_projection_wrapped_grouped_aggregate_subquery_input_and_residual_filter";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_CONTRACT_MODES: &str = "source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report,final_sort_contract:hard_budgeted_report";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_UNRESOLVED_PREFLIGHT_CONTRACTS: &str = "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable,final_sort_contract:libcudf_final_sort_order_preflight_unavailable";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_CONTRACT_REPORT_FIELDS: &str = "source_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows+context_facts,aggregate_contract:allocator_high_water_bytes+retained_bytes+output_bytes+output_rows,final_sort_contract:allocator_high_water_bytes+retained_sort_order_bytes+materialized_output_bytes+output_rows";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_RESERVATION_KINDS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_RESERVATION_STATUSES: &str = "source_read:modeled,operator_output:modeled,build_side:modeled,hash_table:modeled,probe_side:modeled,filtered_probe_state:modeled,mixed_size_data:modeled,gather_map:modeled,join_output:modeled,final_sort:modeled,materialization:modeled";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_RESERVATION_REQUIREMENTS: &str = "source_read:source_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,operator_output:aggregate_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,build_side:query_engine_build_side_source_reservation:modeled_before_execution,hash_table:hash_join_pre_build_reservation_size_bytes:modeled_by_cudf_rs_pre_build_sizing,probe_side:query_engine_probe_side_source_reservation:modeled_by_ordered_bounded_join_execution_path,filtered_probe_state:filtered_join_retained_probe_state:modeled_by_cudf_rs_filtered_probe_state_observability,mixed_size_data:mixed_keyed_residual_or_conditional_full_retained_size_data:modeled_by_cudf_rs_retained_join_size_data_observability,gather_map:join_gather_map_reservation_size_bytes:modeled_by_cudf_rs_join_gather_map_sizing,join_output:dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes:modeled_by_cudf_rs_dataframe_gather_or_projected_cross_output_sizing,final_sort:final_sort_contract:modeled_by_cudf_rs_hard_budgeted_report_with_unresolved_preflight,materialization:query_engine_explicit_sink_materialization_reservation:modeled_by_explicit_sink_boundary";
-const MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_MODELED_RESERVATIONS: &str = "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,final_sort,materialization";
 
 pub(crate) fn bounded_join_unsupported_shape_facts(
     plan: &QueryPlan,
     boundary_policy: ExecutionBoundaryPolicy,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
+    let analysis = plan.capability_analysis();
     if matches_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
         facts.insert(
             "bounded_join_blocked_join_family",
@@ -173,6 +131,8 @@ pub(crate) fn bounded_join_unsupported_shape_facts(
             "bounded_mixed_keyed_residual_left_join_shape_or_orientation".to_string(),
         );
     }
+    insert_capability_reservation_facts(&mut facts, &analysis);
+    insert_capability_rejection_facts(&mut facts, &analysis);
     facts
 }
 
@@ -181,202 +141,9 @@ pub(crate) fn bounded_join_modeled_facts(
     boundary_policy: ExecutionBoundaryPolicy,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.facts(boundary_policy);
-    if crate::capability::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(plan) {
-        facts.insert(
-            "bounded_join_execution_family",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_FAMILY.to_string(),
-        );
-        facts.insert(
-            "bounded_join_required_shape_contract",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_SHAPE_CONTRACT.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_modes",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_MODES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_unresolved_preflight_contracts",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_UNRESOLVED_PREFLIGHT_CONTRACTS
-                .to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_report_fields",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_CONTRACT_REPORT_FIELDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_kinds",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_KINDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_statuses",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_STATUSES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_requirements",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_RESERVATION_REQUIREMENTS.to_string(),
-        );
-        facts.insert("blocked_reservations", String::new());
-        facts.insert("missing_reservations", String::new());
-        facts.insert(
-            "modeled_reservations",
-            MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_MODELED_RESERVATIONS.to_string(),
-        );
-        facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if crate::capability::admits_keyed_hash_join_resident_subplan_pipeline(plan) {
-        facts.insert("bounded_join_execution_family", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_FAMILY.to_string());
-        facts.insert(
-            "bounded_join_required_shape_contract",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_SHAPE_CONTRACT.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_modes",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_CONTRACT_MODES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_unresolved_preflight_contracts",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_UNRESOLVED_PREFLIGHT_CONTRACTS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_report_fields",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_CONTRACT_REPORT_FIELDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_kinds",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_RESERVATION_KINDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_statuses",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_RESERVATION_STATUSES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_requirements",
-            KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_RESERVATION_REQUIREMENTS.to_string(),
-        );
-        facts.insert("blocked_reservations", String::new());
-        facts.insert("missing_reservations", String::new());
-        facts
-            .insert("modeled_reservations", KEYED_HASH_JOIN_RESIDENT_SUBPLAN_PIPELINE_MODELED_RESERVATIONS.to_string());
-        facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if crate::capability::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(plan) {
-        facts.insert("bounded_join_execution_family", MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_FAMILY.to_string());
-        facts.insert(
-            "bounded_join_required_shape_contract",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_SHAPE_CONTRACT.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_modes",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_CONTRACT_MODES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_unresolved_preflight_contracts",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_UNRESOLVED_PREFLIGHT_CONTRACTS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_report_fields",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_CONTRACT_REPORT_FIELDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_kinds",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_RESERVATION_KINDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_statuses",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_RESERVATION_STATUSES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_requirements",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_RESERVATION_REQUIREMENTS.to_string(),
-        );
-        facts.insert("blocked_reservations", String::new());
-        facts.insert("missing_reservations", String::new());
-        facts.insert(
-            "modeled_reservations",
-            MULTI_JOIN_AGGREGATE_OVER_JOIN_SUBPLAN_TOPK_MODELED_RESERVATIONS.to_string(),
-        );
-        facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if crate::capability::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(
-        plan,
-    ) {
-        facts.insert(
-            "bounded_join_execution_family",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_FAMILY.to_string(),
-        );
-        facts.insert(
-            "bounded_join_required_shape_contract",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_SHAPE_CONTRACT.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_modes",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_MODES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_unresolved_preflight_contracts",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_UNRESOLVED_PREFLIGHT_CONTRACTS
-                .to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_report_fields",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_CONTRACT_REPORT_FIELDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_kinds",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_KINDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_statuses",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_STATUSES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_requirements",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_RESERVATION_REQUIREMENTS.to_string(),
-        );
-        facts.insert("blocked_reservations", String::new());
-        facts.insert("missing_reservations", String::new());
-        facts.insert(
-            "modeled_reservations",
-            HASH_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_POST_JOIN_AGGREGATE_TOPK_MODELED_RESERVATIONS.to_string(),
-        );
-        facts.insert("bounded_join_lower_level_blockers", String::new());
-    } else if analyze_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan).is_ok() {
-        facts.insert(
-            "bounded_join_execution_family",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_FAMILY.to_string(),
-        );
-        facts.insert(
-            "bounded_join_required_shape_contract",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_SHAPE_CONTRACT.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_modes",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_CONTRACT_MODES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_unresolved_preflight_contracts",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_UNRESOLVED_PREFLIGHT_CONTRACTS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_contract_report_fields",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_CONTRACT_REPORT_FIELDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_kinds",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_RESERVATION_KINDS.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_statuses",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_RESERVATION_STATUSES.to_string(),
-        );
-        facts.insert(
-            "bounded_join_reservation_requirements",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_RESERVATION_REQUIREMENTS.to_string(),
-        );
-        facts.insert("blocked_reservations", String::new());
-        facts.insert("missing_reservations", String::new());
-        facts.insert(
-            "modeled_reservations",
-            MULTI_JOIN_RESIDENT_GROUPED_AGGREGATE_SUBQUERY_FILTER_MODELED_RESERVATIONS.to_string(),
-        );
-        facts.insert("bounded_join_lower_level_blockers", String::new());
+    let analysis = plan.capability_analysis();
+    if let Some(projection) = crate::capability::CompatibilityReportProjection::from_analysis(&analysis) {
+        projection.insert_modeled_facts(&mut facts);
     }
     facts
 }
@@ -397,6 +164,76 @@ fn insert_structural_topology_blocker(
     facts.insert("bounded_join_required_shape_contract", shape_contract.to_string());
 }
 
+fn insert_capability_rejection_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    analysis: &crate::capability::CapabilityAnalysis,
+) {
+    let Some(rejection) = analysis.compatibility_first_rejection_projection() else {
+        return;
+    };
+    facts.insert("bounded_join_capability_rejection_scope", rejection.scope.to_string());
+    facts.insert("bounded_join_capability_rejection_reason", rejection.reason.to_string());
+    facts.insert("bounded_join_capability_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
+}
+
+fn insert_capability_reservation_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    analysis: &crate::capability::CapabilityAnalysis,
+) {
+    let requirements = analysis.compatibility_reservation_requirements();
+    if requirements.is_empty() {
+        return;
+    }
+    facts.insert("bounded_join_reservation_kinds", analysis.compatibility_reservation_kinds_csv());
+    facts.insert("bounded_join_reservation_statuses", analysis.compatibility_reservation_statuses_csv());
+    facts.insert("bounded_join_reservation_requirements", analysis.compatibility_reservation_requirements_csv());
+    facts.insert("modeled_reservations", analysis.compatibility_modeled_reservations_csv());
+    facts.insert("blocked_reservations", capability_blocked_reservations_csv(&requirements));
+    facts.insert("missing_reservations", capability_blocked_reservations_csv(&requirements));
+    facts.insert("bounded_join_lower_level_blockers", capability_lower_level_blockers_csv(&requirements));
+}
+
+fn capability_blocked_reservations_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {
+    csv_join(requirements.iter().filter_map(|requirement| {
+        (requirement.status != crate::capability::ContractStatus::Modeled).then_some(requirement.kind.as_str())
+    }))
+}
+
+fn capability_lower_level_blockers_csv(requirements: &[crate::capability::ReservationRequirement]) -> String {
+    csv_join(requirements.iter().filter_map(|requirement| {
+        (requirement.status == crate::capability::ContractStatus::BlockedByLowerLevel)
+            .then_some(requirement.required_contract)
+    }))
+}
+
+fn capability_rejection_facts_csv(facts: &BTreeMap<&'static str, String>) -> String {
+    let mut output = String::new();
+    for (key, value) in facts {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(key);
+        output.push('=');
+        output.push_str(value);
+    }
+    output
+}
+
+fn csv_join<I, T>(values: I) -> String
+where
+    I: IntoIterator<Item = T>,
+    T: ToString,
+{
+    let mut output = String::new();
+    for value in values {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(&value.to_string());
+    }
+    output
+}
+
 fn matches_multi_join_aggregate_over_join_subplan_topk(plan: &QueryPlan) -> bool {
     crate::capability::admits_multi_join_aggregate_over_join_subplan_topk_pipeline(plan)
 }
@@ -406,67 +243,7 @@ fn matches_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk(p
 }
 
 fn matches_multi_join_resident_grouped_aggregate_subquery_filter(plan: &QueryPlan) -> bool {
-    let Some(root_join_id) = final_sort_root_join(plan) else {
-        return false;
-    };
-    let Some(root_join) = join_node(plan, root_join_id) else {
-        return false;
-    };
-    keyed_hash_join(root_join)
-        && bounded_join_subtree_join_count(plan, root_join_id).unwrap_or_default() >= 4
-        && root_join.inputs.iter().all(|input| bounded_join_subtree_join_count(plan, *input).unwrap_or_default() >= 1)
-        && contains_grouped_aggregate_without_join_input(plan, root_join_id)
-        && !contains_aggregate_over_join_subplan(plan, root_join_id)
-}
-
-fn final_sort_root_join(plan: &QueryPlan) -> Option<NodeId> {
-    let (join_id, _) = peel_projection_chain(plan, final_sort_input(plan)?, 1)?;
-    join_node(plan, join_id)?;
-    Some(join_id)
-}
-
-fn final_sort_input(plan: &QueryPlan) -> Option<NodeId> {
-    let sink_input = plan.sink().input();
-    if let Some(limit) = limit_node(plan, sink_input) {
-        let sort = sort_node(plan, limit.input)?;
-        return Some(sort.input);
-    }
-    sort_node(plan, sink_input).map(|sort| sort.input)
-}
-
-fn keyed_hash_join(join: &JoinNode) -> bool {
-    !join.spec.keys.is_empty() && !join.spec.output_projection.is_empty()
-}
-
-fn contains_aggregate_over_join_subplan(plan: &QueryPlan, node_id: NodeId) -> bool {
-    visit_subtree(plan, node_id, &mut |node| match &node.kind {
-        PlanNode::Aggregate(aggregate) => contains_join(plan, aggregate.input),
-        _ => false,
-    })
-}
-
-fn contains_grouped_aggregate_without_join_input(plan: &QueryPlan, node_id: NodeId) -> bool {
-    visit_subtree(plan, node_id, &mut |node| match &node.kind {
-        PlanNode::Aggregate(aggregate) => {
-            !aggregate.spec.group_exprs.is_empty() && !contains_join(plan, aggregate.input)
-        },
-        _ => false,
-    })
-}
-
-fn contains_join(plan: &QueryPlan, node_id: NodeId) -> bool {
-    visit_subtree(plan, node_id, &mut |node| matches!(node.kind, PlanNode::Join(_)))
-}
-
-fn visit_subtree(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    predicate: &mut impl FnMut(&crate::plan::QueryNode) -> bool,
-) -> bool {
-    let Some(node) = plan.node(node_id) else {
-        return false;
-    };
-    predicate(node) || node.input_ids().iter().any(|input| visit_subtree(plan, *input, predicate))
+    crate::capability::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(plan)
 }
 
 fn first_unsupported_keyed_residual_semi_anti_join(plan: &QueryPlan) -> Option<&JoinNode> {
@@ -622,29 +399,5 @@ fn root_join_input_leaf_blocker(plan: &QueryPlan, node_id: NodeId) -> Option<&'s
         PlanNode::Aggregate(_) => Some("bounded_root_join_aggregate_leaf_unsupported"),
         PlanNode::Sort(_) => Some("bounded_root_join_sort_leaf_unsupported"),
         PlanNode::Limit(_) => Some("bounded_root_join_limit_leaf_unsupported"),
-    }
-}
-
-fn join_node(plan: &QueryPlan, node_id: NodeId) -> Option<&JoinNode> {
-    let node = plan.node(node_id)?;
-    match &node.kind {
-        PlanNode::Join(join) => Some(join),
-        _ => None,
-    }
-}
-
-fn sort_node(plan: &QueryPlan, node_id: NodeId) -> Option<&SortNode> {
-    let node = plan.node(node_id)?;
-    match &node.kind {
-        PlanNode::Sort(sort) => Some(sort),
-        _ => None,
-    }
-}
-
-fn limit_node(plan: &QueryPlan, node_id: NodeId) -> Option<&LimitNode> {
-    let node = plan.node(node_id)?;
-    match &node.kind {
-        PlanNode::Limit(limit) => Some(limit),
-        _ => None,
     }
 }

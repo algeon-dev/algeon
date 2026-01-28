@@ -64,6 +64,51 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     }
 }
 
+#[test]
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_admission_uses_capability_proof() {
+    let plan =
+        keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+        analysis.admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+    );
+    assert_eq!(
+        analysis.compatibility_family_projection,
+        Some(CompatibilityFamilyProjection::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline)
+    );
+    assert_eq!(
+        analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+        CapabilityDecision::Satisfied
+    );
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. })
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    assert!(analysis.invariants.iter().any(|invariant| {
+        matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+}
+
+#[test]
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_rejects_bad_subplan_locally() {
+    let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+        AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,
+    );
+    let analysis = plan.capability_analysis();
+
+    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    let CapabilityDecision::Rejected { reason, facts } =
+        &analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
+    else {
+        panic!("sort below aggregate input should reject aggregate-over-join subplan inputs admission");
+    };
+    assert_eq!(*reason, "aggregate_over_join_topk_input_requires_join_subplan");
+    assert!(facts.contains_key("node_id"));
+}
+
 #[derive(Debug, Clone, Copy)]
 enum AggregateOverJoinSubplanInputsVariant {
     Admitted,
