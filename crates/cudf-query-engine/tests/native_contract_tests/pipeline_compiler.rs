@@ -1,9 +1,15 @@
+use std::sync::Arc;
+
+use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
-    CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-    PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
-    ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary,
-    SinkBoundaryKind,
+    AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, CompiledPipeline, Expr, GpuResidentSource, JoinKey,
+    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetSource, PipelineBarrier, PipelineBarrierId,
+    PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
+    PipelineTaskKind, QueryPlan, QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner,
+    ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr,
+    SortSpec, SourceNode,
     capability::{ContractQuality, ContractStatus, ReservationRequirement, ReservationRequirementScope},
+    compile_pipeline,
 };
 
 #[test]
@@ -198,4 +204,182 @@ fn reservation_gate_can_wrap_existing_capability_requirement_without_losing_bloc
     assert_eq!(gate.status(), ContractStatus::BlockedByLowerLevel);
     assert_eq!(gate.quality(), ContractQuality::ExactPreflight);
     assert_eq!(gate.requirement().required_contract, "hash_join_pre_build_reservation_size_bytes");
+}
+
+#[test]
+fn compile_pipeline_root_join_uses_build_side_and_not_append_order_as_schedule_proof() {
+    let plan = root_join_plan();
+    let analysis = plan.capability_analysis();
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
+    pipeline.validate().expect("compiled root join pipeline should validate");
+
+    assert_eq!(
+        pipeline.tasks().iter().map(|task| task.kind()).collect::<Vec<_>>(),
+        vec![
+            PipelineTaskKind::SourceRead,
+            PipelineTaskKind::SourceRead,
+            PipelineTaskKind::JoinBuild,
+            PipelineTaskKind::JoinProbe,
+            PipelineTaskKind::JoinMaterialize,
+            PipelineTaskKind::SinkMaterialize,
+        ]
+    );
+
+    let build = &pipeline.tasks()[2];
+    let probe = &pipeline.tasks()[3];
+    assert_eq!(build.input_resources(), &[ResidentResourceId::new(1)]);
+    assert_eq!(probe.input_resources(), &[ResidentResourceId::new(0)]);
+
+    assert!(pipeline.edges().iter().any(|edge| {
+        edge.from() == PipelineTaskId::new(1)
+            && edge.to() == PipelineTaskId::new(2)
+            && edge.kind() == PipelineEdgeKind::JoinBuildInput
+    }));
+    assert!(pipeline.edges().iter().any(|edge| {
+        edge.from() == PipelineTaskId::new(0)
+            && edge.to() == PipelineTaskId::new(3)
+            && edge.kind() == PipelineEdgeKind::JoinProbeInput
+    }));
+    assert!(pipeline.edges().iter().any(|edge| {
+        edge.from() == PipelineTaskId::new(2)
+            && edge.to() == PipelineTaskId::new(3)
+            && edge.kind() == PipelineEdgeKind::Control
+    }));
+
+    let build_before_probe = pipeline
+        .barriers()
+        .iter()
+        .find(|barrier| barrier.kind() == PipelineBarrierKind::JoinBuildBeforeProbe)
+        .expect("join should compile an explicit build-before-probe barrier");
+    assert_eq!(build_before_probe.upstream_tasks(), &[PipelineTaskId::new(2)]);
+    assert_eq!(build_before_probe.downstream_tasks(), &[PipelineTaskId::new(3)]);
+}
+
+#[test]
+fn compile_pipeline_non_join_aggregate_sort_limit_plan_has_blocking_barriers_in_dependency_order() {
+    let plan = aggregate_sort_limit_plan();
+    let analysis = plan.capability_analysis();
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate sort limit plan should compile");
+    pipeline.validate().expect("compiled aggregate pipeline should validate");
+
+    assert_eq!(
+        pipeline.tasks().iter().map(|task| task.kind()).collect::<Vec<_>>(),
+        vec![
+            PipelineTaskKind::SourceRead,
+            PipelineTaskKind::Aggregate,
+            PipelineTaskKind::FinalSort,
+            PipelineTaskKind::Limit,
+            PipelineTaskKind::SinkMaterialize,
+        ]
+    );
+
+    let aggregate = pipeline
+        .barriers()
+        .iter()
+        .find(|barrier| barrier.kind() == PipelineBarrierKind::AggregateBoundary)
+        .expect("aggregate should compile a blocking boundary");
+    assert_eq!(aggregate.upstream_tasks(), &[PipelineTaskId::new(1)]);
+    assert_eq!(aggregate.downstream_tasks(), &[PipelineTaskId::new(2)]);
+
+    let sort = pipeline
+        .barriers()
+        .iter()
+        .find(|barrier| barrier.kind() == PipelineBarrierKind::SortBoundary)
+        .expect("sort should compile a final-sort boundary");
+    assert_eq!(sort.upstream_tasks(), &[PipelineTaskId::new(2)]);
+    assert_eq!(sort.downstream_tasks(), &[PipelineTaskId::new(3)]);
+
+    assert_eq!(pipeline.sink().kind(), SinkBoundaryKind::HostArrowMaterialization);
+    assert_eq!(pipeline.sink().input(), PipelineTaskId::new(4));
+}
+
+#[test]
+fn compile_pipeline_rejects_local_capability_rejection_before_building_graph() {
+    let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("", schema)));
+    let plan = builder.finish_gpu_resident(source);
+    let analysis = plan.capability_analysis();
+
+    let error = compile_pipeline(&plan, &analysis).expect_err("rejected source capability should not compile");
+
+    assert_eq!(error.code().as_str(), "unsupported_plan_shape");
+    assert_eq!(error.fact_value("capability_scope"), Some("node"));
+    assert_eq!(error.fact_value("capability_reason"), Some("unsupported_gpu_resident_source_capability"));
+    assert_eq!(error.fact_value("node_id"), Some("n0"));
+}
+
+fn root_join_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/pipeline-left.parquet",
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/pipeline-right.parquet",
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn aggregate_sort_limit_plan() -> QueryPlan {
+    let source_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Int32, false)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/pipeline-aggregate.parquet",
+        source_schema,
+        vec!["k".into(), "v".into()],
+    )));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("k")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "v_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v_count"), false, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(10), aggregate_schema);
+    builder.finish_with_host_sink(limit)
 }

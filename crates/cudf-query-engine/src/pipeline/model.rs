@@ -54,6 +54,10 @@ impl CompiledPipeline {
     pub fn debug_render(&self) -> String {
         self.to_string()
     }
+
+    pub fn validate(&self) -> crate::Result<()> {
+        super::validate::validate_pipeline(self)
+    }
 }
 
 /// Stable identifier for a symbolic pipeline task.
