@@ -19,6 +19,19 @@ pub enum ContractQuality {
     QueryEngineOwnedBoundary,
 }
 
+impl ContractQuality {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactPreflight => "exact_preflight",
+            Self::MetadataBound => "metadata_bound",
+            Self::HardBudgetedReportWithUnresolvedPreflight => "hard_budgeted_report_with_unresolved_preflight",
+            Self::ObservedRetainedState => "observed_retained_state",
+            Self::QueryEngineOwnedOrdering => "query_engine_owned_ordering",
+            Self::QueryEngineOwnedBoundary => "query_engine_owned_boundary",
+        }
+    }
+}
+
 /// The most local graph scope that owns a reservation requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReservationRequirementScope {
