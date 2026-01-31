@@ -1,13 +1,15 @@
 //! CompiledPipeline invariant validation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
+    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
-        CompiledPipeline, PipelineBarrierId, PipelineEdgeId, PipelineTaskId, PipelineTaskKind, ReservationGateId,
-        ReservationGateOwner, ResidentLifetime, ResidentResourceId,
+        CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
+        PipelineTaskKind, ReservationGateId, ReservationGateOwner, ResidentLifetime, ResidentResourceId,
     },
+    runtime::ReservationKind,
 };
 
 const OPERATION: &str = "cudf_query_engine.pipeline.validate";
@@ -20,9 +22,13 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::Result<()
     let gate_ids = validate_gates(pipeline, &task_ids, &edge_ids, &barrier_ids)?;
 
     validate_task_dependencies(pipeline, &task_ids)?;
+    validate_task_graph_is_acyclic(pipeline)?;
     validate_task_resource_references(pipeline, &resource_ids)?;
+    validate_resource_flow(pipeline)?;
+    validate_barrier_dominance(pipeline)?;
     validate_gate_references(pipeline, &gate_ids)?;
     validate_gate_owner_references(pipeline)?;
+    validate_reservation_gate_contracts(pipeline)?;
 
     if !task_ids.contains(&pipeline.sink().input()) {
         return Err(invalid("pipeline sink input task does not exist").with_fact("task_id", pipeline.sink().input()));
@@ -223,13 +229,10 @@ fn validate_task_dependencies(pipeline: &CompiledPipeline, task_ids: &BTreeSet<P
     }
 
     for task in pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinProbe) {
-        let has_build_dependency = pipeline.edges().iter().any(|edge| {
-            edge.to() == task.id()
-                && pipeline
-                    .tasks()
-                    .iter()
-                    .any(|producer| producer.id() == edge.from() && producer.kind() == PipelineTaskKind::JoinBuild)
-        });
+        let has_build_dependency = pipeline
+            .edges()
+            .iter()
+            .any(|edge| edge.to() == task.id() && is_join_build_for_probe(pipeline, edge.from(), task.id()));
         if !has_build_dependency {
             return Err(
                 invalid("pipeline join probe task does not depend on its build task").with_fact("task_id", task.id())
@@ -243,6 +246,49 @@ fn validate_task_dependencies(pipeline: &CompiledPipeline, task_ids: &BTreeSet<P
         }
     }
 
+    Ok(())
+}
+
+fn is_join_build_for_probe(pipeline: &CompiledPipeline, build_id: PipelineTaskId, probe_id: PipelineTaskId) -> bool {
+    let Some(build) = pipeline.tasks().iter().find(|task| task.id() == build_id) else {
+        return false;
+    };
+    let Some(probe) = pipeline.tasks().iter().find(|task| task.id() == probe_id) else {
+        return false;
+    };
+    build.kind() == PipelineTaskKind::JoinBuild
+        && probe.kind() == PipelineTaskKind::JoinProbe
+        && (build.plan_node().is_none() || probe.plan_node().is_none() || build.plan_node() == probe.plan_node())
+}
+
+fn validate_task_graph_is_acyclic(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    let adjacency = adjacency(pipeline);
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+
+    for task in pipeline.tasks() {
+        visit_task(task.id(), &adjacency, &mut visiting, &mut visited)?;
+    }
+    Ok(())
+}
+
+fn visit_task(
+    task: PipelineTaskId,
+    adjacency: &BTreeMap<PipelineTaskId, Vec<PipelineTaskId>>,
+    visiting: &mut BTreeSet<PipelineTaskId>,
+    visited: &mut BTreeSet<PipelineTaskId>,
+) -> crate::Result<()> {
+    if visited.contains(&task) {
+        return Ok(());
+    }
+    if !visiting.insert(task) {
+        return Err(invalid("pipeline task dependency graph contains a cycle").with_fact("task_id", task));
+    }
+    for downstream in adjacency.get(&task).into_iter().flatten() {
+        visit_task(*downstream, adjacency, visiting, visited)?;
+    }
+    visiting.remove(&task);
+    visited.insert(task);
     Ok(())
 }
 
@@ -266,6 +312,251 @@ fn validate_task_resource_references(
                     .with_fact("edge_id", edge.id())
                     .with_fact("resource_id", resource));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    for resource in pipeline.resources() {
+        let producer = task_by_id(pipeline, resource.producer())?;
+        if !producer.output_resources().contains(&resource.id()) {
+            return Err(invalid("pipeline resident resource producer task does not output resource")
+                .with_fact("resource_id", resource.id())
+                .with_fact("task_id", resource.producer()));
+        }
+
+        for consumer_id in resource.consumers() {
+            let consumer = task_by_id(pipeline, *consumer_id)?;
+            if !consumer.input_resources().contains(&resource.id()) {
+                return Err(invalid("pipeline resident resource consumer task does not input resource")
+                    .with_fact("resource_id", resource.id())
+                    .with_fact("task_id", consumer_id));
+            }
+            if !task_reaches(pipeline, resource.producer(), *consumer_id) {
+                return Err(invalid("pipeline resident resource producer does not dominate consumer")
+                    .with_fact("resource_id", resource.id())
+                    .with_fact("producer_task", resource.producer())
+                    .with_fact("consumer_task", consumer_id));
+            }
+            if !edge_carries_resource(pipeline, resource.producer(), *consumer_id, resource.id()) {
+                return Err(invalid("pipeline resident resource consumer has no carrying dependency edge")
+                    .with_fact("resource_id", resource.id())
+                    .with_fact("producer_task", resource.producer())
+                    .with_fact("consumer_task", consumer_id));
+            }
+        }
+
+        match resource.lifetime() {
+            ResidentLifetime::TaskLocal { task } => {
+                if task != resource.producer() {
+                    return Err(invalid("pipeline task-local lifetime does not match resource producer")
+                        .with_fact("resource_id", resource.id())
+                        .with_fact("lifetime_task", task)
+                        .with_fact("producer_task", resource.producer()));
+                }
+                if !resource.consumers().is_empty() {
+                    return Err(invalid("pipeline task-local lifetime has external consumers")
+                        .with_fact("resource_id", resource.id())
+                        .with_fact("consumer_count", resource.consumers().len()));
+                }
+            },
+            ResidentLifetime::BetweenTasks { producer, last_consumer } => {
+                if producer != resource.producer() {
+                    return Err(invalid("pipeline between-tasks lifetime producer does not match resource producer")
+                        .with_fact("resource_id", resource.id())
+                        .with_fact("lifetime_producer", producer)
+                        .with_fact("producer_task", resource.producer()));
+                }
+                if resource.consumers().is_empty() {
+                    return Err(invalid("pipeline between-tasks lifetime has no consumers")
+                        .with_fact("resource_id", resource.id()));
+                }
+                if !resource.consumers().contains(&last_consumer) {
+                    return Err(invalid("pipeline between-tasks lifetime last consumer is not a resource consumer")
+                        .with_fact("resource_id", resource.id())
+                        .with_fact("last_consumer", last_consumer));
+                }
+            },
+            ResidentLifetime::SinkOutput { producer } => {
+                if producer != resource.producer() {
+                    return Err(invalid("pipeline sink-output lifetime producer does not match resource producer")
+                        .with_fact("resource_id", resource.id())
+                        .with_fact("lifetime_producer", producer)
+                        .with_fact("producer_task", resource.producer()));
+                }
+                if !resource.consumers().is_empty() {
+                    return Err(invalid("pipeline sink-output lifetime has task consumers")
+                        .with_fact("resource_id", resource.id())
+                        .with_fact("consumer_count", resource.consumers().len()));
+                }
+            },
+        }
+    }
+
+    for edge in pipeline.edges() {
+        for resource_id in edge.resources() {
+            let resource = resource_by_id(pipeline, *resource_id)?;
+            if resource.producer() != edge.from() {
+                return Err(invalid("pipeline edge resource producer does not match edge producer")
+                    .with_fact("edge_id", edge.id())
+                    .with_fact("resource_id", resource_id)
+                    .with_fact("edge_producer", edge.from())
+                    .with_fact("resource_producer", resource.producer()));
+            }
+            if !resource.consumers().contains(&edge.to()) {
+                return Err(invalid("pipeline edge resource consumer is not recorded on resource")
+                    .with_fact("edge_id", edge.id())
+                    .with_fact("resource_id", resource_id)
+                    .with_fact("edge_consumer", edge.to()));
+            }
+            if edge.kind() == PipelineEdgeKind::SharedResidentProducer && resource.consumers().len() < 2 {
+                return Err(invalid("pipeline shared resident producer edge does not fan out to multiple consumers")
+                    .with_fact("edge_id", edge.id())
+                    .with_fact("resource_id", resource_id)
+                    .with_fact("consumer_count", resource.consumers().len()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    for barrier in pipeline.barriers() {
+        if barrier.upstream_tasks().is_empty() {
+            return Err(invalid("pipeline barrier has no upstream tasks").with_fact("barrier_id", barrier.id()));
+        }
+
+        for downstream in barrier.downstream_tasks() {
+            if !barrier.upstream_tasks().iter().any(|upstream| task_reaches(pipeline, *upstream, *downstream)) {
+                return Err(invalid("pipeline barrier upstream tasks do not dominate downstream task")
+                    .with_fact("barrier_id", barrier.id())
+                    .with_fact("downstream_task", downstream));
+            }
+        }
+
+        match barrier.kind() {
+            PipelineBarrierKind::JoinBuildBeforeProbe => {
+                let [build] = barrier.upstream_tasks() else {
+                    return Err(invalid("pipeline join build-before-probe barrier must have one build task")
+                        .with_fact("barrier_id", barrier.id())
+                        .with_fact("upstream_count", barrier.upstream_tasks().len()));
+                };
+                let [probe] = barrier.downstream_tasks() else {
+                    return Err(invalid("pipeline join build-before-probe barrier must have one probe task")
+                        .with_fact("barrier_id", barrier.id())
+                        .with_fact("downstream_count", barrier.downstream_tasks().len()));
+                };
+                validate_barrier_task_pair(
+                    pipeline,
+                    barrier.id(),
+                    *build,
+                    PipelineTaskKind::JoinBuild,
+                    *probe,
+                    PipelineTaskKind::JoinProbe,
+                )?;
+            },
+            PipelineBarrierKind::JoinMaterialization => {
+                let [probe] = barrier.upstream_tasks() else {
+                    return Err(invalid("pipeline join materialization barrier must have one probe task")
+                        .with_fact("barrier_id", barrier.id())
+                        .with_fact("upstream_count", barrier.upstream_tasks().len()));
+                };
+                let [materialize] = barrier.downstream_tasks() else {
+                    return Err(invalid("pipeline join materialization barrier must have one materialize task")
+                        .with_fact("barrier_id", barrier.id())
+                        .with_fact("downstream_count", barrier.downstream_tasks().len()));
+                };
+                validate_barrier_task_pair(
+                    pipeline,
+                    barrier.id(),
+                    *probe,
+                    PipelineTaskKind::JoinProbe,
+                    *materialize,
+                    PipelineTaskKind::JoinMaterialize,
+                )?;
+            },
+            PipelineBarrierKind::AggregateBoundary => {
+                validate_barrier_upstream_kind(
+                    pipeline,
+                    barrier.id(),
+                    barrier.upstream_tasks(),
+                    PipelineTaskKind::Aggregate,
+                )?;
+            },
+            PipelineBarrierKind::SortBoundary => {
+                validate_barrier_upstream_kind(
+                    pipeline,
+                    barrier.id(),
+                    barrier.upstream_tasks(),
+                    PipelineTaskKind::FinalSort,
+                )?;
+            },
+            PipelineBarrierKind::SourceChunkBoundary => {
+                validate_barrier_upstream_kind(
+                    pipeline,
+                    barrier.id(),
+                    barrier.upstream_tasks(),
+                    PipelineTaskKind::SourceRead,
+                )?;
+            },
+            PipelineBarrierKind::SinkBoundary => {},
+        }
+    }
+    Ok(())
+}
+
+fn validate_barrier_task_pair(
+    pipeline: &CompiledPipeline,
+    barrier: PipelineBarrierId,
+    upstream_id: PipelineTaskId,
+    expected_upstream: PipelineTaskKind,
+    downstream_id: PipelineTaskId,
+    expected_downstream: PipelineTaskKind,
+) -> crate::Result<()> {
+    let upstream = task_by_id(pipeline, upstream_id)?;
+    let downstream = task_by_id(pipeline, downstream_id)?;
+    if upstream.kind() != expected_upstream {
+        return Err(invalid("pipeline barrier upstream task has wrong kind")
+            .with_fact("barrier_id", barrier)
+            .with_fact("task_id", upstream_id)
+            .with_fact("expected_kind", expected_upstream.as_str())
+            .with_fact("actual_kind", upstream.kind().as_str()));
+    }
+    if downstream.kind() != expected_downstream {
+        return Err(invalid("pipeline barrier downstream task has wrong kind")
+            .with_fact("barrier_id", barrier)
+            .with_fact("task_id", downstream_id)
+            .with_fact("expected_kind", expected_downstream.as_str())
+            .with_fact("actual_kind", downstream.kind().as_str()));
+    }
+    if upstream.plan_node().is_some()
+        && downstream.plan_node().is_some()
+        && upstream.plan_node() != downstream.plan_node()
+    {
+        return Err(invalid("pipeline join barrier tasks do not belong to the same plan node")
+            .with_fact("barrier_id", barrier)
+            .with_fact("upstream_task", upstream_id)
+            .with_fact("downstream_task", downstream_id));
+    }
+    Ok(())
+}
+
+fn validate_barrier_upstream_kind(
+    pipeline: &CompiledPipeline,
+    barrier: PipelineBarrierId,
+    upstream_tasks: &[PipelineTaskId],
+    expected: PipelineTaskKind,
+) -> crate::Result<()> {
+    for task_id in upstream_tasks {
+        let task = task_by_id(pipeline, *task_id)?;
+        if task.kind() != expected {
+            return Err(invalid("pipeline barrier upstream task has wrong kind")
+                .with_fact("barrier_id", barrier)
+                .with_fact("task_id", task_id)
+                .with_fact("expected_kind", expected.as_str())
+                .with_fact("actual_kind", task.kind().as_str()));
         }
     }
     Ok(())
@@ -331,6 +622,144 @@ fn validate_gate_owner_references(pipeline: &CompiledPipeline) -> crate::Result<
         }
     }
     Ok(())
+}
+
+fn validate_reservation_gate_contracts(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    for gate in pipeline.gates() {
+        if gate.memory_boundary().is_empty() {
+            return Err(invalid("pipeline reservation gate has empty memory boundary").with_fact("gate_id", gate.id()));
+        }
+        if gate.required_contract().is_empty() {
+            return Err(
+                invalid("pipeline reservation gate has empty required contract").with_fact("gate_id", gate.id())
+            );
+        }
+        validate_gate_scope(gate.id(), gate.owner(), gate.requirement().scope, gate.reservation_kind())?;
+        validate_unresolved_preflight_label(
+            gate.id(),
+            gate.reservation_kind(),
+            gate.required_contract(),
+            gate.status(),
+            gate.quality(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_gate_scope(
+    gate: ReservationGateId,
+    owner: ReservationGateOwner,
+    scope: ReservationRequirementScope,
+    kind: ReservationKind,
+) -> crate::Result<()> {
+    let valid = match (scope, owner) {
+        (ReservationRequirementScope::Node, ReservationGateOwner::Task(_)) => true,
+        (ReservationRequirementScope::Edge, ReservationGateOwner::Edge(_)) => true,
+        (ReservationRequirementScope::Edge, ReservationGateOwner::SinkBoundary)
+            if kind == ReservationKind::Materialization =>
+        {
+            true
+        },
+        (ReservationRequirementScope::Subgraph, ReservationGateOwner::Barrier(_)) => true,
+        _ => false,
+    };
+    if !valid {
+        return Err(invalid("pipeline reservation gate owner does not match requirement scope")
+            .with_fact("gate_id", gate)
+            .with_fact("gate_owner", owner.to_string())
+            .with_fact("requirement_scope", scope.as_str())
+            .with_fact("reservation_kind", kind.as_str()));
+    }
+    Ok(())
+}
+
+fn validate_unresolved_preflight_label(
+    gate: ReservationGateId,
+    kind: ReservationKind,
+    required_contract: &'static str,
+    status: ContractStatus,
+    quality: ContractQuality,
+) -> crate::Result<()> {
+    if status == ContractStatus::Modeled
+        && is_unresolved_preflight_contract(kind, required_contract)
+        && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+    {
+        return Err(invalid("pipeline hard-budgeted gate is not labeled as unresolved preflight")
+            .with_fact("gate_id", gate)
+            .with_fact("reservation_kind", kind.as_str())
+            .with_fact("contract_status", status.as_str())
+            .with_fact("contract_quality", quality.as_str()));
+    }
+    Ok(())
+}
+
+fn is_unresolved_preflight_contract(kind: ReservationKind, required_contract: &'static str) -> bool {
+    matches!(
+        (kind, required_contract),
+        (ReservationKind::SourceRead, "source_contract")
+            | (ReservationKind::OperatorOutput, "aggregate_contract")
+            | (ReservationKind::FinalSort, "final_sort_contract")
+    )
+}
+
+fn task_by_id(
+    pipeline: &CompiledPipeline,
+    task_id: PipelineTaskId,
+) -> crate::Result<&crate::pipeline::model::PipelineTask> {
+    pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.id() == task_id)
+        .ok_or_else(|| invalid("pipeline task does not exist").with_fact("task_id", task_id))
+}
+
+fn resource_by_id(
+    pipeline: &CompiledPipeline,
+    resource_id: ResidentResourceId,
+) -> crate::Result<&crate::pipeline::model::ResidentResource> {
+    pipeline
+        .resources()
+        .iter()
+        .find(|resource| resource.id() == resource_id)
+        .ok_or_else(|| invalid("pipeline resident resource does not exist").with_fact("resource_id", resource_id))
+}
+
+fn adjacency(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, Vec<PipelineTaskId>> {
+    let mut adjacency = BTreeMap::<PipelineTaskId, Vec<PipelineTaskId>>::new();
+    for edge in pipeline.edges() {
+        adjacency.entry(edge.from()).or_default().push(edge.to());
+    }
+    adjacency
+}
+
+fn task_reaches(pipeline: &CompiledPipeline, from: PipelineTaskId, to: PipelineTaskId) -> bool {
+    if from == to {
+        return true;
+    }
+    let adjacency = adjacency(pipeline);
+    let mut stack = vec![from];
+    let mut visited = BTreeSet::new();
+    while let Some(task) = stack.pop() {
+        if !visited.insert(task) {
+            continue;
+        }
+        for downstream in adjacency.get(&task).into_iter().flatten() {
+            if *downstream == to {
+                return true;
+            }
+            stack.push(*downstream);
+        }
+    }
+    false
+}
+
+fn edge_carries_resource(
+    pipeline: &CompiledPipeline,
+    from: PipelineTaskId,
+    to: PipelineTaskId,
+    resource: ResidentResourceId,
+) -> bool {
+    pipeline.edges().iter().any(|edge| edge.from() == from && edge.to() == to && edge.resources().contains(&resource))
 }
 
 fn invalid(message: &'static str) -> QueryError {
