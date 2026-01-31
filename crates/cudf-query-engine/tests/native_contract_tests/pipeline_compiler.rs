@@ -2,14 +2,30 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, CompiledPipeline, Expr, GpuResidentSource, JoinKey,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetSource, PipelineBarrier, PipelineBarrierId,
-    PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
-    PipelineTaskKind, QueryPlan, QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner,
-    ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr,
-    SortSpec, SourceNode,
-    capability::{ContractQuality, ContractStatus, ReservationRequirement, ReservationRequirementScope},
+    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, Expr, GpuResidentSource,
+    JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetSource, NodeId, PipelineBarrier,
+    PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
+    PipelineTaskId, PipelineTaskKind, PlanNode, QueryPlan, QueryPlanBuilder, ReservationGate, ReservationGateId,
+    ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary,
+    SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
+    capability::{
+        CapabilityAnalysis, CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirement,
+        ReservationRequirementScope, SubgraphInvariantKind,
+    },
     compile_pipeline,
+};
+
+use crate::bounded_join_admission::{
+    AggregateOverJoinSubplanInputsVariant, ResidualResidentGroupedAggregateInputVariant,
+    keyless_conditional_aggregate_over_join_subplan_inputs_plan,
+    plans::{
+        KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant, aggregate_over_join_subplan_topk_plan,
+        keyed_hash_join_resident_subplan_pipeline_plan, keyless_conditional_join_input_subplan_plan,
+        resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+        resident_grouped_aggregate_subquery_filter_plan, serial_aggregate_multi_join_spine_plan,
+        serial_aggregate_single_join_spine_plan,
+    },
+    residual_resident_grouped_aggregate_input_plan,
 };
 
 #[test]
@@ -213,6 +229,8 @@ fn compile_pipeline_root_join_uses_build_side_and_not_append_order_as_schedule_p
 
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     pipeline.validate().expect("compiled root join pipeline should validate");
+    assert_no_legacy_execution_selection_terms("root join", &pipeline);
+    assert_join_build_probe_dependencies("root join", &plan, &analysis, &pipeline);
 
     assert_eq!(
         pipeline.tasks().iter().map(|task| task.kind()).collect::<Vec<_>>(),
@@ -296,6 +314,341 @@ fn compile_pipeline_non_join_aggregate_sort_limit_plan_has_blocking_barriers_in_
 }
 
 #[test]
+fn compile_pipeline_root_join_attaches_edge_task_and_sink_reservation_gates() {
+    let plan = root_join_plan();
+    let analysis = plan.capability_analysis();
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
+
+    let build_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::JoinBuild)
+        .expect("join build task should exist");
+    assert_gate(
+        &pipeline,
+        build_task.gates(),
+        ReservationGateOwner::Task(build_task.id()),
+        ReservationKind::HashTable,
+        ContractStatus::Modeled,
+        ContractQuality::ExactPreflight,
+    );
+
+    let build_edge = pipeline
+        .edges()
+        .iter()
+        .find(|edge| edge.kind() == PipelineEdgeKind::JoinBuildInput)
+        .expect("join build input edge should exist");
+    assert_gate(
+        &pipeline,
+        build_edge.gates(),
+        ReservationGateOwner::Edge(build_edge.id()),
+        ReservationKind::SourceRead,
+        ContractStatus::Modeled,
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+    );
+    assert_gate(
+        &pipeline,
+        build_edge.gates(),
+        ReservationGateOwner::Edge(build_edge.id()),
+        ReservationKind::BuildSide,
+        ContractStatus::Modeled,
+        ContractQuality::ExactPreflight,
+    );
+
+    let probe_edge = pipeline
+        .edges()
+        .iter()
+        .find(|edge| edge.kind() == PipelineEdgeKind::JoinProbeInput)
+        .expect("join probe input edge should exist");
+    assert_gate(
+        &pipeline,
+        probe_edge.gates(),
+        ReservationGateOwner::Edge(probe_edge.id()),
+        ReservationKind::ProbeSide,
+        ContractStatus::Modeled,
+        ContractQuality::QueryEngineOwnedOrdering,
+    );
+
+    let sink_edge = pipeline
+        .edges()
+        .iter()
+        .find(|edge| edge.kind() == PipelineEdgeKind::SinkInput)
+        .expect("host sink input edge should exist");
+    assert_gate(
+        &pipeline,
+        sink_edge.gates(),
+        ReservationGateOwner::Edge(sink_edge.id()),
+        ReservationKind::GatherMap,
+        ContractStatus::Modeled,
+        ContractQuality::ExactPreflight,
+    );
+    assert_gate(
+        &pipeline,
+        sink_edge.gates(),
+        ReservationGateOwner::Edge(sink_edge.id()),
+        ReservationKind::JoinOutput,
+        ContractStatus::Modeled,
+        ContractQuality::ExactPreflight,
+    );
+    assert_gate(
+        &pipeline,
+        pipeline.sink().gates(),
+        ReservationGateOwner::SinkBoundary,
+        ReservationKind::Materialization,
+        ContractStatus::Modeled,
+        ContractQuality::QueryEngineOwnedBoundary,
+    );
+}
+
+#[test]
+fn compile_pipeline_aggregate_and_sort_preserve_unresolved_preflight_gate_quality() {
+    let plan = aggregate_sort_limit_plan();
+    let analysis = plan.capability_analysis();
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate sort limit plan should compile");
+
+    let aggregate_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::Aggregate)
+        .expect("aggregate task should exist");
+    assert_gate(
+        &pipeline,
+        aggregate_task.gates(),
+        ReservationGateOwner::Task(aggregate_task.id()),
+        ReservationKind::OperatorOutput,
+        ContractStatus::Modeled,
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+    );
+
+    let source_edge = pipeline
+        .edges()
+        .iter()
+        .find(|edge| edge.from() == PipelineTaskId::new(0) && edge.to() == aggregate_task.id())
+        .expect("source-to-aggregate edge should exist");
+    assert_gate(
+        &pipeline,
+        source_edge.gates(),
+        ReservationGateOwner::Edge(source_edge.id()),
+        ReservationKind::SourceRead,
+        ContractStatus::Modeled,
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+    );
+
+    let sort_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::FinalSort)
+        .expect("final sort task should exist");
+    let sort_edge =
+        pipeline.edges().iter().find(|edge| edge.to() == sort_task.id()).expect("sort input edge should exist");
+    assert_gate(
+        &pipeline,
+        sort_edge.gates(),
+        ReservationGateOwner::Edge(sort_edge.id()),
+        ReservationKind::FinalSort,
+        ContractStatus::Modeled,
+        ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+    );
+}
+
+#[test]
+fn compile_pipeline_residual_join_preserves_observed_retained_state_quality() {
+    let plan = residual_root_join_plan();
+    let analysis = plan.capability_analysis();
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("residual root join should compile");
+
+    let materialize_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::JoinMaterialize)
+        .expect("join materialization task should exist");
+    assert_gate(
+        &pipeline,
+        materialize_task.gates(),
+        ReservationGateOwner::Task(materialize_task.id()),
+        ReservationKind::MixedSizeData,
+        ContractStatus::Modeled,
+        ContractQuality::ObservedRetainedState,
+    );
+}
+
+#[test]
+fn compile_pipeline_single_join_post_root_pipeline_has_post_join_aggregate_and_sort_barriers() {
+    let (_plan, _analysis, pipeline) = compile_admitted_join_case(
+        "single-join post-root",
+        serial_aggregate_single_join_spine_plan(),
+        CapabilityAnalysis::admits_single_join_post_root_pipeline,
+    );
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinBuild, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinProbe, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 1);
+    assert_task_kind_count_at_least(&pipeline, PipelineTaskKind::Aggregate, 2);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_barrier_kind_count_at_least(&pipeline, PipelineBarrierKind::AggregateBoundary, 2);
+    assert_barrier_kind_count(&pipeline, PipelineBarrierKind::SortBoundary, 1);
+    assert_barrier_appears_before(&pipeline, PipelineBarrierKind::AggregateBoundary, PipelineBarrierKind::SortBoundary);
+}
+
+#[test]
+fn compile_pipeline_multi_join_paths_make_every_build_probe_constraint_explicit() {
+    for (label, plan) in [
+        ("serial aggregate multi-join", serial_aggregate_multi_join_spine_plan()),
+        ("mixed residual multi-join", crate::bounded_join_admission::admitted_mixed_residual_multi_join_plan()),
+    ] {
+        let (plan, analysis, pipeline) =
+            compile_admitted_join_case(label, plan, CapabilityAnalysis::admits_closed_multi_join_subgraph);
+
+        assert!(join_node_ids(&plan).len() >= 2, "{label} should exercise more than one join");
+        assert_eq!(
+            analysis
+                .invariants
+                .iter()
+                .filter(|invariant| matches!(invariant.kind, SubgraphInvariantKind::BuildBeforeProbe { .. }))
+                .count(),
+            join_node_ids(&plan).len(),
+            "{label} should solve one build-before-probe invariant for each join"
+        );
+        assert_task_kind_count(&pipeline, PipelineTaskKind::JoinBuild, join_node_ids(&plan).len());
+        assert_task_kind_count(&pipeline, PipelineTaskKind::JoinProbe, join_node_ids(&plan).len());
+        assert_barrier_kind_count(&pipeline, PipelineBarrierKind::JoinBuildBeforeProbe, join_node_ids(&plan).len());
+    }
+}
+
+#[test]
+fn compile_pipeline_keyless_join_subplan_cases_keep_subplan_work_as_dependencies() {
+    let (_plan, _analysis, input_subplan) = compile_admitted_join_case(
+        "keyless input-subplan",
+        keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted),
+        CapabilityAnalysis::admits_keyless_conditional_join_input_subplan_pipeline,
+    );
+    assert_task_kind_count_at_least(&input_subplan, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count_at_least(&input_subplan, PipelineTaskKind::Unary, 1);
+    assert_task_kind_count_at_least(&input_subplan, PipelineTaskKind::JoinBuild, 2);
+
+    let (_plan, _analysis, aggregate_over_inputs) = compile_admitted_join_case(
+        "keyless aggregate-over-join-subplan inputs",
+        keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted),
+        CapabilityAnalysis::admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
+    );
+    assert_task_kind_count_at_least(&aggregate_over_inputs, PipelineTaskKind::Aggregate, 2);
+    assert_task_kind_count_at_least(&aggregate_over_inputs, PipelineTaskKind::JoinBuild, 5);
+    assert_barrier_kind_count_at_least(&aggregate_over_inputs, PipelineBarrierKind::JoinBuildBeforeProbe, 5);
+}
+
+#[test]
+fn compile_pipeline_topk_bounded_paths_compile_aggregate_sort_limit_structure() {
+    for (label, plan, admits, expected_aggregates) in [
+        (
+            "aggregate-over-join TopK",
+            aggregate_over_join_subplan_topk_plan(),
+            CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline
+                as fn(&CapabilityAnalysis) -> bool,
+            1,
+        ),
+        (
+            "resident grouped-aggregate TopK",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&CapabilityAnalysis) -> bool,
+            2,
+        ),
+    ] {
+        let (_plan, _analysis, pipeline) = compile_admitted_join_case(label, plan, admits);
+
+        assert_task_kind_count_at_least(&pipeline, PipelineTaskKind::Aggregate, expected_aggregates);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+        assert_barrier_kind_count_at_least(&pipeline, PipelineBarrierKind::AggregateBoundary, expected_aggregates);
+        assert_barrier_kind_count(&pipeline, PipelineBarrierKind::SortBoundary, 1);
+        assert_barrier_appears_before(
+            &pipeline,
+            PipelineBarrierKind::AggregateBoundary,
+            PipelineBarrierKind::SortBoundary,
+        );
+    }
+}
+
+#[test]
+fn compile_pipeline_resident_grouped_aggregate_subquery_filter_keeps_join_and_aggregate_boundaries() {
+    let (_plan, _analysis, pipeline) = compile_admitted_join_case(
+        "resident grouped-aggregate subquery filter",
+        resident_grouped_aggregate_subquery_filter_plan(),
+        CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
+    );
+
+    assert_task_kind_count_at_least(&pipeline, PipelineTaskKind::JoinBuild, 3);
+    assert_task_kind_count_at_least(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_barrier_kind_count_at_least(&pipeline, PipelineBarrierKind::JoinMaterialization, 3);
+    assert_barrier_kind_count_at_least(&pipeline, PipelineBarrierKind::AggregateBoundary, 1);
+}
+
+#[test]
+fn compile_pipeline_mixed_residual_resident_grouped_aggregate_branch_feeds_root_build_side() {
+    let (plan, _analysis, pipeline) = compile_admitted_join_case(
+        "mixed residual resident grouped aggregate input",
+        residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily),
+        CapabilityAnalysis::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
+    );
+
+    let root_join = residual_join_node_id(&plan);
+    let build_task = task_for_plan_node(&pipeline, root_join, PipelineTaskKind::JoinBuild);
+    let probe_task = task_for_plan_node(&pipeline, root_join, PipelineTaskKind::JoinProbe);
+    let aggregate_branch = pipeline
+        .edges()
+        .iter()
+        .find(|edge| edge.to() == build_task.id() && edge.kind() == PipelineEdgeKind::JoinBuildInput)
+        .expect("root residual join build side should be fed by the grouped aggregate branch");
+    let producer = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.id() == aggregate_branch.from())
+        .expect("aggregate branch producer task should exist");
+    assert!(
+        matches!(producer.kind(), PipelineTaskKind::Aggregate | PipelineTaskKind::Unary),
+        "grouped aggregate branch should reach the root build side as resident pipeline work"
+    );
+    assert!(pipeline.edges().iter().any(|edge| {
+        edge.from() == build_task.id() && edge.to() == probe_task.id() && edge.kind() == PipelineEdgeKind::Control
+    }));
+}
+
+#[test]
+fn compile_pipeline_keyed_hash_resident_subplan_uses_shared_resource_identity_for_fanout() {
+    let (_plan, _analysis, pipeline) = compile_admitted_join_case(
+        "keyed hash resident subplan",
+        keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily),
+        CapabilityAnalysis::admits_keyed_hash_join_resident_subplan_pipeline,
+    );
+
+    let shared_edges = pipeline
+        .edges()
+        .iter()
+        .filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer)
+        .collect::<Vec<_>>();
+    assert!(!shared_edges.is_empty(), "shared resident subplan should compile explicit shared-producer edges");
+    let shared_resource =
+        shared_edges[0].resources().first().copied().expect("shared producer edge should carry the producer resource");
+    assert!(
+        shared_edges.iter().all(|edge| edge.resources() == [shared_resource]),
+        "shared fan-out should be represented by the same resident resource identity on all shared edges"
+    );
+    let resource = pipeline
+        .resources()
+        .iter()
+        .find(|resource| resource.id() == shared_resource)
+        .expect("shared resident resource should exist");
+    assert!(
+        resource.consumers().len() >= 2,
+        "shared resident producer should dominate multiple consumers through one resource"
+    );
+}
+
+#[test]
 fn compile_pipeline_rejects_local_capability_rejection_before_building_graph() {
     let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
@@ -309,6 +662,164 @@ fn compile_pipeline_rejects_local_capability_rejection_before_building_graph() {
     assert_eq!(error.fact_value("capability_scope"), Some("node"));
     assert_eq!(error.fact_value("capability_reason"), Some("unsupported_gpu_resident_source_capability"));
     assert_eq!(error.fact_value("node_id"), Some("n0"));
+}
+
+fn assert_gate(
+    pipeline: &CompiledPipeline,
+    gate_ids: &[ReservationGateId],
+    owner: ReservationGateOwner,
+    kind: ReservationKind,
+    status: ContractStatus,
+    quality: ContractQuality,
+) {
+    let gate = gate_ids
+        .iter()
+        .filter_map(|gate_id| pipeline.gates().iter().find(|gate| gate.id() == *gate_id))
+        .find(|gate| gate.owner() == owner && gate.reservation_kind() == kind)
+        .unwrap_or_else(|| panic!("missing {kind:?} gate for owner {owner:?}"));
+
+    assert_eq!(gate.status(), status);
+    assert_eq!(gate.quality(), quality);
+    assert_eq!(gate.requirement().status, status);
+    assert_eq!(gate.requirement().quality, quality);
+}
+
+fn compile_admitted_join_case(
+    label: &str,
+    plan: QueryPlan,
+    admits: fn(&CapabilityAnalysis) -> bool,
+) -> (QueryPlan, CapabilityAnalysis, CompiledPipeline) {
+    let analysis = plan.capability_analysis();
+    assert!(!analysis.has_rejections(), "{label}: capability analysis should not contain local rejections");
+    assert!(admits(&analysis), "{label}: expected capability admission to be satisfied");
+
+    let pipeline =
+        compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
+    pipeline.validate().unwrap_or_else(|error| panic!("{label}: compiled pipeline should validate: {error}"));
+    assert_no_legacy_execution_selection_terms(label, &pipeline);
+    assert_join_build_probe_dependencies(label, &plan, &analysis, &pipeline);
+    (plan, analysis, pipeline)
+}
+
+fn assert_no_legacy_execution_selection_terms(label: &str, pipeline: &CompiledPipeline) {
+    let rendered = pipeline.debug_render();
+    for forbidden in ["BoundedJoinExecutionPath", "BoundedJoinExecutionFamily"] {
+        assert!(
+            !rendered.contains(forbidden),
+            "{label}: compiled pipeline rendering must not name legacy execution selection type {forbidden}"
+        );
+    }
+}
+
+fn assert_join_build_probe_dependencies(
+    label: &str,
+    plan: &QueryPlan,
+    analysis: &CapabilityAnalysis,
+    pipeline: &CompiledPipeline,
+) {
+    for join_id in join_node_ids(plan) {
+        let invariant = analysis
+            .invariants
+            .iter()
+            .find(|invariant| {
+                matches!(invariant.kind, SubgraphInvariantKind::BuildBeforeProbe { join_id: candidate } if candidate == join_id)
+            })
+            .unwrap_or_else(|| panic!("{label}: join {join_id} should have a build-before-probe invariant"));
+        assert_eq!(
+            invariant.decision,
+            CapabilityDecision::Satisfied,
+            "{label}: build-before-probe invariant for {join_id} should be satisfied"
+        );
+
+        let build = task_for_plan_node(pipeline, join_id, PipelineTaskKind::JoinBuild);
+        let probe = task_for_plan_node(pipeline, join_id, PipelineTaskKind::JoinProbe);
+        let materialize = task_for_plan_node(pipeline, join_id, PipelineTaskKind::JoinMaterialize);
+        assert!(
+            pipeline.edges().iter().any(|edge| {
+                edge.from() == build.id() && edge.to() == probe.id() && edge.kind() == PipelineEdgeKind::Control
+            }),
+            "{label}: join {join_id} should have explicit build -> probe control dependency"
+        );
+        assert!(
+            pipeline.edges().iter().any(|edge| {
+                edge.from() == probe.id() && edge.to() == materialize.id() && edge.kind() == PipelineEdgeKind::Control
+            }),
+            "{label}: join {join_id} should have explicit probe -> materialize control dependency"
+        );
+        assert!(
+            pipeline.barriers().iter().any(|barrier| {
+                barrier.kind() == PipelineBarrierKind::JoinBuildBeforeProbe
+                    && barrier.upstream_tasks() == [build.id()]
+                    && barrier.downstream_tasks() == [probe.id()]
+            }),
+            "{label}: join {join_id} should have explicit build-before-probe barrier"
+        );
+    }
+}
+
+fn task_for_plan_node(pipeline: &CompiledPipeline, node_id: NodeId, kind: PipelineTaskKind) -> &PipelineTask {
+    pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.plan_node() == Some(node_id) && task.kind() == kind)
+        .unwrap_or_else(|| panic!("missing {kind:?} task for plan node {node_id}"))
+}
+
+fn join_node_ids(plan: &QueryPlan) -> Vec<NodeId> {
+    plan.nodes().iter().filter_map(|node| matches!(node.kind, PlanNode::Join(_)).then_some(node.id)).collect()
+}
+
+fn residual_join_node_id(plan: &QueryPlan) -> NodeId {
+    plan.nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Join(join) if join.spec.residual_predicate.is_some() => Some(node.id),
+            _ => None,
+        })
+        .expect("plan should contain a residual join")
+}
+
+fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, expected: usize) {
+    assert_eq!(task_kind_count(pipeline, kind), expected, "unexpected count for {kind:?} tasks");
+}
+
+fn assert_task_kind_count_at_least(pipeline: &CompiledPipeline, kind: PipelineTaskKind, expected: usize) {
+    let actual = task_kind_count(pipeline, kind);
+    assert!(actual >= expected, "expected at least {expected} {kind:?} tasks, found {actual}");
+}
+
+fn task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind) -> usize {
+    pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
+}
+
+fn assert_barrier_kind_count(pipeline: &CompiledPipeline, kind: PipelineBarrierKind, expected: usize) {
+    assert_eq!(barrier_kind_count(pipeline, kind), expected, "unexpected count for {kind:?} barriers");
+}
+
+fn assert_barrier_kind_count_at_least(pipeline: &CompiledPipeline, kind: PipelineBarrierKind, expected: usize) {
+    let actual = barrier_kind_count(pipeline, kind);
+    assert!(actual >= expected, "expected at least {expected} {kind:?} barriers, found {actual}");
+}
+
+fn barrier_kind_count(pipeline: &CompiledPipeline, kind: PipelineBarrierKind) -> usize {
+    pipeline.barriers().iter().filter(|barrier| barrier.kind() == kind).count()
+}
+
+fn assert_barrier_appears_before(pipeline: &CompiledPipeline, before: PipelineBarrierKind, after: PipelineBarrierKind) {
+    let last_before = pipeline
+        .barriers()
+        .iter()
+        .rposition(|barrier| barrier.kind() == before)
+        .unwrap_or_else(|| panic!("missing {before:?} barrier"));
+    let first_after = pipeline
+        .barriers()
+        .iter()
+        .position(|barrier| barrier.kind() == after)
+        .unwrap_or_else(|| panic!("missing {after:?} barrier"));
+    assert!(
+        last_before < first_after,
+        "{before:?} barriers should appear before the first {after:?} barrier in dependency order"
+    );
 }
 
 fn root_join_plan() -> QueryPlan {
@@ -343,6 +854,53 @@ fn root_join_plan() -> QueryPlan {
             JoinType::Inner,
             vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
         )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn residual_root_join_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/pipeline-residual-left.parquet",
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/pipeline-residual-right.parquet",
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_value", "left_value"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_value", "right_value"),
+        ))
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
             JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),

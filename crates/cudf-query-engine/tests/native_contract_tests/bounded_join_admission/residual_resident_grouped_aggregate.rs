@@ -217,7 +217,7 @@ fn bounded_mixed_residual_resident_grouped_aggregate_phase6_preserves_node_failu
 }
 
 #[derive(Debug, Clone, Copy)]
-enum ResidualResidentGroupedAggregateInputVariant {
+pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
     BlockedFamily,
     RootJoinWithoutResidual,
     BareGroupedAggregateInput,
@@ -234,7 +234,7 @@ enum ResidualResidentGroupedAggregateInputVariant {
     UnsupportedResidualExpression,
 }
 
-fn residual_resident_grouped_aggregate_input_plan(
+pub(crate) fn residual_resident_grouped_aggregate_input_plan(
     variant: ResidualResidentGroupedAggregateInputVariant,
 ) -> cudf_query_engine::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![

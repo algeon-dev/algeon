@@ -22,6 +22,7 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::Result<()
     validate_task_dependencies(pipeline, &task_ids)?;
     validate_task_resource_references(pipeline, &resource_ids)?;
     validate_gate_references(pipeline, &gate_ids)?;
+    validate_gate_owner_references(pipeline)?;
 
     if !task_ids.contains(&pipeline.sink().input()) {
         return Err(invalid("pipeline sink input task does not exist").with_fact("task_id", pipeline.sink().input()));
@@ -303,6 +304,30 @@ fn validate_gate_references(pipeline: &CompiledPipeline, gate_ids: &BTreeSet<Res
             return Err(
                 invalid("pipeline sink boundary references missing reservation gate").with_fact("gate_id", gate)
             );
+        }
+    }
+    Ok(())
+}
+
+fn validate_gate_owner_references(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    for gate in pipeline.gates() {
+        let owner_references_gate = match gate.owner() {
+            ReservationGateOwner::Task(task_id) => {
+                pipeline.tasks().iter().any(|task| task.id() == task_id && task.gates().contains(&gate.id()))
+            },
+            ReservationGateOwner::Edge(edge_id) => {
+                pipeline.edges().iter().any(|edge| edge.id() == edge_id && edge.gates().contains(&gate.id()))
+            },
+            ReservationGateOwner::Barrier(barrier_id) => pipeline
+                .barriers()
+                .iter()
+                .any(|barrier| barrier.id() == barrier_id && barrier.gates().contains(&gate.id())),
+            ReservationGateOwner::SinkBoundary => pipeline.sink().gates().contains(&gate.id()),
+        };
+        if !owner_references_gate {
+            return Err(invalid("pipeline reservation gate owner does not reference gate")
+                .with_fact("gate_id", gate.id())
+                .with_fact("gate_owner", gate.owner().to_string()));
         }
     }
     Ok(())

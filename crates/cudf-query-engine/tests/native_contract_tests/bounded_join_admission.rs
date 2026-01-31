@@ -5,12 +5,19 @@ mod aggregate_over_join_subplans;
 #[path = "bounded_join_admission/mixed_residual.rs"]
 mod mixed_residual;
 #[path = "bounded_join_admission/plans.rs"]
-mod plans;
+pub(crate) mod plans;
 #[path = "bounded_join_admission/reservation_contract.rs"]
 mod reservation_contract;
 #[path = "bounded_join_admission/residual_resident_grouped_aggregate.rs"]
 mod residual_resident_grouped_aggregate;
+pub(crate) use aggregate_over_join_subplans::{
+    AggregateOverJoinSubplanInputsVariant, keyless_conditional_aggregate_over_join_subplan_inputs_plan,
+};
+pub(crate) use mixed_residual::admitted_mixed_residual_multi_join_plan;
 use plans::*;
+pub(crate) use residual_resident_grouped_aggregate::{
+    ResidualResidentGroupedAggregateInputVariant, residual_resident_grouped_aggregate_input_plan,
+};
 
 fn assert_modeled_family_reservation_facts_are_consistent(
     facts: &std::collections::BTreeMap<&'static str, String>,
