@@ -10,8 +10,14 @@ mod projected_cross;
 
 use filtered::execute_bounded_root_filtered_join;
 use hash::execute_bounded_root_hash_join;
+pub(in crate::exec::bounded) use hash::{
+    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join_build_from_frame,
+    execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_probe_from_frame,
+};
 use keyless::execute_bounded_root_keyless_conditional_join;
-pub(super) use leaf::{execute_bounded_join_leaf_input, validate_bounded_join_leaf_input_capabilities};
+pub(super) use leaf::{
+    execute_bounded_join_leaf_input, execute_bounded_join_leaf_source, validate_bounded_join_leaf_input_capabilities,
+};
 use mixed::execute_bounded_root_mixed_join;
 use projected_cross::execute_bounded_root_projected_cross_join;
 

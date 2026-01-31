@@ -6,7 +6,7 @@ use std::{
 };
 
 use arrow::{
-    array::Int32Array,
+    array::{Array, Int32Array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -22,7 +22,9 @@ use cudf_query_engine::{
     exec::{
         CompiledBoundedPipelineSupport, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
         CompiledTaskExecutor, CompiledTaskOutput, compiled_bounded_pipeline_support,
+        compiled_bounded_query_plan_support,
     },
+    execute_query_plan,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -69,6 +71,22 @@ fn compiled_bounded_support_rejects_unmodeled_reservation_gates_before_execution
 
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported
+    );
+}
+
+#[test]
+fn compiled_bounded_query_plan_support_rejects_non_hash_root_join_before_execution() {
+    let plan = keyless_root_join_plan();
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("keyless root join should compile");
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("graph shape should still match the structural envelope"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
         CompiledBoundedPipelineSupport::Unsupported
     );
 }
@@ -186,6 +204,165 @@ fn compiled_gpu_executor_runs_source_filter_projection_prefix() {
     assert!(metrics.reservation_granted_bytes > 0);
 }
 
+#[test]
+fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d14");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+
+    let compiled_plan = root_join_data_plan(&left_path, &right_path);
+    let legacy_plan = root_join_data_plan(&left_path, &right_path);
+    let analysis = compiled_plan.capability_analysis();
+    let pipeline = compile_pipeline(&compiled_plan, &analysis).expect("root join should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let context = bounded_context(Arc::new(runtime));
+    let mut compiled_metrics = QueryMetrics::default();
+    let gpu_inputs = cudf_query_engine::GpuResidentInputMap::new();
+
+    let (state, compiled_batch) = {
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&context, &compiled_plan, &pipeline, &gpu_inputs, &mut compiled_metrics)
+                .unwrap();
+        let state = scheduler.run(&mut executor).expect("compiled root hash join should execute");
+        let output = executor.take_host_output().expect("compiled host sink should materialize");
+        (state, output)
+    };
+    let production_result = execute_query_plan(&context, &legacy_plan).expect("bounded root join should execute");
+    let production_batch = production_result.output().as_host_arrow().expect("production output should be host Arrow");
+
+    assert_eq!(
+        state.execution_order(),
+        &[
+            PipelineTaskId::new(0),
+            PipelineTaskId::new(1),
+            PipelineTaskId::new(2),
+            PipelineTaskId::new(3),
+            PipelineTaskId::new(4),
+            PipelineTaskId::new(5),
+        ]
+    );
+    assert_eq!(state.live_resource_count(), 0);
+    assert_eq!(compiled_batch.num_rows(), production_batch.num_rows());
+    assert_eq!(int32_values(&compiled_batch, 0), int32_values(production_batch, 0));
+    assert_eq!(int32_values(&compiled_batch, 1), int32_values(production_batch, 1));
+    assert_eq!(int32_values(&compiled_batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(&compiled_batch, 1), vec![Some(200), Some(400)]);
+    assert_eq!(compiled_metrics.hash_join_build_count, 1);
+    assert!(compiled_metrics.hash_join_hash_table_bytes > 0);
+}
+
+#[test]
+fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d15-root");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+
+    let plan = root_join_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan).expect("root join should execute through compiled scheduler");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(int32_values(batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(batch, 1), vec![Some(200), Some(400)]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
+fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d15-unary-join");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+
+    let plan = root_join_with_unary_inputs_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join with unary inputs should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan).expect("root join with unary inputs should execute");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(int32_values(batch, 0), vec![Some(2), Some(4)]);
+    assert_eq!(int32_values(batch, 1), vec![Some(200), Some(400)]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
+fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d15-fallback");
+    let path = dir.join("input.parquet");
+    let source_schema = write_source_unary_parquet(&path);
+    let plan = aggregate_sort_limit_data_plan(&path, source_schema);
+    let context = bounded_context(Arc::new(runtime));
+
+    let result =
+        execute_query_plan(&context, &plan).expect("unsupported D.1 compiled graph should use legacy fallback");
+    let batch = result.output().as_host_arrow().expect("fallback output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(metrics.compiled_pipeline_attempts, 0);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 0);
+}
+
+#[test]
+fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let plan = root_join_plan();
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
+    let context = bounded_context(Arc::new(runtime));
+    let gpu_inputs = cudf_query_engine::GpuResidentInputMap::new();
+    let mut metrics = QueryMetrics::default();
+    let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+
+    let error = executor.take_host_output().expect_err("empty host sink should be a structured invariant error");
+    let rendered = error.to_string();
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t5"));
+    assert_eq!(error.facts().get("sink_boundary_kind"), Some("host_arrow_materialization"));
+    assert!(!rendered.contains("BoundedJoinExecutionFamily"));
+    assert!(!rendered.contains("BoundedJoinExecutionPath"));
+    assert!(!rendered.contains("bounded_join_execution_path"));
+}
+
 struct MockExecutor {
     executed: Vec<PipelineTaskId>,
     released: Vec<ResidentResourceId>,
@@ -272,6 +449,158 @@ fn root_join_plan() -> QueryPlan {
     let join = builder.add_join(
         left,
         right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn keyless_root_join_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-d1-keyless-left.parquet",
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-d1-keyless-right.parquet",
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![])
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "left_id", "left_id"),
+                BinaryOp::Lt,
+                Expr::input_column(1, "right_id", "right_id"),
+            ))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+            ])
+            .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        left_path,
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        right_path,
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    let left_source_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_source_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        left_path,
+        Arc::clone(&left_source_schema),
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let left_filter = builder.add_filter(
+        left,
+        Expr::binary(Expr::column("left_id"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(1))),
+        Arc::clone(&left_source_schema),
+    );
+    let left_projected = builder.add_projection(
+        left_filter,
+        vec![
+            ProjectionOutput::new(Expr::column("left_id"), Field::new("left_id", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("left_value"), Field::new("left_value", DataType::Int32, false)),
+        ],
+    );
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        right_path,
+        Arc::clone(&right_source_schema),
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let right_filter = builder.add_filter(
+        right,
+        Expr::binary(Expr::column("right_id"), BinaryOp::Lt, Expr::literal(LiteralValue::Int32(5))),
+        Arc::clone(&right_source_schema),
+    );
+    let right_projected = builder.add_projection(
+        right_filter,
+        vec![
+            ProjectionOutput::new(Expr::column("right_id"), Field::new("right_id", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("right_value"), Field::new("right_value", DataType::Int32, false)),
+        ],
+    );
+    let join = builder.add_join(
+        left_projected,
+        right_projected,
         JoinSpec::new(
             JoinType::Inner,
             vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
@@ -444,6 +773,35 @@ fn aggregate_sort_limit_plan() -> QueryPlan {
     builder.finish_with_host_sink(limit)
 }
 
+fn aggregate_sort_limit_data_plan(path: &Path, source_schema: Arc<Schema>) -> QueryPlan {
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        path,
+        source_schema,
+        vec!["k".into(), "v".into()],
+    )));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("k")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("v"), "v_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("k"), true, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(10), aggregate_schema);
+    builder.finish_with_host_sink(limit)
+}
+
 fn root_join_shaped_pipeline_with_blocked_gate() -> CompiledPipeline {
     let left_source = PipelineTaskId::new(0);
     let right_source = PipelineTaskId::new(1);
@@ -571,6 +929,43 @@ fn write_source_unary_parquet(path: &Path) -> Arc<Schema> {
     writer.write(&batch).unwrap();
     writer.close().unwrap();
     schema
+}
+
+fn write_join_parquets(left_path: &Path, right_path: &Path) {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&left_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3, 4])), Arc::new(Int32Array::from(vec![10, 20, 30, 40]))],
+    )
+    .unwrap();
+    write_parquet(left_path, Arc::clone(&left_schema), &left_batch);
+
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![Arc::new(Int32Array::from(vec![2, 4, 5])), Arc::new(Int32Array::from(vec![200, 400, 500]))],
+    )
+    .unwrap();
+    write_parquet(right_path, Arc::clone(&right_schema), &right_batch);
+}
+
+fn write_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBatch) {
+    let file = File::create(path).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
+    let array = batch.column(column).as_any().downcast_ref::<Int32Array>().unwrap();
+    (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
 }
 
 fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {

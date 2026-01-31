@@ -1,3 +1,7 @@
+use std::collections::BTreeSet;
+
+use arrow::record_batch::RecordBatch;
+
 use super::{
     reservations::validate_task_runtime_gates,
     scheduler::{CompiledTaskExecutor, CompiledTaskOutput},
@@ -7,14 +11,21 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{
         bounded::{
-            ReservationTracker, ResidentGpuFrame, execute_bounded_generic_gpu_resident_source,
-            execute_bounded_generic_local_parquet_source, execute_bounded_generic_unary_from_frame,
+            BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, ReservationTracker, ResidentGpuFrame,
+            execute_bounded_generic_gpu_resident_source, execute_bounded_generic_local_parquet_source,
+            execute_bounded_generic_unary_from_frame, execute_bounded_join_leaf_source,
+            execute_bounded_root_hash_join_build_from_frame, execute_bounded_root_hash_join_materialize,
+            execute_bounded_root_hash_join_probe_from_frame,
         },
+        materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap},
     },
     metrics::QueryMetrics,
-    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId},
-    plan::{NodeId, PlanNode, QueryPlan},
+    pipeline::{
+        CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
+        SinkBoundaryKind,
+    },
+    plan::{JoinNode, NodeId, PlanNode, QueryPlan, ResultSink},
     runtime::{ExecutionContext, MemoryControlPolicy},
     source::SourceNode,
 };
@@ -62,6 +73,9 @@ pub struct CompiledGpuTaskExecutor<'a> {
     gpu_inputs: &'a GpuResidentInputMap,
     metrics: &'a mut QueryMetrics,
     reservations: ReservationTracker,
+    join_build: Option<BoundedRootHashJoinBuildState>,
+    join_probe: Option<BoundedRootHashJoinProbeState>,
+    host_output: Option<RecordBatch>,
 }
 
 impl<'a> CompiledGpuTaskExecutor<'a> {
@@ -77,11 +91,29 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };
         let reservations = ReservationTracker::new_for_context(context, device_budget_bytes, metrics)?;
-        Ok(Self { context, plan, pipeline, gpu_inputs, metrics, reservations })
+        Ok(Self {
+            context,
+            plan,
+            pipeline,
+            gpu_inputs,
+            metrics,
+            reservations,
+            join_build: None,
+            join_probe: None,
+            host_output: None,
+        })
     }
 
     pub fn reserved_bytes(&self) -> u64 {
         self.reservations.reserved_bytes()
+    }
+
+    pub fn take_host_output(&mut self) -> Result<RecordBatch> {
+        self.host_output.take().ok_or_else(|| {
+            invalid("compiled host sink did not produce a host Arrow output")
+                .with_fact("compiled_task_id", self.pipeline.sink().input())
+                .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str())
+        })
     }
 
     fn execute_source_task(&mut self, task: &PipelineTask) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
@@ -94,6 +126,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })?;
         let frame = match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
+                source if self.task_feeds_join_input(task.id()) => execute_bounded_join_leaf_source(
+                    self.context,
+                    source,
+                    node_id,
+                    self.gpu_inputs,
+                    &mut self.reservations,
+                    self.metrics,
+                ),
                 SourceNode::LocalParquet(source) => execute_bounded_generic_local_parquet_source(
                     self.context,
                     source,
@@ -188,6 +228,171 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
+
+    fn execute_join_build_task(
+        &mut self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        let node_id = plan_node(task)?;
+        if self.join_build.is_some() || self.join_probe.is_some() {
+            return Err(invalid("compiled join build task found an existing join state")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+        let input = single_input_resource(task)?;
+        let input_payload = state.resource_payload(input)?;
+        let node = join_node(self.plan, task, node_id)?;
+        let build = execute_bounded_root_hash_join_build_from_frame(
+            self.context,
+            node_id,
+            node,
+            input_payload.clone_frame(),
+            input_payload.reservation_bytes(),
+            &mut self.reservations,
+            self.metrics,
+        )
+        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        self.join_build = Some(build);
+        Ok(CompiledTaskOutput::empty())
+    }
+
+    fn execute_join_probe_task(
+        &mut self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        let node_id = plan_node(task)?;
+        let input = single_input_resource(task)?;
+        let input_payload = state.resource_payload(input)?;
+        let node = join_node(self.plan, task, node_id)?;
+        let build = self.join_build.take().ok_or_else(|| {
+            invalid("compiled join probe task ran before join build state was available")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str())
+        })?;
+        let probe = execute_bounded_root_hash_join_probe_from_frame(
+            self.context,
+            node_id,
+            node,
+            build,
+            input_payload.clone_frame(),
+            input_payload.reservation_bytes(),
+            &mut self.reservations,
+            self.metrics,
+        )
+        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        self.join_probe = Some(probe);
+        Ok(CompiledTaskOutput::empty())
+    }
+
+    fn execute_join_materialize_task(
+        &mut self,
+        task: &PipelineTask,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        let node_id = plan_node(task)?;
+        let output = single_output_resource(task)?;
+        let node = join_node(self.plan, task, node_id)?;
+        let probe = self.join_probe.take().ok_or_else(|| {
+            invalid("compiled join materialize task ran before join probe state was available")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str())
+        })?;
+        let frame = execute_bounded_root_hash_join_materialize(
+            self.context,
+            node_id,
+            node,
+            probe,
+            &mut self.reservations,
+            self.metrics,
+        )
+        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+    }
+
+    fn execute_sink_materialize_task(
+        &mut self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        if self.pipeline.sink().kind() != SinkBoundaryKind::HostArrowMaterialization
+            || self.pipeline.sink().input() != task.id()
+        {
+            return Err(invalid("compiled sink materialize task does not match the pipeline sink boundary")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("pipeline_task_kind", task.kind().as_str())
+                .with_fact("sink_boundary_task_id", self.pipeline.sink().input())
+                .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
+        }
+        if self.host_output.is_some() {
+            return Err(invalid("compiled host sink materialized more than once")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
+        let input = single_input_resource(task)?;
+        let input_payload = state.resource_payload(input)?;
+        let ResultSink::HostArrow { input: final_node_id, schema } = self.plan.sink() else {
+            return Err(invalid("compiled sink materialize task requires a host Arrow sink")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        };
+        let executable_schema = self
+            .plan
+            .node(*final_node_id)
+            .ok_or_else(|| {
+                invalid("compiled sink task references a missing final plan node")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", final_node_id)
+            })?
+            .output_schema();
+        let output = materialize_bounded_frame_to_host(
+            self.context,
+            input_payload.clone_frame(),
+            input_payload.reservation_bytes(),
+            *final_node_id,
+            executable_schema,
+            schema,
+            &mut self.reservations,
+            self.metrics,
+        )
+        .map_err(|error| {
+            error
+                .with_fact_if_absent("compiled_task_id", task.id())
+                .with_fact_if_absent("pipeline_task_kind", task.kind().as_str())
+                .with_fact_if_absent("resident_resource_id", input)
+                .with_fact_if_absent("plan_node_id", final_node_id)
+                .with_fact_if_absent("sink_boundary_kind", self.pipeline.sink().kind().as_str())
+        })?;
+        self.host_output = Some(output);
+        Ok(CompiledTaskOutput::empty())
+    }
+
+    fn task_feeds_join_input(&self, task: PipelineTaskId) -> bool {
+        let mut pending = vec![task];
+        let mut visited = BTreeSet::new();
+
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+
+            for edge in self.pipeline.edges().iter().filter(|edge| edge.from() == current) {
+                match edge.kind() {
+                    PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => return true,
+                    PipelineEdgeKind::ResidentFrame => pending.push(edge.to()),
+                    PipelineEdgeKind::Control
+                    | PipelineEdgeKind::SharedResidentProducer
+                    | PipelineEdgeKind::BarrierOutput
+                    | PipelineEdgeKind::SinkInput => {},
+                }
+            }
+        }
+
+        false
+    }
 }
 
 impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
@@ -202,14 +407,12 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         match task.kind() {
             PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => self.execute_source_task(task),
             PipelineTaskKind::Unary => self.execute_unary_task(task, state),
-            PipelineTaskKind::Aggregate
-            | PipelineTaskKind::JoinBuild
-            | PipelineTaskKind::JoinProbe
-            | PipelineTaskKind::JoinMaterialize
-            | PipelineTaskKind::FinalSort
-            | PipelineTaskKind::Limit
-            | PipelineTaskKind::SinkMaterialize => {
-                Err(invalid("compiled task kind is outside the D.1.3 source/unary execution envelope")
+            PipelineTaskKind::JoinBuild => self.execute_join_build_task(task, state),
+            PipelineTaskKind::JoinProbe => self.execute_join_probe_task(task, state),
+            PipelineTaskKind::JoinMaterialize => self.execute_join_materialize_task(task),
+            PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
+            PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit => {
+                Err(invalid("compiled task kind is outside the D.1 source/unary/root-hash-join execution envelope")
                     .with_fact("compiled_task_id", task.id())
                     .with_fact("pipeline_task_kind", task.kind().as_str()))
             },
@@ -239,6 +442,31 @@ fn single_output_resource(task: &PipelineTask) -> Result<ResidentResourceId> {
             .with_fact("output_resource_count", task.output_resources().len()));
     }
     Ok(task.output_resources()[0])
+}
+
+fn single_input_resource(task: &PipelineTask) -> Result<ResidentResourceId> {
+    if task.input_resources().len() != 1 {
+        return Err(invalid("compiled executable task must declare exactly one input resource")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("pipeline_task_kind", task.kind().as_str())
+            .with_fact("input_resource_count", task.input_resources().len()));
+    }
+    Ok(task.input_resources()[0])
+}
+
+fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a JoinNode> {
+    let node = plan.node(node_id).ok_or_else(|| {
+        invalid("compiled join task references a missing plan node")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+    })?;
+    let PlanNode::Join(join) = &node.kind else {
+        return Err(invalid("compiled join task does not reference a join plan node")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str()));
+    };
+    Ok(join)
 }
 
 fn attach_task_facts(error: QueryError, task: &PipelineTask, node_id: NodeId) -> QueryError {

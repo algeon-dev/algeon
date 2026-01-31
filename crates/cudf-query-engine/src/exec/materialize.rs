@@ -21,28 +21,46 @@ pub(super) fn materialize_bounded_to_host(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<RecordBatch> {
-    let request = MemoryReservationRequest::new(
-        ReservationKind::Materialization,
-        input.reservation.bytes(),
-        reservations.budget(),
-    )
-    .with_memory_boundary("host_materialization")
-    .with_node_id(final_node_id)
-    .with_stage("materialization")
-    .with_attempt(1, 1);
+    let input_reserved_bytes = input.reservation.bytes();
+    let result = materialize_bounded_frame_to_host(
+        context,
+        input.frame,
+        input_reserved_bytes,
+        final_node_id,
+        executable_schema,
+        output_schema,
+        reservations,
+        metrics,
+    );
+    reservations.release(input.reservation);
+    result
+}
+
+pub(in crate::exec) fn materialize_bounded_frame_to_host(
+    context: &ExecutionContext,
+    frame: GpuDataFrame,
+    input_reserved_bytes: u64,
+    final_node_id: NodeId,
+    executable_schema: &SchemaRef,
+    output_schema: &SchemaRef,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<RecordBatch> {
+    let request =
+        MemoryReservationRequest::new(ReservationKind::Materialization, input_reserved_bytes, reservations.budget())
+            .with_memory_boundary("host_materialization")
+            .with_node_id(final_node_id)
+            .with_stage("materialization")
+            .with_attempt(1, 1);
     let materialization_reservation = match reservations.try_reserve(request, metrics) {
         Ok(reservation) => reservation,
-        Err(error) => {
-            reservations.release(input.reservation);
-            return Err(host_materialization_failure_facts(metrics).attach_to_error(error));
-        },
+        Err(error) => return Err(host_materialization_failure_facts(metrics).attach_to_error(error)),
     };
 
-    let handle = match GpuResultHandle::new(context, input.frame, Arc::clone(executable_schema)) {
+    let handle = match GpuResultHandle::new(context, frame, Arc::clone(executable_schema)) {
         Ok(handle) => handle,
         Err(error) => {
             reservations.release(materialization_reservation);
-            reservations.release(input.reservation);
             return Err(host_materialization_failure_facts(metrics).attach_to_error(error));
         },
     };
@@ -59,7 +77,6 @@ pub(super) fn materialize_bounded_to_host(
         .attach_to(error)
     });
     reservations.release(materialization_reservation);
-    reservations.release(input.reservation);
     result.map_err(|error| host_materialization_failure_facts(metrics).attach_to_error(error))
 }
 

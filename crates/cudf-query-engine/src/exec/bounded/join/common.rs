@@ -16,26 +16,56 @@ pub(super) fn prepare_bounded_join_side_input(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinSideFrame> {
+    let frame = input.frame;
+    let input_reservation = input.reservation;
+    let prepared = prepare_bounded_join_side_input_from_frame(
+        frame,
+        input_reservation.bytes(),
+        columns,
+        input_side,
+        node_id,
+        build_side,
+        reservations,
+        metrics,
+    );
+    match prepared {
+        Ok(prepared) => {
+            reservations.release(input_reservation);
+            Ok(prepared)
+        },
+        Err(error) => {
+            reservations.release(input_reservation);
+            Err(error)
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_bounded_join_side_input_from_frame(
+    input: GpuDataFrame,
+    input_reserved_bytes: u64,
+    columns: &[String],
+    input_side: JoinSide,
+    node_id: NodeId,
+    build_side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedJoinSideFrame> {
     let reservation_kind =
         if input_side == build_side { ReservationKind::BuildSide } else { ReservationKind::ProbeSide };
     let memory_boundary = if input_side == build_side { "join_build_side" } else { "join_probe_side" };
     let work_reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            input.reservation.bytes(),
-            reservations.budget(),
-        )
-        .with_memory_boundary("join_input_projection")
-        .with_node_id(node_id)
-        .with_stage("bounded_join")
-        .with_attempt(1, 1),
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
+            .with_memory_boundary("join_input_projection")
+            .with_node_id(node_id)
+            .with_stage("bounded_join")
+            .with_attempt(1, 1),
         metrics,
     )?;
-    let selected = match select_join_input(input.frame.into_frame(), columns, join_side_label(input_side)) {
+    let selected = match select_join_input(input.into_frame(), columns, join_side_label(input_side)) {
         Ok(frame) => frame,
         Err(error) => {
             reservations.release(work_reservation);
-            reservations.release(input.reservation);
             return Err(error);
         },
     };
@@ -44,7 +74,6 @@ pub(super) fn prepare_bounded_join_side_input(
         Ok(bytes) => bytes,
         Err(error) => {
             reservations.release(work_reservation);
-            reservations.release(input.reservation);
             return Err(error);
         },
     };
@@ -55,12 +84,10 @@ pub(super) fn prepare_bounded_join_side_input(
         Ok(reservation) => reservation,
         Err(error) => {
             reservations.release(work_reservation);
-            reservations.release(input.reservation);
             return Err(error);
         },
     };
     reservations.release(work_reservation);
-    reservations.release(input.reservation);
     Ok(BoundedJoinSideFrame { frame: selected, _reservation: reservation, rows, bytes })
 }
 

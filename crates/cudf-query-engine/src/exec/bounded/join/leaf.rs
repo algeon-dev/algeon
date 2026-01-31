@@ -78,7 +78,7 @@ pub(in crate::exec::bounded) fn validate_bounded_join_leaf_input_capabilities(
     }
 }
 
-fn execute_bounded_join_leaf_source(
+pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
     context: &ExecutionContext,
     source: &crate::source::SourceNode,
     node_id: NodeId,

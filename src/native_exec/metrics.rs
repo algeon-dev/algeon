@@ -54,6 +54,9 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "partial_aggregate_rows",
     "final_merge_attempts",
     "final_merge_levels",
+    "compiled_pipeline_attempts",
+    "compiled_pipeline_tasks_executed",
+    "compiled_pipeline_host_arrow_sinks",
     "parquet_files",
     "parquet_bytes_known",
     "row_groups_selected",
@@ -133,6 +136,9 @@ pub(super) struct NativeCudfMetrics {
     partial_aggregate_rows: Count,
     final_merge_attempts: Count,
     final_merge_levels: Count,
+    compiled_pipeline_attempts: Count,
+    compiled_pipeline_tasks_executed: Count,
+    compiled_pipeline_host_arrow_sinks: Count,
     parquet_files: Count,
     parquet_bytes_known: Count,
     row_groups_selected: Count,
@@ -235,6 +241,13 @@ impl NativeCudfMetrics {
             partial_aggregate_rows: summary_counter(metrics, "partial_aggregate_rows", partition),
             final_merge_attempts: summary_counter(metrics, "final_merge_attempts", partition),
             final_merge_levels: summary_counter(metrics, "final_merge_levels", partition),
+            compiled_pipeline_attempts: summary_counter(metrics, "compiled_pipeline_attempts", partition),
+            compiled_pipeline_tasks_executed: summary_counter(metrics, "compiled_pipeline_tasks_executed", partition),
+            compiled_pipeline_host_arrow_sinks: summary_counter(
+                metrics,
+                "compiled_pipeline_host_arrow_sinks",
+                partition,
+            ),
             parquet_files: summary_counter(metrics, "parquet_files", partition),
             parquet_bytes_known: summary_counter(metrics, "parquet_bytes_known", partition),
             row_groups_selected: summary_counter(metrics, "row_groups_selected", partition),
@@ -313,6 +326,9 @@ impl NativeCudfMetrics {
         self.partial_aggregate_rows.add(count(metrics.partial_aggregate_rows));
         self.final_merge_attempts.add(count(metrics.final_merge_attempts));
         self.final_merge_levels.add(count(metrics.final_merge_levels));
+        self.compiled_pipeline_attempts.add(count(metrics.compiled_pipeline_attempts));
+        self.compiled_pipeline_tasks_executed.add(count(metrics.compiled_pipeline_tasks_executed));
+        self.compiled_pipeline_host_arrow_sinks.add(count(metrics.compiled_pipeline_host_arrow_sinks));
         self.parquet_files.add(count(metrics.parquet_files));
         self.parquet_bytes_known.add(count(metrics.parquet_bytes_known));
         self.row_groups_selected.add(count(metrics.row_groups_selected));

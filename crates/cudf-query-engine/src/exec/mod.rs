@@ -31,7 +31,7 @@ mod validate;
 pub use bounded::compiled::{
     CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
     CompiledPipelineState, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
-    compiled_bounded_pipeline_support,
+    compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
 };
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
 pub use types::{

@@ -147,6 +147,13 @@ pub struct QueryMetrics {
     pub final_merge_time: Duration,
     pub final_sort_time: Duration,
     pub materialization_time: Duration,
+    /// Bounded queries whose capability-admitted graph was accepted by the
+    /// compiled-pipeline executor before execution started.
+    pub compiled_pipeline_attempts: u64,
+    /// Compiled-pipeline tasks completed by the scheduler.
+    pub compiled_pipeline_tasks_executed: u64,
+    /// Host Arrow sink boundaries materialized by the compiled-pipeline executor.
+    pub compiled_pipeline_host_arrow_sinks: u64,
 }
 
 impl QueryMetrics {
@@ -316,6 +323,18 @@ impl QueryMetrics {
         self.mixed_join_size_data_bytes = self.mixed_join_size_data_bytes.saturating_add(bytes);
     }
 
+    pub fn record_compiled_pipeline_attempt(&mut self) {
+        self.compiled_pipeline_attempts = self.compiled_pipeline_attempts.saturating_add(1);
+    }
+
+    pub fn record_compiled_pipeline_tasks_executed(&mut self, tasks: u64) {
+        self.compiled_pipeline_tasks_executed = self.compiled_pipeline_tasks_executed.saturating_add(tasks);
+    }
+
+    pub fn record_compiled_pipeline_host_arrow_sink(&mut self) {
+        self.compiled_pipeline_host_arrow_sinks = self.compiled_pipeline_host_arrow_sinks.saturating_add(1);
+    }
+
     pub fn record_partial_aggregate(&mut self, rows: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
@@ -406,6 +425,12 @@ impl QueryMetrics {
         self.final_merge_time += other.final_merge_time;
         self.final_sort_time += other.final_sort_time;
         self.materialization_time += other.materialization_time;
+        self.compiled_pipeline_attempts =
+            self.compiled_pipeline_attempts.saturating_add(other.compiled_pipeline_attempts);
+        self.compiled_pipeline_tasks_executed =
+            self.compiled_pipeline_tasks_executed.saturating_add(other.compiled_pipeline_tasks_executed);
+        self.compiled_pipeline_host_arrow_sinks =
+            self.compiled_pipeline_host_arrow_sinks.saturating_add(other.compiled_pipeline_host_arrow_sinks);
     }
 }
 
