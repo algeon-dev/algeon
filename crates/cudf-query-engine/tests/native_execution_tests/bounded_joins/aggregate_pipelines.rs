@@ -198,6 +198,9 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
     assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert!(metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -207,7 +210,7 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
         metrics
             .reservation_events
             .iter()
-            .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "join_pipeline_aggregate")
+            .filter(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate")
             .count(),
         2
     );
@@ -216,7 +219,7 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
             .reservation_events
             .iter()
             .filter(|event| {
-                event.outcome.as_str() == "granted" && event.memory_boundary == "join_pipeline_aggregate_output"
+                event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_output"
             })
             .count(),
         2
@@ -233,16 +236,16 @@ fn bounded_native_query_executes_serial_aggregate_join_spine() {
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
-            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
-            (ReservationKind::OperatorOutput, "join_pipeline_projection"),
-            (ReservationKind::OperatorOutput, "join_pipeline_projection_output"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
-            (ReservationKind::FinalSort, "join_pipeline_sort"),
-            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
+            (ReservationKind::OperatorOutput, "compiled_projection"),
+            (ReservationKind::OperatorOutput, "compiled_projection_output"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
+            (ReservationKind::OperatorOutput, "compiled_projection"),
+            (ReservationKind::OperatorOutput, "compiled_projection_output"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
+            (ReservationKind::FinalSort, "final_sort"),
+            (ReservationKind::FinalSort, "final_sort"),
             (ReservationKind::Materialization, "host_materialization"),
         ],
     );

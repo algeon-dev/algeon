@@ -438,25 +438,73 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
-    let Some(aggregate) = plan.node(aggregate_id) else {
+    let Some(aggregate_node) = plan.node(aggregate_id) else {
         return CapabilityDecision::rejected(
             "aggregate_shared_producer_missing_aggregate",
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
-    if !matches!(aggregate.kind, PlanNode::Aggregate(_)) {
+    let PlanNode::Aggregate(aggregate) = &aggregate_node.kind else {
         return CapabilityDecision::rejected(
             "aggregate_shared_producer_consumer_not_aggregate",
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
-    }
+    };
     if !produced_properties(producer).contains(&ProducedProperty::ResidentFrame) {
         return CapabilityDecision::rejected(
             "aggregate_shared_producer_requires_resident_frame",
             [("shared_producer", shared_producer.to_string())],
         );
     }
+
+    let Some((peeled_input, projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input) else {
+        return CapabilityDecision::rejected(
+            "aggregate_shared_producer_input_lineage_unresolved",
+            [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
+        );
+    };
+    if peeled_input != shared_producer || projection_count == 0 {
+        return CapabilityDecision::rejected(
+            "aggregate_shared_producer_requires_dataflow_identity",
+            [
+                ("shared_producer", shared_producer.to_string()),
+                ("aggregate_id", aggregate_id.to_string()),
+                ("peeled_input", peeled_input.to_string()),
+            ],
+        );
+    }
+
+    let producer_lineages = match output_lineages_for_node(plan, shared_producer) {
+        Ok(lineages) => lineages,
+        Err(decision) => return decision,
+    };
+    for (aggr_index, expr) in aggregate.spec.aggr_exprs.iter().enumerate() {
+        let input_lineage = match expression_lineage_for_input(plan, aggregate.input, &expr.expr) {
+            Ok(lineage) => lineage,
+            Err(decision) => return decision,
+        };
+        if !producer_lineages.contains(&input_lineage) {
+            return CapabilityDecision::rejected(
+                "aggregate_shared_producer_requires_input_lineage",
+                [
+                    ("shared_producer", shared_producer.to_string()),
+                    ("aggregate_id", aggregate_id.to_string()),
+                    ("aggr_index", aggr_index.to_string()),
+                ],
+            );
+        }
+    }
     CapabilityDecision::Satisfied
+}
+
+fn output_lineages_for_node(plan: &QueryPlan, node_id: NodeId) -> Result<Vec<OutputLineage>, CapabilityDecision> {
+    let Some(node) = plan.node(node_id) else {
+        return Err(CapabilityDecision::rejected(
+            "aggregate_shared_producer_missing_node",
+            [("shared_producer", node_id.to_string())],
+        ));
+    };
+    (0..node.output_schema().fields().len()).map(|field_index| output_lineage(plan, node_id, field_index)).collect()
 }
 
 pub(super) fn solve_projection_transparent_residency_invariant(
