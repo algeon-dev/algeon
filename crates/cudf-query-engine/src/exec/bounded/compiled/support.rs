@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::join_strategy::CompiledJoinExecutionStrategy;
 use crate::{
-    capability::ContractStatus,
+    bounded::BoundedKeylessConditionalJoinType,
+    capability::{ContractQuality, ContractStatus},
     error::Result,
     pipeline::{
         CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
@@ -48,12 +50,6 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if task_kind_count(pipeline, PipelineTaskKind::SourceRead) < 1 {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    if task_kind_count(pipeline, PipelineTaskKind::Aggregate) > 1
-        || task_kind_count(pipeline, PipelineTaskKind::FinalSort) > 1
-        || task_kind_count(pipeline, PipelineTaskKind::Limit) > 1
-    {
-        return Ok(CompiledBoundedPipelineSupport::Unsupported);
-    }
     if !task_reservation_gates_are_in_d2_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
@@ -63,6 +59,9 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if !edge_kinds_are_in_d3_2_envelope(pipeline) || !barrier_kinds_are_in_d2_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
+    if !shared_resident_producer_edges_are_leaf_outputs(pipeline) {
+        return Ok(CompiledBoundedPipelineSupport::Unsupported);
+    }
     if !join_edges_are_in_d2_envelope(pipeline, &join_groups) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
@@ -70,7 +69,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     else {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     };
-    if !post_root_stage_tasks_are_on_chain(pipeline, &post_root_chain) {
+    if !stage_tasks_are_in_d3_3_envelope(pipeline, &post_root_chain) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !join_barriers_are_in_d2_envelope(pipeline, &join_groups) {
@@ -81,7 +80,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     }) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    if !post_root_barriers_are_in_d2_envelope(pipeline) {
+    if !stage_barriers_are_in_d3_3_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
 
@@ -110,7 +109,10 @@ pub fn compiled_bounded_query_plan_support(
         let PlanNode::Join(join) = &node.kind else {
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         };
-        if !join.is_bounded_root_hash_join_compatible() {
+        let Some(strategy) = CompiledJoinExecutionStrategy::from_join_node(join) else {
+            return Ok(CompiledBoundedPipelineSupport::Unsupported);
+        };
+        if !join_strategy_reservations_are_modeled(pipeline, &group, strategy) {
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         }
     }
@@ -125,6 +127,80 @@ pub fn compiled_bounded_query_plan_support(
     }
 
     Ok(CompiledBoundedPipelineSupport::Supported)
+}
+
+fn join_strategy_reservations_are_modeled(
+    pipeline: &CompiledPipeline,
+    group: &JoinTaskGroup<'_>,
+    strategy: CompiledJoinExecutionStrategy,
+) -> bool {
+    task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::BuildSide)
+        && task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.probe, ReservationKind::ProbeSide)
+        && task_runtime_attachment_has_modeled_reservation_gate(
+            pipeline,
+            group.materialize,
+            ReservationKind::JoinOutput,
+        )
+        && join_strategy_specific_reservations_are_modeled(pipeline, group, strategy)
+}
+
+fn join_strategy_specific_reservations_are_modeled(
+    pipeline: &CompiledPipeline,
+    group: &JoinTaskGroup<'_>,
+    strategy: CompiledJoinExecutionStrategy,
+) -> bool {
+    match strategy {
+        CompiledJoinExecutionStrategy::HashEqui => {
+            task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
+                && task_runtime_attachment_has_modeled_reservation_gate(
+                    pipeline,
+                    group.materialize,
+                    ReservationKind::GatherMap,
+                )
+        },
+        CompiledJoinExecutionStrategy::FilteredSemiAnti => {
+            task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
+                && task_runtime_attachment_has_modeled_reservation_gate(
+                    pipeline,
+                    group.materialize,
+                    ReservationKind::FilteredProbeState,
+                )
+                && task_runtime_attachment_has_modeled_reservation_gate(
+                    pipeline,
+                    group.materialize,
+                    ReservationKind::GatherMap,
+                )
+        },
+        CompiledJoinExecutionStrategy::KeylessConditional { join_type } => {
+            (join_type != BoundedKeylessConditionalJoinType::Full
+                || task_runtime_attachment_has_modeled_reservation_gate(
+                    pipeline,
+                    group.materialize,
+                    ReservationKind::MixedSizeData,
+                ))
+                && task_runtime_attachment_has_modeled_reservation_gate(
+                    pipeline,
+                    group.materialize,
+                    ReservationKind::GatherMap,
+                )
+        },
+        CompiledJoinExecutionStrategy::MixedKeyedResidual => {
+            task_runtime_attachment_has_modeled_reservation_gate(
+                pipeline,
+                group.materialize,
+                ReservationKind::MixedSizeData,
+            ) && task_runtime_attachment_has_modeled_reservation_gate(
+                pipeline,
+                group.materialize,
+                ReservationKind::GatherMap,
+            )
+        },
+        CompiledJoinExecutionStrategy::ProjectedCross => task_runtime_attachment_has_modeled_reservation_gate(
+            pipeline,
+            group.materialize,
+            ReservationKind::JoinOutput,
+        ),
+    }
 }
 
 fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
@@ -171,7 +247,7 @@ fn task_resource_shapes_are_in_d2_envelope(
 fn task_reservation_gates_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
         PipelineTaskKind::Aggregate => {
-            task_has_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput)
+            task_has_hard_budgeted_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput)
         },
         PipelineTaskKind::FinalSort => {
             task_runtime_attachment_has_modeled_reservation_gate(pipeline, task, ReservationKind::FinalSort)
@@ -180,7 +256,7 @@ fn task_reservation_gates_are_in_d2_envelope(pipeline: &CompiledPipeline) -> boo
     })
 }
 
-fn task_has_modeled_reservation_gate(
+fn task_has_hard_budgeted_modeled_reservation_gate(
     pipeline: &CompiledPipeline,
     task: &PipelineTask,
     reservation_kind: ReservationKind,
@@ -190,8 +266,17 @@ fn task_has_modeled_reservation_gate(
             gate.id() == *gate_id
                 && gate.reservation_kind() == reservation_kind
                 && gate.status() == ContractStatus::Modeled
+                && gate.quality() == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
         })
     })
+}
+
+fn task_has_modeled_reservation_gate(
+    pipeline: &CompiledPipeline,
+    task: &PipelineTask,
+    reservation_kind: ReservationKind,
+) -> bool {
+    task.gates().iter().any(|gate_id| modeled_gate_has_kind(pipeline, *gate_id, reservation_kind))
 }
 
 fn task_runtime_attachment_has_modeled_reservation_gate(
@@ -249,6 +334,15 @@ fn edge_kinds_are_in_d3_2_envelope(pipeline: &CompiledPipeline) -> bool {
                 | PipelineEdgeKind::JoinProbeInput
                 | PipelineEdgeKind::SinkInput
         )
+    })
+}
+
+fn shared_resident_producer_edges_are_leaf_outputs(pipeline: &CompiledPipeline) -> bool {
+    let tasks = task_index(pipeline);
+    pipeline.edges().iter().filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer).all(|edge| {
+        tasks.get(&edge.from()).is_some_and(|task| {
+            matches!(task.kind(), PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource)
+        })
     })
 }
 
@@ -373,23 +467,109 @@ fn linear_post_root_chain_in_d2_envelope(
     }
 }
 
-fn post_root_stage_tasks_are_on_chain(pipeline: &CompiledPipeline, post_root_chain: &BTreeSet<PipelineTaskId>) -> bool {
+fn stage_tasks_are_in_d3_3_envelope(pipeline: &CompiledPipeline, post_root_chain: &BTreeSet<PipelineTaskId>) -> bool {
+    let post_root_chain_has_stage = pipeline.tasks().iter().any(|task| {
+        post_root_chain.contains(&task.id())
+            && matches!(
+                task.kind(),
+                PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit
+            )
+    });
+    let has_non_post_root_stage = pipeline.tasks().iter().any(|task| {
+        !post_root_chain.contains(&task.id())
+            && matches!(
+                task.kind(),
+                PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit
+            )
+    });
+    if post_root_chain_has_stage && has_non_post_root_stage {
+        return false;
+    }
+
     pipeline.tasks().iter().all(|task| {
-        !matches!(task.kind(), PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit)
-            || post_root_chain.contains(&task.id())
+        if !matches!(task.kind(), PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit) {
+            return true;
+        }
+
+        post_root_chain.contains(&task.id()) || task_feeds_modeled_join_input_or_shared_branch(pipeline, task.id())
     })
 }
 
-fn post_root_barriers_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
+fn stage_barriers_are_in_d3_3_envelope(pipeline: &CompiledPipeline) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::Aggregate => pipeline.barriers().iter().any(|barrier| {
-            barrier.kind() == PipelineBarrierKind::AggregateBoundary && barrier.upstream_tasks() == [task.id()]
-        }),
-        PipelineTaskKind::FinalSort => pipeline.barriers().iter().any(|barrier| {
-            barrier.kind() == PipelineBarrierKind::SortBoundary && barrier.upstream_tasks() == [task.id()]
-        }),
+        PipelineTaskKind::Aggregate => {
+            stage_boundary_dominates_downstream_join_inputs(pipeline, task.id(), PipelineBarrierKind::AggregateBoundary)
+        },
+        PipelineTaskKind::FinalSort => {
+            stage_boundary_dominates_downstream_join_inputs(pipeline, task.id(), PipelineBarrierKind::SortBoundary)
+        },
         _ => true,
     })
+}
+
+fn task_feeds_modeled_join_input_or_shared_branch(pipeline: &CompiledPipeline, task: PipelineTaskId) -> bool {
+    let mut pending = vec![task];
+    let mut visited = BTreeSet::new();
+
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+
+        for edge in pipeline.edges().iter().filter(|edge| edge.from() == current) {
+            match edge.kind() {
+                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => {
+                    if edge.gates().iter().all(|gate_id| pipeline.gates().iter().any(|gate| gate.id() == *gate_id)) {
+                        return true;
+                    }
+                },
+                PipelineEdgeKind::SharedResidentProducer => return true,
+                PipelineEdgeKind::ResidentFrame => pending.push(edge.to()),
+                PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => {},
+            }
+        }
+    }
+
+    false
+}
+
+fn stage_boundary_dominates_downstream_join_inputs(
+    pipeline: &CompiledPipeline,
+    task: PipelineTaskId,
+    barrier_kind: PipelineBarrierKind,
+) -> bool {
+    let downstream_join_inputs = downstream_join_input_tasks(pipeline, task);
+    pipeline.barriers().iter().any(|barrier| {
+        barrier.kind() == barrier_kind
+            && barrier.upstream_tasks() == [task]
+            && downstream_join_inputs.iter().all(|join_input| {
+                barrier.downstream_tasks().iter().any(|downstream| task_reaches(pipeline, *downstream, *join_input))
+            })
+    })
+}
+
+fn downstream_join_input_tasks(pipeline: &CompiledPipeline, task: PipelineTaskId) -> BTreeSet<PipelineTaskId> {
+    let mut pending = vec![task];
+    let mut visited = BTreeSet::new();
+    let mut join_inputs = BTreeSet::new();
+
+    while let Some(current) = pending.pop() {
+        if !visited.insert(current) {
+            continue;
+        }
+
+        for edge in pipeline.edges().iter().filter(|edge| edge.from() == current) {
+            match edge.kind() {
+                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => {
+                    join_inputs.insert(edge.to());
+                },
+                PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer => pending.push(edge.to()),
+                PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => {},
+            }
+        }
+    }
+
+    join_inputs
 }
 
 fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
@@ -518,4 +698,29 @@ fn has_barrier(
 
 fn task_set(tasks: &[PipelineTaskId]) -> BTreeSet<PipelineTaskId> {
     tasks.iter().copied().collect()
+}
+
+fn task_reaches(pipeline: &CompiledPipeline, from: PipelineTaskId, to: PipelineTaskId) -> bool {
+    if from == to {
+        return true;
+    }
+
+    let adjacency =
+        pipeline.edges().iter().fold(BTreeMap::<PipelineTaskId, Vec<PipelineTaskId>>::new(), |mut map, edge| {
+            map.entry(edge.from()).or_default().push(edge.to());
+            map
+        });
+    let mut pending = adjacency.get(&from).cloned().unwrap_or_default();
+    let mut visited = BTreeSet::new();
+
+    while let Some(current) = pending.pop() {
+        if current == to {
+            return true;
+        }
+        if visited.insert(current) {
+            pending.extend(adjacency.get(&current).into_iter().flatten().copied());
+        }
+    }
+
+    false
 }

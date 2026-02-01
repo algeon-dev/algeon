@@ -1,6 +1,7 @@
 use super::*;
 
 mod common;
+mod compiled;
 mod filtered;
 mod hash;
 mod keyless;
@@ -8,11 +9,15 @@ mod leaf;
 mod mixed;
 mod projected_cross;
 
+pub(in crate::exec::bounded) use compiled::{
+    BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, execute_bounded_compiled_join_build_from_frame,
+    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
+};
 use filtered::execute_bounded_root_filtered_join;
-use hash::execute_bounded_root_hash_join;
-pub(in crate::exec::bounded) use hash::{
-    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join_build_from_frame,
-    execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_probe_from_frame,
+use hash::{
+    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join,
+    execute_bounded_root_hash_join_build_from_frame, execute_bounded_root_hash_join_materialize,
+    execute_bounded_root_hash_join_probe_from_frame,
 };
 use keyless::execute_bounded_root_keyless_conditional_join;
 pub(super) use leaf::{

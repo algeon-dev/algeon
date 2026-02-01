@@ -5,6 +5,7 @@
 //! inspects `CompiledPipeline` task, edge, barrier, sink, and gate contracts and
 //! does not route by legacy bounded join family/path vocabulary.
 
+pub(in crate::exec::bounded) mod join_strategy;
 mod reservations;
 mod scheduler;
 mod state;
