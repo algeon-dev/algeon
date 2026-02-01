@@ -6,7 +6,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, Int32Array},
+    array::{Array, Int32Array, Int64Array},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -27,6 +27,8 @@ use cudf_query_engine::{
     execute_query_plan,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+
+use crate::bounded_join_admission::plans::single_join_post_root_aggregate_sort_limit_plan;
 
 #[test]
 fn compiled_bounded_support_accepts_root_join_graph_without_legacy_routing_terms() {
@@ -63,6 +65,40 @@ fn compiled_bounded_support_rejects_non_d1_task_envelope_before_execution() {
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
         CompiledBoundedPipelineSupport::Unsupported
     );
+}
+
+#[test]
+fn compiled_bounded_support_accepts_single_join_post_root_d2_tasks_without_legacy_routing_terms() {
+    let plan = single_join_post_root_aggregate_sort_limit_plan();
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_single_join_post_root_pipeline());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("single-join post-root plan should compile");
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert!(pipeline.barriers().iter().any(|barrier| barrier.kind() == PipelineBarrierKind::AggregateBoundary));
+    assert!(pipeline.barriers().iter().any(|barrier| barrier.kind() == PipelineBarrierKind::SortBoundary));
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let final_sort_gate = pipeline
+        .gates()
+        .iter()
+        .find(|gate| gate.reservation_kind() == ReservationKind::FinalSort)
+        .expect("single-join post-root plan should retain final-sort gates");
+    assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
+    assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+
+    let rendered = pipeline.debug_render();
+    assert!(!rendered.contains("BoundedJoinExecutionFamily"));
+    assert!(!rendered.contains("BoundedJoinExecutionPath"));
 }
 
 #[test]
@@ -340,6 +376,38 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
 }
 
 #[test]
+fn execute_query_plan_routes_single_join_post_root_d2_graph_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d22-single-join");
+    let customers_path = dir.join("customers.parquet");
+    let orders_path = dir.join("orders.parquet");
+    write_single_join_post_root_parquets(&customers_path, &orders_path);
+    let plan = single_join_post_root_aggregate_sort_limit_data_plan(&customers_path, &orders_path);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_single_join_post_root_pipeline());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("single-join post-root plan should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan).expect("D.2 graph should execute through compiled path");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(int32_values(batch, 0), vec![Some(3), Some(2)]);
+    assert_eq!(int64_values(batch, 1), vec![Some(0), Some(1)]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
 fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -613,6 +681,76 @@ fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path: &Path) ->
         output_schema,
     );
     builder.finish_with_host_sink(join)
+}
+
+fn single_join_post_root_aggregate_sort_limit_data_plan(customers_path: &Path, orders_path: &Path) -> QueryPlan {
+    let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int32, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        customers_path,
+        customer_schema,
+        vec!["c_custkey".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        orders_path,
+        orders_schema,
+        vec!["o_orderkey".into(), "o_custkey".into()],
+    )));
+    let join = builder.add_join(
+        customers,
+        orders,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let projection = builder.add_projection(
+        join,
+        vec![
+            ProjectionOutput::new(Expr::column("c_custkey"), Field::new("c_custkey", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("o_orderkey"), Field::new("o_orderkey", DataType::Int32, true)),
+        ],
+    );
+    let aggregate = builder.add_aggregate(
+        projection,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("c_count"), false, false),
+            SortExpr::new(Expr::column("c_custkey"), true, false),
+        ]),
+        Arc::clone(&aggregate_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregate_schema);
+    builder.finish_with_host_sink(limit)
 }
 
 fn simple_unary_pipeline() -> CompiledPipeline {
@@ -955,6 +1093,24 @@ fn write_join_parquets(left_path: &Path, right_path: &Path) {
     write_parquet(right_path, Arc::clone(&right_schema), &right_batch);
 }
 
+fn write_single_join_post_root_parquets(customers_path: &Path, orders_path: &Path) {
+    let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let customer_batch =
+        RecordBatch::try_new(Arc::clone(&customer_schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+    write_parquet(customers_path, Arc::clone(&customer_schema), &customer_batch);
+
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let orders_batch = RecordBatch::try_new(
+        Arc::clone(&orders_schema),
+        vec![Arc::new(Int32Array::from(vec![10, 20, 30])), Arc::new(Int32Array::from(vec![1, 1, 2]))],
+    )
+    .unwrap();
+    write_parquet(orders_path, Arc::clone(&orders_schema), &orders_batch);
+}
+
 fn write_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBatch) {
     let file = File::create(path).unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
@@ -966,6 +1122,19 @@ fn write_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBatch) {
 fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
     let array = batch.column(column).as_any().downcast_ref::<Int32Array>().unwrap();
     (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
+}
+
+fn int64_values(batch: &RecordBatch, column: usize) -> Vec<Option<i64>> {
+    let array = batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap();
+    (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
+}
+
+fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, expected: usize) {
+    assert_eq!(
+        pipeline.tasks().iter().filter(|task| task.kind() == kind).count(),
+        expected,
+        "unexpected count for {kind:?} tasks"
+    );
 }
 
 fn bounded_context(runtime: Arc<cudf::Runtime>) -> ExecutionContext {

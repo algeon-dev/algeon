@@ -13,9 +13,10 @@ use crate::{
         bounded::{
             BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, ReservationTracker, ResidentGpuFrame,
             execute_bounded_generic_gpu_resident_source, execute_bounded_generic_local_parquet_source,
-            execute_bounded_generic_unary_from_frame, execute_bounded_join_leaf_source,
-            execute_bounded_root_hash_join_build_from_frame, execute_bounded_root_hash_join_materialize,
-            execute_bounded_root_hash_join_probe_from_frame,
+            execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
+            execute_bounded_join_leaf_source, execute_bounded_root_hash_join_build_from_frame,
+            execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_probe_from_frame,
+            execute_final_sort_node_from_frame_with_retry,
         },
         materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap},
@@ -25,8 +26,8 @@ use crate::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
         SinkBoundaryKind,
     },
-    plan::{JoinNode, NodeId, PlanNode, QueryPlan, ResultSink},
-    runtime::{ExecutionContext, MemoryControlPolicy},
+    plan::{AggregateNode, JoinNode, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
+    runtime::{ExecutionContext, MemoryControlPolicy, ReservationKind},
     source::SourceNode,
 };
 
@@ -64,7 +65,7 @@ impl CompiledGpuResource {
     }
 }
 
-/// D.1 compiled task interpreter for source and unary GPU work.
+/// Compiled task interpreter for bounded GPU work.
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
     context: &'a ExecutionContext,
@@ -313,6 +314,100 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
 
+    fn execute_aggregate_task(
+        &mut self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        let node_id = plan_node(task)?;
+        let input = single_input_resource(task)?;
+        let output = single_output_resource(task)?;
+        let input_payload = state.resource_payload(input)?;
+        let node = self.plan.node(node_id).ok_or_else(|| {
+            invalid("compiled aggregate task references a missing plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+        })?;
+        let PlanNode::Aggregate(aggregate) = &node.kind else {
+            return Err(invalid("compiled aggregate task does not reference an aggregate plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        };
+        let frame = execute_bounded_generic_unary_from_frame(
+            self.context,
+            node_id,
+            "compiled_aggregate",
+            "compiled_aggregate_output",
+            input_payload.clone_frame(),
+            input_payload.reservation_bytes(),
+            &mut self.reservations,
+            self.metrics,
+            true,
+            |context, input, token, metrics| {
+                execute_compiled_aggregate_with_budget(
+                    context,
+                    aggregate,
+                    input,
+                    node.output_schema(),
+                    token.expect("budget token is created for compiled bounded aggregate stages"),
+                    metrics,
+                )
+            },
+        )
+        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+    }
+
+    fn execute_final_sort_task(
+        &mut self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        let node_id = plan_node(task)?;
+        let input = single_input_resource(task)?;
+        let output = single_output_resource(task)?;
+        let input_payload = state.resource_payload(input)?;
+        let sort = sort_node(self.plan, task, node_id)?;
+        let frame = execute_final_sort_node_from_frame_with_retry(
+            self.context,
+            node_id,
+            sort,
+            input_payload.clone_frame(),
+            &mut self.reservations,
+            self.metrics,
+        )
+        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+    }
+
+    fn execute_limit_task(
+        &mut self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<CompiledGpuResource>,
+    ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
+        let node_id = plan_node(task)?;
+        let input = single_input_resource(task)?;
+        let output = single_output_resource(task)?;
+        let input_payload = state.resource_payload(input)?;
+        let limit = limit_node(self.plan, task, node_id)?;
+        let frame = execute_bounded_generic_unary_from_frame_with_reservation_kind(
+            self.context,
+            node_id,
+            "compiled_limit",
+            "compiled_limit_output",
+            input_payload.clone_frame(),
+            input_payload.reservation_bytes(),
+            ReservationKind::FinalSort,
+            &mut self.reservations,
+            self.metrics,
+            false,
+            |context, input, _token, metrics| crate::exec::operators::execute_limit(context, limit, input, metrics),
+        )
+        .map_err(|error| attach_task_facts(error, task, node_id))?;
+        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+    }
+
     fn execute_sink_materialize_task(
         &mut self,
         task: &PipelineTask,
@@ -410,12 +505,10 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::JoinBuild => self.execute_join_build_task(task, state),
             PipelineTaskKind::JoinProbe => self.execute_join_probe_task(task, state),
             PipelineTaskKind::JoinMaterialize => self.execute_join_materialize_task(task),
+            PipelineTaskKind::Aggregate => self.execute_aggregate_task(task, state),
+            PipelineTaskKind::FinalSort => self.execute_final_sort_task(task, state),
+            PipelineTaskKind::Limit => self.execute_limit_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
-            PipelineTaskKind::Aggregate | PipelineTaskKind::FinalSort | PipelineTaskKind::Limit => {
-                Err(invalid("compiled task kind is outside the D.1 source/unary/root-hash-join execution envelope")
-                    .with_fact("compiled_task_id", task.id())
-                    .with_fact("pipeline_task_kind", task.kind().as_str()))
-            },
         }
     }
 
@@ -467,6 +560,47 @@ fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> R
             .with_fact("pipeline_task_kind", task.kind().as_str()));
     };
     Ok(join)
+}
+
+fn sort_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a SortNode> {
+    let node = plan.node(node_id).ok_or_else(|| {
+        invalid("compiled final sort task references a missing plan node")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+    })?;
+    let PlanNode::Sort(sort) = &node.kind else {
+        return Err(invalid("compiled final sort task does not reference a sort plan node")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str()));
+    };
+    Ok(sort)
+}
+
+fn limit_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a LimitNode> {
+    let node = plan.node(node_id).ok_or_else(|| {
+        invalid("compiled limit task references a missing plan node")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+    })?;
+    let PlanNode::Limit(limit) = &node.kind else {
+        return Err(invalid("compiled limit task does not reference a limit plan node")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str()));
+    };
+    Ok(limit)
+}
+
+fn execute_compiled_aggregate_with_budget(
+    context: &ExecutionContext,
+    aggregate: &AggregateNode,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    token: &cudf::ExecutionBudgetToken,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    crate::exec::operators::execute_aggregate_with_budget(context, aggregate, input, output_schema, token, metrics)
 }
 
 fn attach_task_facts(error: QueryError, task: &PipelineTask, node_id: NodeId) -> QueryError {

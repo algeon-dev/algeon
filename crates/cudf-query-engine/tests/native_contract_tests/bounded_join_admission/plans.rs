@@ -259,6 +259,73 @@ pub(crate) fn serial_aggregate_single_join_spine_plan() -> cudf_query_engine::Qu
     builder.finish_with_host_sink(sort)
 }
 
+pub(crate) fn single_join_post_root_aggregate_sort_limit_plan() -> cudf_query_engine::QueryPlan {
+    let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int32, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/single-join-post-root-customers.parquet",
+        customer_schema,
+        vec!["c_custkey".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/single-join-post-root-orders.parquet",
+        orders_schema,
+        vec!["o_orderkey".into(), "o_custkey".into()],
+    )));
+    let join = builder.add_join(
+        customers,
+        orders,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let projection = builder.add_projection(
+        join,
+        projection_outputs(vec![Expr::column("c_custkey"), Expr::column("o_orderkey")], Arc::clone(&join_schema)),
+    );
+    let aggregate = builder.add_aggregate(
+        projection,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("c_count"), false, false),
+            SortExpr::new(Expr::column("c_custkey"), true, false),
+        ]),
+        Arc::clone(&aggregate_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregate_schema);
+    builder.finish_with_host_sink(limit)
+}
+
 pub(crate) fn serial_aggregate_multi_join_spine_plan() -> cudf_query_engine::QueryPlan {
     let part_schema = Arc::new(Schema::new(vec![
         Field::new("p_partkey", DataType::Int32, false),

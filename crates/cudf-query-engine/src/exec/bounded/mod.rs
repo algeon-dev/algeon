@@ -469,8 +469,42 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
+    execute_bounded_generic_unary_from_frame_with_reservation_kind(
+        context,
+        node_id,
+        stage,
+        output_boundary,
+        input,
+        input_reserved_bytes,
+        ReservationKind::OperatorOutput,
+        reservations,
+        metrics,
+        use_budget_token,
+        execute,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_reservation_kind(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    stage: &'static str,
+    output_boundary: &'static str,
+    input: GpuDataFrame,
+    input_reserved_bytes: u64,
+    reservation_kind: ReservationKind,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    use_budget_token: bool,
+    execute: impl FnOnce(
+        &ExecutionContext,
+        GpuDataFrame,
+        Option<&ExecutionBudgetToken>,
+        &mut QueryMetrics,
+    ) -> Result<GpuDataFrame>,
+) -> Result<ResidentGpuFrame> {
     let work_reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
+        MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, reservations.budget())
             .with_memory_boundary(stage)
             .with_node_id(node_id)
             .with_stage(stage)
@@ -510,7 +544,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
         },
     };
     let output_reservation = match reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+        MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
             .with_memory_boundary(output_boundary)
             .with_node_id(node_id)
             .with_stage(stage)

@@ -87,6 +87,39 @@ pub(super) fn execute_final_sort_node_with_retry(
     }
 }
 
+pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    sort: &SortNode,
+    input_frame: GpuDataFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = context.memory_control_policy() else {
+        unreachable!("execute_final_sort_node_from_frame_with_retry is called only for bounded policies");
+    };
+    let max_attempts = max_retry_attempts.max(1);
+    let timer = Instant::now();
+    let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let result = final_sort.full_sort_limit_attempt_from_frame(None, &input_frame, 1);
+
+    match result {
+        Ok(output) => {
+            final_sort.metrics.final_sort_time += timer.elapsed();
+            Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
+        },
+        Err(error) if is_retryable_final_sort_error(&error) => {
+            record_final_sort_retry_error(&error, final_sort.metrics);
+            final_sort.metrics.final_sort_time += timer.elapsed();
+            Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error))
+        },
+        Err(error) => {
+            final_sort.metrics.final_sort_time += timer.elapsed();
+            Err(error)
+        },
+    }
+}
+
 struct FinalSortExecutor<'a> {
     context: &'a ExecutionContext,
     node_id: NodeId,

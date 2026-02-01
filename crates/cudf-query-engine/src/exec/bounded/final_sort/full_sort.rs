@@ -7,12 +7,20 @@ impl<'a> FinalSortExecutor<'a> {
         input: &CommittedPartial,
         attempt: usize,
     ) -> Result<CommittedPartial> {
+        self.full_sort_limit_attempt_from_frame(limit, &input.frame, attempt)
+    }
+
+    pub(super) fn full_sort_limit_attempt_from_frame(
+        &mut self,
+        limit: Option<&LimitNode>,
+        input: &GpuDataFrame,
+        attempt: usize,
+    ) -> Result<CommittedPartial> {
         let sort = lower_sort_spec(&self.sort.spec)?;
         let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
         let prepare_token = self.final_sort_budget_token("final_sort", attempt)?;
         let timer = Instant::now();
         let prepared = input
-            .frame
             .frame()
             .clone()
             .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, &prepare_token)
@@ -93,9 +101,12 @@ impl<'a> FinalSortExecutor<'a> {
                 return Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation });
             }
 
-            let materialized_output_bytes = materialized_reservation.bytes();
             let output_reservation = match self.reserve_estimated_final_sort_output(
-                estimated_limited_output_bytes(materialized_output_bytes, materialized_frame.num_rows(), limit.spec)?,
+                estimated_limited_output_bytes(
+                    materialized_reservation.bytes(),
+                    materialized_frame.num_rows(),
+                    limit.spec,
+                )?,
                 attempt,
             ) {
                 Ok(reservation) => reservation,
