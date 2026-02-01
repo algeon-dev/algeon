@@ -60,13 +60,13 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::R
         analysis.nodes.iter().find(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &node.executable
     {
-        return Err(capability_rejection_error("node", *reason).with_fact("node_id", node.node_id));
+        return Err(capability_rejection_error("node", reason).with_fact("node_id", node.node_id));
     }
 
     if let Some(edge) = analysis.edges.iter().find(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &edge.decision
     {
-        return Err(capability_rejection_error("edge", *reason)
+        return Err(capability_rejection_error("edge", reason)
             .with_fact("producer", edge.producer)
             .with_fact("consumer", edge_consumer_label(edge.consumer)));
     }
@@ -75,7 +75,7 @@ fn reject_local_capability_rejections(analysis: &CapabilityAnalysis) -> crate::R
         analysis.invariants.iter().find(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
         && let CapabilityDecision::Rejected { reason, .. } = &invariant.decision
     {
-        return Err(capability_rejection_error("invariant", *reason)
+        return Err(capability_rejection_error("invariant", reason)
             .with_fact("invariant_id", invariant.invariant_id.index())
             .with_fact("invariant_kind", invariant_kind_label(&invariant.kind)));
     }
@@ -615,16 +615,14 @@ fn build_resources(
         }
         consumers.sort_unstable();
         consumers.dedup();
-        let lifetime = if consumers.is_empty()
-            && matches!(plan.sink(), ResultSink::GpuResident { input } if *input == *node_id)
-        {
-            ResidentLifetime::SinkOutput { producer }
-        } else if consumers.is_empty() {
-            ResidentLifetime::TaskLocal { task: producer }
-        } else {
-            let last_consumer = *consumers.iter().max_by_key(|task| task.index()).expect("consumers must not be empty");
-            ResidentLifetime::BetweenTasks { producer, last_consumer }
-        };
+        let lifetime =
+            if consumers.is_empty() && matches!(plan.sink(), ResultSink::GpuResident { input } if *input == *node_id) {
+                ResidentLifetime::SinkOutput { producer }
+            } else if consumers.is_empty() {
+                ResidentLifetime::TaskLocal { task: producer }
+            } else {
+                ResidentLifetime::BetweenTasks { producer }
+            };
         resources.push(ResidentResource::new(resource, producer, consumers, lifetime));
     }
     Ok(resources)

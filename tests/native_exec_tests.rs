@@ -1,6 +1,6 @@
 use std::{fs, sync::Arc};
 
-use cudf_query_engine::BoundedJoinReservationContract;
+use cudf_query_engine::{BoundedJoinReservationContract, PipelineTaskKind, compile_pipeline};
 use datafusion::{
     common::{DataFusionError, config::ConfigOptions},
     execution::context::TaskContext,

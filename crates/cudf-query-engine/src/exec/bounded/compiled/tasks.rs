@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::record_batch::RecordBatch;
 
@@ -16,7 +16,7 @@ use crate::{
             execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
             execute_bounded_join_leaf_source, execute_bounded_root_hash_join_build_from_frame,
             execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_probe_from_frame,
-            execute_final_sort_node_from_frame_with_retry,
+            execute_compiled_bounded_aggregate_from_frame, execute_final_sort_node_from_frame_with_retry,
         },
         materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap},
@@ -26,7 +26,7 @@ use crate::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
         SinkBoundaryKind,
     },
-    plan::{AggregateNode, JoinNode, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
+    plan::{JoinNode, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
     runtime::{ExecutionContext, MemoryControlPolicy, ReservationKind},
     source::SourceNode,
 };
@@ -74,8 +74,8 @@ pub struct CompiledGpuTaskExecutor<'a> {
     gpu_inputs: &'a GpuResidentInputMap,
     metrics: &'a mut QueryMetrics,
     reservations: ReservationTracker,
-    join_build: Option<BoundedRootHashJoinBuildState>,
-    join_probe: Option<BoundedRootHashJoinProbeState>,
+    join_builds: BTreeMap<NodeId, BoundedRootHashJoinBuildState>,
+    join_probes: BTreeMap<NodeId, BoundedRootHashJoinProbeState>,
     host_output: Option<RecordBatch>,
 }
 
@@ -99,8 +99,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             gpu_inputs,
             metrics,
             reservations,
-            join_build: None,
-            join_probe: None,
+            join_builds: BTreeMap::new(),
+            join_probes: BTreeMap::new(),
             host_output: None,
         })
     }
@@ -236,8 +236,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         state: &CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
-        if self.join_build.is_some() || self.join_probe.is_some() {
-            return Err(invalid("compiled join build task found an existing join state")
+        if self.join_builds.contains_key(&node_id) || self.join_probes.contains_key(&node_id) {
+            return Err(invalid("compiled join build task found existing state for its join node")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
@@ -255,7 +255,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.metrics,
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        self.join_build = Some(build);
+        self.join_builds.insert(node_id, build);
         Ok(CompiledTaskOutput::empty())
     }
 
@@ -268,12 +268,18 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let input = single_input_resource(task)?;
         let input_payload = state.resource_payload(input)?;
         let node = join_node(self.plan, task, node_id)?;
-        let build = self.join_build.take().ok_or_else(|| {
+        let build = self.join_builds.remove(&node_id).ok_or_else(|| {
             invalid("compiled join probe task ran before join build state was available")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str())
         })?;
+        if self.join_probes.contains_key(&node_id) {
+            return Err(invalid("compiled join probe task found existing probe state for its join node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str()));
+        }
         let probe = execute_bounded_root_hash_join_probe_from_frame(
             self.context,
             node_id,
@@ -285,7 +291,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.metrics,
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        self.join_probe = Some(probe);
+        self.join_probes.insert(node_id, probe);
         Ok(CompiledTaskOutput::empty())
     }
 
@@ -296,7 +302,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let node_id = plan_node(task)?;
         let output = single_output_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
-        let probe = self.join_probe.take().ok_or_else(|| {
+        let probe = self.join_probes.remove(&node_id).ok_or_else(|| {
             invalid("compiled join materialize task ran before join probe state was available")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
@@ -334,26 +340,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
-        let frame = execute_bounded_generic_unary_from_frame(
+        let frame = execute_compiled_bounded_aggregate_from_frame(
             self.context,
             node_id,
-            "compiled_aggregate",
-            "compiled_aggregate_output",
+            aggregate,
+            node.output_schema(),
             input_payload.clone_frame(),
             input_payload.reservation_bytes(),
             &mut self.reservations,
             self.metrics,
-            true,
-            |context, input, token, metrics| {
-                execute_compiled_aggregate_with_budget(
-                    context,
-                    aggregate,
-                    input,
-                    node.output_schema(),
-                    token.expect("budget token is created for compiled bounded aggregate stages"),
-                    metrics,
-                )
-            },
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
@@ -590,17 +585,6 @@ fn limit_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> 
             .with_fact("pipeline_task_kind", task.kind().as_str()));
     };
     Ok(limit)
-}
-
-fn execute_compiled_aggregate_with_budget(
-    context: &ExecutionContext,
-    aggregate: &AggregateNode,
-    input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
-    token: &cudf::ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
-) -> Result<GpuDataFrame> {
-    crate::exec::operators::execute_aggregate_with_budget(context, aggregate, input, output_schema, token, metrics)
 }
 
 fn attach_task_facts(error: QueryError, task: &PipelineTask, node_id: NodeId) -> QueryError {

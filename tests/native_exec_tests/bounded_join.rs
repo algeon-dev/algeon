@@ -77,18 +77,32 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    let native = optimized
+        .as_any()
+        .downcast_ref::<NativeCudfExec>()
+        .expect("single-join post-root pipeline should optimize to NativeCudfExec");
+    let pipeline = compile_pipeline(native.native_plan(), &native.native_plan().capability_analysis())
+        .expect("lowered single-join post-root pipeline should compile");
+    assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Aggregate), 1);
+    assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::FinalSort), 1);
+    assert_eq!(task_kind_count(&pipeline, PipelineTaskKind::Limit), 1);
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 0);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
 
-    let batches = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+    let batches =
+        futures::executor::block_on(collect(Arc::clone(&optimized), Arc::new(TaskContext::default()))).unwrap();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].num_rows(), 2);
     assert_eq!(batches[0].num_columns(), 2);
     assert_eq!(int32_array(&batches[0], 0).values().as_ref(), &[1, 2]);
     assert_eq!(int64_array(&batches[0], 1).values().as_ref(), &[303, 202]);
+
+    let metrics = optimized.metrics().expect("native execution should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_tasks_executed").unwrap().as_usize(), pipeline.tasks().len());
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -157,6 +171,10 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     );
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn task_kind_count(pipeline: &cudf_query_engine::CompiledPipeline, kind: PipelineTaskKind) -> usize {
+    pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
 }
 
 #[test]

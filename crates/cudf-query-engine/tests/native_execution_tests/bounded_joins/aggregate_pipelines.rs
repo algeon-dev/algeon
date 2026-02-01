@@ -64,6 +64,9 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
     assert!(metrics.reservation_requested_bytes > 0);
     assert!(metrics.reservation_granted_bytes > 0);
     assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert!(metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert_eq!(metrics.partial_aggregate_count, 0);
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
@@ -83,12 +86,12 @@ fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_res
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate"),
-            (ReservationKind::OperatorOutput, "join_pipeline_aggregate_output"),
-            (ReservationKind::FinalSort, "join_pipeline_sort"),
-            (ReservationKind::FinalSort, "join_pipeline_sort_output"),
-            (ReservationKind::FinalSort, "join_pipeline_limit"),
-            (ReservationKind::FinalSort, "join_pipeline_limit_output"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate"),
+            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
+            (ReservationKind::FinalSort, "final_sort"),
+            (ReservationKind::FinalSort, "final_sort"),
+            (ReservationKind::FinalSort, "compiled_limit"),
+            (ReservationKind::FinalSort, "compiled_limit_output"),
             (ReservationKind::Materialization, "host_materialization"),
         ],
     );

@@ -28,7 +28,17 @@ use cudf_query_engine::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
-use crate::bounded_join_admission::plans::single_join_post_root_aggregate_sort_limit_plan;
+use crate::bounded_join_admission::{
+    AggregateOverJoinSubplanInputsVariant, ResidualResidentGroupedAggregateInputVariant,
+    admitted_mixed_residual_multi_join_plan, keyless_conditional_aggregate_over_join_subplan_inputs_plan,
+    plans::{
+        KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant, aggregate_over_join_subplan_topk_plan,
+        keyed_hash_join_resident_subplan_pipeline_plan, keyless_conditional_join_input_subplan_plan,
+        resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+        resident_grouped_aggregate_subquery_filter_plan, single_join_post_root_aggregate_sort_limit_plan,
+    },
+    residual_resident_grouped_aggregate_input_plan,
+};
 
 #[test]
 fn compiled_bounded_support_accepts_root_join_graph_without_legacy_routing_terms() {
@@ -88,6 +98,20 @@ fn compiled_bounded_support_accepts_single_join_post_root_d2_tasks_without_legac
         CompiledBoundedPipelineSupport::Supported
     );
 
+    let aggregate_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.kind() == PipelineTaskKind::Aggregate)
+        .expect("single-join post-root plan should have an aggregate task");
+    let aggregate_gate = aggregate_task
+        .gates()
+        .iter()
+        .find_map(|gate_id| pipeline.gates().iter().find(|gate| gate.id() == *gate_id))
+        .expect("compiled aggregate task should retain its output reservation gate");
+    assert_eq!(aggregate_gate.reservation_kind(), ReservationKind::OperatorOutput);
+    assert_eq!(aggregate_gate.status(), ContractStatus::Modeled);
+    assert_eq!(aggregate_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+
     let final_sort_gate = pipeline
         .gates()
         .iter()
@@ -99,6 +123,88 @@ fn compiled_bounded_support_accepts_single_join_post_root_d2_tasks_without_legac
     let rendered = pipeline.debug_render();
     assert!(!rendered.contains("BoundedJoinExecutionFamily"));
     assert!(!rendered.contains("BoundedJoinExecutionPath"));
+}
+
+#[test]
+fn compiled_bounded_support_accepts_simple_multi_join_tree_without_legacy_routing_terms() {
+    let plan = simple_multi_join_plan(
+        Path::new("/tmp/compiled-d26-a.parquet"),
+        Path::new("/tmp/compiled-d26-b.parquet"),
+        Path::new("/tmp/compiled-d26-c.parquet"),
+    );
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_closed_multi_join_subgraph());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("simple multi-join plan should compile");
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::SourceRead, 3);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinBuild, 2);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinProbe, 2);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 2);
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let rendered = pipeline.debug_render();
+    assert!(!rendered.contains("BoundedJoinExecutionFamily"));
+    assert!(!rendered.contains("BoundedJoinExecutionPath"));
+}
+
+#[test]
+fn compiled_bounded_support_rejects_post_root_aggregate_without_output_gate_before_execution() {
+    let plan = single_join_post_root_aggregate_sort_limit_plan();
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("single-join post-root plan should compile");
+    let malformed = pipeline_without_reservation_gates(&pipeline);
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&malformed).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported
+    );
+}
+
+#[test]
+fn compiled_bounded_support_rejects_post_root_final_sort_without_gate_before_execution() {
+    let plan = root_join_sort_limit_data_plan(
+        Path::new("/tmp/compiled-d24-final-sort-left.parquet"),
+        Path::new("/tmp/compiled-d24-final-sort-right.parquet"),
+    );
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("single-join final-sort plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 0);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let malformed = pipeline_without_reservation_gates(&pipeline);
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&malformed).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported
+    );
+}
+
+#[test]
+fn compiled_bounded_support_rejects_aggregate_join_input_before_execution() {
+    let plan = aggregate_join_input_plan();
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinBuild, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinProbe, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 1);
+
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported
+    );
 }
 
 #[test]
@@ -128,7 +234,53 @@ fn compiled_bounded_query_plan_support_rejects_non_hash_root_join_before_executi
 }
 
 #[test]
-fn compiled_scheduler_runs_tasks_from_dependencies_and_releases_last_consumers() {
+fn compiled_bounded_support_rejects_d3_1_nonlinear_inventory_before_scheduler_execution() {
+    for case in d3_1_inventory_cases() {
+        let analysis = case.plan.capability_analysis();
+        assert!(
+            !analysis.has_rejections(),
+            "{}: compiler should still receive locally satisfied capability facts",
+            case.label
+        );
+        assert!((case.admits)(&analysis), "{}: expected D.3 target admission to be satisfied", case.label);
+        let pipeline = compile_pipeline(&case.plan, &analysis)
+            .unwrap_or_else(|error| panic!("{}: compile failed: {error}", case.label));
+        pipeline
+            .validate()
+            .unwrap_or_else(|error| panic!("{}: compiled pipeline should validate: {error}", case.label));
+
+        assert_eq!(
+            compiled_bounded_pipeline_support(&pipeline).expect("graph-only support check should not fail"),
+            case.graph_support,
+            "{}: graph-only support status should stay pinned until the matching D.3 migration lands",
+            case.label
+        );
+        assert_eq!(
+            compiled_bounded_query_plan_support(&case.plan, &pipeline)
+                .expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Unsupported,
+            "{}: plan-aware compiled support should reject before scheduler execution",
+            case.label
+        );
+
+        assert_compiled_graph_inventory(case.label, &pipeline);
+        let rendered = pipeline.debug_render();
+        for expected in case.render_fragments {
+            assert!(rendered.contains(expected), "{}: compiled graph rendering should contain {expected}", case.label);
+        }
+        assert_no_legacy_execution_selection_terms(case.label, &rendered);
+
+        let executor = MockExecutor::new();
+        assert!(
+            executor.executed.is_empty(),
+            "{}: unsupported compiled graph should stop at support checking and execute zero compiled tasks",
+            case.label
+        );
+    }
+}
+
+#[test]
+fn compiled_scheduler_runs_tasks_from_dependencies_and_releases_after_all_consumers() {
     let pipeline = out_of_order_join_barrier_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let mut executor = MockExecutor::new();
@@ -150,6 +302,44 @@ fn compiled_scheduler_runs_tasks_from_dependencies_and_releases_last_consumers()
     assert_eq!(state.live_resource_count(), 0);
     assert!(state.is_resource_released(ResidentResourceId::new(0)));
     assert!(state.is_resource_released(ResidentResourceId::new(1)));
+}
+
+#[test]
+fn compiled_scheduler_runs_shared_resident_fanout_and_releases_after_all_consumers() {
+    let pipeline = shared_resident_fanout_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("shared fan-out pipeline should be schedulable");
+    let mut executor = MockExecutor::new();
+
+    let state = scheduler.run(&mut executor).expect("shared fan-out pipeline should execute");
+
+    assert_eq!(state.execution_order(), &[PipelineTaskId::new(0), PipelineTaskId::new(1), PipelineTaskId::new(2)]);
+    assert_eq!(executor.executed, state.execution_order());
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+    assert_eq!(state.live_resource_count(), 0);
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
+}
+
+#[test]
+fn compiled_state_keeps_shared_resource_live_until_every_consumer_completes() {
+    let pipeline = shared_resident_fanout_pipeline();
+    let mut state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
+
+    let released = state
+        .complete_task(&pipeline.tasks()[0], vec![(ResidentResourceId::new(0), "frame".to_string())])
+        .expect("source should produce shared resource");
+    assert!(released.is_empty());
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+
+    let released =
+        state.complete_task(&pipeline.tasks()[1], vec![]).expect("first consumer should not release shared resource");
+    assert!(released.is_empty());
+    assert!(state.is_resource_live(ResidentResourceId::new(0)));
+
+    let released = state
+        .complete_task(&pipeline.tasks()[2], vec![])
+        .expect("last completed consumer should release shared resource");
+    assert_eq!(released.iter().map(|resource| resource.id()).collect::<Vec<_>>(), vec![ResidentResourceId::new(0)]);
+    assert!(state.is_resource_released(ResidentResourceId::new(0)));
 }
 
 #[test]
@@ -190,21 +380,6 @@ fn compiled_scheduler_errors_when_task_reports_duplicate_produced_resource() {
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
 }
 
-#[test]
-fn compiled_scheduler_errors_on_premature_last_consumer_release() {
-    let pipeline = premature_last_consumer_pipeline();
-    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
-    let mut executor = MockExecutor::new();
-
-    let error = scheduler.run(&mut executor).expect_err("premature release should fail");
-
-    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
-    assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
-    assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
-    assert_eq!(error.facts().get("incomplete_consumer_task"), Some("t2"));
-}
-
-#[test]
 fn compiled_gpu_executor_runs_source_filter_projection_prefix() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -296,6 +471,59 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
 }
 
 #[test]
+fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d32-shared-source");
+    let path = dir.join("shared.parquet");
+    write_self_join_parquet(&path);
+
+    let plan = shared_source_self_join_data_plan(&path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source self join should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::SourceRead, 1);
+    let shared_resource = pipeline
+        .resources()
+        .iter()
+        .find(|resource| resource.consumers().len() == 2)
+        .expect("one source resource should feed both join inputs")
+        .id();
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let context = bounded_context(Arc::new(runtime));
+    let mut metrics = QueryMetrics::default();
+    let gpu_inputs = cudf_query_engine::GpuResidentInputMap::new();
+
+    let (state, compiled_batch) = {
+        let mut executor = CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics).unwrap();
+        let state = scheduler.run(&mut executor).expect("compiled shared-source join should execute");
+        let output = executor.take_host_output().expect("compiled host sink should materialize");
+        (state, output)
+    };
+
+    assert_eq!(
+        state.execution_order(),
+        &[
+            PipelineTaskId::new(0),
+            PipelineTaskId::new(1),
+            PipelineTaskId::new(2),
+            PipelineTaskId::new(3),
+            PipelineTaskId::new(4),
+        ]
+    );
+    assert!(state.is_resource_released(shared_resource));
+    assert_eq!(state.live_resource_count(), 0);
+    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(compiled_batch.num_rows(), 3);
+    assert_eq!(int32_values(&compiled_batch, 0), vec![Some(1), Some(2), Some(4)]);
+    assert_eq!(int32_values(&compiled_batch, 1), vec![Some(10), Some(20), Some(40)]);
+}
+
+#[test]
 fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -376,6 +604,80 @@ fn execute_query_plan_leaves_unsupported_compiled_graphs_on_legacy_fallback() {
 }
 
 #[test]
+fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d23-aggregate");
+    let customers_path = dir.join("customers.parquet");
+    let orders_path = dir.join("orders.parquet");
+    write_single_join_post_root_parquets(&customers_path, &orders_path);
+    let plan = single_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_single_join_post_root_pipeline());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("single-join aggregate plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 0);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 0);
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let context = bounded_context(Arc::new(runtime));
+
+    let result =
+        execute_query_plan(&context, &plan).expect("D.2.3 aggregate graph should execute through compiled path");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_int64_pairs_sorted(batch, 0, 1), vec![(Some(1), Some(2)), (Some(2), Some(1)), (Some(3), Some(0))]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
+fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d24-sort-limit");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_sort_limit_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join final-sort/limit plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 0);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let final_sort_gate =
+        runtime_visible_gate_for_task_kind(&pipeline, PipelineTaskKind::FinalSort, ReservationKind::FinalSort)
+            .expect("compiled final-sort task should retain its modeled reservation gate");
+    assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
+    assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan).expect("D.2.4 final-sort/limit graph should execute");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_values(batch, 0), vec![Some(4)]);
+    assert_eq!(int32_values(batch, 1), vec![Some(400)]);
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.hash_join_build_count, 1);
+}
+
+#[test]
 fn execute_query_plan_routes_single_join_post_root_d2_graph_through_compiled_pipeline() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -408,6 +710,41 @@ fn execute_query_plan_routes_single_join_post_root_d2_graph_through_compiled_pip
 }
 
 #[test]
+fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let dir = unique_temp_dir("cudf-query-engine-compiled-d26-multi-join");
+    let a_path = dir.join("a.parquet");
+    let b_path = dir.join("b.parquet");
+    let c_path = dir.join("c.parquet");
+    write_multi_join_parquets(&a_path, &b_path, &c_path);
+    let plan = simple_multi_join_plan(&a_path, &b_path, &c_path);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_closed_multi_join_subgraph());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("simple multi-join plan should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    let context = bounded_context(Arc::new(runtime));
+
+    let result = execute_query_plan(&context, &plan).expect("D.2.6 multi-join graph should execute");
+    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
+    let metrics = result.metrics();
+
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(
+        int32_quads_sorted(batch, 0, 1, 2, 3),
+        vec![(Some(2), Some(20), Some(200), Some(2000)), (Some(3), Some(30), Some(300), Some(3000)),]
+    );
+    assert_eq!(metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
+    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
+    assert_eq!(metrics.hash_join_build_count, 2);
+}
+
+#[test]
 fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
@@ -429,6 +766,183 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     assert!(!rendered.contains("BoundedJoinExecutionFamily"));
     assert!(!rendered.contains("BoundedJoinExecutionPath"));
     assert!(!rendered.contains("bounded_join_execution_path"));
+}
+
+struct D31InventoryCase {
+    label: &'static str,
+    plan: QueryPlan,
+    admits: fn(&cudf_query_engine::capability::CapabilityAnalysis) -> bool,
+    graph_support: CompiledBoundedPipelineSupport,
+    render_fragments: &'static [&'static str],
+}
+
+fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
+    vec![
+        D31InventoryCase {
+            label: "shared resident producer fan-out",
+            plan: keyed_hash_join_resident_subplan_pipeline_plan(
+                KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily,
+            ),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_keyed_hash_join_resident_subplan_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=shared_resident_producer",
+                "kind=aggregate_boundary",
+                "kind=join_build_before_probe",
+                "consumers=t",
+                "gates=g",
+            ],
+        },
+        D31InventoryCase {
+            label: "keyless conditional join input-subplan pipeline",
+            plan: keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted),
+            admits:
+                cudf_query_engine::capability::CapabilityAnalysis::admits_keyless_conditional_join_input_subplan_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=aggregate",
+                "kind=unary",
+                "kind=join_build_before_probe",
+                "kind=aggregate_boundary",
+                "kind=sink_boundary",
+            ],
+        },
+        D31InventoryCase {
+            label: "keyless aggregate-over-join subplan inputs",
+            plan: keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+                AggregateOverJoinSubplanInputsVariant::Admitted,
+            ),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=aggregate",
+                "kind=join_materialization",
+                "kind=aggregate_boundary",
+                "kind=join_build_before_probe",
+            ],
+        },
+        D31InventoryCase {
+            label: "resident grouped aggregate input",
+            plan: resident_grouped_aggregate_input_post_join_aggregate_topk_plan(),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=aggregate",
+                "kind=final_sort",
+                "kind=limit",
+                "kind=aggregate_boundary",
+                "kind=sort_boundary",
+            ],
+        },
+        D31InventoryCase {
+            label: "mixed keyed-residual grouped aggregate input",
+            plan: residual_resident_grouped_aggregate_input_plan(
+                ResidualResidentGroupedAggregateInputVariant::BlockedFamily,
+            ),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=aggregate",
+                "kind=unary",
+                "kind=join_build_input",
+                "kind=join_probe_input",
+                "kind=aggregate_boundary",
+            ],
+        },
+        D31InventoryCase {
+            label: "filtered left-semi join strategy",
+            plan: root_filtered_left_only_join_plan(JoinType::LeftSemi),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_root_join,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            render_fragments: &[
+                "kind=join_build",
+                "kind=join_probe",
+                "kind=join_materialize",
+                "kind=join_build_before_probe",
+                "kind=join_materialization",
+            ],
+        },
+        D31InventoryCase {
+            label: "filtered left-anti join strategy",
+            plan: root_filtered_left_only_join_plan(JoinType::LeftAnti),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_root_join,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            render_fragments: &[
+                "kind=join_build",
+                "kind=join_probe",
+                "kind=join_materialize",
+                "kind=join_build_before_probe",
+                "kind=join_materialization",
+            ],
+        },
+        D31InventoryCase {
+            label: "mixed residual multi-join strategy",
+            plan: admitted_mixed_residual_multi_join_plan(),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_closed_multi_join_subgraph,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            render_fragments: &[
+                "kind=join_build",
+                "kind=join_probe",
+                "kind=join_materialize",
+                "kind=join_build_before_probe",
+                "kind=join_materialization",
+            ],
+        },
+        D31InventoryCase {
+            label: "broad multi-join TopK with aggregate-over-join input",
+            plan: aggregate_over_join_subplan_topk_plan(),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=aggregate",
+                "kind=final_sort",
+                "kind=limit",
+                "kind=aggregate_boundary",
+                "kind=sort_boundary",
+            ],
+        },
+        D31InventoryCase {
+            label: "resident grouped aggregate subquery-filter TopK path",
+            plan: resident_grouped_aggregate_subquery_filter_plan(),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
+            graph_support: CompiledBoundedPipelineSupport::Unsupported,
+            render_fragments: &[
+                "kind=aggregate",
+                "kind=final_sort",
+                "kind=join_materialization",
+                "kind=aggregate_boundary",
+                "kind=sort_boundary",
+            ],
+        },
+    ]
+}
+
+fn assert_compiled_graph_inventory(label: &str, pipeline: &CompiledPipeline) {
+    assert!(!pipeline.tasks().is_empty(), "{label}: compiled graph should carry explicit tasks");
+    assert!(!pipeline.edges().is_empty(), "{label}: compiled graph should carry explicit task edges");
+    assert!(!pipeline.barriers().is_empty(), "{label}: compiled graph should carry explicit barriers");
+    assert!(!pipeline.resources().is_empty(), "{label}: compiled graph should carry explicit resident resources");
+    assert!(!pipeline.gates().is_empty(), "{label}: compiled graph should carry explicit reservation gates");
+    assert_eq!(pipeline.sink().kind(), SinkBoundaryKind::HostArrowMaterialization, "{label}: expected host sink");
+
+    let rendered = pipeline.debug_render();
+    for expected_section in ["tasks:", "edges:", "barriers:", "resources:", "gates:", "sink:"] {
+        assert!(rendered.contains(expected_section), "{label}: graph rendering should expose {expected_section}");
+    }
+}
+
+fn assert_no_legacy_execution_selection_terms(label: &str, rendered: &str) {
+    for forbidden in [
+        "BoundedJoinExecutionFamily",
+        "BoundedJoinExecutionPath",
+        "bounded_join_execution_family",
+        "bounded_join_execution_path",
+    ] {
+        assert!(
+            !rendered.contains(forbidden),
+            "{label}: compiled graph diagnostics must not contain legacy execution selection term {forbidden}"
+        );
+    }
 }
 
 struct MockExecutor {
@@ -575,6 +1089,105 @@ fn keyless_root_join_plan() -> QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
+fn aggregate_join_input_plan() -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("sum_amount", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-d24-aggregate-join-input-left.parquet",
+        Arc::clone(&left_schema),
+        vec!["id".into(), "amount".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-d24-aggregate-join-input-right.parquet",
+        Arc::clone(&right_schema),
+        vec!["id".into()],
+    )));
+    let aggregate = builder.add_aggregate(
+        left,
+        AggregateSpec::new(
+            vec![Expr::column("id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "sum_amount")],
+        ),
+        aggregate_schema,
+    );
+    let join = builder.add_join(
+        aggregate,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "left_id"), ColumnRef::input(1, "id", "right_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sum_amount", "sum_amount"), "sum_amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn root_filtered_left_only_join_plan(join_type: JoinType) -> QueryPlan {
+    assert!(matches!(join_type, JoinType::LeftSemi | JoinType::LeftAnti));
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-d31-filtered-left.parquet",
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/compiled-d31-filtered-right.parquet",
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            join_type,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_value", "left_value"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_value", "right_value"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "left_value", "left_value"), "left_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
 fn root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("left_id", DataType::Int32, false),
@@ -615,6 +1228,241 @@ fn root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
         output_schema,
     );
     builder.finish_with_host_sink(join)
+}
+
+fn shared_source_self_join_data_plan(path: &Path) -> QueryPlan {
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        path,
+        source_schema,
+        vec!["id".into(), "value".into()],
+    )));
+    let join = builder.add_join(
+        source,
+        source,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "id", "id"), "id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn root_join_sort_limit_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        left_path,
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        right_path,
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "left_id", "left_id"), ColumnRef::input(1, "right_id", "right_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("right_value"), true, false)]),
+        Arc::clone(&output_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(1), output_schema);
+    builder.finish_with_host_sink(limit)
+}
+
+fn simple_multi_join_plan(a_path: &Path, b_path: &Path, c_path: &Path) -> QueryPlan {
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+    ]));
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_id", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, false),
+    ]));
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_id", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, false),
+    ]));
+    let first_join_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, true),
+        Field::new("c_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let a = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        a_path,
+        a_schema,
+        vec!["a_id".into(), "a_value".into()],
+    )));
+    let b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        b_path,
+        b_schema,
+        vec!["b_id".into(), "b_value".into()],
+    )));
+    let c = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        c_path,
+        c_schema,
+        vec!["c_id".into(), "c_value".into()],
+    )));
+    let ab = builder.add_join(
+        a,
+        b,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "a_id", "a_id"), ColumnRef::input(1, "b_id", "b_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_id", "a_id"), "a_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_value", "a_value"), "a_value"),
+            JoinOutputColumn::right(ColumnRef::input(1, "b_value", "b_value"), "b_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&first_join_schema),
+    );
+    let abc = builder.add_join(
+        ab,
+        c,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "a_id", "a_id"), ColumnRef::input(1, "c_id", "c_id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_id", "a_id"), "a_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_value", "a_value"), "a_value"),
+            JoinOutputColumn::left(ColumnRef::input(0, "b_value", "b_value"), "b_value"),
+            JoinOutputColumn::right(ColumnRef::input(1, "c_value", "c_value"), "c_value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(abc)
+}
+
+fn pipeline_without_reservation_gates(pipeline: &CompiledPipeline) -> CompiledPipeline {
+    let tasks = pipeline
+        .tasks()
+        .iter()
+        .map(|task| {
+            let base = match task.plan_node() {
+                Some(node_id) => PipelineTask::for_plan_node(task.id(), task.kind(), node_id),
+                None => PipelineTask::new(task.id(), task.kind()),
+            };
+            base.with_input_resources(task.input_resources().to_vec())
+                .with_output_resources(task.output_resources().to_vec())
+                .with_gates(vec![])
+        })
+        .collect::<Vec<_>>();
+    let edges = pipeline
+        .edges()
+        .iter()
+        .map(|edge| {
+            PipelineEdge::new(edge.id(), edge.from(), edge.to(), edge.kind())
+                .with_resources(edge.resources().to_vec())
+                .with_gates(vec![])
+        })
+        .collect::<Vec<_>>();
+    let barriers = pipeline
+        .barriers()
+        .iter()
+        .map(|barrier| {
+            PipelineBarrier::new(barrier.id(), barrier.kind())
+                .with_upstream_tasks(barrier.upstream_tasks().to_vec())
+                .with_downstream_tasks(barrier.downstream_tasks().to_vec())
+                .with_gates(vec![])
+        })
+        .collect::<Vec<_>>();
+    let resources = pipeline
+        .resources()
+        .iter()
+        .map(|resource| {
+            ResidentResource::new(
+                resource.id(),
+                resource.producer(),
+                resource.consumers().to_vec(),
+                resource.lifetime(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let sink = SinkBoundary::new(pipeline.sink().kind(), pipeline.sink().input()).with_gates(vec![]);
+    CompiledPipeline::new(tasks, edges, barriers, resources, vec![], sink)
+}
+
+fn runtime_visible_gate_for_task_kind(
+    pipeline: &CompiledPipeline,
+    task_kind: PipelineTaskKind,
+    reservation_kind: ReservationKind,
+) -> Option<&ReservationGate> {
+    let task = pipeline.tasks().iter().find(|task| task.kind() == task_kind)?;
+    task.gates()
+        .iter()
+        .chain(
+            pipeline
+                .edges()
+                .iter()
+                .filter(|edge| edge.from() == task.id() || edge.to() == task.id())
+                .flat_map(|edge| edge.gates()),
+        )
+        .chain(
+            pipeline
+                .barriers()
+                .iter()
+                .filter(|barrier| {
+                    barrier.upstream_tasks().contains(&task.id()) || barrier.downstream_tasks().contains(&task.id())
+                })
+                .flat_map(|barrier| barrier.gates()),
+        )
+        .chain((pipeline.sink().input() == task.id()).then_some(pipeline.sink().gates()).into_iter().flatten())
+        .find_map(|gate_id| {
+            pipeline.gates().iter().find(|gate| gate.id() == *gate_id && gate.reservation_kind() == reservation_kind)
+        })
 }
 
 fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
@@ -681,6 +1529,60 @@ fn root_join_with_unary_inputs_data_plan(left_path: &Path, right_path: &Path) ->
         output_schema,
     );
     builder.finish_with_host_sink(join)
+}
+
+fn single_join_post_root_aggregate_data_plan(customers_path: &Path, orders_path: &Path) -> QueryPlan {
+    let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let orders_schema = Arc::new(Schema::new(vec![
+        Field::new("o_orderkey", DataType::Int32, false),
+        Field::new("o_custkey", DataType::Int32, false),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int32, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customers = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        customers_path,
+        customer_schema,
+        vec!["c_custkey".into()],
+    )));
+    let orders = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        orders_path,
+        orders_schema,
+        vec!["o_orderkey".into(), "o_custkey".into()],
+    )));
+    let join = builder.add_join(
+        customers,
+        orders,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        aggregate_schema,
+    );
+    builder.finish_with_host_sink(aggregate)
 }
 
 fn single_join_post_root_aggregate_sort_limit_data_plan(customers_path: &Path, orders_path: &Path) -> QueryPlan {
@@ -774,12 +1676,7 @@ fn simple_unary_pipeline() -> CompiledPipeline {
             PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SinkBoundary)
                 .with_upstream_tasks(vec![unary]),
         ],
-        vec![ResidentResource::new(
-            frame,
-            source,
-            vec![unary],
-            ResidentLifetime::BetweenTasks { producer: source, last_consumer: unary },
-        )],
+        vec![ResidentResource::new(frame, source, vec![unary], ResidentLifetime::BetweenTasks { producer: source })],
         vec![],
         SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, unary),
     )
@@ -830,13 +1727,13 @@ fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
                 source_frame,
                 source,
                 vec![build, probe],
-                ResidentLifetime::BetweenTasks { producer: source, last_consumer: probe },
+                ResidentLifetime::BetweenTasks { producer: source },
             ),
             ResidentResource::new(
                 join_output,
                 materialize,
                 vec![sink],
-                ResidentLifetime::BetweenTasks { producer: materialize, last_consumer: sink },
+                ResidentLifetime::BetweenTasks { producer: materialize },
             ),
         ],
         vec![],
@@ -844,39 +1741,44 @@ fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
     )
 }
 
-fn premature_last_consumer_pipeline() -> CompiledPipeline {
+fn shared_resident_fanout_pipeline() -> CompiledPipeline {
     let source = PipelineTaskId::new(0);
-    let early_last_consumer = PipelineTaskId::new(1);
-    let later_consumer = PipelineTaskId::new(2);
+    let first_consumer = PipelineTaskId::new(1);
+    let second_consumer = PipelineTaskId::new(2);
     let frame = ResidentResourceId::new(0);
 
     CompiledPipeline::new(
         vec![
             PipelineTask::new(source, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
-            PipelineTask::new(early_last_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
-            PipelineTask::new(later_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+            PipelineTask::new(first_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+            PipelineTask::new(second_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
         ],
         vec![
-            PipelineEdge::new(PipelineEdgeId::new(0), source, early_last_consumer, PipelineEdgeKind::ResidentFrame)
+            PipelineEdge::new(PipelineEdgeId::new(0), source, first_consumer, PipelineEdgeKind::SharedResidentProducer)
                 .with_resources(vec![frame]),
-            PipelineEdge::new(PipelineEdgeId::new(1), source, later_consumer, PipelineEdgeKind::ResidentFrame)
-                .with_resources(vec![frame]),
+            PipelineEdge::new(
+                PipelineEdgeId::new(1),
+                source,
+                second_consumer,
+                PipelineEdgeKind::SharedResidentProducer,
+            )
+            .with_resources(vec![frame]),
         ],
         vec![
             PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
                 .with_upstream_tasks(vec![source])
-                .with_downstream_tasks(vec![early_last_consumer, later_consumer]),
+                .with_downstream_tasks(vec![first_consumer, second_consumer]),
             PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SinkBoundary)
-                .with_upstream_tasks(vec![later_consumer]),
+                .with_upstream_tasks(vec![second_consumer]),
         ],
         vec![ResidentResource::new(
             frame,
             source,
-            vec![early_last_consumer, later_consumer],
-            ResidentLifetime::BetweenTasks { producer: source, last_consumer: early_last_consumer },
+            vec![first_consumer, second_consumer],
+            ResidentLifetime::BetweenTasks { producer: source },
         )],
         vec![],
-        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, later_consumer),
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, second_consumer),
     )
 }
 
@@ -997,19 +1899,19 @@ fn root_join_shaped_pipeline_with_blocked_gate() -> CompiledPipeline {
             left_frame,
             left_source,
             vec![probe],
-            ResidentLifetime::BetweenTasks { producer: left_source, last_consumer: probe },
+            ResidentLifetime::BetweenTasks { producer: left_source },
         ),
         ResidentResource::new(
             right_frame,
             right_source,
             vec![build],
-            ResidentLifetime::BetweenTasks { producer: right_source, last_consumer: build },
+            ResidentLifetime::BetweenTasks { producer: right_source },
         ),
         ResidentResource::new(
             join_output,
             materialize,
             vec![sink_task],
-            ResidentLifetime::BetweenTasks { producer: materialize, last_consumer: sink_task },
+            ResidentLifetime::BetweenTasks { producer: materialize },
         ),
     ];
 
@@ -1093,6 +1995,54 @@ fn write_join_parquets(left_path: &Path, right_path: &Path) {
     write_parquet(right_path, Arc::clone(&right_schema), &right_batch);
 }
 
+fn write_self_join_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("value", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 4])), Arc::new(Int32Array::from(vec![10, 20, 40]))],
+    )
+    .unwrap();
+    write_parquet(path, Arc::clone(&schema), &batch);
+}
+
+fn write_multi_join_parquets(a_path: &Path, b_path: &Path, c_path: &Path) {
+    let a_schema = Arc::new(Schema::new(vec![
+        Field::new("a_id", DataType::Int32, false),
+        Field::new("a_value", DataType::Int32, false),
+    ]));
+    let a_batch = RecordBatch::try_new(
+        Arc::clone(&a_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(Int32Array::from(vec![10, 20, 30]))],
+    )
+    .unwrap();
+    write_parquet(a_path, Arc::clone(&a_schema), &a_batch);
+
+    let b_schema = Arc::new(Schema::new(vec![
+        Field::new("b_id", DataType::Int32, false),
+        Field::new("b_value", DataType::Int32, false),
+    ]));
+    let b_batch = RecordBatch::try_new(
+        Arc::clone(&b_schema),
+        vec![Arc::new(Int32Array::from(vec![2, 3, 4])), Arc::new(Int32Array::from(vec![200, 300, 400]))],
+    )
+    .unwrap();
+    write_parquet(b_path, Arc::clone(&b_schema), &b_batch);
+
+    let c_schema = Arc::new(Schema::new(vec![
+        Field::new("c_id", DataType::Int32, false),
+        Field::new("c_value", DataType::Int32, false),
+    ]));
+    let c_batch = RecordBatch::try_new(
+        Arc::clone(&c_schema),
+        vec![Arc::new(Int32Array::from(vec![3, 2, 5])), Arc::new(Int32Array::from(vec![3000, 2000, 5000]))],
+    )
+    .unwrap();
+    write_parquet(c_path, Arc::clone(&c_schema), &c_batch);
+}
+
 fn write_single_join_post_root_parquets(customers_path: &Path, orders_path: &Path) {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let customer_batch =
@@ -1127,6 +2077,42 @@ fn int32_values(batch: &RecordBatch, column: usize) -> Vec<Option<i32>> {
 fn int64_values(batch: &RecordBatch, column: usize) -> Vec<Option<i64>> {
     let array = batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap();
     (0..array.len()).map(|index| if array.is_null(index) { None } else { Some(array.value(index)) }).collect()
+}
+
+fn int32_int64_pairs_sorted(
+    batch: &RecordBatch,
+    left_column: usize,
+    right_column: usize,
+) -> Vec<(Option<i32>, Option<i64>)> {
+    let left = int32_values(batch, left_column);
+    let right = int64_values(batch, right_column);
+    let mut pairs = left.into_iter().zip(right).collect::<Vec<_>>();
+    pairs.sort();
+    pairs
+}
+
+type Int32Quad = (Option<i32>, Option<i32>, Option<i32>, Option<i32>);
+
+fn int32_quads_sorted(
+    batch: &RecordBatch,
+    first_column: usize,
+    second_column: usize,
+    third_column: usize,
+    fourth_column: usize,
+) -> Vec<Int32Quad> {
+    let first = int32_values(batch, first_column);
+    let second = int32_values(batch, second_column);
+    let third = int32_values(batch, third_column);
+    let fourth = int32_values(batch, fourth_column);
+    let mut quads = first
+        .into_iter()
+        .zip(second)
+        .zip(third)
+        .zip(fourth)
+        .map(|(((first, second), third), fourth)| (first, second, third, fourth))
+        .collect::<Vec<_>>();
+    quads.sort();
+    quads
 }
 
 fn assert_task_kind_count(pipeline: &CompiledPipeline, kind: PipelineTaskKind, expected: usize) {

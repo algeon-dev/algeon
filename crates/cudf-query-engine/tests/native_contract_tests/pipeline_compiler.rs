@@ -92,19 +92,19 @@ fn pipeline_model_renders_symbolic_tasks_edges_barriers_resources_and_sink() {
             left_frame,
             left_source,
             vec![build],
-            ResidentLifetime::BetweenTasks { producer: left_source, last_consumer: build },
+            ResidentLifetime::BetweenTasks { producer: left_source },
         ),
         ResidentResource::new(
             right_frame,
             right_source,
             vec![probe],
-            ResidentLifetime::BetweenTasks { producer: right_source, last_consumer: probe },
+            ResidentLifetime::BetweenTasks { producer: right_source },
         ),
         ResidentResource::new(
             join_output,
             materialize,
             vec![sink_task],
-            ResidentLifetime::BetweenTasks { producer: materialize, last_consumer: sink_task },
+            ResidentLifetime::BetweenTasks { producer: materialize },
         ),
     ];
 
@@ -172,7 +172,7 @@ fn pipeline_model_renders_symbolic_tasks_edges_barriers_resources_and_sink() {
 
     assert_eq!(
         pipeline.debug_render(),
-        "CompiledPipeline\n  tasks:\n    t0 kind=source_read node=none inputs=none outputs=r0 gates=g0\n    t1 kind=gpu_resident_source node=none inputs=none outputs=r1 gates=none\n    t2 kind=join_build node=none inputs=r0 outputs=none gates=g1\n    t3 kind=join_probe node=none inputs=r1 outputs=none gates=g2\n    t4 kind=join_materialize node=none inputs=none outputs=r2 gates=g3\n    t5 kind=sink_materialize node=none inputs=r2 outputs=none gates=none\n  edges:\n    e0 t0 -> t2 kind=join_build_input resources=r0 gates=g1\n    e1 t1 -> t3 kind=join_probe_input resources=r1 gates=g2\n    e2 t2 -> t3 kind=control resources=none gates=none\n    e3 t3 -> t4 kind=control resources=none gates=none\n    e4 t4 -> t5 kind=sink_input resources=r2 gates=g3\n  barriers:\n    b0 kind=join_build_before_probe upstream=t2 downstream=t3 gates=none\n    b1 kind=sink_boundary upstream=t5 downstream=none gates=g4\n  resources:\n    r0 producer=t0 consumers=t2 lifetime=between_tasks(producer=t0,last_consumer=t2)\n    r1 producer=t1 consumers=t3 lifetime=between_tasks(producer=t1,last_consumer=t3)\n    r2 producer=t4 consumers=t5 lifetime=between_tasks(producer=t4,last_consumer=t5)\n  gates:\n    g0 owner=task:t0 kind=source_read boundary=source_read contract=source_contract status=modeled quality=hard_budgeted_report_with_unresolved_preflight\n    g1 owner=edge:e0 kind=build_side boundary=join_build_side contract=query_engine_build_side_source_reservation status=modeled quality=exact_preflight\n    g2 owner=edge:e1 kind=probe_side boundary=join_probe_side contract=query_engine_probe_side_source_reservation status=modeled quality=query_engine_owned_ordering\n    g3 owner=edge:e4 kind=join_output boundary=join_output contract=dataframe_gather_output_reservation_size_bytes status=modeled quality=exact_preflight\n    g4 owner=sink_boundary kind=materialization boundary=host_materialization contract=query_engine_explicit_sink_materialization_reservation status=modeled quality=query_engine_owned_boundary\n  sink: kind=host_arrow_materialization input=t5 gates=g4\n"
+        "CompiledPipeline\n  tasks:\n    t0 kind=source_read node=none inputs=none outputs=r0 gates=g0\n    t1 kind=gpu_resident_source node=none inputs=none outputs=r1 gates=none\n    t2 kind=join_build node=none inputs=r0 outputs=none gates=g1\n    t3 kind=join_probe node=none inputs=r1 outputs=none gates=g2\n    t4 kind=join_materialize node=none inputs=none outputs=r2 gates=g3\n    t5 kind=sink_materialize node=none inputs=r2 outputs=none gates=none\n  edges:\n    e0 t0 -> t2 kind=join_build_input resources=r0 gates=g1\n    e1 t1 -> t3 kind=join_probe_input resources=r1 gates=g2\n    e2 t2 -> t3 kind=control resources=none gates=none\n    e3 t3 -> t4 kind=control resources=none gates=none\n    e4 t4 -> t5 kind=sink_input resources=r2 gates=g3\n  barriers:\n    b0 kind=join_build_before_probe upstream=t2 downstream=t3 gates=none\n    b1 kind=sink_boundary upstream=t5 downstream=none gates=g4\n  resources:\n    r0 producer=t0 consumers=t2 lifetime=between_tasks(producer=t0,release=after_all_consumers)\n    r1 producer=t1 consumers=t3 lifetime=between_tasks(producer=t1,release=after_all_consumers)\n    r2 producer=t4 consumers=t5 lifetime=between_tasks(producer=t4,release=after_all_consumers)\n  gates:\n    g0 owner=task:t0 kind=source_read boundary=source_read contract=source_contract status=modeled quality=hard_budgeted_report_with_unresolved_preflight\n    g1 owner=edge:e0 kind=build_side boundary=join_build_side contract=query_engine_build_side_source_reservation status=modeled quality=exact_preflight\n    g2 owner=edge:e1 kind=probe_side boundary=join_probe_side contract=query_engine_probe_side_source_reservation status=modeled quality=query_engine_owned_ordering\n    g3 owner=edge:e4 kind=join_output boundary=join_output contract=dataframe_gather_output_reservation_size_bytes status=modeled quality=exact_preflight\n    g4 owner=sink_boundary kind=materialization boundary=host_materialization contract=query_engine_explicit_sink_materialization_reservation status=modeled quality=query_engine_owned_boundary\n  sink: kind=host_arrow_materialization input=t5 gates=g4\n"
     );
 }
 
@@ -720,6 +720,31 @@ fn compiled_pipeline_validate_rejects_resource_consumer_without_carrying_edge() 
 }
 
 #[test]
+fn compiled_pipeline_validate_rejects_task_input_resource_without_recorded_consumer() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.edges[4] = PipelineEdge::new(
+            PipelineEdgeId::new(4),
+            PipelineTaskId::new(4),
+            PipelineTaskId::new(5),
+            PipelineEdgeKind::Control,
+        );
+        parts.resources[2] = ResidentResource::new(
+            ResidentResourceId::new(2),
+            PipelineTaskId::new(4),
+            vec![],
+            ResidentLifetime::TaskLocal { task: PipelineTaskId::new(4) },
+        );
+    });
+
+    let error = pipeline.validate().expect_err("task input resource should be a recorded consumer");
+
+    assert_pipeline_validation_error(&error, "pipeline task input resource consumer is not recorded on resource");
+    assert_eq!(error.fact_value("resource_id"), Some("r2"));
+    assert_eq!(error.fact_value("producer_task"), Some("t4"));
+    assert_eq!(error.fact_value("consumer_task"), Some("t5"));
+}
+
+#[test]
 fn compiled_pipeline_validate_rejects_join_probe_without_matching_build_dependency() {
     let pipeline = strict_validation_fixture_with(|parts| {
         parts.edges[2] = PipelineEdge::new(
@@ -904,19 +929,19 @@ fn strict_validation_fixture_parts() -> StrictValidationFixtureParts {
             left_frame,
             left_source,
             vec![probe],
-            ResidentLifetime::BetweenTasks { producer: left_source, last_consumer: probe },
+            ResidentLifetime::BetweenTasks { producer: left_source },
         ),
         ResidentResource::new(
             right_frame,
             right_source,
             vec![build],
-            ResidentLifetime::BetweenTasks { producer: right_source, last_consumer: build },
+            ResidentLifetime::BetweenTasks { producer: right_source },
         ),
         ResidentResource::new(
             join_output,
             materialize,
             vec![sink_task],
-            ResidentLifetime::BetweenTasks { producer: materialize, last_consumer: sink_task },
+            ResidentLifetime::BetweenTasks { producer: materialize },
         ),
     ];
 

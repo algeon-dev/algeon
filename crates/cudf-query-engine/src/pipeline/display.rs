@@ -53,8 +53,8 @@ impl fmt::Display for ResidentLifetime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TaskLocal { task } => write!(f, "task_local({task})"),
-            Self::BetweenTasks { producer, last_consumer } => {
-                write!(f, "between_tasks(producer={producer},last_consumer={last_consumer})")
+            Self::BetweenTasks { producer } => {
+                write!(f, "between_tasks(producer={producer},release=after_all_consumers)")
             },
             Self::SinkOutput { producer } => write!(f, "sink_output(producer={producer})"),
         }
