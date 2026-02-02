@@ -50,6 +50,7 @@ pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
         report,
         source_diagnostics: Vec::new(),
         bounded_join_reservation_facts: Default::default(),
+        strict_bounded_contract: Default::default(),
     }
 }
 
@@ -65,6 +66,7 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
         report,
         source_diagnostics: Vec::new(),
         bounded_join_reservation_facts: Default::default(),
+        strict_bounded_contract: Default::default(),
     };
     diagnostics.bounded_join_reservation_facts = BoundedJoinReservationContract
         .facts(ExecutionBoundaryPolicy::default())
@@ -90,6 +92,7 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect(),
+        strict_bounded_contract: Default::default(),
     }
 }
 

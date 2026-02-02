@@ -26,6 +26,8 @@ pub(super) use leaf::{
 use mixed::execute_bounded_root_mixed_join;
 use projected_cross::execute_bounded_root_projected_cross_join;
 
+#[allow(dead_code)]
+// D.3.7 retirement bridge: root joins now execute through compiled join tasks.
 pub(super) fn execute_bounded_root_join_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,

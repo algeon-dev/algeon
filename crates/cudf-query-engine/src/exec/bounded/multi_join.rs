@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+// Retained as part of the D.3.7 legacy retirement bridge; normal strict bounded
+// multi-join execution is routed through compiled pipeline scheduling.
+
 use super::*;
 use crate::bounded::{BoundedJoinPipelineStage, analyze_bounded_multi_join_pipeline, bounded_multi_join_compatible};
 

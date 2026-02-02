@@ -1,3 +1,9 @@
+#![allow(dead_code)]
+// D.3.7 keeps the legacy topology recognizers as an explicitly documented
+// retirement bridge while normal strict bounded join execution is compiled-only.
+// New admission and execution work should use capability facts plus compiled
+// pipeline support instead of adding callers here.
+
 use arrow::datatypes::SchemaRef;
 
 use crate::{

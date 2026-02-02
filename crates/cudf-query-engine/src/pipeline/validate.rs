@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
+    capability::{ContractQuality, ContractStatus, ReservationRequirementScope, lower_level_unresolved_preflight_gap},
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
@@ -759,12 +759,7 @@ fn validate_unresolved_preflight_label(
 }
 
 fn is_unresolved_preflight_contract(kind: ReservationKind, required_contract: &'static str) -> bool {
-    matches!(
-        (kind, required_contract),
-        (ReservationKind::SourceRead, "source_contract")
-            | (ReservationKind::OperatorOutput, "aggregate_contract")
-            | (ReservationKind::FinalSort, "final_sort_contract")
-    )
+    lower_level_unresolved_preflight_gap(kind, required_contract).is_some()
 }
 
 fn task_by_id(

@@ -135,6 +135,7 @@ fn native_datafusion_reports_scope_bounded_join_facts_to_join_candidates() {
             .into_iter()
             .map(|(key, value)| (key.to_string(), value))
             .collect(),
+        strict_bounded_contract: Default::default(),
     };
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         "mixed",

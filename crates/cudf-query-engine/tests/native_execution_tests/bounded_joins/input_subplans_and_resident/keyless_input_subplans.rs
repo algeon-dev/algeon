@@ -112,12 +112,15 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         true,
     );
     assert!(gpu_plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    let gpu_result = execute_query_plan(&context, &gpu_plan).unwrap();
-    assert_eq!(gpu_result.metrics().boundary.host_to_device_uploads, 0);
-    assert_eq!(gpu_result.metrics().boundary.device_to_host_materializations, 0);
-    let QueryOutput::GpuResident(_) = gpu_result.output() else {
-        panic!("gpu resident sink should not materialize host output");
+    let gpu_error = match execute_query_plan(&context, &gpu_plan) {
+        Ok(_) => panic!("D.3.7 strict bounded joins require compiled host-Arrow execution"),
+        Err(error) => error,
     };
+    assert_eq!(gpu_error.code(), cudf_query_engine::QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(gpu_error.fact_value("compiled_pipeline_required"), Some("true"));
+    assert_eq!(gpu_error.fact_value("compiled_pipeline_rejection_reason"), Some("unsupported_sink_boundary"));
+    assert_eq!(gpu_error.fact_value("legacy_bounded_join_path_bridge"), Some("disabled"));
+    assert_eq!(gpu_error.fact_value("result_sink_kind"), Some("gpu_resident"));
 
     let constrained_context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))

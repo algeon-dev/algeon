@@ -75,7 +75,7 @@ impl CompatibilityReportProjection {
 
     fn unresolved_preflight_contracts_csv(&self) -> String {
         csv_join(self.hard_budgeted_contracts().into_iter().filter_map(|contract| {
-            unresolved_preflight_contract(contract).map(|detail| format!("{contract}:{detail}"))
+            lower_level_unresolved_preflight_gap_for_contract(contract).map(|detail| format!("{contract}:{detail}"))
         }))
     }
 
@@ -191,15 +191,6 @@ fn required_shape_contract(family: BoundedJoinExecutionFamily) -> &'static str {
         .find(|contract| contract.family() == family)
         .map(|contract| contract.topology_contract())
         .unwrap_or("")
-}
-
-fn unresolved_preflight_contract(contract: &str) -> Option<&'static str> {
-    match contract {
-        "source_contract" => Some("libcudf_parquet_decoded_output_preflight_unavailable"),
-        "aggregate_contract" => Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
-        "final_sort_contract" => Some("libcudf_final_sort_order_preflight_unavailable"),
-        _ => None,
-    }
 }
 
 fn contract_report_fields(contract: &str) -> Option<&'static str> {

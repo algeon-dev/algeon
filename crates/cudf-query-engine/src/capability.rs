@@ -45,6 +45,7 @@ pub use model::{
     EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement,
     ProducedProperty, RequiredProperty, ReservationRequirement, ReservationRequirementScope, ResidentResource,
     ResidualRequirement, ResultSinkKind, ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability,
-    SubgraphInvariant, SubgraphInvariantKind,
+    SubgraphInvariant, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
+    lower_level_unresolved_preflight_gap_for_contract,
 };
 pub use requirements::reservation_requirement_scope;

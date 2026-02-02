@@ -1,5 +1,4 @@
 use super::{source::record_bounded_parquet_source_metrics, *};
-use crate::capability::BoundedJoinExecutionPath;
 
 mod aggregate;
 mod chunks;
@@ -39,10 +38,6 @@ pub(super) fn execute_bounded_query_plan(
     }
 
     if plan.contains_join() {
-        let analysis = plan.capability_analysis();
-        if let Some(path) = analysis.bounded_join_execution_path() {
-            return execute_bounded_join_execution_path(context, plan, path, gpu_inputs, metrics);
-        }
         reject_bounded_join_plan(context, plan)?;
     }
 
@@ -137,57 +132,6 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
     Ok(())
 }
 
-fn execute_bounded_join_execution_path(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    path: BoundedJoinExecutionPath,
-    gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
-) -> Result<QueryOutput> {
-    match path {
-        BoundedJoinExecutionPath::RootJoin => execute_bounded_root_join_query_plan(context, plan, gpu_inputs, metrics),
-        BoundedJoinExecutionPath::SingleJoinPostRootPipeline => {
-            execute_bounded_join_pipeline_query_plan(context, plan, gpu_inputs, metrics)
-        },
-        BoundedJoinExecutionPath::KeylessConditionalJoinInputSubplanPipeline => {
-            execute_bounded_keyless_conditional_join_input_subplan_pipeline_query_plan(
-                context, plan, gpu_inputs, metrics,
-            )
-        },
-        BoundedJoinExecutionPath::KeylessConditionalJoinAggregateOverJoinSubplanInputsPipeline => {
-            execute_bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_query_plan(
-                context, plan, gpu_inputs, metrics,
-            )
-        },
-        BoundedJoinExecutionPath::MultiJoinTreePostRootPipeline => {
-            execute_bounded_multi_join_pipeline_query_plan(context, plan, gpu_inputs, metrics)
-        },
-        BoundedJoinExecutionPath::MultiJoinAggregateOverJoinSubplanTopKPipeline => {
-            execute_bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_query_plan(
-                context, plan, gpu_inputs, metrics,
-            )
-        },
-        BoundedJoinExecutionPath::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline => {
-            execute_bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_query_plan(
-                context, plan, gpu_inputs, metrics,
-            )
-        },
-        BoundedJoinExecutionPath::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKPipeline => {
-            execute_bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_query_plan(
-                context, plan, gpu_inputs, metrics,
-            )
-        },
-        BoundedJoinExecutionPath::MultiJoinResidentGroupedAggregateSubqueryFilterPipeline => {
-            execute_bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_query_plan(
-                context, plan, gpu_inputs, metrics,
-            )
-        },
-        BoundedJoinExecutionPath::KeyedHashJoinResidentSubplanPipeline => {
-            execute_bounded_keyed_hash_join_resident_subplan_pipeline_query_plan(context, plan, gpu_inputs, metrics)
-        },
-    }
-}
-
 fn bounded_join_unsupported_message(contract: BoundedJoinReservationContract) -> String {
     format!(
         "bounded native join execution currently supports these ordered-reservation families: {}",
@@ -202,10 +146,6 @@ fn execute_bounded_generic_query_plan(
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
     if plan.contains_join() {
-        let analysis = plan.capability_analysis();
-        if let Some(path) = analysis.bounded_join_execution_path() {
-            return execute_bounded_join_execution_path(context, plan, path, gpu_inputs, metrics);
-        }
         reject_bounded_join_plan(context, plan)?;
     }
 

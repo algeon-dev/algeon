@@ -197,10 +197,13 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     );
     let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
     let direct_metrics = direct_result.metrics();
+    assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
+    assert!(direct_metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
             && event.reservation_kind == cudf_query_engine::ReservationKind::OperatorOutput
-            && event.memory_boundary == "join_pipeline_aggregate"
+            && event.memory_boundary == "compiled_aggregate"
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
@@ -252,10 +255,13 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     );
     let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
     let direct_metrics = direct_result.metrics();
+    assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
+    assert!(direct_metrics.compiled_pipeline_tasks_executed > 0);
+    assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
             && event.reservation_kind == cudf_query_engine::ReservationKind::OperatorOutput
-            && event.memory_boundary == "join_pipeline_projection"
+            && event.memory_boundary == "compiled_projection"
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
@@ -379,10 +385,10 @@ async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservati
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
     assert_eq!(adapter_error.fact_value("native_datafusion_phase"), Some("runtime_execution"));
-    assert_eq!(
-        adapter_error.fact_value("bounded_join_execution_family"),
-        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
-    );
+    assert_eq!(adapter_error.fact_value("bounded_join_execution_family"), None);
+    assert!(adapter_error.fact_value("compiled_task_id").is_some());
+    assert!(adapter_error.fact_value("pipeline_task_kind").is_some());
+    assert!(adapter_error.fact_value("plan_node_id").is_some());
     for fact in [
         "memory_boundary",
         "reservation_kind",

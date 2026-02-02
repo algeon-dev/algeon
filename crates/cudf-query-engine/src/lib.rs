@@ -7,6 +7,7 @@
 pub(crate) mod bounded;
 pub mod capability;
 pub mod chunk;
+pub mod contract_report;
 pub mod datatypes;
 pub mod error;
 pub mod exec;
@@ -20,6 +21,10 @@ pub mod source;
 pub use chunk::{
     SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, plan_local_parquet_source_chunks,
     plan_local_parquet_source_chunks_with_metadata_cache,
+};
+pub use contract_report::{
+    StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, StrictBoundedContractReport,
+    StrictBoundedExecutionMode,
 };
 pub use datatypes::{
     arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,

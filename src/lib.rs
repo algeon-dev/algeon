@@ -30,7 +30,11 @@ pub use native_report::{
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
     NativePlanningFailure, NativeSourceDiagnosticSummary,
 };
-pub use planner::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativePlanningDiagnostics};
+pub use planner::{
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativePlanningDiagnostics,
+    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+    STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+};
 pub use policy::{FallbackReason, GpuFallbackPolicy};
 pub use report::{CandidateOutcome, GpuCandidate, PlanningReport};
 pub use session::{

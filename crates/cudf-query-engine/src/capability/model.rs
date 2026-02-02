@@ -118,6 +118,23 @@ impl ReservationRequirement {
     }
 }
 
+pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
+    if matches!(kind, ReservationKind::SourceRead | ReservationKind::OperatorOutput | ReservationKind::FinalSort) {
+        lower_level_unresolved_preflight_gap_for_contract(required_contract)
+    } else {
+        None
+    }
+}
+
+pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str) -> Option<&'static str> {
+    match required_contract {
+        "source_contract" => Some("libcudf_parquet_decoded_output_preflight_unavailable"),
+        "aggregate_contract" => Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
+        "final_sort_contract" => Some("libcudf_final_sort_order_preflight_unavailable"),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CompatibilityReservationContract {
     memory_boundary: &'static str,
