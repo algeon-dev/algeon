@@ -131,9 +131,8 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
     assert_eq!(rule.last_source_diagnostics().len(), 1);
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
-    assert!(diagnostics.strict_bounded_contract.accepted_reports.is_empty());
-    assert!(diagnostics.strict_bounded_contract.rejected_blocking_contracts.is_empty());
-    assert_eq!(diagnostics.strict_bounded_contract.compiled_graphs.len(), 0);
+    assert!(diagnostics.strict_bounded_contract.accepted_candidates.is_empty());
+    assert!(diagnostics.strict_bounded_contract.rejected_candidates.is_empty());
     assert_eq!(diagnostics.strict_bounded_contract.non_join_bounded_plan_count, 1);
     assert_eq!(
         diagnostics.strict_bounded_contract.non_join_bounded_plan_reason.as_deref(),

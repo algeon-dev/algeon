@@ -151,7 +151,15 @@ fn benchmark_report_accepted_join_rows_emit_strict_contract_rows() {
     assert!(
         fields[contract_rows_index].contains("unresolved_preflight_gap=libcudf_final_sort_order_preflight_unavailable")
     );
+    assert!(
+        fields[contract_rows_index]
+            .contains("unresolved_preflight_gap=libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
+    );
     assert!(!fields[contract_rows_index].contains("bounded_join_execution_family"));
+    assert!(!fields[contract_rows_index].contains("retry"));
+    assert!(!fields[contract_rows_index].contains("spill"));
+    assert!(!fields[contract_rows_index].contains("downgrade"));
+    assert!(!fields[contract_rows_index].contains("memory_history"));
     assert!(fields[graph_index].contains("sink_kind=host_arrow_materialization"));
     assert!(text.contains("\tmatched\t"));
 }

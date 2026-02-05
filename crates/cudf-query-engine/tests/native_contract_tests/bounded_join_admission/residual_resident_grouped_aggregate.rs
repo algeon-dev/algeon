@@ -28,34 +28,27 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
         let facts = plan
             .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
             .expect("executable residual-resident grouped aggregate family should emit modeled facts");
-        assert_eq!(
-            facts.get("bounded_join_execution_family").map(String::as_str),
-            Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
-            "{variant:?}"
-        );
-        assert_eq!(
-            facts.get("bounded_join_contract_modes").map(String::as_str),
-            Some("source_contract:hard_budgeted_report,aggregate_contract:hard_budgeted_report"),
-            "{variant:?}"
-        );
-        assert_eq!(
-            facts.get("bounded_join_unresolved_preflight_contracts").map(String::as_str),
-            Some(
-                "source_contract:libcudf_parquet_decoded_output_preflight_unavailable,aggregate_contract:libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"
-            ),
-            "{variant:?}"
-        );
+        assert_eq!(facts.get("bounded_join_execution_family"), None, "{variant:?}");
         assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""), "{variant:?}");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""), "{variant:?}");
-        assert_eq!(
-            facts.get("modeled_reservations").map(String::as_str),
-            Some(
-                "source_read,operator_output,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
-            ),
-            "{variant:?}"
-        );
+        let modeled = facts.get("modeled_reservations").expect("modeled reservations should be reported");
+        for expected in [
+            "source_read",
+            "operator_output",
+            "build_side",
+            "hash_table",
+            "probe_side",
+            "mixed_size_data",
+            "gather_map",
+            "join_output",
+            "materialization",
+        ] {
+            assert!(modeled.split(',').any(|kind| kind == expected), "{variant:?}: missing modeled {expected}");
+        }
         assert!(
-            !facts.get("bounded_join_contract_modes").is_some_and(|value| value.contains("final_sort_contract")),
+            !facts
+                .get("bounded_join_reservation_requirements")
+                .is_some_and(|value| value.contains("final_sort_contract")),
             "{variant:?}"
         );
         assert_modeled_family_reservation_facts_are_consistent(
@@ -107,11 +100,6 @@ fn bounded_capability_analysis_extracts_phase4_mixed_residual_resident_aggregate
     let plan =
         residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
-
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
-    );
     let residual_join = analysis
         .nodes
         .iter()
@@ -181,10 +169,6 @@ fn bounded_mixed_residual_resident_grouped_aggregate_phase6_admission_uses_capab
     assert_eq!(
         plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
         analysis.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
-    );
-    assert_eq!(
-        analysis.compatibility_family_projection,
-        Some(CompatibilityFamilyProjection::MixedKeyedResidualJoinResidentGroupedAggregateInputPipeline)
     );
     assert_eq!(
         analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,

@@ -29,10 +29,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let facts = native_plan
         .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q02 should expose modeled bounded join facts");
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("multi_join_with_aggregate_over_join_subplan_topk")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q15 = items.iter().find(|item| item.query_id == "q15").expect("TPC-H workload should include q15");
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q15.input else {
@@ -48,10 +45,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let facts = native_plan
         .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q15 should expose modeled bounded join facts");
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("keyed_hash_join_resident_subplan_pipeline")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q18 = items.iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q18.input else {
@@ -68,10 +62,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let facts = native_plan
         .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q18 should expose modeled bounded join facts");
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     let q20 = items.iter().find(|item| item.query_id == "q20").expect("TPC-H workload should include q20");
     let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = &q20.input else {
@@ -87,10 +78,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let facts = native_plan
         .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q20 should expose modeled bounded join facts");
-    assert_eq!(
-        facts.get("bounded_join_execution_family").map(String::as_str),
-        Some("multi_join_with_resident_grouped_aggregate_subquery_filter")
-    );
+    assert_eq!(facts.get("bounded_join_execution_family"), None);
 
     fs::remove_dir_all(dir).unwrap();
 }

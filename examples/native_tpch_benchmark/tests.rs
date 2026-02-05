@@ -371,6 +371,7 @@ fn strict_bounded_gate_row(
         memory_boundary: kind.as_str(),
         required_contract: match kind {
             cudf_query_engine::ReservationKind::FinalSort => "final_sort_contract",
+            cudf_query_engine::ReservationKind::OperatorOutput => "aggregate_contract",
             cudf_query_engine::ReservationKind::Materialization => {
                 "query_engine_explicit_sink_materialization_reservation"
             },
@@ -396,6 +397,11 @@ fn accepted_strict_bounded_contract_rows() -> Vec<cudf_query_engine::StrictBound
             Some("libcudf_final_sort_order_preflight_unavailable"),
         ),
         strict_bounded_gate_row(
+            cudf_query_engine::ReservationKind::OperatorOutput,
+            cudf_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
+        ),
+        strict_bounded_gate_row(
             cudf_query_engine::ReservationKind::Materialization,
             cudf_query_engine::capability::ContractQuality::QueryEngineOwnedBoundary,
             None,
@@ -409,7 +415,7 @@ fn accepted_strict_bounded_compiled_graphs() -> Vec<datafusion_cudf::NativeStric
         edge_count: 2,
         barrier_count: 0,
         resource_count: 3,
-        gate_count: 3,
+        gate_count: 4,
         sink_kind: "host_arrow_materialization".to_string(),
         sink_gate_count: 1,
     }]
@@ -466,21 +472,6 @@ fn expanded_mixed_residual_multi_join_facts() -> BTreeMap<String, String> {
         .into_iter()
         .map(|(key, value)| (key.to_string(), value))
         .collect::<BTreeMap<_, _>>();
-    facts.insert(
-        "bounded_join_execution_families".to_string(),
-        [
-            "root_reusable_hash_join",
-            "root_filtered_semi_anti_join",
-            "keyless_conditional_join",
-            "keyless_conditional_join_input_subplan_pipeline",
-            "keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline",
-            "root_projected_cross_join",
-            "root_mixed_keyed_residual_join",
-            "multi_join_reusable_hash_pipeline",
-            "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline",
-        ]
-        .join(","),
-    );
     facts.insert(
         "bounded_join_mixed_keyed_residual_multi_join_capability".to_string(),
         "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline".to_string(),

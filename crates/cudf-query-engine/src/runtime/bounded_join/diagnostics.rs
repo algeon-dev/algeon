@@ -3,21 +3,9 @@ use std::collections::BTreeMap;
 use super::*;
 
 impl BoundedJoinReservationContract {
-    /// CSV of supported execution-family diagnostic strings.
-    pub fn execution_families_csv(self) -> String {
-        csv_join(self.execution_families().iter().map(|family| family.as_str()))
-    }
-
-    /// CSV of `family:admission_model:topology_contract` rows in report order.
-    pub fn execution_family_contracts_csv(self) -> String {
-        csv_join(self.execution_family_contracts().iter().map(|contract| {
-            format!("{}:{}:{}", contract.family().as_str(), contract.admission_model(), contract.topology_contract())
-        }))
-    }
-
     /// Human/report-facing unsupported-shape requirement text.
     pub fn supported_shape_requirement(self) -> String {
-        format!("requires_one_of({})", self.execution_families_csv())
+        "requires_strict_bounded_capability_admission".to_string()
     }
 
     /// CSV of all reservation kinds in requirement order.
@@ -91,10 +79,6 @@ impl BoundedJoinReservationContract {
             ("result_materialization_boundary", boundary_policy.result_materialization().to_string()),
             ("bounded_join_reservation_model", self.model_status().to_string()),
             ("bounded_join_execution_status", self.execution_status().to_string()),
-            ("bounded_join_admission_model", self.admission_model().to_string()),
-            ("bounded_join_admission_scope", self.admission_scope().to_string()),
-            ("bounded_join_execution_families", self.execution_families_csv()),
-            ("bounded_join_execution_family_contracts", self.execution_family_contracts_csv()),
             ("bounded_join_enabled", self.enabled().to_string()),
             ("bounded_join_reservation_kinds", self.reservation_kinds_csv()),
             ("bounded_join_reservation_statuses", self.reservation_statuses_csv()),

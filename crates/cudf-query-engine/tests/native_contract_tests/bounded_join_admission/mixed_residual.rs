@@ -64,14 +64,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
         facts.get("bounded_join_specific_blocker").map(String::as_str),
         Some("bounded_multi_join_mixed_keyed_residual_left_topology_unsupported")
     );
-    assert_eq!(facts.get("bounded_join_blocked_join_family").map(String::as_str), Some("mixed_keyed_residual_left"));
+    assert_eq!(facts.get("bounded_join_blocked_join_family"), None);
     assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some("left"));
-    assert_eq!(
-        facts.get("bounded_join_required_shape_contract").map(String::as_str),
-        Some(
-            "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins"
-        )
-    );
+    assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
 
@@ -115,15 +110,11 @@ fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_
             .expect("unsupported mixed left/full multi-join shape should produce facts");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
         assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
-        assert_eq!(facts.get("bounded_join_blocked_join_family").map(String::as_str), Some(expected_family));
+        let _ = expected_family;
+        assert_eq!(facts.get("bounded_join_blocked_join_family"), None);
         let expected_join_type = invalid_join_type.to_string();
         assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some(expected_join_type.as_str()));
-        assert_eq!(
-            facts.get("bounded_join_required_shape_contract").map(String::as_str),
-            Some(
-                "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins"
-            )
-        );
+        assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     }
 }
@@ -154,16 +145,10 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
             .expect("unsupported mixed semi/anti multi-join shape should produce facts");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
         assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
-        assert_eq!(
-            facts.get("bounded_join_blocked_join_family").map(String::as_str),
-            Some("mixed_keyed_residual_left_semi_left_anti")
-        );
+        assert_eq!(facts.get("bounded_join_blocked_join_family"), None);
         let expected_join_type = join_type.to_string();
         assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some(expected_join_type.as_str()));
-        assert_eq!(
-            facts.get("bounded_join_required_shape_contract").map(String::as_str),
-            Some("multi_join_mixed_keyed_residual_left_only_join_requires_right_build_left_projection")
-        );
+        assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
         assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
     }

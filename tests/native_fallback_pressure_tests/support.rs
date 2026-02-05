@@ -85,6 +85,8 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
 }
 
 pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoundedContractDiagnostics {
+    let candidate =
+        GpuCandidate::new("SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))", 1);
     let rows = vec![
         strict_bounded_gate_row(
             StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
@@ -110,19 +112,21 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
         ),
     ];
     NativeStrictBoundedContractDiagnostics {
-        accepted_reports: vec![
-            StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, rows).unwrap(),
-        ],
-        rejected_blocking_contracts: Vec::new(),
-        compiled_graphs: vec![NativeStrictBoundedCompiledGraphDiagnostics {
-            task_count: 2,
-            edge_count: 1,
-            barrier_count: 0,
-            resource_count: 2,
-            gate_count: 2,
-            sink_kind: "host_arrow_materialization".to_string(),
-            sink_gate_count: 1,
+        accepted_candidates: vec![NativeStrictBoundedAcceptedCandidateDiagnostics {
+            candidate,
+            report: StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, rows)
+                .unwrap(),
+            compiled_graph: NativeStrictBoundedCompiledGraphDiagnostics {
+                task_count: 2,
+                edge_count: 1,
+                barrier_count: 0,
+                resource_count: 2,
+                gate_count: 2,
+                sink_kind: "host_arrow_materialization".to_string(),
+                sink_gate_count: 1,
+            },
         }],
+        rejected_candidates: Vec::new(),
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
     }
@@ -130,22 +134,27 @@ pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoun
 
 pub(super) fn rejected_strict_bounded_contract_diagnostics() -> NativeStrictBoundedContractDiagnostics {
     NativeStrictBoundedContractDiagnostics {
-        accepted_reports: Vec::new(),
-        rejected_blocking_contracts: vec![StrictBoundedContractGateRow {
-            execution_mode: StrictBoundedExecutionMode::UnsupportedStrictBounded,
-            contract_scope: ReservationRequirementScope::Node,
-            gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
-            owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(
-                cudf_query_engine::pipeline::PipelineTaskId::new(0),
-            )),
-            reservation_kind: ReservationKind::MixedSizeData,
-            memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-            required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-            contract_status: ContractStatus::BlockedByLowerLevel,
-            contract_quality: ContractQuality::ObservedRetainedState,
-            unresolved_preflight_gap: None,
+        accepted_candidates: Vec::new(),
+        rejected_candidates: vec![NativeStrictBoundedRejectedCandidateDiagnostics {
+            candidate: GpuCandidate::new(
+                "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
+                1,
+            ),
+            blocking_contract: StrictBoundedContractGateRow {
+                execution_mode: StrictBoundedExecutionMode::UnsupportedStrictBounded,
+                contract_scope: ReservationRequirementScope::Node,
+                gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
+                owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(
+                    cudf_query_engine::pipeline::PipelineTaskId::new(0),
+                )),
+                reservation_kind: ReservationKind::MixedSizeData,
+                memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
+                required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
+                contract_status: ContractStatus::BlockedByLowerLevel,
+                contract_quality: ContractQuality::ObservedRetainedState,
+                unresolved_preflight_gap: None,
+            },
         }],
-        compiled_graphs: Vec::new(),
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
     }

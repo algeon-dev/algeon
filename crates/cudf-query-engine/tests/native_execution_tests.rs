@@ -90,7 +90,7 @@ fn assert_bounded_join_rejection_contract(error: &cudf_query_engine::QueryError)
     }
 
     assert_eq!(error.fact_value("bounded_join_reservation_model"), Some(contract.model_status()));
-    assert_eq!(error.fact_value("bounded_join_execution_families"), Some(contract.execution_families_csv().as_str()));
+    assert_eq!(error.fact_value("bounded_join_execution_families"), None);
     assert_eq!(error.fact_value("bounded_join_enabled"), Some("true"));
     assert_eq!(
         error.fact_value("boundary_policy"),

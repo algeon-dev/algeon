@@ -17,13 +17,22 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
             "{query_id} should expose strict bounded contract gate rows"
         );
         assert!(
-            row.strict_bounded_contract_rows
-                .iter()
-                .map(|gate| gate.to_stable_kv_row())
-                .all(|rendered| strict_contract_row_is_family_path_free(&rendered)),
+            row.strict_bounded_contract_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
+                strict_contract_row_is_family_path_free(&rendered)
+                    && strict_contract_row_excludes_adaptive_terms(&rendered)
+            }),
             "{query_id} should not expose legacy family/path facts"
         );
     }
+
+    let q21 = planning_row(report, "q21");
+    assert_eq!(q21.physical_root, "SortExec(TopK)");
+    assert!(
+        q21.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
+            && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+            && gate.unresolved_preflight_gap == Some("libcudf_final_sort_order_preflight_unavailable")),
+        "q21 should report its TopK final-sort gate as hard-budgeted unresolved preflight"
+    );
 
     let q15 = planning_row(report, "q15");
     assert!(
@@ -31,6 +40,17 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
             && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
             && gate.unresolved_preflight_gap == Some("libcudf_final_sort_order_preflight_unavailable")),
         "q15 should report final-sort as hard-budgeted with an unresolved lower-level preflight gap"
+    );
+    assert!(
+        q15.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::OperatorOutput
+            && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
+            && gate.unresolved_preflight_gap
+                == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")),
+        "q15 resident/shared-subplan row should keep aggregate preflight gaps explicit"
+    );
+    assert!(
+        q15.strict_bounded_compiled_graphs.iter().any(|graph| graph.resource_count > 0 && graph.gate_count > 0),
+        "q15 resident/shared-subplan row should expose compiled graph resource and gate accounting"
     );
 
     let q17 = planning_row(report, "q17");
@@ -66,8 +86,20 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(text.contains("contract_quality="));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(!text.contains("bounded_join_execution_family="));
+    assert!(!text.contains("memory_history"));
+    assert!(!text.contains("spill"));
+    assert!(!text.contains("downgrade"));
     assert!(text.contains("q01\t"));
     assert!(text.contains("q06\t"));
     assert!(text.contains("q22\t"));
     assert!(text.contains("\taccepted_replaced\t"));
+}
+
+fn strict_contract_row_excludes_adaptive_terms(rendered: &str) -> bool {
+    !rendered.contains("retry")
+        && !rendered.contains("spill")
+        && !rendered.contains("downgrade")
+        && !rendered.contains("memory_history")
+        && !rendered.contains("memory-history")
+        && !rendered.contains("memory history")
 }

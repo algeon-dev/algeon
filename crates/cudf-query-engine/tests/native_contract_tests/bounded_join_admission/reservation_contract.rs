@@ -38,7 +38,7 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
             "probe_side",
             "join_probe_side",
             BoundedJoinReservationStatus::Modeled,
-            "modeled_by_ordered_bounded_join_execution_path",
+            "modeled_by_query_engine_ordered_probe_input",
         ),
         (
             ReservationKind::FilteredProbeState,
@@ -87,15 +87,7 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
     assert_eq!(requirements.len(), expected.len());
     assert_eq!(contract.model_status(), "modeled");
     assert_eq!(contract.execution_status(), "enabled");
-    assert_eq!(contract.execution_families().len(), 14);
-    assert_eq!(
-        contract.execution_families_csv(),
-        "root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,multi_join_with_aggregate_over_join_subplan_topk,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk,multi_join_with_resident_grouped_aggregate_subquery_filter,keyed_hash_join_resident_subplan_pipeline"
-    );
-    assert_eq!(
-        contract.supported_shape_requirement(),
-        "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,multi_join_with_aggregate_over_join_subplan_topk,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk,multi_join_with_resident_grouped_aggregate_subquery_filter,keyed_hash_join_resident_subplan_pipeline)"
-    );
+    assert_eq!(contract.supported_shape_requirement(), "requires_strict_bounded_capability_admission");
     assert!(contract.enabled());
 
     for (requirement, (kind, expected_name, expected_boundary, expected_status, expected_detail)) in
@@ -129,39 +121,19 @@ fn bounded_join_reservation_kinds_are_modeled_without_estimates() {
 }
 
 #[test]
-fn bounded_join_family_catalogue_is_explicitly_transitional_and_topology_scoped() {
+fn bounded_join_reservation_contract_does_not_emit_family_catalogue_projection() {
     let contract = BoundedJoinReservationContract;
-    let family_contracts = contract.execution_family_contracts();
-
-    assert_eq!(contract.admission_model(), cudf_query_engine::BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL);
-    assert_eq!(contract.admission_scope(), cudf_query_engine::BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE);
-    assert_eq!(family_contracts.len(), contract.execution_families().len());
-    assert_eq!(family_contracts, cudf_query_engine::BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS);
-
-    for (family, family_contract) in contract.execution_families().iter().zip(family_contracts) {
-        assert_eq!(*family, family_contract.family());
-        assert_eq!(family_contract.admission_model(), cudf_query_engine::BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL);
-        assert!(
-            !family_contract.topology_contract().is_empty(),
-            "{} must document a Phase A topology contract",
-            family.as_str()
-        );
-        assert_topology_contract_avoids_query_specific_terms(family.as_str(), family_contract.topology_contract());
-    }
-
     let facts = contract.facts(ExecutionBoundaryPolicy::default());
-    assert_eq!(
-        facts.get("bounded_join_admission_model").map(String::as_str),
-        Some(cudf_query_engine::BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL)
-    );
-    assert_eq!(
-        facts.get("bounded_join_admission_scope").map(String::as_str),
-        Some(cudf_query_engine::BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE)
-    );
-    assert_eq!(
-        facts.get("bounded_join_execution_family_contracts").map(String::as_str),
-        Some(contract.execution_family_contracts_csv().as_str())
-    );
+    for forbidden in [
+        "bounded_join_execution_family",
+        "bounded_join_execution_families",
+        "bounded_join_execution_family_contracts",
+        "bounded_join_required_shape_contract",
+        "bounded_join_contract_modes",
+        "bounded_join_unresolved_preflight_contracts",
+    ] {
+        assert_eq!(facts.get(forbidden), None, "{forbidden} must not be emitted by strict bounded facts");
+    }
 }
 
 #[test]
@@ -192,20 +164,11 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
     );
     assert_eq!(
         unsupported_shape_facts.get("bounded_join_unsupported_shape").map(String::as_str),
-        Some(
-            "requires_one_of(root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline,keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,root_projected_cross_join,root_mixed_keyed_residual_join,multi_join_reusable_hash_pipeline,multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline,multi_join_with_aggregate_over_join_subplan_topk,mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk,multi_join_with_resident_grouped_aggregate_subquery_filter,keyed_hash_join_resident_subplan_pipeline)"
-        )
-    );
-    assert_eq!(
-        unsupported_shape_facts.get("bounded_join_execution_families").map(String::as_str),
-        facts.get("bounded_join_execution_families").map(String::as_str)
+        Some("requires_strict_bounded_capability_admission")
     );
     assert_eq!(facts.get("bounded_join_reservation_model").map(String::as_str), Some(contract.model_status()));
     assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some(contract.execution_status()));
-    assert_eq!(
-        facts.get("bounded_join_execution_families").map(String::as_str),
-        Some(contract.execution_families_csv().as_str())
-    );
+    assert_eq!(facts.get("bounded_join_execution_families"), None);
     assert_eq!(facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
     assert_eq!(
         facts.get("bounded_join_reservation_kinds").map(String::as_str),
@@ -372,56 +335,6 @@ fn bounded_join_rejection_facts_are_shared_and_estimate_free() {
         Some(contract.blocking_reservation_kinds_csv().as_str())
     );
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
-}
-
-fn assert_topology_contract_avoids_query_specific_terms(family: &str, topology_contract: &str) {
-    let normalized = topology_contract.replace('-', "_").to_ascii_lowercase();
-    for disallowed in [
-        "tpch",
-        "query_id",
-        "q01",
-        "q02",
-        "q03",
-        "q04",
-        "q05",
-        "q06",
-        "q07",
-        "q08",
-        "q09",
-        "q10",
-        "q11",
-        "q12",
-        "q13",
-        "q14",
-        "q15",
-        "q16",
-        "q17",
-        "q18",
-        "q19",
-        "q20",
-        "q21",
-        "q22",
-        "lineitem",
-        "orders",
-        "customer",
-        "supplier",
-        "part",
-        "partsupp",
-        "nation",
-        "region",
-        "suppkey",
-        "extendedprice",
-        "totalrevenue",
-        "maxrevenue",
-        "literal",
-        "parquet_path",
-        "sql_text",
-    ] {
-        assert!(
-            !normalized.contains(disallowed),
-            "{family} topology contract must stay query-independent, found {disallowed} in {topology_contract}"
-        );
-    }
 }
 
 fn assert_modeled_reservations_match_statuses(facts: &std::collections::BTreeMap<&'static str, String>) {

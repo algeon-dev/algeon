@@ -1,4 +1,4 @@
-use super::{admission::*, compatibility::*, edge::*, graph::*, invariant::*, model::*, node::*, *};
+use super::{admission::*, edge::*, graph::*, invariant::*, model::*, node::*, *};
 
 impl QueryPlan {
     /// Runs bounded capability analysis for diagnostics, report projection, and
@@ -48,7 +48,7 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         );
     let multi_join_resident_grouped_aggregate_subquery_filter_admission =
         analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(plan, &nodes, &edges, &invariants);
-    let mut analysis = CapabilityAnalysis {
+    CapabilityAnalysis {
         nodes,
         edges,
         invariants,
@@ -63,10 +63,7 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         keyless_conditional_join_input_subplan_admission,
         keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
         multi_join_resident_grouped_aggregate_subquery_filter_admission,
-        compatibility_family_projection: None,
-    };
-    analysis.compatibility_family_projection = compatibility_family_projection(plan);
-    analysis
+    }
 }
 
 /// Runs the root-join proof without compatibility-family projection.

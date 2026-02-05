@@ -15,7 +15,6 @@ use crate::{
 };
 
 mod admission;
-mod compatibility;
 mod edge;
 mod entry;
 mod expr;
@@ -26,7 +25,6 @@ mod node;
 mod requirements;
 mod shape;
 
-pub(crate) use compatibility::CompatibilityReportProjection;
 pub use entry::analyze_query_capabilities;
 pub(crate) use entry::{
     admits_closed_multi_join_subgraph,
@@ -40,12 +38,11 @@ pub(crate) use entry::{
     admits_single_join_post_root_pipeline,
 };
 pub use model::{
-    AggregateGrouping, BoundedJoinExecutionPath, CapabilityAnalysis, CapabilityDecision, CompatibilityFamilyProjection,
-    CompatibilityRejectionProjection, ConstraintRef, ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer,
-    EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement,
-    ProducedProperty, RequiredProperty, ReservationRequirement, ReservationRequirementScope, ResidentResource,
-    ResidualRequirement, ResultSinkKind, ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability,
-    SubgraphInvariant, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
-    lower_level_unresolved_preflight_gap_for_contract,
+    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionOwner, CapabilityRejectionProjection,
+    ConstraintRef, ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer, EdgeContract, EdgeContractKind,
+    InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty, RequiredProperty,
+    ReservationRequirement, ReservationRequirementScope, ResidentResource, ResidualRequirement, ResultSinkKind,
+    ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability, SubgraphInvariant, SubgraphInvariantKind,
+    lower_level_unresolved_preflight_gap, lower_level_unresolved_preflight_gap_for_contract,
 };
 pub use requirements::reservation_requirement_scope;

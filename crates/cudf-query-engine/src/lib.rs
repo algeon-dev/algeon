@@ -54,8 +54,6 @@ pub use plan::{
     ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode,
 };
 pub use runtime::{
-    BOUNDED_JOIN_EXECUTION_FAMILIES, BOUNDED_JOIN_EXECUTION_FAMILY_CONTRACTS, BOUNDED_JOIN_TOPOLOGY_ONLY_SCOPE,
-    BOUNDED_JOIN_TRANSITIONAL_ADMISSION_MODEL, BoundedJoinExecutionFamily, BoundedJoinExecutionFamilyContract,
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
     BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder,
     MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, MemorySpaceId, ProbeExecutionBoundary,
