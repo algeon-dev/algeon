@@ -1,13 +1,14 @@
 use super::*;
 
 #[test]
-fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() {
+fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resource_metrics() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q01".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let row = NativeTpchBenchmarkRow {
         query_id: "q01".to_string(),
         planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
-        bounded_join_reservation_facts: BTreeMap::new(),
+        strict_bounded_contract_rows: Vec::new(),
+        strict_bounded_compiled_graphs: Vec::new(),
         reason_code: None,
         unsupported_category: None,
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
@@ -103,7 +104,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() 
 
     let text = report.to_tsv();
     assert!(text.contains(
-        "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
+        "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"
@@ -115,324 +116,42 @@ fn benchmark_report_accepted_rows_include_bounded_status_and_resource_metrics() 
 }
 
 #[test]
-fn benchmark_report_q07_accepted_join_rows_preserve_bounded_join_facts() {
+fn benchmark_report_accepted_join_rows_emit_strict_contract_rows() {
     let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q07".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let mut planning = accepted_planning_row("q07");
-    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
-    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
-        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
-    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
-    let row = NativeTpchBenchmarkRow::accepted(
-        "q07",
-        planning,
-        Ok(timed_cpu_run("output-fnv1a64:0000000000000007")),
-        Ok(timed_native_run("output-fnv1a64:0000000000000007")),
-    );
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
+        NativeTpchBenchmarkConfig { query_ids: vec!["q15".to_string()], ..NativeTpchBenchmarkConfig::default() };
+    let mut planning = accepted_planning_row("q15");
+    planning.native_candidate_shape_family = Some("sort_hash_join_input".to_string());
+    planning.strict_bounded_contract_rows = accepted_strict_bounded_contract_rows();
+    planning.strict_bounded_compiled_graphs = accepted_strict_bounded_compiled_graphs();
+    let report = NativeTpchBenchmarkReport {
+        metadata: benchmark_metadata(),
+        config,
+        rows: vec![NativeTpchBenchmarkRow::accepted(
+            "q15",
+            planning,
+            Ok(timed_cpu_run("output-fnv1a64:0000000000000015")),
+            Ok(timed_native_run("output-fnv1a64:0000000000000015")),
+        )],
+    };
 
     let text = report.to_tsv();
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row = lines.next().expect("benchmark report should contain the q07 row");
-    assert!(lines.next().is_none(), "benchmark report should contain only the q07 row");
+    let row = lines.next().expect("benchmark report should contain the q15 row");
     let fields = row.split('\t').collect::<Vec<_>>();
     assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
 
-    let bounded_status_index = header_index(&header_fields, "bounded_status");
-    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
-    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
-    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
-    let native_started_index = header_index(&header_fields, "native_runtime_started");
-    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
-
-    assert_eq!(fields[0], "q07");
-    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
-    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_lower_level_blockers="));
-    assert_eq!(fields[shape_family_index], "sort_hash_join_aggregate");
-    assert_eq!(fields[execution_path_index], "native");
-    assert_eq!(fields[native_started_index], "true");
-    assert_eq!(fields[runtime_outcome_index], "succeeded");
-}
-
-#[test]
-fn benchmark_report_q13_accepted_join_rows_preserve_bounded_facts_and_parity_fields() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q13".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let mut planning = accepted_planning_row("q13");
-    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
-    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
-        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
-    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
-    let row = NativeTpchBenchmarkRow::accepted(
-        "q13",
-        planning,
-        Ok(timed_cpu_run("output-fnv1a64:0000000000000013")),
-        Ok(timed_native_run("output-fnv1a64:0000000000000013")),
-    );
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
-
-    let text = report.to_tsv();
-    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
-    let header = lines.next().expect("benchmark report should contain a TSV header");
-    let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row = lines.next().expect("benchmark report should contain the q13 row");
-    assert!(lines.next().is_none(), "benchmark report should contain only the q13 row");
-    let fields = row.split('\t').collect::<Vec<_>>();
-    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
-
-    let bounded_status_index = header_index(&header_fields, "bounded_status");
-    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
-    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
-    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
-    let cpu_started_index = header_index(&header_fields, "cpu_runtime_started");
-    let native_started_index = header_index(&header_fields, "native_runtime_started");
-    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
-    let parity_status_index = header_index(&header_fields, "parity_status");
-    let cpu_fingerprint_index = header_index(&header_fields, "cpu_output_fingerprint");
-    let native_fingerprint_index = header_index(&header_fields, "native_output_fingerprint");
-    let output_fingerprint_index = header_index(&header_fields, "output_fingerprint");
-
-    assert_eq!(fields[0], "q13");
-    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
-    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_lower_level_blockers="));
-    assert_eq!(fields[shape_family_index], "sort_hash_join_aggregate");
-    assert_eq!(fields[execution_path_index], "native");
-    assert_eq!(fields[cpu_started_index], "true");
-    assert_eq!(fields[native_started_index], "true");
-    assert_eq!(fields[runtime_outcome_index], "succeeded");
-    assert_eq!(fields[parity_status_index], "matched");
-    assert_eq!(fields[cpu_fingerprint_index], "output-fnv1a64:0000000000000013");
-    assert_eq!(fields[native_fingerprint_index], "output-fnv1a64:0000000000000013");
-    assert_eq!(fields[output_fingerprint_index], "output-fnv1a64:0000000000000013");
-}
-
-#[test]
-fn benchmark_report_q16_accepted_join_rows_preserve_bounded_facts_and_parity_fields() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q16".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let mut planning = accepted_planning_row("q16");
-    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
-    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
-        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
-    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
-    let row = NativeTpchBenchmarkRow::accepted(
-        "q16",
-        planning,
-        Ok(timed_cpu_run("output-fnv1a64:0000000000000016")),
-        Ok(timed_native_run("output-fnv1a64:0000000000000016")),
-    );
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
-
-    let text = report.to_tsv();
-    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
-    let header = lines.next().expect("benchmark report should contain a TSV header");
-    let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row = lines.next().expect("benchmark report should contain the q16 row");
-    assert!(lines.next().is_none(), "benchmark report should contain only the q16 row");
-    let fields = row.split('\t').collect::<Vec<_>>();
-    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
-
-    let bounded_status_index = header_index(&header_fields, "bounded_status");
-    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
-    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
-    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
-    let cpu_started_index = header_index(&header_fields, "cpu_runtime_started");
-    let native_started_index = header_index(&header_fields, "native_runtime_started");
-    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
-    let parity_status_index = header_index(&header_fields, "parity_status");
-    let cpu_fingerprint_index = header_index(&header_fields, "cpu_output_fingerprint");
-    let native_fingerprint_index = header_index(&header_fields, "native_output_fingerprint");
-    let output_fingerprint_index = header_index(&header_fields, "output_fingerprint");
-
-    assert_eq!(fields[0], "q16");
-    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
-    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_lower_level_blockers="));
-    assert!(fields[bounded_join_facts_index].contains(
-        "bounded_join_mixed_keyed_residual_multi_join_capability=multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
-    ));
-    assert_eq!(fields[shape_family_index], "sort_hash_join_aggregate");
-    assert_eq!(fields[execution_path_index], "native");
-    assert_eq!(fields[cpu_started_index], "true");
-    assert_eq!(fields[native_started_index], "true");
-    assert_eq!(fields[runtime_outcome_index], "succeeded");
-    assert_eq!(fields[parity_status_index], "matched");
-    assert_eq!(fields[cpu_fingerprint_index], "output-fnv1a64:0000000000000016");
-    assert_eq!(fields[native_fingerprint_index], "output-fnv1a64:0000000000000016");
-    assert_eq!(fields[output_fingerprint_index], "output-fnv1a64:0000000000000016");
-}
-
-#[test]
-fn benchmark_report_q21_accepted_join_rows_preserve_expanded_mixed_residual_facts() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q21".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let mut planning = accepted_planning_row("q21");
-    planning.native_candidate_shape_family = Some("sort_fetch_hash_join_aggregate".to_string());
-    planning.bounded_join_reservation_facts = expanded_mixed_residual_multi_join_facts();
-    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
-    let row = NativeTpchBenchmarkRow::accepted(
-        "q21",
-        planning,
-        Ok(timed_cpu_run("output-fnv1a64:0000000000000021")),
-        Ok(timed_native_run("output-fnv1a64:0000000000000021")),
-    );
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
-
-    let text = report.to_tsv();
-    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
-    let header = lines.next().expect("benchmark report should contain a TSV header");
-    let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row = lines.next().expect("benchmark report should contain the q21 row");
-    assert!(lines.next().is_none(), "benchmark report should contain only the q21 row");
-    let fields = row.split('\t').collect::<Vec<_>>();
-    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
-
-    let bounded_status_index = header_index(&header_fields, "bounded_status");
-    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
-    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
-    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
-    let native_started_index = header_index(&header_fields, "native_runtime_started");
-    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
-
-    assert_eq!(fields[0], "q21");
-    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
-    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
-    assert!(fields[bounded_join_facts_index].contains(
-        "bounded_join_mixed_keyed_residual_multi_join_capability=multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline"
-    ));
-    assert!(fields[bounded_join_facts_index]
-        .contains("bounded_join_mixed_keyed_residual_multi_join_capability_detail=mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti"));
-    assert_eq!(fields[shape_family_index], "sort_fetch_hash_join_aggregate");
-    assert_eq!(fields[execution_path_index], "native");
-    assert_eq!(fields[native_started_index], "true");
-    assert_eq!(fields[runtime_outcome_index], "succeeded");
-}
-
-#[test]
-fn benchmark_report_q11_accepted_rows_preserve_keyless_aggregate_over_join_subplan_inputs_facts() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q11".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let mut planning = accepted_planning_row("q11");
-    planning.native_candidate_shape_family = Some("sort_mixed_hash_nested_loop_join_input".to_string());
-    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
-        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
-    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
-    let row = NativeTpchBenchmarkRow::accepted(
-        "q11",
-        planning,
-        Ok(timed_cpu_run("output-fnv1a64:0000000000000011")),
-        Ok(timed_native_run("output-fnv1a64:0000000000000011")),
-    );
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
-
-    let text = report.to_tsv();
-    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
-    let header = lines.next().expect("benchmark report should contain a TSV header");
-    let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row = lines.next().expect("benchmark report should contain the q11 row");
-    assert!(lines.next().is_none(), "benchmark report should contain only the q11 row");
-    let fields = row.split('\t').collect::<Vec<_>>();
-    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
-
-    let bounded_status_index = header_index(&header_fields, "bounded_status");
-    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
-    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
-    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
-    let native_started_index = header_index(&header_fields, "native_runtime_started");
-    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
-    let parity_status_index = header_index(&header_fields, "parity_status");
-
-    assert_eq!(fields[0], "q11");
-    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
-    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
+    let contract_rows_index = header_index(&header_fields, "strict_bounded_contract_rows");
+    let graph_index = header_index(&header_fields, "strict_bounded_compiled_graphs");
+    assert_eq!(fields[0], "q15");
+    assert!(fields[contract_rows_index].contains("execution_mode=strict_bounded"));
+    assert!(fields[contract_rows_index].contains("contract_status=modeled"));
+    assert!(fields[contract_rows_index].contains("contract_quality=hard_budgeted_report_with_unresolved_preflight"));
     assert!(
-        fields[bounded_join_facts_index]
-            .contains("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
+        fields[contract_rows_index].contains("unresolved_preflight_gap=libcudf_final_sort_order_preflight_unavailable")
     );
-    assert!(fields[bounded_join_facts_index].contains(
-        "bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability=keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline"
-    ));
-    assert!(fields[bounded_join_facts_index].contains(
-        "bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability_detail=root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort"
-    ));
-    assert_eq!(fields[shape_family_index], "sort_mixed_hash_nested_loop_join_input");
-    assert_eq!(fields[execution_path_index], "native");
-    assert_eq!(fields[native_started_index], "true");
-    assert_eq!(fields[runtime_outcome_index], "succeeded");
-    assert_eq!(fields[parity_status_index], "matched");
-}
-
-#[test]
-fn benchmark_report_q22_accepted_rows_preserve_keyless_input_subplan_facts() {
-    let config =
-        NativeTpchBenchmarkConfig { query_ids: vec!["q22".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let mut planning = accepted_planning_row("q22");
-    planning.native_candidate_shape_family = Some("sort_mixed_hash_nested_loop_join_aggregate".to_string());
-    planning.bounded_join_reservation_facts = cudf_query_engine::BoundedJoinReservationContract
-        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
-    let expected_bounded_join_facts = expected_key_value_facts(&planning.bounded_join_reservation_facts);
-    let row = NativeTpchBenchmarkRow::accepted(
-        "q22",
-        planning,
-        Ok(timed_cpu_run("output-fnv1a64:0000000000000022")),
-        Ok(timed_native_run("output-fnv1a64:0000000000000022")),
-    );
-    let report = NativeTpchBenchmarkReport { metadata: benchmark_metadata(), config, rows: vec![row] };
-
-    let text = report.to_tsv();
-    let mut lines = text.lines().filter(|line| !line.starts_with('#'));
-    let header = lines.next().expect("benchmark report should contain a TSV header");
-    let header_fields = header.split('\t').collect::<Vec<_>>();
-    let row = lines.next().expect("benchmark report should contain the q22 row");
-    assert!(lines.next().is_none(), "benchmark report should contain only the q22 row");
-    let fields = row.split('\t').collect::<Vec<_>>();
-    assert_eq!(fields.len(), header_fields.len(), "row has wrong schema width: {row}");
-
-    let bounded_status_index = header_index(&header_fields, "bounded_status");
-    let bounded_join_facts_index = header_index(&header_fields, "bounded_join_reservation_facts");
-    let shape_family_index = header_index(&header_fields, "native_candidate_shape_family");
-    let execution_path_index = header_index(&header_fields, "post_native_execution_path");
-    let native_started_index = header_index(&header_fields, "native_runtime_started");
-    let runtime_outcome_index = header_index(&header_fields, "runtime_outcome");
-
-    assert_eq!(fields[0], "q22");
-    assert_eq!(fields[bounded_status_index], "bounded_accepted_parity_matched");
-    assert_eq!(fields[bounded_join_facts_index], expected_bounded_join_facts);
-    assert!(fields[bounded_join_facts_index].contains("bounded_join_execution_status=enabled"));
-    assert!(fields[bounded_join_facts_index]
-        .contains("bounded_join_execution_families=root_reusable_hash_join,root_filtered_semi_anti_join,keyless_conditional_join,keyless_conditional_join_input_subplan_pipeline"));
-    assert!(fields[bounded_join_facts_index].contains(
-        "bounded_join_keyless_conditional_join_input_subplan_pipeline_capability=keyless_conditional_join_input_subplan_pipeline"
-    ));
-    assert!(fields[bounded_join_facts_index].contains(
-        "bounded_join_keyless_conditional_join_input_subplan_pipeline_capability_detail=root_join=keyless_conditional_inner;input_subplans=source_filter_projection_or_projection_wrapped_left_anti_hash_join_or_scalar_global_aggregate"
-    ));
-    assert_eq!(fields[shape_family_index], "sort_mixed_hash_nested_loop_join_aggregate");
-    assert_eq!(fields[execution_path_index], "native");
-    assert_eq!(fields[native_started_index], "true");
-    assert_eq!(fields[runtime_outcome_index], "succeeded");
+    assert!(!fields[contract_rows_index].contains("bounded_join_execution_family"));
+    assert!(fields[graph_index].contains("sink_kind=host_arrow_materialization"));
+    assert!(text.contains("\tmatched\t"));
 }

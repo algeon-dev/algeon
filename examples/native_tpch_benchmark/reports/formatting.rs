@@ -71,8 +71,55 @@ pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: &TpchDa
     push_line(output, format_args!("# tpch_dataset_table_row_group_counts={}", metadata.table_row_group_counts()));
 }
 
-pub(super) fn format_bounded_join_reservation_facts(facts: &BTreeMap<String, String>) -> String {
-    format_key_value_facts(facts)
+pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractGateRow]) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.gate_id
+            .to_string()
+            .cmp(&right.gate_id.to_string())
+            .then_with(|| left.reservation_kind.as_str().cmp(right.reservation_kind.as_str()))
+            .then_with(|| left.owner.to_string().cmp(&right.owner.to_string()))
+    });
+    rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBoundedCompiledGraphDiagnostics]) -> String {
+    if graphs.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut graphs = graphs.iter().collect::<Vec<_>>();
+    graphs.sort_by_key(|graph| {
+        (
+            graph.task_count,
+            graph.edge_count,
+            graph.barrier_count,
+            graph.resource_count,
+            graph.gate_count,
+            graph.sink_kind.clone(),
+            graph.sink_gate_count,
+        )
+    });
+    graphs
+        .iter()
+        .map(|graph| {
+            format!(
+                "task_count={},edge_count={},barrier_count={},resource_count={},gate_count={},sink_kind={},sink_gate_count={}",
+                graph.task_count,
+                graph.edge_count,
+                graph.barrier_count,
+                graph.resource_count,
+                graph.gate_count,
+                stable_tsv_field(&graph.sink_kind),
+                graph.sink_gate_count,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 pub(super) fn format_failure_facts(facts: &BTreeMap<String, String>) -> String {

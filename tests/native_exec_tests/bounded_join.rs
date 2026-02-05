@@ -146,39 +146,12 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert!(strict_report.is_strict_bounded_ready());
     assert_strict_report_has_host_sink_boundary(strict_report);
     assert_strict_report_has_join_path_gates(strict_report);
-    assert_eq!(
-        diagnostics.bounded_join_reservation_facts.get("bounded_join_enabled").map(String::as_str),
-        Some("true")
-    );
-    assert_eq!(
-        diagnostics.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
-        Some("enabled")
-    );
-    assert_eq!(
-        diagnostics.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("")
-    );
     assert!(
-        diagnostics.bounded_join_reservation_facts.get("bounded_join_execution_families").is_some_and(|families| {
-            families.contains("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
-        }),
-        "Q11 bounded planner facts must name the aggregate-over-join subplan inputs family"
-    );
-    assert_eq!(
-        diagnostics
-            .bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability")
-            .map(String::as_str),
-        Some("keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline")
-    );
-    assert_eq!(
-        diagnostics
-            .bounded_join_reservation_facts
-            .get("bounded_join_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_capability_detail")
-            .map(String::as_str),
-        Some(
-            "root_join=keyless_conditional_inner;left_input=projection_wrapped_grouped_aggregate_over_bounded_join_subplan;right_input=projection_wrapped_scalar_global_aggregate_over_bounded_join_subplan;root_output=left_only;post_root=projection_sort"
-        )
+        strict_report
+            .stable_kv_rows()
+            .iter()
+            .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath")),
+        "strict bounded planner diagnostics must not require family/path vocabulary"
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -357,7 +330,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
 }
 
 #[test]
-fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
+fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection_still_reports_legacy_error_facts() {
     let dir = unique_temp_dir("datafusion-cudf-bounded-join-rejection-split");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -367,30 +340,18 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
     let _ = rule.optimize(plan, &ConfigOptions::default()).unwrap();
     let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
-    let planner_facts = &diagnostics.bounded_join_reservation_facts;
 
-    assert_eq!(planner_facts.get("bounded_join_enabled").map(String::as_str), Some("true"));
-    assert_eq!(planner_facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
+    assert_eq!(diagnostics.strict_bounded_contract.accepted_reports.len(), 1);
+    assert!(diagnostics.strict_bounded_contract.rejected_blocking_contracts.is_empty());
+    let strict_rows = diagnostics.strict_bounded_contract.accepted_reports[0].gate_rows();
+    assert!(strict_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
+    assert!(
+        strict_rows
+            .iter()
+            .map(|row| row.to_stable_kv_row())
+            .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath"))
+    );
     let expected_unsupported_shape = BoundedJoinReservationContract.supported_shape_requirement();
-    assert_eq!(planner_facts.get("bounded_join_unsupported_shape").map(String::as_str), None);
-    assert_eq!(
-        planner_facts.get("modeled_reservations").map(String::as_str),
-        Some(
-            "source_read,build_side,hash_table,probe_side,filtered_probe_state,mixed_size_data,gather_map,join_output,materialization"
-        )
-    );
-    assert_eq!(planner_facts.get("blocked_reservations").map(String::as_str), Some(""));
-    assert_eq!(planner_facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str), None);
-    assert_eq!(
-        planner_facts.get("cudf_rs_mixed_join_size_data_alias_compatibility").map(String::as_str),
-        Some(
-            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
-        )
-    );
-    assert_eq!(
-        planner_facts.get("bounded_join_mixed_keyed_residual_capability_detail").map(String::as_str),
-        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
-    );
 
     fs::remove_dir_all(dir).unwrap();
 
@@ -423,26 +384,5 @@ fn bounded_join_facts_cover_planner_supported_and_runtime_rejected_paths() {
     assert_eq!(
         runtime_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail"),
         Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
-    );
-
-    assert_eq!(
-        planner_facts.get("modeled_reservations").map(String::as_str),
-        runtime_error.fact_value("modeled_reservations")
-    );
-    assert_eq!(
-        planner_facts.get("blocked_reservations").map(String::as_str),
-        runtime_error.fact_value("blocked_reservations")
-    );
-    assert_eq!(
-        planner_facts.get("bounded_join_execution_family_alias_compatibility").map(String::as_str),
-        runtime_error.fact_value("bounded_join_execution_family_alias_compatibility")
-    );
-    assert_eq!(
-        planner_facts.get("cudf_rs_mixed_join_size_data_alias_compatibility").map(String::as_str),
-        runtime_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility")
-    );
-    assert_eq!(
-        planner_facts.get("bounded_join_mixed_keyed_residual_capability_detail").map(String::as_str),
-        runtime_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail")
     );
 }

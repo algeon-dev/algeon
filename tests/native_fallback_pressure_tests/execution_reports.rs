@@ -19,11 +19,12 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(report.rejected_before_execution_count(), 0);
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
-    assert_eq!(
-        row.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
-        Some("enabled")
+    assert_eq!(row.strict_bounded_contract_rows.len(), 2);
+    assert_eq!(row.strict_bounded_compiled_graphs.len(), 1);
+    assert!(
+        row.strict_bounded_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::Materialization
+            && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary)
     );
-    assert_eq!(row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
     assert_eq!(row.post_native_plan_root, "NativeCudfExec");
     assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(!row.rejected_before_execution);
@@ -83,13 +84,17 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 10);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 71);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 11);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 72);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=10\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=11\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
-    assert!(text.contains("bounded_join_execution_status=enabled"));
-    assert!(text.contains("\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t1\t0\t0\t0\t1\t4\t256\t2\t512\t1\t1024\t2\t4\t4096\t8192\t128\t128\t0\t6\t7\t5\t2\t3\t2\t1\t1\t4\t5\t3\t2\t65536\t8\t4\t5\t9\t2\t1\t3\t1\t2\t1\t6\t2\t1\t3\t4\t5\t16384\t8192\t1024\t512\t2048\t"));
+    assert!(text.contains("execution_mode=strict_bounded"));
+    assert!(text.contains("contract_status=modeled"));
+    assert!(text.contains("contract_quality=query_engine_owned_boundary"));
+    assert!(!text.contains("bounded_join_execution_status"));
+    assert!(!text.contains("bounded_join_reservation_facts"));
+    assert!(text.contains("\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t"));
 }
 
 #[test]
@@ -115,7 +120,7 @@ fn native_datafusion_execution_report_keeps_unobserved_optional_memory_metrics_e
 }
 
 #[test]
-fn native_datafusion_reports_scope_bounded_join_facts_to_join_candidates() {
+fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
     let mut report = PlanningReport::new();
     report.push_rewritten(GpuCandidate::new(
         "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
@@ -130,12 +135,7 @@ fn native_datafusion_reports_scope_bounded_join_facts_to_join_candidates() {
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
         report,
         source_diagnostics: Vec::new(),
-        bounded_join_reservation_facts: BoundedJoinReservationContract
-            .facts(ExecutionBoundaryPolicy::default())
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect(),
-        strict_bounded_contract: Default::default(),
+        strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
     };
     let planning = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
         "mixed",
@@ -158,27 +158,15 @@ fn native_datafusion_reports_scope_bounded_join_facts_to_join_candidates() {
         })
         .expect("non-join candidate row should exist");
 
-    assert_eq!(
-        join_row.bounded_join_reservation_facts.get("bounded_join_execution_status").map(String::as_str),
-        Some("enabled")
-    );
-    assert_eq!(
-        join_row
-            .bounded_join_reservation_facts
-            .get("bounded_join_execution_family_alias_compatibility")
-            .map(String::as_str),
-        None
-    );
-    assert_eq!(
-        join_row
-            .bounded_join_reservation_facts
-            .get("bounded_join_mixed_keyed_residual_capability_detail")
-            .map(String::as_str),
-        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
+    assert_eq!(join_row.strict_bounded_contract_rows.len(), 2);
+    assert_eq!(join_row.strict_bounded_compiled_graphs.len(), 1);
+    assert!(
+        non_join_row.strict_bounded_contract_rows.is_empty(),
+        "strict bounded contract rows must not bleed into unrelated candidate rows"
     );
     assert!(
-        non_join_row.bounded_join_reservation_facts.is_empty(),
-        "bounded join facts must not bleed into unrelated candidate rows"
+        non_join_row.strict_bounded_compiled_graphs.is_empty(),
+        "strict bounded graph diagnostics must not bleed into unrelated candidate rows"
     );
 }
 
@@ -197,17 +185,13 @@ fn native_datafusion_execution_report_keeps_rejected_queries_out_of_runtime() {
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
     assert_eq!(row.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
-    assert_eq!(row.bounded_join_reservation_facts.get("blocked_reservations").map(String::as_str), Some(""));
+    assert_eq!(row.strict_bounded_contract_rows.len(), 1);
     assert_eq!(
-        row.bounded_join_reservation_facts.get("bounded_join_lower_level_blockers").map(String::as_str),
-        Some("")
+        row.strict_bounded_contract_rows[0].execution_mode,
+        StrictBoundedExecutionMode::UnsupportedStrictBounded
     );
-    assert_eq!(
-        row.bounded_join_reservation_facts.get("cudf_rs_mixed_join_size_data_alias_compatibility").map(String::as_str),
-        Some(
-            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
-        )
-    );
+    assert_eq!(row.strict_bounded_contract_rows[0].contract_status, ContractStatus::BlockedByLowerLevel);
+    assert!(row.strict_bounded_compiled_graphs.is_empty());
     assert!(row.rejected_before_execution);
     assert!(!row.native_runtime_started);
     assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);

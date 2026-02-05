@@ -99,31 +99,6 @@ pub(super) fn expected_tpch_datafusion_planning_rejection(query_id: &str) -> (&'
     }
 }
 
-pub(super) fn expected_tpch_bounded_join_lower_level_blockers(query_id: &str) -> &'static str {
-    match query_id {
-        "q17" => "source_contract,aggregate_contract",
-        _ => "",
-    }
-}
-
-pub(super) fn expected_tpch_bounded_join_blocked_reservations(query_id: &str) -> &'static str {
-    match query_id {
-        "q17" => "source_read,operator_output",
-        _ => "",
-    }
-}
-
-pub(super) fn expected_tpch_bounded_join_blocked_family(query_id: &str) -> Option<&'static str> {
-    match query_id {
-        "q17" => Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
-        _ => None,
-    }
-}
-
-pub(super) fn expected_tpch_bounded_join_shape_blocker(_query_id: &str) -> Option<&'static str> {
-    None
-}
-
 fn expected_tpch_operator_unsupported_category(query_id: &str) -> &'static str {
     match query_id {
         "q02" | "q10" | "q18" => "operator_sort_topk",

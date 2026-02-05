@@ -45,6 +45,13 @@ pub struct StrictBoundedContractReport {
 }
 
 impl StrictBoundedContractReport {
+    pub fn from_gate_rows(
+        execution_mode: StrictBoundedExecutionMode,
+        gate_rows: Vec<StrictBoundedContractGateRow>,
+    ) -> Result<Self> {
+        Self::new(execution_mode, gate_rows)
+    }
+
     pub fn from_compiled_pipeline(analysis: &CapabilityAnalysis, pipeline: &CompiledPipeline) -> Result<Self> {
         let execution_mode = if analysis.has_rejections()
             || pipeline.gates().iter().any(|gate| gate.status() != ContractStatus::Modeled)

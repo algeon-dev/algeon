@@ -1,8 +1,10 @@
-use std::{collections::BTreeMap, fmt::Write};
+use std::fmt::Write;
 
+use cudf_query_engine::StrictBoundedContractGateRow;
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::*;
+use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
 
 pub(super) fn format_join_diagnostics(diagnostics: &[NativeJoinDiagnosticSummary]) -> String {
     if diagnostics.is_empty() {
@@ -72,17 +74,62 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
     output
 }
 
-pub(super) fn format_bounded_join_reservation_facts(facts: &BTreeMap<String, String>) -> String {
-    if facts.is_empty() {
+pub(super) fn format_strict_bounded_contract_rows(rows: &[StrictBoundedContractGateRow]) -> String {
+    if rows.is_empty() {
         return "none".to_string();
     }
 
+    let mut rows = rows.iter().collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.gate_id
+            .to_string()
+            .cmp(&right.gate_id.to_string())
+            .then_with(|| left.reservation_kind.as_str().cmp(right.reservation_kind.as_str()))
+            .then_with(|| left.owner.to_string().cmp(&right.owner.to_string()))
+    });
     let mut output = String::new();
-    for (index, (key, value)) in facts.iter().enumerate() {
+    for (index, row) in rows.iter().enumerate() {
         if index > 0 {
-            output.push(';');
+            output.push('|');
         }
-        let _ = write!(output, "{}={}", stable_tsv_field(key), stable_tsv_field(value));
+        output.push_str(&stable_tsv_field(&row.to_stable_kv_row()));
+    }
+    output
+}
+
+pub(super) fn format_strict_bounded_compiled_graphs(graphs: &[NativeStrictBoundedCompiledGraphDiagnostics]) -> String {
+    if graphs.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut graphs = graphs.iter().collect::<Vec<_>>();
+    graphs.sort_by_key(|graph| {
+        (
+            graph.task_count,
+            graph.edge_count,
+            graph.barrier_count,
+            graph.resource_count,
+            graph.gate_count,
+            graph.sink_kind.clone(),
+            graph.sink_gate_count,
+        )
+    });
+    let mut output = String::new();
+    for (index, graph) in graphs.iter().enumerate() {
+        if index > 0 {
+            output.push('|');
+        }
+        let _ = write!(
+            output,
+            "task_count={},edge_count={},barrier_count={},resource_count={},gate_count={},sink_kind={},sink_gate_count={}",
+            graph.task_count,
+            graph.edge_count,
+            graph.barrier_count,
+            graph.resource_count,
+            graph.gate_count,
+            stable_tsv_field(&graph.sink_kind),
+            graph.sink_gate_count,
+        );
     }
     output
 }

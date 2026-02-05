@@ -49,7 +49,6 @@ pub(super) fn accepted_native_diagnostics() -> NativePlanningDiagnostics {
         input_plan_shape: "SortExec(fetch)(AggregateExec(LocalParquetScan))".to_string(),
         report,
         source_diagnostics: Vec::new(),
-        bounded_join_reservation_facts: Default::default(),
         strict_bounded_contract: Default::default(),
     }
 }
@@ -60,19 +59,13 @@ pub(super) fn accepted_bounded_join_native_diagnostics() -> NativePlanningDiagno
         "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))",
         1,
     ));
-    let mut diagnostics = NativePlanningDiagnostics {
+    let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
         report,
         source_diagnostics: Vec::new(),
-        bounded_join_reservation_facts: Default::default(),
-        strict_bounded_contract: Default::default(),
+        strict_bounded_contract: accepted_strict_bounded_contract_diagnostics(),
     };
-    diagnostics.bounded_join_reservation_facts = BoundedJoinReservationContract
-        .facts(ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect();
     diagnostics
 }
 
@@ -87,12 +80,98 @@ pub(super) fn rejected_native_diagnostics() -> NativePlanningDiagnostics {
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
         report,
         source_diagnostics: Vec::new(),
-        bounded_join_reservation_facts: BoundedJoinReservationContract
-            .rejection_facts(ExecutionBoundaryPolicy::default())
-            .into_iter()
-            .map(|(key, value)| (key.to_string(), value))
-            .collect(),
-        strict_bounded_contract: Default::default(),
+        strict_bounded_contract: rejected_strict_bounded_contract_diagnostics(),
+    }
+}
+
+pub(super) fn accepted_strict_bounded_contract_diagnostics() -> NativeStrictBoundedContractDiagnostics {
+    let rows = vec![
+        strict_bounded_gate_row(
+            StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::Edge(
+                cudf_query_engine::pipeline::PipelineEdgeId::new(0),
+            )),
+            ReservationRequirementScope::Edge,
+            ReservationKind::BuildSide,
+            "join_build_input",
+            "query_engine_build_side_source_reservation",
+            ContractQuality::ExactPreflight,
+            None,
+        ),
+        strict_bounded_gate_row(
+            StrictBoundedContractGateId::Compiled(ReservationGateId::new(1)),
+            StrictBoundedContractOwner::Compiled(ReservationGateOwner::SinkBoundary),
+            ReservationRequirementScope::Edge,
+            ReservationKind::Materialization,
+            "host_arrow_materialization",
+            "query_engine_explicit_sink_materialization_reservation",
+            ContractQuality::QueryEngineOwnedBoundary,
+            None,
+        ),
+    ];
+    NativeStrictBoundedContractDiagnostics {
+        accepted_reports: vec![
+            StrictBoundedContractReport::from_gate_rows(StrictBoundedExecutionMode::StrictBounded, rows).unwrap(),
+        ],
+        rejected_blocking_contracts: Vec::new(),
+        compiled_graphs: vec![NativeStrictBoundedCompiledGraphDiagnostics {
+            task_count: 2,
+            edge_count: 1,
+            barrier_count: 0,
+            resource_count: 2,
+            gate_count: 2,
+            sink_kind: "host_arrow_materialization".to_string(),
+            sink_gate_count: 1,
+        }],
+        non_join_bounded_plan_count: 0,
+        non_join_bounded_plan_reason: None,
+    }
+}
+
+pub(super) fn rejected_strict_bounded_contract_diagnostics() -> NativeStrictBoundedContractDiagnostics {
+    NativeStrictBoundedContractDiagnostics {
+        accepted_reports: Vec::new(),
+        rejected_blocking_contracts: vec![StrictBoundedContractGateRow {
+            execution_mode: StrictBoundedExecutionMode::UnsupportedStrictBounded,
+            contract_scope: ReservationRequirementScope::Node,
+            gate_id: StrictBoundedContractGateId::Compiled(ReservationGateId::new(0)),
+            owner: StrictBoundedContractOwner::Compiled(ReservationGateOwner::Task(
+                cudf_query_engine::pipeline::PipelineTaskId::new(0),
+            )),
+            reservation_kind: ReservationKind::MixedSizeData,
+            memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
+            required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
+            contract_status: ContractStatus::BlockedByLowerLevel,
+            contract_quality: ContractQuality::ObservedRetainedState,
+            unresolved_preflight_gap: None,
+        }],
+        compiled_graphs: Vec::new(),
+        non_join_bounded_plan_count: 0,
+        non_join_bounded_plan_reason: None,
+    }
+}
+
+fn strict_bounded_gate_row(
+    gate_id: StrictBoundedContractGateId,
+    owner: StrictBoundedContractOwner,
+    contract_scope: ReservationRequirementScope,
+    reservation_kind: ReservationKind,
+    memory_boundary: &'static str,
+    required_contract: &'static str,
+    contract_quality: ContractQuality,
+    unresolved_preflight_gap: Option<&'static str>,
+) -> StrictBoundedContractGateRow {
+    StrictBoundedContractGateRow {
+        execution_mode: StrictBoundedExecutionMode::StrictBounded,
+        contract_scope,
+        gate_id,
+        owner,
+        reservation_kind,
+        memory_boundary,
+        required_contract,
+        contract_status: ContractStatus::Modeled,
+        contract_quality,
+        unresolved_preflight_gap,
     }
 }
 

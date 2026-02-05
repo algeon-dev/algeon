@@ -1,6 +1,7 @@
-use std::collections::BTreeMap;
+use cudf_query_engine::StrictBoundedContractGateRow;
 
 use super::metrics::NativeDataFusionExecutionMetrics;
+use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDataFusionPlanningRow {
@@ -12,7 +13,8 @@ pub struct NativeDataFusionPlanningRow {
     pub outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
-    pub bounded_join_reservation_facts: BTreeMap<String, String>,
+    pub strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
+    pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
     pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
@@ -30,7 +32,8 @@ pub struct NativeDataFusionExecutionRow {
     pub planning_outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
-    pub bounded_join_reservation_facts: BTreeMap<String, String>,
+    pub strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
+    pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,

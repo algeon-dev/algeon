@@ -108,7 +108,7 @@ impl NativeDataFusionPlanningReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -117,7 +117,8 @@ impl NativeDataFusionPlanningReport {
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
-                format_bounded_join_reservation_facts(&row.bounded_join_reservation_facts),
+                format_strict_bounded_contract_rows(&row.strict_bounded_contract_rows),
+                format_strict_bounded_compiled_graphs(&row.strict_bounded_compiled_graphs),
                 format_join_diagnostics(&row.join_diagnostics),
                 format_source_diagnostics(&row.source_diagnostics),
                 row.post_native_plan_root,
@@ -173,7 +174,8 @@ impl NativeDataFusionExecutionReport {
                 row.planning_outcome.as_str().to_string(),
                 row.reason_code.clone().unwrap_or_else(|| "none".to_string()),
                 row.unsupported_category.clone().unwrap_or_else(|| "none".to_string()),
-                format_bounded_join_reservation_facts(&row.bounded_join_reservation_facts),
+                format_strict_bounded_contract_rows(&row.strict_bounded_contract_rows),
+                format_strict_bounded_compiled_graphs(&row.strict_bounded_compiled_graphs),
                 row.post_native_plan_root.clone(),
                 row.post_native_execution_path.as_str().to_string(),
                 row.rejected_before_execution.to_string(),
