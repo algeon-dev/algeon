@@ -11,13 +11,15 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, ExecutionContext, Expr,
-    JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetSource,
-    MemoryControlPolicy, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-    PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryPlan,
+    AdaptiveCandidateStatus, AdaptiveExecutionMode, AdaptiveStrategy, AggregateExpr, AggregateFunction, AggregateSpec,
+    BinaryOp, ColumnRef, CompiledPipeline, ExecutionContext, Expr, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
+    JoinType, LimitSpec, LiteralValue, LocalParquetSource, MemoryControlPolicy, NativePipelineExecutionMode,
+    PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind,
+    PipelineTask, PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan,
     QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
     ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
     StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner,
+    adaptive_bounded_pipeline_admission,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope, SubgraphInvariantKind,
     },
@@ -28,7 +30,7 @@ use cudf_query_engine::{
         CompiledTaskExecutor, CompiledTaskOutput, compiled_bounded_pipeline_support,
         compiled_bounded_query_plan_support,
     },
-    execute_query_plan,
+    execute_query_plan, strict_bounded_pipeline_admission,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -41,7 +43,7 @@ use crate::bounded_join_admission::{
         resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
         resident_grouped_aggregate_subquery_filter_plan, single_join_post_root_aggregate_sort_limit_plan,
     },
-    residual_resident_grouped_aggregate_input_plan,
+    residual_resident_grouped_aggregate_input_plan, unsupported_cross_key_join_plan,
 };
 
 #[test]
@@ -67,6 +69,102 @@ fn compiled_bounded_support_accepts_root_join_graph_without_legacy_routing_terms
         .expect("root join should retain source-read gates");
     assert_eq!(source_gate.status(), ContractStatus::Modeled);
     assert_eq!(source_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+}
+
+#[test]
+fn phase_e2_native_pipeline_modes_are_explicit_and_report_construction_stays_strict_only() {
+    assert_eq!(NativePipelineExecutionMode::StrictBounded.as_str(), "strict_bounded");
+    assert_eq!(NativePipelineExecutionMode::Adaptive.as_str(), "adaptive");
+    assert_eq!(
+        StrictBoundedExecutionMode::UnsupportedStrictBounded.native_mode(),
+        NativePipelineExecutionMode::StrictBounded
+    );
+    assert_eq!(AdaptiveExecutionMode::Adaptive.native_mode(), NativePipelineExecutionMode::Adaptive);
+    assert_ne!(AdaptiveExecutionMode::Adaptive.as_str(), StrictBoundedExecutionMode::StrictBounded.as_str());
+    assert_ne!(
+        AdaptiveExecutionMode::UnsupportedAdaptive.as_str(),
+        StrictBoundedExecutionMode::UnsupportedStrictBounded.as_str()
+    );
+
+    let _: fn(
+        StrictBoundedExecutionMode,
+        Vec<StrictBoundedContractGateRow>,
+    ) -> cudf_query_engine::Result<StrictBoundedContractReport> = StrictBoundedContractReport::from_gate_rows;
+}
+
+#[test]
+fn phase_e2_strict_execution_uses_strict_admission_evidence() {
+    let plan = root_join_plan();
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("root join should produce strict admission evidence");
+
+    assert_eq!(admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
+    assert!(admission.analysis().admits_strict_bounded_join());
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+        .expect("strict admission evidence should build strict report rows");
+    assert_eq!(report.execution_mode().native_mode(), NativePipelineExecutionMode::StrictBounded);
+    assert!(report.gate_rows().iter().all(|row| {
+        row.execution_mode.native_mode() == NativePipelineExecutionMode::StrictBounded
+            && row.execution_mode.as_str() != AdaptiveExecutionMode::Adaptive.as_str()
+            && row.execution_mode.as_str() != AdaptiveExecutionMode::UnsupportedAdaptive.as_str()
+    }));
+}
+
+#[test]
+fn phase_e3_adaptive_admission_reports_use_adaptive_rows_not_strict_contract_rows() {
+    let plan = root_join_plan();
+    let admission = adaptive_bounded_pipeline_admission(&plan)
+        .expect("adaptive admission should not fail")
+        .expect("root join should produce adaptive admission evidence");
+
+    assert_eq!(admission.native_mode(), NativePipelineExecutionMode::Adaptive);
+    assert!(admission.pipeline().is_some());
+    let report = admission.report();
+    assert_eq!(report.execution_mode(), AdaptiveExecutionMode::Adaptive);
+    let row = report.row();
+    assert_eq!(row.execution_mode, AdaptiveExecutionMode::Adaptive);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Admitted);
+    assert_eq!(row.adaptive_strategy, AdaptiveStrategy::ConservativeCompiledPipeline);
+    assert_eq!(row.final_sink_boundary.materialization_mode, QueryOutputMode::MaterializeToHost);
+    assert!(
+        row.missing_strict_contracts
+            .iter()
+            .all(|missing| missing.contract_status != ContractStatus::RejectedByCapability)
+    );
+
+    let rendered = report.stable_kv_row();
+    assert!(rendered.contains("execution_mode=adaptive"));
+    assert!(rendered.contains("adaptive_strategy=conservative_compiled_pipeline"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+    assert!(!rendered.contains("unsupported_strict_bounded"));
+}
+
+#[test]
+fn phase_e3_unsupported_adaptive_rows_reference_strict_gaps_without_strict_evidence() {
+    let plan = unsupported_cross_key_join_plan();
+    let admission = adaptive_bounded_pipeline_admission(&plan)
+        .expect("adaptive admission should not fail")
+        .expect("join plan should produce adaptive report evidence");
+
+    assert_eq!(admission.native_mode(), NativePipelineExecutionMode::Adaptive);
+    assert!(admission.pipeline().is_none());
+    let row = admission.report().row();
+    assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
+    assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
+    assert_eq!(row.rejection_reason, Some("missing_strict_contracts"));
+    assert!(row.missing_strict_contracts.iter().any(|missing| {
+        missing.required_contract == "unsupported_join_node_capability"
+            && missing.contract_status == ContractStatus::RejectedByCapability
+    }));
+
+    let rendered = admission.report().stable_kv_row();
+    assert!(rendered.contains("execution_mode=unsupported_adaptive"));
+    assert!(rendered.contains("required_contract=unsupported_join_node_capability"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+    assert!(!rendered.contains("execution_mode=unsupported_strict_bounded"));
 }
 
 #[test]

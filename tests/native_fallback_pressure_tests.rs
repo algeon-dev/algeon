@@ -11,8 +11,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf_query_engine::{
-    GpuResidentSource, LocalParquetSource, QueryPlanBuilder, SourceNode, StrictBoundedContractGateId,
-    StrictBoundedContractGateRow, StrictBoundedContractOwner, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy, GpuResidentSource, LocalParquetSource,
+    QueryPlanBuilder, SourceNode, StrictBoundedContractGateId, StrictBoundedContractGateRow,
+    StrictBoundedContractOwner, StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
     pipeline::{ReservationGateId, ReservationGateOwner},
     runtime::ReservationKind,
@@ -43,7 +44,8 @@ use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuCandidate, GpuFallbackPolicy,
     NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, NativeCudfComposedExec,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
+    NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativeCudfComposedExec,
     NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec, NativeDataFusionExecutionReport,
     NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
     NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime,
@@ -361,12 +363,12 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(planning_failure_row.rejected_before_execution);
 
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 7);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 8);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=7\n"));
+    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=8\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));

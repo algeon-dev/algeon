@@ -1,9 +1,10 @@
 //! Compiled bounded-pipeline execution facade.
 //!
-//! Phase D.1.1 wires the compiled graph into bounded runtime dispatch without
-//! executing tasks yet. The support checker is intentionally graph-driven: it
-//! inspects `CompiledPipeline` task, edge, barrier, sink, and gate contracts and
-//! does not route by legacy bounded join family/path vocabulary.
+//! The support checker is intentionally graph-driven: it inspects
+//! `CompiledPipeline` task, edge, barrier, sink, and gate contracts and does
+//! not route by legacy bounded join family/path vocabulary. Unsupported
+//! strict graphs fail deterministically instead of falling back to legacy
+//! whole-query wrappers.
 
 pub(in crate::exec::bounded) mod join_strategy;
 mod reservations;
@@ -20,20 +21,37 @@ pub use support::{
 pub use tasks::{CompiledGpuResource, CompiledGpuTaskExecutor};
 
 use crate::{
+    capability::CapabilityAnalysis,
     error::{QueryError, QueryErrorCode, Result},
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
-    pipeline::compile_pipeline,
+    mode::NativePipelineExecutionMode,
+    pipeline::{CompiledPipeline, compile_pipeline},
     plan::{QueryPlan, ResultSink},
     runtime::ExecutionContext,
 };
 
-pub(in crate::exec) fn try_execute_compiled_bounded_pipeline(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
-) -> Result<Option<QueryOutput>> {
+#[derive(Debug, Clone)]
+pub struct StrictBoundedPipelineAdmission {
+    analysis: CapabilityAnalysis,
+    pipeline: CompiledPipeline,
+}
+
+impl StrictBoundedPipelineAdmission {
+    pub fn analysis(&self) -> &CapabilityAnalysis {
+        &self.analysis
+    }
+
+    pub fn pipeline(&self) -> &CompiledPipeline {
+        &self.pipeline
+    }
+
+    pub const fn native_mode(&self) -> NativePipelineExecutionMode {
+        NativePipelineExecutionMode::StrictBounded
+    }
+}
+
+pub fn strict_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<StrictBoundedPipelineAdmission>> {
     if !plan.contains_join() {
         return Ok(None);
     }
@@ -53,21 +71,33 @@ pub(in crate::exec) fn try_execute_compiled_bounded_pipeline(
             Some(&pipeline),
             "unsupported_compiled_pipeline_envelope",
         )),
-        CompiledBoundedPipelineSupport::Supported => {
-            let scheduler = CompiledPipelineScheduler::new(&pipeline)?;
-            metrics.record_compiled_pipeline_attempt();
-            let (state, output) = {
-                let mut executor = CompiledGpuTaskExecutor::new(context, plan, &pipeline, gpu_inputs, metrics)?;
-                let state = scheduler.run(&mut executor)?;
-                let output = executor.take_host_output()?;
-                debug_assert_eq!(executor.reserved_bytes(), 0);
-                (state, output)
-            };
-            metrics.record_compiled_pipeline_tasks_executed(state.completed_task_count() as u64);
-            metrics.record_compiled_pipeline_host_arrow_sink();
-            Ok(Some(QueryOutput::HostArrow(output)))
-        },
+        CompiledBoundedPipelineSupport::Supported => Ok(Some(StrictBoundedPipelineAdmission { analysis, pipeline })),
     }
+}
+
+pub(in crate::exec) fn try_execute_strict_bounded_pipeline(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    gpu_inputs: &GpuResidentInputMap,
+    metrics: &mut QueryMetrics,
+) -> Result<Option<QueryOutput>> {
+    let Some(admission) = strict_bounded_pipeline_admission(plan)? else {
+        return Ok(None);
+    };
+    debug_assert_eq!(admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
+    let pipeline = admission.pipeline();
+    let scheduler = CompiledPipelineScheduler::new(pipeline)?;
+    metrics.record_compiled_pipeline_attempt();
+    let (state, output) = {
+        let mut executor = CompiledGpuTaskExecutor::new(context, plan, pipeline, gpu_inputs, metrics)?;
+        let state = scheduler.run(&mut executor)?;
+        let output = executor.take_host_output()?;
+        debug_assert_eq!(executor.reserved_bytes(), 0);
+        (state, output)
+    };
+    metrics.record_compiled_pipeline_tasks_executed(state.completed_task_count() as u64);
+    metrics.record_compiled_pipeline_host_arrow_sink();
+    Ok(Some(QueryOutput::HostArrow(output)))
 }
 
 fn compiled_bounded_pipeline_required_error(

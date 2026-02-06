@@ -1,5 +1,6 @@
 use super::{source::record_bounded_parquet_source_metrics, *};
 
+mod adaptive;
 mod aggregate;
 mod chunks;
 pub(super) mod compiled;
@@ -10,9 +11,11 @@ mod multi_join;
 mod pipeline;
 mod reservation;
 
+use adaptive::try_execute_adaptive_bounded_pipeline;
+pub use adaptive::{AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission};
 use aggregate::*;
 use chunks::*;
-use compiled::try_execute_compiled_bounded_pipeline;
+use compiled::try_execute_strict_bounded_pipeline;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
@@ -27,14 +30,25 @@ use multi_join::*;
 use pipeline::*;
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
 
+use crate::mode::NativePipelineExecutionMode;
+
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
-    if let Some(output) = try_execute_compiled_bounded_pipeline(context, plan, gpu_inputs, metrics)? {
-        return Ok(output);
+    match bounded_pipeline_execution_mode(context) {
+        NativePipelineExecutionMode::StrictBounded => {
+            if let Some(output) = try_execute_strict_bounded_pipeline(context, plan, gpu_inputs, metrics)? {
+                return Ok(output);
+            }
+        },
+        NativePipelineExecutionMode::Adaptive => {
+            if let Some(output) = try_execute_adaptive_bounded_pipeline(context, plan, gpu_inputs, metrics)? {
+                return Ok(output);
+            }
+        },
     }
 
     if plan.contains_join() {
@@ -111,6 +125,10 @@ pub(super) fn execute_bounded_query_plan(
             Ok(QueryOutput::HostArrow(output))
         },
     }
+}
+
+fn bounded_pipeline_execution_mode(_context: &ExecutionContext) -> NativePipelineExecutionMode {
+    NativePipelineExecutionMode::StrictBounded
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {

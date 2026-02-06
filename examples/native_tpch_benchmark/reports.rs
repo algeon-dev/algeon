@@ -1,4 +1,4 @@
-use cudf_query_engine::StrictBoundedContractGateRow;
+use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 use datafusion_cudf::NativeStrictBoundedCompiledGraphDiagnostics;
 
 use super::*;
@@ -8,8 +8,8 @@ mod formatting;
 
 use formatting::*;
 
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION: u32 = 7;
-pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tjoin_gather_map_bytes\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION: u32 = 8;
+pub(super) const NATIVE_TPCH_BENCHMARK_TSV_HEADER: &str = "query_id\tplanning_outcome\tbounded_status\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_candidate_shape_family\tpost_native_execution_path\trejected_before_execution\tcpu_runtime_started\tnative_runtime_started\truntime_outcome\tcpu_failure\tcpu_failure_code\tcpu_failure_kind\tcpu_failure_status\tcpu_failure_operation\tcpu_failure_facts\truntime_failure\truntime_failure_code\truntime_failure_kind\truntime_failure_status\truntime_failure_operation\truntime_failure_facts\tparity_status\tcpu_wall_ms\tnative_wall_ms\tspeedup_vs_cpu\tcpu_output_batches\tnative_output_batches\tcpu_output_rows\tnative_output_rows\tcpu_output_bytes\tnative_output_bytes\tcpu_output_fingerprint\tnative_output_fingerprint\toutput_fingerprint\tgpu_resident_input_handoffs\thost_to_device_uploads\thost_to_device_uploaded_rows\thost_to_device_uploaded_bytes\tdevice_to_host_materializations\tdevice_to_host_materialized_rows\tdevice_to_host_materialized_bytes\tdevice_to_device_copies\tdevice_to_device_copied_bytes\tparquet_files\tparquet_bytes_known\trow_groups_selected\tread_columns\tresident_dataframe_peak_bytes\tallocator_high_water_bytes\treservation_requested_bytes\treservation_granted_bytes\treservation_denied_count\tsource_chunks_planned\tsource_chunks_attempted\tsource_chunks_committed\tsource_chunks_retried\tsource_read_prefetches_started\tsource_read_prefetches_completed\tsource_read_prefetches_skipped\tsource_read_prefetches_abandoned\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\trow_groups_planned\trow_groups_committed\tpartial_aggregate_count\tpartial_aggregate_rows\tfinal_merge_attempts\tfinal_merge_levels\tretry_count\tretry_resource_exhausted_count\tretry_reservation_failure_count\thash_join_build_count\tfiltered_join_build_count\thash_join_cache_hits\thash_join_cache_misses\thash_join_durable_cache_hits\thash_join_durable_cache_misses\thash_join_durable_cache_inserts\thash_join_hash_table_bytes\tfiltered_join_hash_table_bytes\tfiltered_join_probe_state_bytes\tmixed_join_size_data_bytes\tjoin_gather_map_bytes\tparquet_read_time_ms\tsource_read_time_ms\tsource_read_queue_wait_time_ms\tsource_cache_lookup_time_ms\toperator_time_ms\tchunk_operator_time_ms\tfinal_merge_time_ms\tfinal_sort_time_ms\tmaterialization_time_ms";
 
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchBenchmarkReport {
@@ -62,6 +62,7 @@ pub(super) struct NativeTpchBenchmarkRow {
     pub(super) planning_outcome: NativeDataFusionPlanningOutcome,
     pub(super) strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
     pub(super) strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
+    pub(super) adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     pub(super) reason_code: Option<String>,
     pub(super) unsupported_category: Option<String>,
     pub(super) native_candidate_shape_family: Option<String>,
@@ -98,6 +99,7 @@ impl NativeTpchBenchmarkRow {
             planning_outcome: planning_row.outcome,
             strict_bounded_contract_rows: planning_row.strict_bounded_contract_rows,
             strict_bounded_compiled_graphs: planning_row.strict_bounded_compiled_graphs,
+            adaptive_pipeline_rows: planning_row.adaptive_pipeline_rows,
             reason_code: planning_row.reason_code,
             unsupported_category: planning_row.unsupported_category,
             native_candidate_shape_family: planning_row.native_candidate_shape_family,
@@ -135,6 +137,7 @@ impl NativeTpchBenchmarkRow {
             planning_outcome: NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
             strict_bounded_contract_rows: Vec::new(),
             strict_bounded_compiled_graphs: Vec::new(),
+            adaptive_pipeline_rows: Vec::new(),
             reason_code: Some("physical_planning_failed".to_string()),
             unsupported_category: Some("planning".to_string()),
             native_candidate_shape_family: None,
@@ -206,6 +209,7 @@ impl NativeTpchBenchmarkRow {
             planning_outcome: planning_row.outcome,
             strict_bounded_contract_rows: planning_row.strict_bounded_contract_rows,
             strict_bounded_compiled_graphs: planning_row.strict_bounded_compiled_graphs,
+            adaptive_pipeline_rows: planning_row.adaptive_pipeline_rows,
             reason_code: planning_row.reason_code,
             unsupported_category: planning_row.unsupported_category,
             native_candidate_shape_family: planning_row.native_candidate_shape_family,
@@ -249,6 +253,7 @@ impl NativeTpchBenchmarkRow {
             optional_text(self.unsupported_category.as_deref(), "none"),
             format_strict_bounded_contract_rows(&self.strict_bounded_contract_rows),
             format_strict_bounded_compiled_graphs(&self.strict_bounded_compiled_graphs),
+            format_adaptive_pipeline_rows(&self.adaptive_pipeline_rows),
             optional_text(self.native_candidate_shape_family.as_deref(), "none"),
             self.post_native_execution_path.as_str().to_string(),
             self.rejected_before_execution.to_string(),

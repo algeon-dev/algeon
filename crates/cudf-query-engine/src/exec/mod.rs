@@ -31,13 +31,15 @@ mod validate;
 pub use bounded::compiled::{
     CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
     CompiledPipelineState, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
-    compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+    StrictBoundedPipelineAdmission, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,
+    strict_bounded_pipeline_admission,
 };
+pub use bounded::{AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission};
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
 pub use types::{
-    ExecutionMode, GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
+    GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
     GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap,
-    GpuResultHandle, QueryExecutionResult, QueryOutput,
+    GpuResultHandle, QueryExecutionResult, QueryOutput, QueryOutputMode,
 };
 
 use self::{

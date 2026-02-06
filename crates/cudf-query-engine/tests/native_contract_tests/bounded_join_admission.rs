@@ -531,7 +531,7 @@ fn bounded_capability_analysis_rejects_one_sided_residual_as_subgraph_invariant(
     assert_eq!(facts.get("references_right").map(String::as_str), Some("false"));
 }
 
-fn unsupported_cross_key_join_plan() -> cudf_query_engine::QueryPlan {
+pub(crate) fn unsupported_cross_key_join_plan() -> cudf_query_engine::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
     let output_schema = Arc::new(Schema::new(vec![

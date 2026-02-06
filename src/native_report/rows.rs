@@ -1,4 +1,4 @@
-use cudf_query_engine::StrictBoundedContractGateRow;
+use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
 use super::metrics::NativeDataFusionExecutionMetrics;
 use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
@@ -13,8 +13,12 @@ pub struct NativeDataFusionPlanningRow {
     pub outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    /// Strict-only gate rows; adaptive evidence must use a separate surface.
     pub strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
+    /// Compiled graph summaries for strict bounded candidates.
     pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
+    /// Adaptive-only rows; strict evidence must not be projected here.
+    pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
@@ -32,8 +36,12 @@ pub struct NativeDataFusionExecutionRow {
     pub planning_outcome: NativeDataFusionPlanningOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    /// Strict-only gate rows; adaptive evidence must use a separate surface.
     pub strict_bounded_contract_rows: Vec<StrictBoundedContractGateRow>,
+    /// Compiled graph summaries for strict bounded candidates.
     pub strict_bounded_compiled_graphs: Vec<NativeStrictBoundedCompiledGraphDiagnostics>,
+    /// Adaptive-only rows; strict evidence must not be projected here.
+    pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub post_native_plan_root: String,
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,

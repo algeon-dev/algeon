@@ -4,7 +4,11 @@ use crate::{
     runtime::ReservationKind,
 };
 
-/// A non-executing graph of native pipeline obligations.
+/// Mode-agnostic compiled graph for a native query DAG.
+///
+/// This structure records task order, resource lifetimes, barriers, sink
+/// boundaries, and reservation gates. Strict and adaptive executors may consume
+/// it, but mode-specific admission and retry/spill policy live outside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledPipeline {
     tasks: Vec<PipelineTask>,
@@ -131,6 +135,10 @@ impl ReservationGateId {
 }
 
 /// One symbolic unit of native work.
+///
+/// A task names the operator work to perform and the resident resources it
+/// consumes or produces. The scheduler uses task ids and dependencies; the
+/// operator interpreter owns the actual cuDF work.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineTask {
     id: PipelineTaskId,
@@ -193,15 +201,25 @@ impl PipelineTask {
 /// Symbolic native work categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipelineTaskKind {
+    /// Read a bounded source chunk into a resident frame.
     SourceRead,
+    /// Import an already GPU-resident input frame.
     GpuResidentSource,
+    /// Apply pipelineable unary work such as filter or projection.
     Unary,
+    /// Execute a blocking aggregate.
     Aggregate,
+    /// Prepare the resident build side of a join.
     JoinBuild,
+    /// Execute the probe phase against a prepared join build side.
     JoinProbe,
+    /// Materialize join indices or prepared join state into an output frame.
     JoinMaterialize,
+    /// Execute the final ordering boundary.
     FinalSort,
+    /// Apply a bounded limit.
     Limit,
+    /// Materialize the explicit result sink.
     SinkMaterialize,
 }
 
@@ -276,12 +294,19 @@ impl PipelineEdge {
 /// Symbolic dependency classes in the compiled graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipelineEdgeKind {
+    /// Pure ordering dependency with no resident payload transfer.
     Control,
+    /// A resident frame flows from producer to consumer.
     ResidentFrame,
+    /// A resident frame is consumed as a join build input.
     JoinBuildInput,
+    /// A resident frame is consumed as a join probe input.
     JoinProbeInput,
+    /// One resident producer is intentionally reused by multiple consumers.
     SharedResidentProducer,
+    /// Output of a blocking boundary flows downstream.
     BarrierOutput,
+    /// The final resident resource feeds the sink.
     SinkInput,
 }
 
@@ -353,11 +378,17 @@ impl PipelineBarrier {
 /// Blocking and ordering boundaries in the pipeline graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PipelineBarrierKind {
+    /// Boundary between planned source chunks.
     SourceChunkBoundary,
+    /// Aggregate must complete before downstream consumers run.
     AggregateBoundary,
+    /// Join build state must exist before probing begins.
     JoinBuildBeforeProbe,
+    /// Join probe state must be materialized before downstream consumers run.
     JoinMaterialization,
+    /// Sort/order output is a blocking boundary.
     SortBoundary,
+    /// Final output materialization boundary.
     SinkBoundary,
 }
 
@@ -413,8 +444,11 @@ impl ResidentResource {
 /// Symbolic resident lifetime class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResidentLifetime {
+    /// Produced and released during the same task.
     TaskLocal { task: PipelineTaskId },
+    /// Produced by one task and retained until the last recorded consumer.
     BetweenTasks { producer: PipelineTaskId },
+    /// Retained as the final sink output.
     SinkOutput { producer: PipelineTaskId },
 }
 
@@ -485,9 +519,13 @@ impl ReservationGate {
 /// The graph object that owns a reservation gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReservationGateOwner {
+    /// Gate is owned by a task-local operation.
     Task(PipelineTaskId),
+    /// Gate is owned by a producer-consumer edge.
     Edge(PipelineEdgeId),
+    /// Gate is owned by a blocking or ordering barrier.
     Barrier(PipelineBarrierId),
+    /// Gate is owned by the final sink boundary.
     SinkBoundary,
 }
 
@@ -525,7 +563,9 @@ impl SinkBoundary {
 /// The final result boundary class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SinkBoundaryKind {
+    /// Materialize the result as host Arrow.
     HostArrowMaterialization,
+    /// Keep the result as a GPU-resident frame.
     GpuResidentOutput,
 }
 

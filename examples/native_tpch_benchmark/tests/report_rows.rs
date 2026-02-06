@@ -9,6 +9,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
         planning_outcome: NativeDataFusionPlanningOutcome::AcceptedReplaced,
         strict_bounded_contract_rows: Vec::new(),
         strict_bounded_compiled_graphs: Vec::new(),
+        adaptive_pipeline_rows: Vec::new(),
         reason_code: None,
         unsupported_category: None,
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
@@ -104,7 +105,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
 
     let text = report.to_tsv();
     assert!(text.contains(
-        "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
+        "q01\taccepted_replaced\tbounded_accepted_parity_matched\tnone\tnone\tnone\tnone\tnone\tsort_local_parquet_aggregate\tnative\tfalse\ttrue\ttrue\tsucceeded"
     ));
     assert!(text.contains(
         "\t20.000\t5.000\t4.000\t1\t1\t4\t4\t128\t128\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\toutput-fnv1a64:1111111111111111\t"

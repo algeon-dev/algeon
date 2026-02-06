@@ -4,6 +4,7 @@
 //! matching, fallback reporting, and adapter wrappers belong in
 //! `datafusion-cudf`.
 
+pub mod adaptive_report;
 pub(crate) mod bounded;
 pub mod capability;
 pub mod chunk;
@@ -13,18 +14,23 @@ pub mod error;
 pub mod exec;
 pub mod expr;
 pub mod metrics;
+pub mod mode;
 pub mod pipeline;
 pub mod plan;
 pub mod runtime;
 pub mod source;
 
+pub use adaptive_report::{
+    AdaptiveCandidateStatus, AdaptiveFinalSinkBoundary, AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract,
+    AdaptivePipelineReport, AdaptivePipelineReportRow, AdaptiveRuntimeActionCounts, AdaptiveRuntimeActionsAllowed,
+    AdaptiveSinkKind, AdaptiveStrategy,
+};
 pub use chunk::{
     SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, plan_local_parquet_source_chunks,
     plan_local_parquet_source_chunks_with_metadata_cache,
 };
 pub use contract_report::{
     StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, StrictBoundedContractReport,
-    StrictBoundedExecutionMode,
 };
 pub use datatypes::{
     arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
@@ -32,16 +38,19 @@ pub use datatypes::{
 };
 pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus, Result};
 pub use exec::{
-    ExecutionMode, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
+    AdaptivePipelineAdmission, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
     GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap, GpuResultHandle,
-    QueryExecutionResult, QueryOutput, execute_query_plan, execute_query_plan_with_gpu_inputs,
-    materialize_gpu_result_to_host, read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source,
+    QueryExecutionResult, QueryOutput, QueryOutputMode, StrictBoundedPipelineAdmission,
+    adaptive_bounded_pipeline_admission, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    materialize_gpu_result_to_host, read_gpu_resident_source, read_local_parquet_source,
+    strict_bounded_pipeline_admission, validate_local_parquet_source,
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
     LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
 pub use metrics::{BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, OperatorMetrics, QueryMetrics};
+pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use pipeline::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
     PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
