@@ -21,8 +21,8 @@ use crate::{
 
 /// Gate-first report for strict bounded contract readiness.
 ///
-/// A report is strict-only: adaptive retry, spill, downgrade, or memory-history
-/// evidence must use a different report surface and execution mode.
+/// A report is strict-only: non-strict runtime evidence must use a different
+/// report surface and execution mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StrictBoundedContractReport {
     execution_mode: StrictBoundedExecutionMode,

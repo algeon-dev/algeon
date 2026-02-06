@@ -8,7 +8,7 @@ use crate::{
 ///
 /// This structure records task order, resource lifetimes, barriers, sink
 /// boundaries, and reservation gates. Strict and adaptive executors may consume
-/// it, but mode-specific admission and retry/spill policy live outside it.
+/// it, but mode-specific admission and runtime-action policy live outside it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledPipeline {
     tasks: Vec<PipelineTask>,

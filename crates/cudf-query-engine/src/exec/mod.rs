@@ -28,7 +28,7 @@ mod util;
 mod validate;
 
 #[doc(hidden)]
-pub use bounded::compiled::{
+pub use bounded::strict::{
     CompiledBoundedPipelineSupport, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler,
     CompiledPipelineState, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
     StrictBoundedPipelineAdmission, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,

@@ -8,7 +8,10 @@
 
 use std::sync::Arc;
 
-use crate::error::{QueryError, Result};
+use crate::{
+    error::{QueryError, Result},
+    mode::NativePipelineExecutionMode,
+};
 
 mod boundary;
 mod bounded_join;
@@ -110,6 +113,8 @@ pub struct ExecutionContext {
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source scheduling policy for bounded local Parquet reads.
     source_scheduler_policy: SourceSchedulerPolicy,
+    /// Selected native bounded-pipeline execution mode.
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Optional durable GPU hash-join build cache.
     ///
     /// Required when the boundary policy asks for durable build
@@ -149,6 +154,7 @@ impl ExecutionContext {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
         }
@@ -207,6 +213,11 @@ impl ExecutionContext {
         self.source_scheduler_policy
     }
 
+    /// Returns the selected bounded-pipeline execution mode.
+    pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
+        self.native_pipeline_execution_mode
+    }
+
     /// Returns the durable GPU hash-join build cache, when configured.
     ///
     /// A clone of the `Arc` is returned so callers can retain the cache without
@@ -242,6 +253,8 @@ pub struct ExecutionContextBuilder {
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source read scheduling contract.
     source_scheduler_policy: SourceSchedulerPolicy,
+    /// Native bounded-pipeline execution mode.
+    native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Optional durable hash-join build cache.
     hash_join_build_cache: Option<Arc<crate::exec::GpuHashJoinBuildCache>>,
     /// Optional durable local-Parquet source cache.
@@ -311,6 +324,12 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Selects the native bounded-pipeline execution mode.
+    pub fn with_native_pipeline_execution_mode(mut self, mode: NativePipelineExecutionMode) -> Self {
+        self.native_pipeline_execution_mode = mode;
+        self
+    }
+
     /// Provides the cache required by durable GPU hash-join materialization.
     pub fn with_hash_join_build_cache(mut self, cache: Arc<crate::exec::GpuHashJoinBuildCache>) -> Self {
         self.hash_join_build_cache = Some(cache);
@@ -341,6 +360,7 @@ impl ExecutionContextBuilder {
                 memory_control_policy: self.memory_control_policy,
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
+                native_pipeline_execution_mode: self.native_pipeline_execution_mode,
                 hash_join_build_cache: self.hash_join_build_cache,
                 local_parquet_source_cache: self.local_parquet_source_cache,
             });
@@ -375,6 +395,7 @@ impl ExecutionContextBuilder {
             memory_control_policy: self.memory_control_policy,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
+            native_pipeline_execution_mode: self.native_pipeline_execution_mode,
             hash_join_build_cache: self.hash_join_build_cache,
             local_parquet_source_cache: self.local_parquet_source_cache,
         })

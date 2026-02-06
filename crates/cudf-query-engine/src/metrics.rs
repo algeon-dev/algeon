@@ -154,6 +154,12 @@ pub struct QueryMetrics {
     pub compiled_pipeline_tasks_executed: u64,
     /// Host Arrow sink boundaries materialized by the compiled-pipeline executor.
     pub compiled_pipeline_host_arrow_sinks: u64,
+    /// Adaptive executor retry actions taken by this query.
+    pub adaptive_retry_count: u64,
+    /// Adaptive executor spill actions taken by this query.
+    pub adaptive_spill_count: u64,
+    /// Adaptive executor downgrade actions taken by this query.
+    pub adaptive_downgrade_count: u64,
 }
 
 impl QueryMetrics {
@@ -335,6 +341,12 @@ impl QueryMetrics {
         self.compiled_pipeline_host_arrow_sinks = self.compiled_pipeline_host_arrow_sinks.saturating_add(1);
     }
 
+    pub fn record_adaptive_runtime_action_counts(&mut self, retry_count: u64, spill_count: u64, downgrade_count: u64) {
+        self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(retry_count);
+        self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(spill_count);
+        self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(downgrade_count);
+    }
+
     pub fn record_partial_aggregate(&mut self, rows: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
@@ -431,6 +443,9 @@ impl QueryMetrics {
             self.compiled_pipeline_tasks_executed.saturating_add(other.compiled_pipeline_tasks_executed);
         self.compiled_pipeline_host_arrow_sinks =
             self.compiled_pipeline_host_arrow_sinks.saturating_add(other.compiled_pipeline_host_arrow_sinks);
+        self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(other.adaptive_retry_count);
+        self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(other.adaptive_spill_count);
+        self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(other.adaptive_downgrade_count);
     }
 }
 
