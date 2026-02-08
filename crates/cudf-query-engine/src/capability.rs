@@ -1,11 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    bounded::{
-        BoundedJoinNodeCapability, BoundedKeylessConditionalJoinType, bounded_join_node_capability,
-        bounded_multi_join_node_capability, bounded_root_filtered_join_compatible, bounded_root_hash_join_compatible,
-        bounded_root_join_compatible,
-    },
     error::QueryError,
     exec::validate_local_parquet_source,
     expr::{AggregateExpr, AggregateFunction, BinaryOp, ColumnQualifier, Expr, LiteralValue},
@@ -20,6 +15,7 @@ mod entry;
 mod expr;
 mod graph;
 mod invariant;
+mod join;
 mod model;
 mod node;
 mod requirements;
@@ -31,6 +27,11 @@ pub(crate) use entry::{
     admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
     admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
     admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
+};
+pub(crate) use join::{
+    JoinExecutionCapability, KeylessConditionalJoinKind, join_node_execution_capability,
+    keyed_filtered_semi_anti_join_capable, keyed_hash_join_capable, keyed_residual_mixed_join_capable,
+    multi_join_keyed_residual_mixed_join_capable, multi_join_subtree_join_execution_capability,
 };
 pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionOwner, CapabilityRejectionProjection,

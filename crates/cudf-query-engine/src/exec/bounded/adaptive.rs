@@ -4,7 +4,11 @@
 //! conservative compiled-pipeline wrapper with adaptive labels and action
 //! accounting; richer runtime actions belong to later Phase E steps.
 
-use super::{compiled::execute_compiled_pipeline_to_host, *};
+use super::{
+    admission::{CapabilityFirstCandidateStatus, capability_first_bounded_pipeline_admission},
+    compiled::execute_compiled_pipeline_to_host,
+    *,
+};
 use crate::{
     adaptive_report::{
         AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus, AdaptiveMemoryHistoryEvidence,
@@ -12,7 +16,7 @@ use crate::{
     },
     adaptive_runtime::AdaptiveMemoryHistory,
     mode::{AdaptiveExecutionMode, NativePipelineExecutionMode},
-    pipeline::{CompiledPipeline, compile_pipeline},
+    pipeline::CompiledPipeline,
 };
 
 #[derive(Debug, Clone)]
@@ -69,32 +73,22 @@ pub fn adaptive_bounded_pipeline_admission_with_memory_history(
         return Ok(None);
     }
 
-    let analysis = plan.capability_analysis();
     let runtime_evidence = runtime_evidence_for_plan(plan, memory_history);
-    let (candidate_status, adaptive_strategy, rejection_reason, pipeline) =
-        if analysis.has_rejections() || !analysis.admits_strict_bounded_join() {
-            (AdaptiveCandidateStatus::Rejected, AdaptiveStrategy::Unsupported, Some("missing_strict_contracts"), None)
-        } else if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
-            (AdaptiveCandidateStatus::Rejected, AdaptiveStrategy::Unsupported, Some("unsupported_sink_boundary"), None)
-        } else {
-            let pipeline = compile_pipeline(plan, &analysis)?;
-            match compiled_bounded_query_plan_support(plan, &pipeline)? {
-                CompiledBoundedPipelineSupport::Supported => (
-                    AdaptiveCandidateStatus::Admitted,
-                    AdaptiveStrategy::ConservativeCompiledPipeline,
-                    None,
-                    Some(pipeline),
-                ),
-                CompiledBoundedPipelineSupport::Unsupported => (
-                    AdaptiveCandidateStatus::Rejected,
-                    AdaptiveStrategy::Unsupported,
-                    Some("unsupported_compiled_pipeline_envelope"),
-                    None,
-                ),
-            }
-        };
+    let admission =
+        capability_first_bounded_pipeline_admission(plan)?.expect("join plan should produce admission evidence");
+    let (candidate_status, adaptive_strategy, rejection_reason, pipeline) = match admission.candidate_status() {
+        CapabilityFirstCandidateStatus::Admitted => (
+            AdaptiveCandidateStatus::Admitted,
+            AdaptiveStrategy::ConservativeCompiledPipeline,
+            None,
+            admission.pipeline().cloned(),
+        ),
+        CapabilityFirstCandidateStatus::Rejected => {
+            (AdaptiveCandidateStatus::Rejected, AdaptiveStrategy::Unsupported, admission.rejection_reason(), None)
+        },
+    };
     let report = AdaptivePipelineReport::from_admission_parts(
-        &analysis,
+        admission.analysis(),
         plan,
         candidate_status,
         adaptive_strategy,

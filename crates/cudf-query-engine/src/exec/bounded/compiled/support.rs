@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::join_strategy::CompiledJoinExecutionStrategy;
 use crate::{
-    bounded::BoundedKeylessConditionalJoinType,
-    capability::{CapabilityDecision, ContractQuality, ContractStatus, SubgraphInvariantKind},
+    capability::{
+        CapabilityDecision, ContractQuality, ContractStatus, KeylessConditionalJoinKind, SubgraphInvariantKind,
+    },
     error::Result,
     pipeline::{
         CompiledPipeline, PipelineBarrierKind, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind,
@@ -181,7 +182,7 @@ fn join_strategy_specific_reservations_are_modeled(
                 )
         },
         CompiledJoinExecutionStrategy::KeylessConditional { join_type } => {
-            (join_type != BoundedKeylessConditionalJoinType::Full
+            (join_type != KeylessConditionalJoinKind::Full
                 || task_runtime_attachment_has_modeled_reservation_gate(
                     pipeline,
                     group.materialize,

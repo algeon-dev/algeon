@@ -5,6 +5,7 @@ use super::{
     },
     *,
 };
+use crate::capability::keyed_hash_join_capable;
 
 pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
     build_side: JoinSide,
@@ -295,10 +296,10 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
 
 fn validate_root_hash_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
-    if !node.is_bounded_root_hash_join_compatible() {
+    if !keyed_hash_join_capable(node) {
         return Err(unsupported_bounded_shape(
-            "bounded root join execution currently supports reusable hash inner, left, and full equi joins",
-            "bounded_join_plan_shape_unsupported",
+            "compiled hash join execution requires keyed inner, left, or full equi join capability",
+            "compiled_join_strategy_unsupported",
         )
         .with_fact("join_type", node.spec.join_type)
         .with_fact("build_side", node.spec.build_side)

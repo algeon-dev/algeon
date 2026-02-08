@@ -186,7 +186,7 @@ fn limit_node_executable_decision(plan: &QueryPlan, node_id: NodeId, limit: &Lim
 }
 
 fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
-    let Some(capability) = bounded_join_node_capability(join) else {
+    let Some(capability) = join_node_execution_capability(join) else {
         return CapabilityDecision::rejected(
             "unsupported_join_node_capability",
             [
@@ -208,7 +208,7 @@ fn join_node_executable_decision(node_id: NodeId, join: &JoinNode) -> Capability
             rejection,
         );
     }
-    if matches!(capability, BoundedJoinNodeCapability::KeyedFilteredSemiAnti)
+    if matches!(capability, JoinExecutionCapability::KeyedFilteredSemiAnti)
         && join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
     {
         return CapabilityDecision::rejected(
@@ -247,13 +247,13 @@ fn node_local_requirements(kind: &PlanNode) -> Vec<ReservationRequirement> {
             "aggregate_contract",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
-        PlanNode::Join(join) if bounded_root_hash_join_compatible(join) => vec![ReservationRequirement::modeled(
+        PlanNode::Join(join) if keyed_hash_join_capable(join) => vec![ReservationRequirement::modeled(
             ReservationKind::HashTable,
             "join_hash_table",
             "hash_join_pre_build_reservation_size_bytes",
             ContractQuality::ExactPreflight,
         )],
-        PlanNode::Join(join) if bounded_root_filtered_join_compatible(join) => vec![
+        PlanNode::Join(join) if keyed_filtered_semi_anti_join_capable(join) => vec![
             ReservationRequirement::modeled(
                 ReservationKind::HashTable,
                 "join_hash_table",
@@ -268,10 +268,7 @@ fn node_local_requirements(kind: &PlanNode) -> Vec<ReservationRequirement> {
             ),
         ],
         PlanNode::Join(join)
-            if matches!(
-                BoundedKeylessConditionalJoinType::try_from_join(join),
-                Some(BoundedKeylessConditionalJoinType::Full)
-            ) =>
+            if matches!(KeylessConditionalJoinKind::try_from_join(join), Some(KeylessConditionalJoinKind::Full)) =>
         {
             vec![ReservationRequirement::modeled(
                 ReservationKind::MixedSizeData,

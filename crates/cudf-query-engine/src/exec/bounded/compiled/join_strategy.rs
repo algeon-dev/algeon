@@ -1,5 +1,5 @@
 use crate::{
-    bounded::{BoundedJoinNodeCapability, BoundedKeylessConditionalJoinType, bounded_join_node_capability},
+    capability::{JoinExecutionCapability, KeylessConditionalJoinKind, join_node_execution_capability},
     plan::JoinNode,
 };
 
@@ -14,19 +14,19 @@ use crate::{
 pub(crate) enum CompiledJoinExecutionStrategy {
     HashEqui,
     FilteredSemiAnti,
-    KeylessConditional { join_type: BoundedKeylessConditionalJoinType },
+    KeylessConditional { join_type: KeylessConditionalJoinKind },
     ProjectedCross,
     MixedKeyedResidual,
 }
 
 impl CompiledJoinExecutionStrategy {
     pub(crate) fn from_join_node(join: &JoinNode) -> Option<Self> {
-        match bounded_join_node_capability(join)? {
-            BoundedJoinNodeCapability::KeyedHash => Some(Self::HashEqui),
-            BoundedJoinNodeCapability::KeyedFilteredSemiAnti => Some(Self::FilteredSemiAnti),
-            BoundedJoinNodeCapability::KeylessConditional(join_type) => Some(Self::KeylessConditional { join_type }),
-            BoundedJoinNodeCapability::ProjectedCross => Some(Self::ProjectedCross),
-            BoundedJoinNodeCapability::KeyedResidualMixed => Some(Self::MixedKeyedResidual),
+        match join_node_execution_capability(join)? {
+            JoinExecutionCapability::KeyedHash => Some(Self::HashEqui),
+            JoinExecutionCapability::KeyedFilteredSemiAnti => Some(Self::FilteredSemiAnti),
+            JoinExecutionCapability::KeylessConditional(join_type) => Some(Self::KeylessConditional { join_type }),
+            JoinExecutionCapability::ProjectedCross => Some(Self::ProjectedCross),
+            JoinExecutionCapability::KeyedResidualMixed => Some(Self::MixedKeyedResidual),
         }
     }
 }

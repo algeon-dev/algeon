@@ -1015,7 +1015,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_preserves_node_failure_lo
 }
 
 #[test]
-fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_recognizer_stays_narrow() {
+fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_narrow() {
     for variant in [
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit,
         AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan,

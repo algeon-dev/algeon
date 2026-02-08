@@ -10,7 +10,9 @@ pub use strict_bounded::{
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
     STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
-use strict_bounded::{accepted_plan_contract_diagnostics, rejected_plan_contract_diagnostics};
+use strict_bounded::{
+    accepted_plan_contract_diagnostics, rejected_plan_contract_diagnostics, strict_bounded_admission_is_rejected,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePlanningDiagnostics {
@@ -320,7 +322,7 @@ fn replace_lowered_root_or_keep_plan(
         });
     }
 
-    if native_execution_boundary_is_rejected(&lowering.plans[0], native_execution_config) {
+    if native_execution_boundary_is_rejected(&lowering.plans[0], native_execution_config)? {
         let report = native_execution_rejection_report(&lowering.report, FallbackReason::NativeBoundedJoinUnsupported);
         let candidate = first_bounded_join_unsupported_candidate(&report)
             .cloned()
@@ -411,13 +413,11 @@ fn host_arrow_boundary_allows_child_replacement(plan: &dyn ExecutionPlan) -> boo
 fn native_execution_boundary_is_rejected(
     plan: &cudf_query_engine::QueryPlan,
     execution_config: &NativeCudfExecutionConfig,
-) -> bool {
-    execution_config
-        .memory_control_policy()
-        .is_bounded()
-        .then(|| plan.bounded_join_unsupported_shape_facts(execution_config.boundary_policy()))
-        .flatten()
-        .is_some()
+) -> DataFusionResult<bool> {
+    if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
+        return Ok(false);
+    }
+    strict_bounded_admission_is_rejected(plan)
 }
 
 fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: FallbackReason) -> PlanningReport {

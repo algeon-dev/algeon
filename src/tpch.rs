@@ -35,9 +35,17 @@ use crate::{
     NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
 };
 
+mod ad_hoc_olap;
 mod dataset;
 mod tiny;
 
+pub use ad_hoc_olap::{
+    AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,
+    AdHocOlapLoweringExpectation, AdHocOlapQuery, AdHocOlapWorkloadClass,
+    ad_hoc_olap_datafusion_planning_workload_items,
+    ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config, ad_hoc_olap_fallback_pressure_workload_items,
+    ad_hoc_olap_query_ids,
+};
 pub use dataset::{
     CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV,
     CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_TABLES, TpchDatasetMetadata, TpchTableFileMetadata, TpchTableMetadata,

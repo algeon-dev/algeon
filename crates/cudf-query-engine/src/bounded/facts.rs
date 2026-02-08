@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
-use super::*;
-use crate::runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy};
+use crate::{
+    capability::{keyed_residual_mixed_join_capable, multi_join_keyed_residual_mixed_join_capable},
+    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
+    runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy},
+};
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_BLOCKER: &str =
     "bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_lower_level_contracts";
 const MIXED_KEYED_RESIDUAL_JOIN_RESIDENT_GROUPED_AGGREGATE_INPUT_PIPELINE_LOWER_LEVEL_CONTRACT: &str =
@@ -207,9 +210,9 @@ fn first_unsupported_keyed_residual_semi_anti_join(plan: &QueryPlan) -> Option<&
         }
 
         if multi_join {
-            (!bounded_multi_join_mixed_keyed_residual_compatible(join)).then_some(join)
+            (!multi_join_keyed_residual_mixed_join_capable(join)).then_some(join)
         } else {
-            (!bounded_root_mixed_join_compatible(join) || root_join_leaf_blocker(plan, join).is_some()).then_some(join)
+            (!keyed_residual_mixed_join_capable(join) || root_join_leaf_blocker(plan, join).is_some()).then_some(join)
         }
     })
 }
@@ -258,28 +261,6 @@ fn mixed_keyed_residual_left_only_blocker(plan: &QueryPlan, join: &JoinNode) -> 
     }
 }
 
-fn mixed_keyed_residual_left_only_shape_contract(plan: &QueryPlan, join: &JoinNode) -> String {
-    if reachable_join_count(plan) > 1 {
-        if join.spec.build_side != JoinSide::Right
-            || join.spec.output_projection.is_empty()
-            || join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
-        {
-            "multi_join_mixed_keyed_residual_left_only_join_requires_right_build_left_projection".to_string()
-        } else {
-            "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins".to_string()
-        }
-    } else if join.spec.build_side != JoinSide::Right
-        || join.spec.output_projection.is_empty()
-        || join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left)
-    {
-        "root_mixed_keyed_residual_left_only_join_requires_right_build_left_projection".to_string()
-    } else if root_join_leaf_blocker(plan, join).is_some() {
-        "root_mixed_keyed_residual_join_requires_source_leaf_inputs".to_string()
-    } else {
-        BoundedJoinReservationContract.supported_shape_requirement()
-    }
-}
-
 fn mixed_keyed_residual_full_blocker(plan: &QueryPlan, join: &JoinNode) -> &'static str {
     if reachable_join_count(plan) > 1 {
         "bounded_multi_join_mixed_keyed_residual_full_topology_unsupported"
@@ -289,18 +270,6 @@ fn mixed_keyed_residual_full_blocker(plan: &QueryPlan, join: &JoinNode) -> &'sta
         blocker
     } else {
         "bounded_root_mixed_keyed_residual_full_shape_unsupported"
-    }
-}
-
-fn mixed_keyed_residual_full_shape_contract(plan: &QueryPlan, join: &JoinNode) -> String {
-    if reachable_join_count(plan) > 1 {
-        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins".to_string()
-    } else if join.spec.output_projection.is_empty() {
-        "root_mixed_keyed_residual_full_join_requires_projected_output".to_string()
-    } else if root_join_leaf_blocker(plan, join).is_some() {
-        "root_mixed_keyed_residual_join_requires_source_leaf_inputs".to_string()
-    } else {
-        BoundedJoinReservationContract.supported_shape_requirement()
     }
 }
 
@@ -315,20 +284,6 @@ fn mixed_keyed_residual_left_blocker(plan: &QueryPlan, join: &JoinNode) -> &'sta
         blocker
     } else {
         "bounded_root_mixed_keyed_residual_left_shape_unsupported"
-    }
-}
-
-fn mixed_keyed_residual_left_shape_contract(plan: &QueryPlan, join: &JoinNode) -> String {
-    if reachable_join_count(plan) > 1 {
-        "multi_join_pipeline_requires_reusable_hash_filtered_semi_anti_or_mixed_keyed_residual_inner_left_semi_left_anti_joins".to_string()
-    } else if join.spec.build_side != JoinSide::Right {
-        "root_mixed_keyed_residual_left_join_requires_right_build".to_string()
-    } else if join.spec.output_projection.is_empty() {
-        "root_mixed_keyed_residual_left_join_requires_projected_output".to_string()
-    } else if root_join_leaf_blocker(plan, join).is_some() {
-        "root_mixed_keyed_residual_join_requires_source_leaf_inputs".to_string()
-    } else {
-        BoundedJoinReservationContract.supported_shape_requirement()
     }
 }
 
@@ -347,4 +302,24 @@ fn root_join_input_leaf_blocker(plan: &QueryPlan, node_id: NodeId) -> Option<&'s
         PlanNode::Sort(_) => Some("bounded_root_join_sort_leaf_unsupported"),
         PlanNode::Limit(_) => Some("bounded_root_join_limit_leaf_unsupported"),
     }
+}
+
+fn reachable_join_count(plan: &QueryPlan) -> usize {
+    let mut reachable = vec![false; plan.nodes().len()];
+    let mut stack = vec![plan.sink().input()];
+    let mut count = 0;
+    while let Some(id) = stack.pop() {
+        let Some(node) = plan.node(id) else {
+            continue;
+        };
+        if reachable[id.index()] {
+            continue;
+        }
+        reachable[id.index()] = true;
+        if matches!(node.kind, PlanNode::Join(_)) {
+            count += 1;
+        }
+        stack.extend(node.input_ids().iter().copied());
+    }
+    count
 }

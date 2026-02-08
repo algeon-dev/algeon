@@ -59,7 +59,7 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
 }
 
 #[test]
-fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_recognizer_stays_narrow() {
+fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability_proof_stays_narrow() {
     for variant in [
         ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
         ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,
