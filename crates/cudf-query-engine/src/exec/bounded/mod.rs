@@ -13,8 +13,6 @@ mod compiled;
 mod facts;
 mod final_sort;
 mod join;
-mod multi_join;
-mod pipeline;
 mod reservation;
 pub(in crate::exec) mod strict;
 
@@ -29,14 +27,11 @@ pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
-use join::*;
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, execute_bounded_compiled_join_build_from_frame,
     execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
     execute_bounded_join_leaf_source,
 };
-use multi_join::*;
-use pipeline::*;
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
 use strict::try_execute_strict_bounded_pipeline;
 

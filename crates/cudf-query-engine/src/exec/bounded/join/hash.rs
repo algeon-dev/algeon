@@ -29,49 +29,6 @@ pub(in crate::exec::bounded) struct BoundedRootHashJoinProbeState {
     gather_map_bytes: u64,
 }
 
-pub(super) fn execute_bounded_root_hash_join(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &JoinNode,
-    left: ResidentGpuFrame,
-    right: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
-    validate_executable_join_subset(node)?;
-    let (build_input, probe_input) = match node.spec.build_side {
-        JoinSide::Left => (left, right),
-        JoinSide::Right => (right, left),
-    };
-    let build = execute_bounded_root_hash_join_build(context, node_id, node, build_input, reservations, metrics)?;
-    let probe =
-        execute_bounded_root_hash_join_probe(context, node_id, node, build, probe_input, reservations, metrics)?;
-    execute_bounded_root_hash_join_materialize(context, node_id, node, probe, reservations, metrics)
-}
-
-pub(super) fn execute_bounded_root_hash_join_build(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &JoinNode,
-    input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<BoundedRootHashJoinBuildState> {
-    let input_frame = input.frame;
-    let input_reserved_bytes = input.reservation.bytes();
-    let build = execute_bounded_root_hash_join_build_from_frame(
-        context,
-        node_id,
-        node,
-        input_frame,
-        input_reserved_bytes,
-        reservations,
-        metrics,
-    );
-    reservations.release(input.reservation);
-    build
-}
-
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -135,31 +92,6 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
         left_indices_from_probe: build_side == JoinSide::Right,
         timer,
     })
-}
-
-pub(super) fn execute_bounded_root_hash_join_probe(
-    context: &ExecutionContext,
-    node_id: NodeId,
-    node: &JoinNode,
-    build: BoundedRootHashJoinBuildState,
-    input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<BoundedRootHashJoinProbeState> {
-    let input_frame = input.frame;
-    let input_reserved_bytes = input.reservation.bytes();
-    let probe = execute_bounded_root_hash_join_probe_from_frame(
-        context,
-        node_id,
-        node,
-        build,
-        input_frame,
-        input_reserved_bytes,
-        reservations,
-        metrics,
-    );
-    reservations.release(input.reservation);
-    probe
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(

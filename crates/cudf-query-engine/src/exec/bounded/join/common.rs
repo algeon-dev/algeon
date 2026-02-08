@@ -7,39 +7,6 @@ pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
     pub(in crate::exec::bounded) bytes: u64,
 }
 
-pub(super) fn prepare_bounded_join_side_input(
-    input: ResidentGpuFrame,
-    columns: &[String],
-    input_side: JoinSide,
-    node_id: NodeId,
-    build_side: JoinSide,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<BoundedJoinSideFrame> {
-    let frame = input.frame;
-    let input_reservation = input.reservation;
-    let prepared = prepare_bounded_join_side_input_from_frame(
-        frame,
-        input_reservation.bytes(),
-        columns,
-        input_side,
-        node_id,
-        build_side,
-        reservations,
-        metrics,
-    );
-    match prepared {
-        Ok(prepared) => {
-            reservations.release(input_reservation);
-            Ok(prepared)
-        },
-        Err(error) => {
-            reservations.release(input_reservation);
-            Err(error)
-        },
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     input: GpuDataFrame,
