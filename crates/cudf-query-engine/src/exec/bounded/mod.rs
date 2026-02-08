@@ -19,7 +19,10 @@ mod reservation;
 pub(in crate::exec) mod strict;
 
 use adaptive::try_execute_adaptive_bounded_pipeline;
-pub use adaptive::{AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission};
+pub use adaptive::{
+    AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission,
+    adaptive_bounded_pipeline_admission_with_memory_history,
+};
 use aggregate::*;
 use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;

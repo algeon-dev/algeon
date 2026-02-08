@@ -50,10 +50,10 @@ use datafusion_cudf::{
     NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
     NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime,
     NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
-    NativeFallbackPressureWorkloadItem, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
-    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
-    NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport, TPCH_QUERY_COUNT, TPCH_TABLES,
-    describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
+    NativeFallbackPressureWorkloadItem, NativePipelineExecutionMode, NativePlanningDiagnostics,
+    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
+    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport,
+    TPCH_QUERY_COUNT, TPCH_TABLES, describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
     tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_query_ids,
     tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };
@@ -221,12 +221,12 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(planning_failure.rejected_before_execution);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 5);
+    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 6);
     assert_eq!(
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
-        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution"
+        "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tadaptive_pipeline_rows\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=5\n"));
+    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=6\n"));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("sum_rewrite\tSortExec"));
     assert!(text.contains("not_rewrite\tSortExec"));
@@ -238,7 +238,36 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("\trewritten\tnone\tnone\t"));
     assert!(text.contains("\tnative_distributed_aggregate_unsupported\taggregate_filter\t"));
     assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
-    assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\tnone\trejected\tsql_planning_failed\tplanning\tnone\tnone\ttrue"));
+    assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\tnone\trejected\tsql_planning_failed\tplanning\tnone\tnone\tnone\ttrue"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn adaptive_fallback_pressure_report_projects_adaptive_rows_only_when_selected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure-adaptive");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_numeric_parquet_file(&left);
+    write_numeric_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right).await;
+    let item = NativeFallbackPressureWorkloadItem::new("join_adaptive", Arc::clone(&plan));
+
+    let strict = NativeFallbackPressureReport::collect([item.clone()]);
+    assert!(report_row(&strict, "join_adaptive").adaptive_pipeline_rows.is_empty());
+
+    let adaptive_config = NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
+        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
+    let adaptive = NativeFallbackPressureReport::collect_with_native_execution_config([item], &adaptive_config);
+    let row = report_row(&adaptive, "join_adaptive");
+
+    assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(row.reason_code, None);
+    assert_eq!(row.adaptive_pipeline_rows.len(), 1);
+    let rendered = row.adaptive_pipeline_rows[0].to_stable_kv_row();
+    assert!(rendered.contains("execution_mode=adaptive"));
+    assert!(!rendered.contains("execution_mode=strict_bounded"));
+    assert!(adaptive.to_tsv().contains("execution_mode=adaptive"));
 
     fs::remove_dir_all(dir).unwrap();
 }

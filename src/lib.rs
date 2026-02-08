@@ -11,7 +11,9 @@ pub mod session;
 pub mod tpch;
 mod tpch_queries;
 
-pub use cudf_query_engine::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey};
+pub use cudf_query_engine::{
+    AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativePipelineExecutionMode,
+};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
 pub use native_exec::{
@@ -47,7 +49,9 @@ pub use tpch::{
     CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata, TpchQuery,
     TpchTableFileMetadata, TpchTableMetadata, TpchWorkloadError, TpchWorkloadResult, describe_tpch_dataset,
     describe_tpch_dataset_with_content_fingerprint, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
-    tiny_tpch_dataset_metadata, tpch_datafusion_execution_workload_items, tpch_datafusion_planning_workload_items,
-    tpch_fallback_pressure_workload_items, tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
+    tiny_tpch_dataset_metadata, tpch_datafusion_execution_workload_items,
+    tpch_datafusion_execution_workload_items_with_optimizer_config, tpch_datafusion_planning_workload_items,
+    tpch_datafusion_planning_workload_items_with_optimizer_config, tpch_fallback_pressure_workload_items,
+    tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
     tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
 };

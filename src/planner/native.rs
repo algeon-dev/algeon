@@ -4,6 +4,7 @@ mod adaptive;
 mod strict_bounded;
 
 pub use adaptive::{NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics};
+use adaptive::{adaptive_pipeline_was_rejected, plan_adaptive_pipeline_diagnostics};
 pub use strict_bounded::{
     NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
     NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
@@ -282,11 +283,48 @@ fn replace_lowered_root_or_keep_plan(
             rewritten: false,
         });
     }
+    let candidate = single_rewritten_candidate(&lowering.report)
+        .cloned()
+        .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
+
+    if native_execution_config.native_pipeline_execution_mode()
+        == cudf_query_engine::NativePipelineExecutionMode::Adaptive
+    {
+        let adaptive_pipeline =
+            plan_adaptive_pipeline_diagnostics(&lowering.plans[0], candidate.clone(), native_execution_config)?
+                .unwrap_or_default();
+        if adaptive_pipeline_was_rejected(&adaptive_pipeline) {
+            return Ok(NativeOptimizationAttempt {
+                plan,
+                report: native_execution_rejection_report(
+                    &lowering.report,
+                    FallbackReason::NativeAdaptivePipelineUnsupported,
+                ),
+                source_diagnostics: lowering.source_diagnostics,
+                strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+                adaptive_pipeline,
+                rewritten: false,
+            });
+        }
+
+        let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
+            .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
+            .map_err(DataFusionError::from)?;
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report: lowering.report,
+            source_diagnostics: lowering.source_diagnostics,
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline,
+            rewritten: true,
+        });
+    }
+
     if native_execution_boundary_is_rejected(&lowering.plans[0], native_execution_config) {
-        let report = native_execution_boundary_report(&lowering.report);
+        let report = native_execution_rejection_report(&lowering.report, FallbackReason::NativeBoundedJoinUnsupported);
         let candidate = first_bounded_join_unsupported_candidate(&report)
             .cloned()
-            .ok_or_else(|| strict_bounded_candidate_error("strict bounded rejection has no bounded-join candidate"))?;
+            .ok_or_else(|| native_candidate_error("strict bounded rejection has no bounded-join candidate"))?;
         return Ok(NativeOptimizationAttempt {
             plan,
             report,
@@ -304,9 +342,6 @@ fn replace_lowered_root_or_keep_plan(
     let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(DataFusionError::from)?;
-    let candidate = single_rewritten_candidate(&lowering.report)
-        .cloned()
-        .ok_or_else(|| strict_bounded_candidate_error("strict bounded rewrite has no rewritten candidate"))?;
     let strict_bounded_contract =
         accepted_plan_contract_diagnostics(&lowering.plans[0], candidate, native_execution_config)?;
     Ok(NativeOptimizationAttempt {
@@ -385,11 +420,10 @@ fn native_execution_boundary_is_rejected(
         .is_some()
 }
 
-fn native_execution_boundary_report(report: &PlanningReport) -> PlanningReport {
+fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: FallbackReason) -> PlanningReport {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
-        CandidateOutcome::Rewritten { candidate } => CandidateOutcome::Rejected {
-            candidate: candidate.clone(),
-            reason: FallbackReason::NativeBoundedJoinUnsupported,
+        CandidateOutcome::Rewritten { candidate } => {
+            CandidateOutcome::Rejected { candidate: candidate.clone(), reason: rejection_reason }
         },
         CandidateOutcome::Rejected { candidate, reason } => {
             CandidateOutcome::Rejected { candidate: candidate.clone(), reason: *reason }
@@ -415,10 +449,10 @@ fn first_bounded_join_unsupported_candidate(report: &PlanningReport) -> Option<&
     })
 }
 
-fn strict_bounded_candidate_error(message: &'static str) -> DataFusionError {
+fn native_candidate_error(message: &'static str) -> DataFusionError {
     Error::new(
         crate::error::ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.native.strict_bounded_contract_diagnostics",
+        "datafusion_cudf.native.pipeline_candidate_diagnostics",
         message,
     )
     .into()

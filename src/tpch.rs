@@ -235,7 +235,15 @@ pub async fn tpch_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    let optimizer_config = tpch_native_optimizer_config();
+    tpch_datafusion_planning_workload_items_with_optimizer_config(root, session_config, tpch_native_optimizer_config())
+        .await
+}
+
+pub async fn tpch_datafusion_planning_workload_items_with_optimizer_config(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
@@ -280,7 +288,15 @@ pub async fn tpch_datafusion_execution_workload_items(
     root: &Path,
     session_config: SessionConfig,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
-    let optimizer_config = tpch_native_optimizer_config();
+    tpch_datafusion_execution_workload_items_with_optimizer_config(root, session_config, tpch_native_optimizer_config())
+        .await
+}
+
+pub async fn tpch_datafusion_execution_workload_items_with_optimizer_config(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+) -> TpchWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)

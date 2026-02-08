@@ -7,6 +7,7 @@
 use std::fmt;
 
 use crate::{
+    adaptive_runtime::AdaptiveMemoryHistorySummary,
     capability::{
         CapabilityAnalysis, CapabilityRejectionOwner, ContractQuality, ContractStatus, EdgeConsumer,
         ReservationRequirement, ReservationRequirementScope, ResultSinkKind, lower_level_unresolved_preflight_gap,
@@ -31,6 +32,7 @@ impl AdaptivePipelineReport {
         plan: &QueryPlan,
         candidate_status: AdaptiveCandidateStatus,
         adaptive_strategy: AdaptiveStrategy,
+        runtime_evidence: AdaptiveAdmissionRuntimeEvidence,
         rejection_reason: Option<&'static str>,
     ) -> Result<Self> {
         let execution_mode = match candidate_status {
@@ -45,8 +47,8 @@ impl AdaptivePipelineReport {
                 candidate_status == AdaptiveCandidateStatus::Rejected,
             ),
             adaptive_strategy,
-            runtime_actions_allowed: AdaptiveRuntimeActionsAllowed::default(),
-            memory_history_evidence: AdaptiveMemoryHistoryEvidence::NotUsed,
+            runtime_actions_allowed: runtime_evidence.runtime_actions_allowed,
+            memory_history_evidence: runtime_evidence.memory_history_evidence,
             runtime_action_counts: AdaptiveRuntimeActionCounts::default(),
             final_sink_boundary: AdaptiveFinalSinkBoundary::for_sink(plan.sink()),
             rejection_reason,
@@ -107,7 +109,7 @@ impl AdaptivePipelineReportRow {
             format_missing_strict_contracts(&self.missing_strict_contracts),
             self.adaptive_strategy.as_str(),
             self.runtime_actions_allowed.to_stable_value(),
-            self.memory_history_evidence.as_str(),
+            self.memory_history_evidence.to_stable_value(),
             self.runtime_action_counts.retry_count,
             self.runtime_action_counts.spill_count,
             self.runtime_action_counts.downgrade_count,
@@ -116,6 +118,13 @@ impl AdaptivePipelineReportRow {
             self.rejection_reason.unwrap_or("none"),
         )
     }
+}
+
+/// Adaptive runtime evidence read during admission.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct AdaptiveAdmissionRuntimeEvidence {
+    pub runtime_actions_allowed: AdaptiveRuntimeActionsAllowed,
+    pub memory_history_evidence: AdaptiveMemoryHistoryEvidence,
 }
 
 /// Whether adaptive admission currently accepts the candidate.
@@ -191,16 +200,50 @@ impl AdaptiveRuntimeActionsAllowed {
 }
 
 /// Adaptive memory-history evidence used by admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AdaptiveMemoryHistoryEvidence {
     NotUsed,
+    LookupMiss,
+    Observed(AdaptiveMemoryHistorySummary),
 }
 
 impl AdaptiveMemoryHistoryEvidence {
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::NotUsed => "not_used",
+            Self::LookupMiss => "lookup_miss",
+            Self::Observed(_) => "observed",
         }
+    }
+
+    pub fn lookup_attempted(&self) -> bool {
+        !matches!(self, Self::NotUsed)
+    }
+
+    pub fn lookup_hit(&self) -> bool {
+        matches!(self, Self::Observed(_))
+    }
+
+    pub fn to_stable_value(&self) -> String {
+        match self {
+            Self::NotUsed => "not_used".to_string(),
+            Self::LookupMiss => "lookup_miss".to_string(),
+            Self::Observed(summary) => format!(
+                "observed:observation_count={}|resident_dataframe_peak_bytes={}|reservation_granted_bytes={}|source_chunks_committed={}",
+                summary.observation_count,
+                summary
+                    .max_resident_dataframe_peak_bytes
+                    .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
+                summary.max_reservation_granted_bytes,
+                summary.max_source_chunks_committed
+            ),
+        }
+    }
+}
+
+impl Default for AdaptiveMemoryHistoryEvidence {
+    fn default() -> Self {
+        Self::NotUsed
     }
 }
 

@@ -114,6 +114,8 @@ pub struct NativeFallbackPressureRow {
     pub outcome: NativeFallbackPressureOutcome,
     pub reason_code: Option<String>,
     pub unsupported_category: Option<String>,
+    /// Adaptive-only rows; strict fallback-pressure reports leave this empty.
+    pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     pub join_diagnostics: Vec<NativeJoinDiagnosticSummary>,
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     pub rejected_before_execution: bool,

@@ -8,7 +8,15 @@ pub struct NativeFallbackPressureReport {
 
 impl NativeFallbackPressureReport {
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
-        let rows = items.into_iter().flat_map(report_rows_for_item).collect();
+        let execution_config = NativeCudfExecutionConfig::unbounded();
+        Self::collect_with_native_execution_config(items, &execution_config)
+    }
+
+    pub fn collect_with_native_execution_config(
+        items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>,
+        execution_config: &NativeCudfExecutionConfig,
+    ) -> Self {
+        let rows = items.into_iter().flat_map(|item| report_rows_for_item(item, execution_config)).collect();
         Self { rows, tpch_dataset: None }
     }
 
@@ -37,7 +45,7 @@ impl NativeFallbackPressureReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -46,6 +54,7 @@ impl NativeFallbackPressureReport {
                 row.outcome.as_str(),
                 row.reason_code.as_deref().unwrap_or("none"),
                 row.unsupported_category.as_deref().unwrap_or("none"),
+                format_adaptive_pipeline_rows(&row.adaptive_pipeline_rows),
                 format_join_diagnostics(&row.join_diagnostics),
                 format_source_diagnostics(&row.source_diagnostics),
                 row.rejected_before_execution,
@@ -227,6 +236,12 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.retry_count.to_string(),
                 row.metrics.retry_resource_exhausted_count.to_string(),
                 row.metrics.retry_reservation_failure_count.to_string(),
+                row.metrics.adaptive_retry_count.to_string(),
+                row.metrics.adaptive_spill_count.to_string(),
+                row.metrics.adaptive_downgrade_count.to_string(),
+                row.metrics.adaptive_memory_history_lookup_count.to_string(),
+                row.metrics.adaptive_memory_history_hit_count.to_string(),
+                row.metrics.adaptive_memory_history_miss_count.to_string(),
                 row.metrics.hash_join_build_count.to_string(),
                 row.metrics.filtered_join_build_count.to_string(),
                 row.metrics.hash_join_cache_hits.to_string(),

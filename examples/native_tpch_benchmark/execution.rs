@@ -359,6 +359,16 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.retry_resource_exhausted_count.saturating_add(current.retry_resource_exhausted_count);
         aggregate.retry_reservation_failure_count =
             aggregate.retry_reservation_failure_count.saturating_add(current.retry_reservation_failure_count);
+        aggregate.adaptive_retry_count = aggregate.adaptive_retry_count.saturating_add(current.adaptive_retry_count);
+        aggregate.adaptive_spill_count = aggregate.adaptive_spill_count.saturating_add(current.adaptive_spill_count);
+        aggregate.adaptive_downgrade_count =
+            aggregate.adaptive_downgrade_count.saturating_add(current.adaptive_downgrade_count);
+        aggregate.adaptive_memory_history_lookup_count =
+            aggregate.adaptive_memory_history_lookup_count.saturating_add(current.adaptive_memory_history_lookup_count);
+        aggregate.adaptive_memory_history_hit_count =
+            aggregate.adaptive_memory_history_hit_count.saturating_add(current.adaptive_memory_history_hit_count);
+        aggregate.adaptive_memory_history_miss_count =
+            aggregate.adaptive_memory_history_miss_count.saturating_add(current.adaptive_memory_history_miss_count);
         aggregate.hash_join_build_count = aggregate.hash_join_build_count.saturating_add(current.hash_join_build_count);
         aggregate.filtered_join_build_count =
             aggregate.filtered_join_build_count.saturating_add(current.filtered_join_build_count);

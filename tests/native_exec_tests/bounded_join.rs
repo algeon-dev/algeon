@@ -108,6 +108,39 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
 }
 
 #[test]
+fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-adaptive-join-planning");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    let config = NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1)
+        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::Adaptive);
+    let rule = CudfNativePhysicalOptimizerRule::new(
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(config),
+    );
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    let native = optimized
+        .as_any()
+        .downcast_ref::<NativeCudfExec>()
+        .expect("adaptive mode should still present a NativeCudfExec DataFusion boundary");
+    assert_eq!(displayable(native).one_line().to_string().contains("native_pipeline_execution_mode=adaptive"), true);
+    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain diagnostics");
+    assert!(diagnostics.strict_bounded_contract.is_empty());
+    assert_eq!(diagnostics.adaptive_pipeline.candidates.len(), 1);
+    let row = diagnostics.adaptive_pipeline.candidates[0].report.row();
+    assert_eq!(row.execution_mode.as_str(), "adaptive");
+    assert_eq!(row.candidate_status.as_str(), "admitted");
+    assert_eq!(diagnostics.report.rewritten_count(), 1);
+    assert_eq!(diagnostics.report.rejected_count(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-q11-admission");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();

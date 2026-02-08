@@ -67,14 +67,20 @@ impl DisplayAs for NativeCudfExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfExec: native_nodes={}, sink=host_arrow, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host",
+                "NativeCudfExec: native_nodes={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, output_boundary=device_to_host",
                 self.plan.node_count(),
+                self.execution_config.native_pipeline_execution_mode(),
                 self.execution_config.memory_control_policy(),
                 self.execution_config.boundary_policy(),
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
                 writeln!(f, "sink=host_arrow")?;
+                writeln!(
+                    f,
+                    "native_pipeline_execution_mode={}",
+                    self.execution_config.native_pipeline_execution_mode()
+                )?;
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
                 writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "output_boundary=device_to_host")

@@ -121,9 +121,10 @@ impl DisplayAs for NativeCudfComposedExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host",
+                "NativeCudfComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host",
                 self.plan.node_count(),
                 self.gpu_inputs.len(),
+                self.execution_config.native_pipeline_execution_mode(),
                 self.execution_config.memory_control_policy(),
                 self.execution_config.boundary_policy(),
             ),
@@ -131,6 +132,11 @@ impl DisplayAs for NativeCudfComposedExec {
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
                 writeln!(f, "gpu_input_count={}", self.gpu_inputs.len())?;
                 writeln!(f, "sink=host_arrow")?;
+                writeln!(
+                    f,
+                    "native_pipeline_execution_mode={}",
+                    self.execution_config.native_pipeline_execution_mode()
+                )?;
                 writeln!(f, "memory_control_policy={}", self.execution_config.memory_control_policy())?;
                 writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "input_boundary=gpu_resident")?;

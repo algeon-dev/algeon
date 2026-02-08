@@ -57,8 +57,17 @@ impl CudfOptimizerConfig {
         &self.native_execution_config
     }
 
+    pub fn native_pipeline_execution_mode(&self) -> cudf_query_engine::NativePipelineExecutionMode {
+        self.native_execution_config.native_pipeline_execution_mode()
+    }
+
     pub fn with_native_execution_config(mut self, execution_config: NativeCudfExecutionConfig) -> Self {
         self.native_execution_config = execution_config;
+        self
+    }
+
+    pub fn with_native_pipeline_execution_mode(mut self, mode: cudf_query_engine::NativePipelineExecutionMode) -> Self {
+        self.native_execution_config = self.native_execution_config.clone().with_native_pipeline_execution_mode(mode);
         self
     }
 

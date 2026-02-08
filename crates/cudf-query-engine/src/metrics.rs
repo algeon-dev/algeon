@@ -160,6 +160,12 @@ pub struct QueryMetrics {
     pub adaptive_spill_count: u64,
     /// Adaptive executor downgrade actions taken by this query.
     pub adaptive_downgrade_count: u64,
+    /// Adaptive memory-history lookups performed during admission/execution.
+    pub adaptive_memory_history_lookup_count: u64,
+    /// Adaptive memory-history lookups with a prior observation.
+    pub adaptive_memory_history_hit_count: u64,
+    /// Adaptive memory-history lookups without a prior observation.
+    pub adaptive_memory_history_miss_count: u64,
 }
 
 impl QueryMetrics {
@@ -347,6 +353,15 @@ impl QueryMetrics {
         self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(downgrade_count);
     }
 
+    pub fn record_adaptive_memory_history_lookup(&mut self, hit: bool) {
+        self.adaptive_memory_history_lookup_count = self.adaptive_memory_history_lookup_count.saturating_add(1);
+        if hit {
+            self.adaptive_memory_history_hit_count = self.adaptive_memory_history_hit_count.saturating_add(1);
+        } else {
+            self.adaptive_memory_history_miss_count = self.adaptive_memory_history_miss_count.saturating_add(1);
+        }
+    }
+
     pub fn record_partial_aggregate(&mut self, rows: u64) {
         self.partial_aggregate_count = self.partial_aggregate_count.saturating_add(1);
         self.partial_aggregate_rows = self.partial_aggregate_rows.saturating_add(rows);
@@ -446,6 +461,12 @@ impl QueryMetrics {
         self.adaptive_retry_count = self.adaptive_retry_count.saturating_add(other.adaptive_retry_count);
         self.adaptive_spill_count = self.adaptive_spill_count.saturating_add(other.adaptive_spill_count);
         self.adaptive_downgrade_count = self.adaptive_downgrade_count.saturating_add(other.adaptive_downgrade_count);
+        self.adaptive_memory_history_lookup_count =
+            self.adaptive_memory_history_lookup_count.saturating_add(other.adaptive_memory_history_lookup_count);
+        self.adaptive_memory_history_hit_count =
+            self.adaptive_memory_history_hit_count.saturating_add(other.adaptive_memory_history_hit_count);
+        self.adaptive_memory_history_miss_count =
+            self.adaptive_memory_history_miss_count.saturating_add(other.adaptive_memory_history_miss_count);
     }
 }
 

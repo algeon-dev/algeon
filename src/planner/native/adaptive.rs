@@ -1,6 +1,7 @@
-use cudf_query_engine::{AdaptivePipelineReport, AdaptivePipelineReportRow};
+use cudf_query_engine::{AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptivePipelineReportRow, QueryPlan};
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
 
-use crate::report::GpuCandidate;
+use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
 
 /// Adapter-side adaptive bounded diagnostics collected during planning.
 ///
@@ -28,10 +29,42 @@ impl NativeAdaptivePipelineDiagnostics {
             .map(|entry| entry.report.row().clone())
             .collect()
     }
+
+    pub fn single(candidate: GpuCandidate, report: AdaptivePipelineReport) -> Self {
+        Self { candidates: vec![NativeAdaptivePipelineCandidateDiagnostics { candidate, report }] }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeAdaptivePipelineCandidateDiagnostics {
     pub candidate: GpuCandidate,
     pub report: AdaptivePipelineReport,
+}
+
+pub(super) fn plan_adaptive_pipeline_diagnostics(
+    plan: &QueryPlan,
+    candidate: GpuCandidate,
+    execution_config: &NativeCudfExecutionConfig,
+) -> DataFusionResult<Option<NativeAdaptivePipelineDiagnostics>> {
+    let memory_history = execution_config.adaptive_memory_history();
+    let admission =
+        cudf_query_engine::adaptive_bounded_pipeline_admission_with_memory_history(plan, memory_history.as_deref())
+            .map_err(adaptive_pipeline_report_error)?;
+    Ok(admission.map(|admission| NativeAdaptivePipelineDiagnostics::single(candidate, admission.report().clone())))
+}
+
+pub(super) fn adaptive_pipeline_was_rejected(diagnostics: &NativeAdaptivePipelineDiagnostics) -> bool {
+    diagnostics
+        .candidates
+        .iter()
+        .any(|candidate| candidate.report.row().candidate_status == AdaptiveCandidateStatus::Rejected)
+}
+
+fn adaptive_pipeline_report_error(error: cudf_query_engine::QueryError) -> DataFusionError {
+    Error::from_native(
+        "datafusion_cudf.native.adaptive_pipeline_diagnostics",
+        "adaptive pipeline diagnostics could not be built",
+        error,
+    )
+    .into()
 }
