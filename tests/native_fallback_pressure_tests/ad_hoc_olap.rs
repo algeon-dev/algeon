@@ -22,6 +22,8 @@ async fn native_pipeline_ad_hoc_olap_fallback_report_pins_lowering_diagnostics()
         assert!(!row.join_diagnostics.is_empty(), "{} should emit join diagnostics", query.id);
         assert!(!row.source_diagnostics.is_empty(), "{} should emit source diagnostics", query.id);
         assert!(!row.rejected_before_execution, "{} should lower before bounded admission checks", query.id);
+        assert_no_legacy_rejection_terms(query.id, &format!("{:?}", row.join_diagnostics));
+        assert_no_legacy_rejection_terms(query.id, &format!("{:?}", row.source_diagnostics));
     }
 
     fs::remove_dir_all(dir).unwrap();
@@ -51,6 +53,7 @@ async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_firs
             query.id
         );
         assert!(row.native_candidate_shape.as_deref().is_some_and(|shape| shape.contains("JoinExec")));
+        assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
 
         match query.current_strict_admission {
             AdHocOlapCurrentStrictAdmission::Accepted => {
@@ -92,6 +95,7 @@ async fn native_pipeline_ad_hoc_olap_strict_planning_report_pins_capability_firs
             );
         }
     }
+    assert_no_legacy_rejection_terms("ad_hoc_olap_strict_planning_tsv", &report.to_tsv());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -115,6 +119,7 @@ async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows
     assert_eq!(report.rows.len(), AD_HOC_OLAP_QUERY_COUNT);
     for query in AD_HOC_OLAP_QUERIES {
         let row = planning_row(&report, query.id);
+        assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
         assert!(
             row.strict_bounded_contract_rows.is_empty(),
             "{} adaptive row must not carry strict gate rows",
@@ -134,6 +139,38 @@ async fn native_pipeline_ad_hoc_olap_adaptive_planning_report_uses_adaptive_rows
             query.id
         );
     }
+    assert_no_legacy_rejection_terms("ad_hoc_olap_adaptive_planning_tsv", &report.to_tsv());
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn assert_planning_row_has_family_free_rejection_diagnostics(
+    query_id: &str,
+    row: &datafusion_cudf::NativeDataFusionPlanningRow,
+) {
+    for gate in &row.strict_bounded_contract_rows {
+        assert_no_legacy_rejection_terms(query_id, &gate.to_stable_kv_row());
+    }
+    for graph in &row.strict_bounded_compiled_graphs {
+        assert_no_legacy_rejection_terms(query_id, &format!("{graph:?}"));
+    }
+    for adaptive in &row.adaptive_pipeline_rows {
+        assert_no_legacy_rejection_terms(query_id, &adaptive.to_stable_kv_row());
+    }
+    assert_no_legacy_rejection_terms(query_id, &format!("{:?}", row.join_diagnostics));
+    assert_no_legacy_rejection_terms(query_id, &format!("{:?}", row.source_diagnostics));
+}
+
+fn assert_no_legacy_rejection_terms(label: &str, rendered: &str) {
+    for retired in [
+        "bounded_join_capability_rejection_",
+        "bounded_join_blocked_join_family",
+        "bounded_join_specific_blocker",
+        "bounded_join_shape_blocker",
+        "topology_unsupported",
+        "BoundedJoinExecutionFamily",
+        "BoundedJoinExecutionPath",
+    ] {
+        assert!(!rendered.contains(retired), "{label} must not expose retired rejection term {retired}");
+    }
 }

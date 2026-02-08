@@ -19,7 +19,7 @@ pub(crate) use residual_resident_grouped_aggregate::{
     ResidualResidentGroupedAggregateInputVariant, residual_resident_grouped_aggregate_input_plan,
 };
 
-fn assert_modeled_family_reservation_facts_are_consistent(
+fn assert_modeled_reservation_facts_are_consistent(
     facts: &std::collections::BTreeMap<&'static str, String>,
     label: &str,
 ) {
@@ -50,6 +50,25 @@ fn assert_modeled_family_reservation_facts_are_consistent(
                 "{label}: {kind} hard-budgeted requirement must name a lower-level preflight contract"
             );
         }
+    }
+}
+
+fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'static str, String>, label: &str) {
+    for retired_key in [
+        "bounded_join_execution_family",
+        "bounded_join_blocked_join_family",
+        "bounded_join_specific_blocker",
+        "bounded_join_shape_blocker",
+    ] {
+        assert_eq!(facts.get(retired_key), None, "{label}: retired rejection fact {retired_key} must not be emitted");
+    }
+    for (key, value) in facts {
+        assert!(
+            !value.contains("topology_unsupported")
+                && !value.contains("BoundedJoinExecutionFamily")
+                && !value.contains("BoundedJoinExecutionPath"),
+            "{label}: {key}={value:?} must not carry retired family/path vocabulary"
+        );
     }
 }
 
@@ -407,7 +426,7 @@ fn bounded_capability_analysis_projects_modeled_report_facts_for_simple_root_joi
 
     assert_eq!(facts.get("bounded_join_execution_family"), None);
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
-    assert_modeled_family_reservation_facts_are_consistent(&facts, "root_join");
+    assert_modeled_reservation_facts_are_consistent(&facts, "root_join");
 }
 
 #[test]
@@ -420,14 +439,16 @@ fn bounded_capability_analysis_prevents_modeled_facts_for_capability_rejections(
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("capability-rejected single-join pipeline should produce rejection facts");
 
-    assert_eq!(facts.get("bounded_join_capability_rejection_scope").map(String::as_str), Some("node"));
+    assert_rejection_facts_are_family_free(&facts, "empty_in_list_filter");
+    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
+    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_expression_family"));
     assert_eq!(
-        facts.get("bounded_join_capability_rejection_reason").map(String::as_str),
+        facts.get("bounded_join_rejection_reason").map(String::as_str),
         Some("unsupported_filter_expression_capability")
     );
     assert!(
         facts
-            .get("bounded_join_capability_rejection_facts")
+            .get("bounded_join_rejection_facts")
             .is_some_and(|value| value.contains("reason=in_list_must_not_be_empty"))
     );
 }
@@ -838,7 +859,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
     }));
     let reservation_requirements = facts
         .get("bounded_join_reservation_requirements")
-        .expect("resident-revenue blocked family should report shape-local reservation requirements");
+        .expect("resident subplan pipeline should report shape-local reservation requirements");
     assert!(
         reservation_requirements.contains("source_read:source_contract:hard_budgeted_report_with_unresolved_preflight")
     );
@@ -854,7 +875,7 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
     assert_eq!(facts.get("bounded_join_unresolved_preflight_contracts"), None);
     assert_eq!(facts.get("bounded_join_contract_report_fields"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
-    assert_modeled_family_reservation_facts_are_consistent(&facts, "keyed_hash_join_resident_subplan_pipeline");
+    assert_modeled_reservation_facts_are_consistent(&facts, "keyed_hash_join_resident_subplan_pipeline");
 }
 
 #[test]
@@ -935,11 +956,8 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
-        assert_ne!(
-            facts.get("bounded_join_blocked_join_family").map(String::as_str),
-            Some("keyed_hash_join_resident_subplan_pipeline"),
-            "{variant:?} must not be classified as the blocked resident-revenue family"
-        );
+        assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
+        assert!(facts.get("bounded_join_rejection_reason").is_some(), "{variant:?}");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
 }
@@ -994,7 +1012,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
     assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
         value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
     }));
-    assert_modeled_family_reservation_facts_are_consistent(&facts, "multi_join_with_aggregate_over_join_subplan_topk");
+    assert_modeled_reservation_facts_are_consistent(&facts, "multi_join_with_aggregate_over_join_subplan_topk");
 }
 
 #[test]
@@ -1026,7 +1044,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_na
 
         assert!(
             !plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-            "{variant:?} must not be admitted by the aggregate-over-join TopK family"
+            "{variant:?} must not satisfy the aggregate-over-join TopK capability proof"
         );
         assert!(
             plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
@@ -1035,11 +1053,8 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_na
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("rejected aggregate-over-join TopK variant should produce facts");
-        assert_ne!(
-            facts.get("bounded_join_blocked_join_family").map(String::as_str),
-            Some("multi_join_with_aggregate_over_join_subplan_topk"),
-            "{variant:?} must not be classified as the blocked aggregate-over-join TopK family"
-        );
+        assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
+        assert!(facts.get("bounded_join_rejection_reason").is_some(), "{variant:?}");
     }
 }
 
@@ -1072,7 +1087,7 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_exe
     assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
         value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
     }));
-    assert_modeled_family_reservation_facts_are_consistent(
+    assert_modeled_reservation_facts_are_consistent(
         &facts,
         "multi_join_with_resident_grouped_aggregate_subquery_filter",
     );
@@ -1130,7 +1145,7 @@ fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_p
     assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
         value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
     }));
-    assert_modeled_family_reservation_facts_are_consistent(
+    assert_modeled_reservation_facts_are_consistent(
         &facts,
         "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
     );

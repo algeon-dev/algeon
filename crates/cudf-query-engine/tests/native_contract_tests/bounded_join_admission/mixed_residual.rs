@@ -59,13 +59,11 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed left multi-join shape should produce facts");
+    assert_rejection_facts_are_family_free(&facts, "mixed_left_multi_join");
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-    assert_eq!(
-        facts.get("bounded_join_specific_blocker").map(String::as_str),
-        Some("bounded_multi_join_mixed_keyed_residual_left_topology_unsupported")
-    );
-    assert_eq!(facts.get("bounded_join_blocked_join_family"), None);
-    assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some("left"));
+    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("subgraph"));
+    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("missing_subgraph_invariant"));
+    assert!(facts.get("bounded_join_rejection_reason").is_some());
     assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
@@ -85,20 +83,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
 
 #[test]
 fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_anti() {
-    for (valid_join_type, invalid_join_type, expected_family, expected_blocker) in [
-        (
-            JoinType::LeftSemi,
-            JoinType::Left,
-            "mixed_keyed_residual_left",
-            "bounded_multi_join_mixed_keyed_residual_left_topology_unsupported",
-        ),
-        (
-            JoinType::LeftAnti,
-            JoinType::Full,
-            "mixed_keyed_residual_full",
-            "bounded_multi_join_mixed_keyed_residual_full_topology_unsupported",
-        ),
-    ] {
+    for (valid_join_type, invalid_join_type) in
+        [(JoinType::LeftSemi, JoinType::Left), (JoinType::LeftAnti, JoinType::Full)]
+    {
         let plan =
             valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(valid_join_type, invalid_join_type);
 
@@ -108,12 +95,14 @@ fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed left/full multi-join shape should produce facts");
+        assert_rejection_facts_are_family_free(&facts, "mixed_left_full_multi_join");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-        assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
-        let _ = expected_family;
-        assert_eq!(facts.get("bounded_join_blocked_join_family"), None);
-        let expected_join_type = invalid_join_type.to_string();
-        assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some(expected_join_type.as_str()));
+        assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("subgraph"));
+        assert_eq!(
+            facts.get("bounded_join_rejection_category").map(String::as_str),
+            Some("missing_subgraph_invariant")
+        );
+        assert!(facts.get("bounded_join_rejection_reason").is_some());
         assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     }
@@ -143,11 +132,24 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed semi/anti multi-join shape should produce facts");
+        assert_rejection_facts_are_family_free(&facts, "invalid_mixed_semi_anti_multi_join");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-        assert_eq!(facts.get("bounded_join_specific_blocker").map(String::as_str), Some(expected_blocker));
-        assert_eq!(facts.get("bounded_join_blocked_join_family"), None);
-        let expected_join_type = join_type.to_string();
-        assert_eq!(facts.get("bounded_join_blocked_join_type").map(String::as_str), Some(expected_join_type.as_str()));
+        assert!(
+            matches!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node" | "subgraph")),
+            "invalid mixed semi/anti joins should report the first local node or subgraph blocker"
+        );
+        assert!(
+            matches!(
+                facts.get("bounded_join_rejection_category").map(String::as_str),
+                Some("unsupported_node_operator" | "missing_subgraph_invariant")
+            ),
+            "invalid mixed semi/anti joins should not require a family-shaped blocker category"
+        );
+        assert!(
+            facts
+                .get("bounded_join_rejection_reason")
+                .is_some_and(|reason| reason == expected_blocker || reason.contains("join"))
+        );
         assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
         assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));

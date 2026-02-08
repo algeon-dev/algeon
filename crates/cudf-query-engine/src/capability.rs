@@ -22,16 +22,9 @@ mod requirements;
 mod shape;
 
 pub use entry::analyze_query_capabilities;
-pub(crate) use entry::{
-    admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
-    admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
-    admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
-    admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
-};
 pub(crate) use join::{
     JoinExecutionCapability, KeylessConditionalJoinKind, join_node_execution_capability,
-    keyed_filtered_semi_anti_join_capable, keyed_hash_join_capable, keyed_residual_mixed_join_capable,
-    multi_join_keyed_residual_mixed_join_capable, multi_join_subtree_join_execution_capability,
+    keyed_filtered_semi_anti_join_capable, keyed_hash_join_capable, multi_join_subtree_join_execution_capability,
 };
 pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionOwner, CapabilityRejectionProjection,

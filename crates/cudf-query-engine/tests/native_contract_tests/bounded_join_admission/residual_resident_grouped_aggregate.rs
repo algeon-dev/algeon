@@ -51,7 +51,7 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
                 .is_some_and(|value| value.contains("final_sort_contract")),
             "{variant:?}"
         );
-        assert_modeled_family_reservation_facts_are_consistent(
+        assert_modeled_reservation_facts_are_consistent(
             &facts,
             "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline",
         );
@@ -86,11 +86,8 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported resident grouped aggregate input variant should produce facts");
-        assert_ne!(
-            facts.get("bounded_join_blocked_join_family").map(String::as_str),
-            Some("mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline"),
-            "{variant:?} must not be classified as the blocked residual-resident grouped aggregate family"
-        );
+        assert_rejection_facts_are_family_free(&facts, "unsupported_residual_resident_grouped_aggregate_input");
+        assert!(facts.get("bounded_join_rejection_reason").is_some(), "{variant:?}");
         assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
 }

@@ -36,11 +36,14 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed semi root shape should produce facts");
+    assert_rejection_facts_are_family_free(&facts, "mixed_semi_root_right_projection");
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(
-        facts.get("bounded_join_specific_blocker").map(String::as_str),
-        Some("root_mixed_keyed_residual_semi_anti_requires_left_only_projection")
+        facts.get("bounded_join_rejection_reason").map(String::as_str),
+        Some("unsupported_join_node_capability")
     );
+    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
+    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_node_operator"));
     assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
 
@@ -56,11 +59,14 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed anti root shape should produce facts");
+    assert_rejection_facts_are_family_free(&facts, "mixed_anti_root_left_build");
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(
-        facts.get("bounded_join_specific_blocker").map(String::as_str),
-        Some("root_mixed_keyed_residual_semi_anti_requires_right_build_side")
+        facts.get("bounded_join_rejection_reason").map(String::as_str),
+        Some("unsupported_join_node_capability")
     );
+    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
+    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_node_operator"));
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
 }
 
