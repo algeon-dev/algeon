@@ -97,7 +97,7 @@ fn csv_triples<'a>(
 fn bounded_capability_analysis_runs_as_side_channel_for_multi_join_pipeline() {
     let plan = serial_aggregate_multi_join_spine_plan();
 
-    assert!(plan.has_bounded_executable_multi_join_pipeline());
+    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
     let analysis = plan.capability_analysis();
 
     assert_eq!(analysis.nodes.len(), plan.node_count());
@@ -135,7 +135,7 @@ fn bounded_capability_analysis_runs_as_side_channel_for_multi_join_pipeline() {
 fn bounded_capability_analysis_extracts_node_capabilities_for_root_join() {
     let plan = simple_root_join_plan();
 
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
     let analysis = plan.capability_analysis();
     assert!(!analysis.has_rejections());
     assert_eq!(analysis.nodes.len(), 3);
@@ -167,7 +167,7 @@ fn bounded_capability_analysis_extracts_node_capabilities_for_root_join() {
 fn bounded_capability_analysis_extracts_node_capabilities_for_single_join_post_root_pipeline() {
     let plan = serial_aggregate_single_join_spine_plan();
 
-    assert!(plan.has_bounded_executable_join_pipeline());
+    assert!(plan.capability_analysis().admits_single_join_post_root_pipeline());
     let analysis = plan.capability_analysis();
     assert!(!analysis.has_rejections());
     assert!(analysis.nodes.iter().any(|node| {
@@ -193,7 +193,7 @@ fn bounded_capability_analysis_extracts_node_capabilities_for_single_join_post_r
 fn bounded_root_and_single_join_admission_uses_capability_proofs_without_path_projection() {
     let root = simple_root_join_plan();
     let root_analysis = root.capability_analysis();
-    assert!(root.has_bounded_executable_root_join());
+    assert!(root.capability_analysis().admits_root_join());
     assert!(root_analysis.admits_root_join());
     assert!(root_analysis.admits_strict_bounded_join());
     assert!(!root_analysis.admits_closed_multi_join_subgraph());
@@ -201,7 +201,7 @@ fn bounded_root_and_single_join_admission_uses_capability_proofs_without_path_pr
 
     let single = serial_aggregate_single_join_spine_plan();
     let single_analysis = single.capability_analysis();
-    assert!(single.has_bounded_executable_join_pipeline());
+    assert!(single.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(single_analysis.admits_single_join_post_root_pipeline());
     assert!(single_analysis.admits_strict_bounded_join());
     assert!(!single_analysis.admits_closed_multi_join_subgraph());
@@ -213,7 +213,7 @@ fn bounded_capability_analysis_preserves_status_quality_separation() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
 
-    assert!(plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
+    assert!(plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
     let analysis = plan.capability_analysis();
     assert!(analysis.requirements.iter().any(|requirement| {
         requirement.kind == ReservationKind::FinalSort
@@ -353,18 +353,24 @@ fn bounded_multi_join_phase6_admission_uses_closed_subgraph_capability_proof() {
     let plan = serial_aggregate_multi_join_spine_plan();
     let analysis = plan.capability_analysis();
 
-    assert_eq!(plan.has_bounded_executable_multi_join_pipeline(), analysis.admits_closed_multi_join_subgraph());
+    assert_eq!(
+        plan.capability_analysis().admits_closed_multi_join_subgraph(),
+        analysis.admits_closed_multi_join_subgraph()
+    );
 }
 
 #[test]
 fn bounded_capability_analysis_rejects_phase5_multi_join_admission_without_family_recognizer() {
     let plan = multi_join_candidate_with_aggregate_inside_join_subtree_plan();
 
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.admits_closed_multi_join_subgraph());
-    assert_eq!(plan.has_bounded_executable_multi_join_pipeline(), analysis.admits_closed_multi_join_subgraph());
+    assert_eq!(
+        plan.capability_analysis().admits_closed_multi_join_subgraph(),
+        analysis.admits_closed_multi_join_subgraph()
+    );
     assert!(!analysis.has_rejections(), "the local node and edge capability layers still accept this plan");
     let CapabilityDecision::Rejected { reason, facts } = &analysis.closed_multi_join_subgraph_admission else {
         panic!("aggregate inside the join subtree should reject the closed multi-join subgraph proof");
@@ -408,7 +414,7 @@ fn bounded_capability_analysis_projects_modeled_report_facts_for_simple_root_joi
 fn bounded_capability_analysis_prevents_modeled_facts_for_capability_rejections() {
     let plan = single_join_pipeline_with_empty_in_list_filter_plan();
 
-    assert!(!plan.has_bounded_executable_join_pipeline());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
@@ -773,9 +779,9 @@ fn multi_join_candidate_with_aggregate_inside_join_subtree_plan() -> cudf_query_
 fn bounded_single_join_pipeline_admits_serial_aggregate_spine() {
     let plan = serial_aggregate_single_join_spine_plan();
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 }
 
@@ -783,9 +789,9 @@ fn bounded_single_join_pipeline_admits_serial_aggregate_spine() {
 fn bounded_multi_join_pipeline_admits_serial_aggregate_spine_with_projection_and_sort() {
     let plan = serial_aggregate_multi_join_spine_plan();
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 }
 
@@ -794,9 +800,9 @@ fn bounded_single_join_pipeline_rejects_aggregate_join_input_leaves() {
     for aggregate_side in [JoinSide::Left, JoinSide::Right] {
         let plan = single_join_with_aggregate_input_plan(aggregate_side);
 
-        assert!(!plan.has_bounded_executable_root_join());
-        assert!(!plan.has_bounded_executable_join_pipeline());
-        assert!(!plan.has_bounded_executable_multi_join_pipeline());
+        assert!(!plan.capability_analysis().admits_root_join());
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
         assert!(
             plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some(),
             "aggregate {aggregate_side} join input must not be accepted as a bounded root join leaf"
@@ -809,13 +815,13 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
-    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
@@ -858,7 +864,7 @@ fn bounded_keyed_hash_join_resident_subplan_phase6_admission_uses_capability_pro
     let analysis = plan.capability_analysis();
 
     assert_eq!(
-        plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(),
+        plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(),
         analysis.admits_keyed_hash_join_resident_subplan_pipeline()
     );
     assert_eq!(analysis.keyed_hash_join_resident_subplan_admission, CapabilityDecision::Satisfied);
@@ -887,7 +893,7 @@ fn bounded_keyed_hash_join_resident_subplan_rejects_structural_equivalence_witho
     );
     let analysis = plan.capability_analysis();
 
-    assert!(!plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
     let CapabilityDecision::Rejected { reason, facts } = &analysis.keyed_hash_join_resident_subplan_admission else {
         panic!("structurally equivalent grouped aggregates must not satisfy resident-subplan admission");
     };
@@ -902,7 +908,7 @@ fn bounded_keyed_hash_join_resident_subplan_preserves_node_failure_locality() {
     );
     let analysis = plan.capability_analysis();
 
-    assert!(!plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
     let CapabilityDecision::Rejected { reason, facts } = &analysis.keyed_hash_join_resident_subplan_admission else {
         panic!("unsupported residual expression should reject keyed hash resident-subplan admission");
     };
@@ -922,10 +928,10 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
     ] {
         let plan = keyed_hash_join_resident_subplan_pipeline_plan(variant);
 
-        assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
@@ -943,14 +949,14 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() 
     let plan = aggregate_over_join_subplan_topk_plan();
     let analysis = plan.capability_analysis();
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
-    assert!(plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
     assert!(analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
-    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
     assert!(analysis.edges.iter().any(|edge| {
         matches!(edge.input_role, InputRole::JoinBuildInput { .. })
@@ -998,7 +1004,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_preserves_node_failure_lo
     );
     let analysis = plan.capability_analysis();
 
-    assert!(!plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline());
+    assert!(!plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
     let CapabilityDecision::Rejected { reason, facts } =
         &analysis.multi_join_aggregate_over_join_subplan_topk_admission
     else {
@@ -1019,7 +1025,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_recognizer_stays
         let plan = aggregate_over_join_subplan_topk_variant_plan(variant);
 
         assert!(
-            !plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+            !plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
             "{variant:?} must not be admitted by the aggregate-over-join TopK family"
         );
         assert!(
@@ -1041,16 +1047,18 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_recognizer_stays
 fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_executable() {
     let plan = resident_grouped_aggregate_subquery_filter_plan();
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
-    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     assert!(
-        !plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+        !plan
+            .capability_analysis()
+            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
     );
-    assert!(plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline());
+    assert!(plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     let facts = plan
@@ -1076,7 +1084,7 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_phase8_admissio
     let analysis = plan.capability_analysis();
 
     assert_eq!(
-        plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
+        plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         analysis.admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline()
     );
     assert_eq!(analysis.multi_join_resident_grouped_aggregate_subquery_filter_admission, CapabilityDecision::Satisfied);
@@ -1094,13 +1102,16 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_phase8_admissio
 fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_is_executable() {
     let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_plan();
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
-    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(
+        plan.capability_analysis()
+            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+    );
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     let facts = plan
@@ -1131,7 +1142,8 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_phase6_admission_uses_capab
     let analysis = plan.capability_analysis();
 
     assert_eq!(
-        plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+        plan.capability_analysis()
+            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         analysis.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
     );
     assert_eq!(
@@ -1163,7 +1175,9 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_preserves_node_failure_loca
     let analysis = plan.capability_analysis();
 
     assert!(
-        !plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
+        !plan
+            .capability_analysis()
+            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
     );
     let CapabilityDecision::Rejected { reason, facts } =
         &analysis.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission
@@ -1185,7 +1199,9 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_admission_stays_narrow() {
         let plan = resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(variant);
 
         assert!(
-            !plan.has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+            !plan
+                .capability_analysis()
+                .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
             "{variant:?} must not be admitted by the resident grouped-aggregate TopK family"
         );
     }
@@ -1195,11 +1211,11 @@ fn bounded_hash_join_resident_grouped_aggregate_topk_admission_stays_narrow() {
 fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_input_subplan_bounded_shapes() {
     let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted);
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     for variant in [
@@ -1212,14 +1228,14 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
     ] {
         let plan = keyless_conditional_join_input_subplan_plan(variant);
 
-        assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
-            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported keyless input-subplan subplan shape should produce facts");
@@ -1237,7 +1253,7 @@ fn bounded_keyless_conditional_join_input_subplan_phase8_admission_uses_capabili
     let analysis = plan.capability_analysis();
 
     assert_eq!(
-        plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(),
+        plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(),
         analysis.admits_keyless_conditional_join_input_subplan_pipeline()
     );
     assert_eq!(analysis.keyless_conditional_join_input_subplan_admission, CapabilityDecision::Satisfied);
@@ -1252,7 +1268,7 @@ fn bounded_keyless_conditional_join_input_subplan_phase8_rejects_non_input_subpl
     let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::InnerJoinInput);
     let analysis = plan.capability_analysis();
 
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     let CapabilityDecision::Rejected { reason, facts } = &analysis.keyless_conditional_join_input_subplan_admission
     else {
         panic!("inner join input should reject keyless input-subplan admission");

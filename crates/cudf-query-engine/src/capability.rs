@@ -27,15 +27,10 @@ mod shape;
 
 pub use entry::analyze_query_capabilities;
 pub(crate) use entry::{
-    admits_closed_multi_join_subgraph,
     admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline,
-    admits_keyed_hash_join_resident_subplan_pipeline,
-    admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline,
-    admits_keyless_conditional_join_input_subplan_pipeline,
     admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline,
     admits_multi_join_aggregate_over_join_subplan_topk_pipeline,
-    admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline, admits_root_join,
-    admits_single_join_post_root_pipeline,
+    admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,
 };
 pub use model::{
     AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionOwner, CapabilityRejectionProjection,

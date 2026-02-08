@@ -32,7 +32,7 @@ fn bounded_native_query_executes_root_keyless_conditional_join_with_ordered_rese
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
 
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
@@ -121,7 +121,7 @@ fn bounded_native_query_executes_root_keyless_conditional_left_join_with_unmatch
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -209,7 +209,7 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.has_bounded_executable_root_join());
+    assert!(plan.capability_analysis().admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

@@ -78,7 +78,7 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
-        lowering.plans[0].has_bounded_executable_multi_join_pipeline(),
+        lowering.plans[0].capability_analysis().admits_closed_multi_join_subgraph(),
         "Q7 should use the bounded multi-join native path:\n{}",
         lowering.plans[0]
     );
@@ -114,7 +114,7 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
-        lowering.plans[0].has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        lowering.plans[0].capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "Q2 should use the bounded aggregate-over-join subplan TopK path:\n{}",
         lowering.plans[0]
     );
@@ -191,7 +191,8 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
         lowering.plans[0]
-            .has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+            .capability_analysis()
+            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         "Q18 should use the resident grouped aggregate TopK bounded path:\n{}",
         lowering.plans[0]
     );
@@ -249,7 +250,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(
-        lowering.plans[0].has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
+        lowering.plans[0].capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         "Q20 should use the resident grouped aggregate subquery-filter bounded path:\n{}",
         lowering.plans[0]
     );

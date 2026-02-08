@@ -39,9 +39,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
     ] {
         let plan = mixed_residual_multi_join_plan(join_type, JoinSide::Right, projection);
 
-        assert!(!plan.has_bounded_executable_root_join());
-        assert!(!plan.has_bounded_executable_join_pipeline());
-        assert!(plan.has_bounded_executable_multi_join_pipeline());
+        assert!(!plan.capability_analysis().admits_root_join());
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+        assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
         assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
     }
 
@@ -53,9 +53,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
             JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
         ],
     );
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     let facts = plan
         .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
         .expect("unsupported mixed left multi-join shape should produce facts");
@@ -78,9 +78,9 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
             JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload"),
         ],
     );
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
 }
 
 #[test]
@@ -102,9 +102,9 @@ fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_
         let plan =
             valid_mixed_residual_semi_anti_then_invalid_mixed_residual_join_plan(valid_join_type, invalid_join_type);
 
-        assert!(!plan.has_bounded_executable_root_join());
-        assert!(!plan.has_bounded_executable_join_pipeline());
-        assert!(!plan.has_bounded_executable_multi_join_pipeline());
+        assert!(!plan.capability_analysis().admits_root_join());
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed left/full multi-join shape should produce facts");
@@ -137,9 +137,9 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
     ] {
         let plan = mixed_residual_multi_join_plan(join_type, build_side, projection);
 
-        assert!(!plan.has_bounded_executable_root_join());
-        assert!(!plan.has_bounded_executable_join_pipeline());
-        assert!(!plan.has_bounded_executable_multi_join_pipeline());
+        assert!(!plan.capability_analysis().admits_root_join());
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
         let facts = plan
             .bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default())
             .expect("unsupported mixed semi/anti multi-join shape should produce facts");
@@ -158,19 +158,19 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
 fn bounded_multi_join_keeps_aggregate_inputs_out_of_join_subtrees() {
     let plan = mixed_residual_multi_join_with_aggregate_leaf_plan();
 
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
 
     for aggregate_leaf in
         [MultiJoinAggregateLeaf::FirstLeft, MultiJoinAggregateLeaf::FirstRight, MultiJoinAggregateLeaf::SecondRight]
     {
         let plan = hash_multi_join_with_aggregate_leaf_plan(aggregate_leaf);
 
-        assert!(!plan.has_bounded_executable_root_join());
-        assert!(!plan.has_bounded_executable_join_pipeline());
+        assert!(!plan.capability_analysis().admits_root_join());
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
         assert!(
-            !plan.has_bounded_executable_multi_join_pipeline(),
+            !plan.capability_analysis().admits_closed_multi_join_subgraph(),
             "aggregate {aggregate_leaf:?} leaf must not be accepted below a bounded multi-join"
         );
         assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_some());

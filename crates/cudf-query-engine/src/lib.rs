@@ -22,9 +22,10 @@ pub mod runtime;
 pub mod source;
 
 pub use adaptive_report::{
-    AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus, AdaptiveFinalSinkBoundary,
-    AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract, AdaptivePipelineReport, AdaptivePipelineReportRow,
-    AdaptiveRuntimeActionCounts, AdaptiveRuntimeActionsAllowed, AdaptiveSinkKind, AdaptiveStrategy,
+    ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptiveAdmissionRuntimeEvidence, AdaptiveCandidateStatus,
+    AdaptiveFinalSinkBoundary, AdaptiveMemoryHistoryEvidence, AdaptiveMissingStrictContract, AdaptivePipelineReport,
+    AdaptivePipelineReportRow, AdaptiveRuntimeActionCounts, AdaptiveRuntimeActionsAllowed, AdaptiveSinkKind,
+    AdaptiveStrategy,
 };
 pub use adaptive_runtime::{
     AdaptiveMemoryHistory, AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary, AdaptiveMemoryObservation,

@@ -6,7 +6,10 @@
 
 use std::{collections::BTreeMap, sync::RwLock};
 
+use arrow::datatypes::DataType;
+
 use crate::{
+    expr::{AggregateFunction, BinaryOp, Expr, LiteralValue},
     metrics::QueryMetrics,
     plan::{PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
@@ -27,15 +30,15 @@ impl AdaptiveMemoryHistoryKey {
             format!("node_count={}", plan.node_count()),
             format!("root={}", plan.root_id().index()),
             format!("sink={}", sink_signature(plan.sink())),
-            format!("output_fields={}", plan.output_schema().fields().len()),
+            format!("output_schema={}", schema_signature(plan.output_schema().fields())),
         ];
         parts.extend(plan.nodes().iter().map(|node| {
             format!(
-                "node{}:{}:inputs={}:fields={}",
+                "node{}:{}:inputs={}:output_schema={}",
                 node.id.index(),
                 node_signature(&node.kind),
                 node.input_ids().len(),
-                node.output_schema().fields().len()
+                schema_signature(node.output_schema().fields())
             )
         }));
         Self(parts.join("|"))
@@ -134,21 +137,187 @@ fn node_signature(node: &PlanNode) -> String {
             ),
             SourceNode::GpuResident(_) => "source:gpu_resident".to_string(),
         },
-        PlanNode::Filter(_) => "filter".to_string(),
-        PlanNode::Projection(node) => format!("projection:outputs={}", node.outputs.len()),
-        PlanNode::Aggregate(node) => {
-            format!("aggregate:groups={}:aggregates={}", node.spec.group_exprs.len(), node.spec.aggr_exprs.len())
+        PlanNode::Filter(node) => format!("filter:predicate={}", expr_signature(&node.predicate)),
+        PlanNode::Projection(node) => {
+            let outputs = node.outputs.iter().map(|output| {
+                format!(
+                    "expr={}:type={}:nullable={}",
+                    expr_signature(&output.expr),
+                    data_type_signature(output.field.data_type()),
+                    output.field.is_nullable()
+                )
+            });
+            format!("projection:outputs={}", join_signatures(outputs))
         },
-        PlanNode::Sort(node) => format!("sort:exprs={}", node.spec.expressions.len()),
+        PlanNode::Aggregate(node) => {
+            let groups = node.spec.group_exprs.iter().map(expr_signature);
+            let aggregates = node.spec.aggr_exprs.iter().map(|aggregate| {
+                format!(
+                    "function={}:expr={}",
+                    aggregate_function_signature(aggregate.function),
+                    expr_signature(&aggregate.expr)
+                )
+            });
+            format!("aggregate:groups={}:aggregates={}", join_signatures(groups), join_signatures(aggregates))
+        },
+        PlanNode::Sort(node) => {
+            let expressions = node.spec.expressions.iter().map(|expr| {
+                format!(
+                    "expr={}:descending={}:nulls_first={}",
+                    expr_signature(&expr.expr),
+                    expr.descending,
+                    expr.nulls_first
+                )
+            });
+            format!("sort:exprs={}", join_signatures(expressions))
+        },
         PlanNode::Limit(node) => format!("limit:skip={}:fetch={}", node.spec.skip > 0, node.spec.fetch > 0),
         PlanNode::Join(node) => format!(
             "join:type={}:keys={}:residual={}:null_equality={}:build_side={}:outputs={}",
             node.spec.join_type,
             node.spec.keys.len(),
-            node.spec.residual_predicate.is_some(),
+            node.spec.residual_predicate.as_ref().map_or_else(|| "none".to_string(), expr_signature),
             node.spec.null_equality,
             node.spec.build_side,
             node.spec.output_projection.len()
         ),
     }
+}
+
+fn schema_signature<'a>(fields: impl IntoIterator<Item = &'a arrow::datatypes::FieldRef>) -> String {
+    let fields = fields.into_iter().map(field_signature);
+    join_signatures(fields)
+}
+
+fn field_signature(field: &arrow::datatypes::FieldRef) -> String {
+    format!("type={}:nullable={}", data_type_signature(field.data_type()), field.is_nullable())
+}
+
+fn data_type_signature(data_type: &DataType) -> String {
+    match data_type {
+        DataType::Null => "null".to_string(),
+        DataType::Boolean => "bool".to_string(),
+        DataType::Int8 => "i8".to_string(),
+        DataType::Int16 => "i16".to_string(),
+        DataType::Int32 => "i32".to_string(),
+        DataType::Int64 => "i64".to_string(),
+        DataType::UInt8 => "u8".to_string(),
+        DataType::UInt16 => "u16".to_string(),
+        DataType::UInt32 => "u32".to_string(),
+        DataType::UInt64 => "u64".to_string(),
+        DataType::Float16 => "f16".to_string(),
+        DataType::Float32 => "f32".to_string(),
+        DataType::Float64 => "f64".to_string(),
+        DataType::Binary => "binary".to_string(),
+        DataType::FixedSizeBinary(bytes) => format!("fixed_size_binary:bytes={bytes}"),
+        DataType::LargeBinary => "large_binary".to_string(),
+        DataType::BinaryView => "binary_view".to_string(),
+        DataType::Utf8 => "utf8".to_string(),
+        DataType::LargeUtf8 => "large_utf8".to_string(),
+        DataType::Utf8View => "utf8_view".to_string(),
+        DataType::Date32 => "date32".to_string(),
+        DataType::Date64 => "date64".to_string(),
+        DataType::Time32(unit) => format!("time32:{unit:?}"),
+        DataType::Time64(unit) => format!("time64:{unit:?}"),
+        DataType::Timestamp(unit, timezone) => format!("timestamp:{unit:?}:timezone={}", timezone.is_some()),
+        DataType::Duration(unit) => format!("duration:{unit:?}"),
+        DataType::Interval(unit) => format!("interval:{unit:?}"),
+        DataType::List(field) => format!("list:field={}", field_signature(field)),
+        DataType::ListView(field) => format!("list_view:field={}", field_signature(field)),
+        DataType::FixedSizeList(field, length) => {
+            format!("fixed_size_list:length={length}:field={}", field_signature(field))
+        },
+        DataType::LargeList(field) => format!("large_list:field={}", field_signature(field)),
+        DataType::LargeListView(field) => format!("large_list_view:field={}", field_signature(field)),
+        DataType::Struct(fields) => format!("struct:fields={}", schema_signature(fields)),
+        DataType::Union(fields, mode) => {
+            let fields = fields.iter().map(|(type_id, field)| format!("type_id={type_id}:{}", field_signature(field)));
+            format!("union:mode={mode:?}:fields={}", join_signatures(fields))
+        },
+        DataType::Dictionary(key_type, value_type) => {
+            format!("dictionary:key={}:value={}", data_type_signature(key_type), data_type_signature(value_type))
+        },
+        DataType::Decimal32(precision, scale) => format!("decimal32:precision={precision}:scale={scale}"),
+        DataType::Decimal64(precision, scale) => format!("decimal64:precision={precision}:scale={scale}"),
+        DataType::Decimal128(precision, scale) => format!("decimal128:precision={precision}:scale={scale}"),
+        DataType::Decimal256(precision, scale) => format!("decimal256:precision={precision}:scale={scale}"),
+        DataType::Map(field, sorted) => format!("map:sorted={sorted}:field={}", field_signature(field)),
+        DataType::RunEndEncoded(run_ends, values) => {
+            format!("run_end_encoded:run_ends={}:values={}", field_signature(run_ends), field_signature(values))
+        },
+    }
+}
+
+fn expr_signature(expr: &Expr) -> String {
+    match expr {
+        Expr::Column(column) => format!("column:qualified={}", column.is_qualified()),
+        Expr::Literal(value) => format!("literal:type={}", data_type_signature(&literal_data_type(value))),
+        Expr::Not(expr) => format!("not({})", expr_signature(expr)),
+        Expr::IsNull(expr) => format!("is_null({})", expr_signature(expr)),
+        Expr::IsNotNull(expr) => format!("is_not_null({})", expr_signature(expr)),
+        Expr::Cast { expr, target_type } => {
+            format!("cast({}:target={})", expr_signature(expr), data_type_signature(target_type))
+        },
+        Expr::Binary { left, op, right } => format!(
+            "binary:op={}:left={}:right={}",
+            binary_op_signature(*op),
+            expr_signature(left),
+            expr_signature(right)
+        ),
+        Expr::Like { expr, escape, negated, .. } => {
+            format!("like:expr={}:escape={}:negated={}", expr_signature(expr), escape.is_some(), negated)
+        },
+        Expr::Substring { expr, length, .. } => {
+            format!("substring:expr={}:length_present={}", expr_signature(expr), length.is_some())
+        },
+        Expr::InList { expr, list, negated } => {
+            let list = list.iter().map(expr_signature);
+            format!("in_list:expr={}:list={}:negated={}", expr_signature(expr), join_signatures(list), negated)
+        },
+        Expr::Case { branches, else_expr } => {
+            let branches = branches
+                .iter()
+                .map(|branch| format!("when={}:then={}", expr_signature(&branch.when), expr_signature(&branch.then)));
+            format!("case:branches={}:else={}", join_signatures(branches), expr_signature(else_expr))
+        },
+        Expr::Extract { field, expr } => format!("extract:field={field}:expr={}", expr_signature(expr)),
+        Expr::Alias { expr, .. } => format!("alias({})", expr_signature(expr)),
+    }
+}
+
+fn literal_data_type(value: &LiteralValue) -> DataType {
+    value.data_type()
+}
+
+fn binary_op_signature(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "add",
+        BinaryOp::Subtract => "subtract",
+        BinaryOp::Multiply => "multiply",
+        BinaryOp::Divide => "divide",
+        BinaryOp::Modulo => "modulo",
+        BinaryOp::Eq => "eq",
+        BinaryOp::NotEq => "not_eq",
+        BinaryOp::Lt => "lt",
+        BinaryOp::LtEq => "lt_eq",
+        BinaryOp::Gt => "gt",
+        BinaryOp::GtEq => "gt_eq",
+        BinaryOp::And => "and",
+        BinaryOp::Or => "or",
+    }
+}
+
+fn aggregate_function_signature(function: AggregateFunction) -> &'static str {
+    match function {
+        AggregateFunction::Sum => "sum",
+        AggregateFunction::Min => "min",
+        AggregateFunction::Max => "max",
+        AggregateFunction::Count => "count",
+        AggregateFunction::Avg => "avg",
+    }
+}
+
+fn join_signatures(signatures: impl IntoIterator<Item = String>) -> String {
+    let signatures = signatures.into_iter().collect::<Vec<_>>();
+    if signatures.is_empty() { "none".to_string() } else { signatures.join(",") }
 }

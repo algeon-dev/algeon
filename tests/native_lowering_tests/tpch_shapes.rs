@@ -18,7 +18,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let native_plan = &result.plans[0];
     let analysis = native_plan.capability_analysis();
     assert!(
-        native_plan.has_bounded_executable_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        native_plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should lower to the executable aggregate-over-join subplan TopK pipeline: {:?}\n{native_plan}",
         analysis.multi_join_aggregate_over_join_subplan_topk_admission,
     );
@@ -39,7 +39,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_eq!(result.rewritten_count(), 1, "q15 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        native_plan.has_bounded_executable_keyed_hash_join_resident_subplan_pipeline(),
+        native_plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(),
         "q15 should lower to the executable keyed hash join resident subplan pipeline:\n{native_plan}"
     );
     let facts = native_plan
@@ -56,7 +56,8 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     let native_plan = &result.plans[0];
     assert!(
         native_plan
-            .has_bounded_executable_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
+            .capability_analysis()
+            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
     let facts = native_plan
@@ -72,7 +73,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
     assert_eq!(result.rewritten_count(), 1, "q20 outcomes={:?}", result.report.outcomes());
     let native_plan = &result.plans[0];
     assert!(
-        native_plan.has_bounded_executable_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
+        native_plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
     let facts = native_plan
@@ -235,7 +236,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let plan = &result.plans[0];
-    assert!(plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(plan.bounded_join_unsupported_shape_facts(cudf_query_engine::ExecutionBoundaryPolicy::default()).is_none());
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);

@@ -25,11 +25,11 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
         &scalar_fact_schema,
         &supplier_schema,
     );
-    assert!(!plan.has_bounded_executable_root_join());
-    assert!(!plan.has_bounded_executable_join_pipeline());
-    assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline());
-    assert!(plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.has_bounded_executable_multi_join_pipeline());
+    assert!(!plan.capability_analysis().admits_root_join());
+    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
+    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none());
 
     let context = bounded_join_execution_context(&runtime);

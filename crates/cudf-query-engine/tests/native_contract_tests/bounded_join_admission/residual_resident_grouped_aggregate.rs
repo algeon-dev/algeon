@@ -12,16 +12,16 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_i
     ] {
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
-        assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
-            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         assert!(
-            plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+            plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
         assert!(plan.bounded_join_unsupported_shape_facts(ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
@@ -71,16 +71,16 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_r
     ] {
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
-        assert!(!plan.has_bounded_executable_root_join(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_join_pipeline(), "{variant:?}");
-        assert!(!plan.has_bounded_executable_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
-            !plan.has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(!plan.has_bounded_executable_multi_join_pipeline(), "{variant:?}");
+        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         assert!(
-            !plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+            !plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
         let facts = plan
@@ -167,7 +167,7 @@ fn bounded_mixed_residual_resident_grouped_aggregate_phase6_admission_uses_capab
     let analysis = plan.capability_analysis();
 
     assert_eq!(
-        plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+        plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
         analysis.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
     );
     assert_eq!(
@@ -183,7 +183,7 @@ fn bounded_mixed_residual_resident_grouped_aggregate_phase6_preserves_node_failu
     );
     let analysis = plan.capability_analysis();
 
-    assert!(!plan.has_bounded_executable_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
     let CapabilityDecision::Rejected { reason, facts } =
         &analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission
     else {

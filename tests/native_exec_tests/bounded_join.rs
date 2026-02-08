@@ -149,7 +149,9 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert!(
-        lowering.plans[0].has_bounded_executable_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+        lowering.plans[0]
+            .capability_analysis()
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
         "direct Q11 lowering should be bounded executable:\n{}",
         lowering.plans[0]
     );
