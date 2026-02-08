@@ -244,6 +244,7 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.adaptive_memory_history_miss_count.to_string(),
                 row.metrics.hash_join_build_count.to_string(),
                 row.metrics.filtered_join_build_count.to_string(),
+                row.metrics.one_shot_join_count.to_string(),
                 row.metrics.hash_join_cache_hits.to_string(),
                 row.metrics.hash_join_cache_misses.to_string(),
                 row.metrics.hash_join_durable_cache_hits.to_string(),
@@ -253,6 +254,9 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.filtered_join_hash_table_bytes.to_string(),
                 row.metrics.filtered_join_probe_state_bytes.to_string(),
                 row.metrics.mixed_join_size_data_bytes.to_string(),
+                row.metrics.one_shot_join_index_bytes.to_string(),
+                row.metrics.one_shot_join_materialization_bytes.to_string(),
+                row.metrics.one_shot_join_output_bytes.to_string(),
                 row.metrics.join_gather_map_bytes.to_string(),
                 format_source_diagnostics(&row.source_diagnostics),
             ];

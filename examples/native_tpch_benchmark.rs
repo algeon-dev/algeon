@@ -11,7 +11,7 @@ use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect, metrics::MetricsSet},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
@@ -19,8 +19,8 @@ use datafusion_cudf::{
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
     NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
     NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode, TPCH_QUERIES, TPCH_TABLES, TpchDatasetMetadata,
-    TpchQuery, TpchWorkloadError, describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset,
-    tpch_report_session_config,
+    TpchQuery, TpchTableLayout, TpchWorkloadError, describe_tpch_dataset_with_content_fingerprint,
+    prepare_tpch_report_dataset, register_tpch_table_layout, tpch_report_session_config,
 };
 
 #[path = "native_tpch_benchmark/case_runner.rs"]

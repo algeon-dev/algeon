@@ -119,7 +119,7 @@ pub fn compiled_bounded_query_plan_support(
         let PlanNode::Join(join) = &node.kind else {
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         };
-        let Some(strategy) = CompiledJoinExecutionStrategy::from_join_node(join) else {
+        let Ok(Some(strategy)) = CompiledJoinExecutionStrategy::from_plan_join_node(plan, group.plan_node, join) else {
             return Ok(CompiledBoundedPipelineSupport::Unsupported);
         };
         if !join_strategy_reservations_are_modeled(pipeline, &group, strategy) {
@@ -168,6 +168,11 @@ fn join_strategy_specific_reservations_are_modeled(
                     ReservationKind::GatherMap,
                 )
         },
+        CompiledJoinExecutionStrategy::OneShotEqui => task_runtime_attachment_has_modeled_reservation_gate(
+            pipeline,
+            group.materialize,
+            ReservationKind::GatherMap,
+        ),
         CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
                 && task_runtime_attachment_has_modeled_reservation_gate(

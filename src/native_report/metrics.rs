@@ -52,6 +52,7 @@ pub struct NativeDataFusionExecutionMetrics {
     pub adaptive_memory_history_miss_count: usize,
     pub hash_join_build_count: usize,
     pub filtered_join_build_count: usize,
+    pub one_shot_join_count: usize,
     pub hash_join_cache_hits: usize,
     pub hash_join_cache_misses: usize,
     pub hash_join_durable_cache_hits: usize,
@@ -61,6 +62,9 @@ pub struct NativeDataFusionExecutionMetrics {
     pub filtered_join_hash_table_bytes: usize,
     pub filtered_join_probe_state_bytes: usize,
     pub mixed_join_size_data_bytes: usize,
+    pub one_shot_join_index_bytes: usize,
+    pub one_shot_join_materialization_bytes: usize,
+    pub one_shot_join_output_bytes: usize,
     pub join_gather_map_bytes: usize,
 }
 
@@ -115,6 +119,7 @@ impl NativeDataFusionExecutionMetrics {
             adaptive_memory_history_miss_count: metric_count(metrics, "adaptive_memory_history_miss_count"),
             hash_join_build_count: metric_count(metrics, "hash_join_build_count"),
             filtered_join_build_count: metric_count(metrics, "filtered_join_build_count"),
+            one_shot_join_count: metric_count(metrics, "one_shot_join_count"),
             hash_join_cache_hits: metric_count(metrics, "hash_join_cache_hits"),
             hash_join_cache_misses: metric_count(metrics, "hash_join_cache_misses"),
             hash_join_durable_cache_hits: metric_count(metrics, "hash_join_durable_cache_hits"),
@@ -124,6 +129,9 @@ impl NativeDataFusionExecutionMetrics {
             filtered_join_hash_table_bytes: metric_count(metrics, "filtered_join_hash_table_bytes"),
             filtered_join_probe_state_bytes: metric_count(metrics, "filtered_join_probe_state_bytes"),
             mixed_join_size_data_bytes: metric_count(metrics, "mixed_join_size_data_bytes"),
+            one_shot_join_index_bytes: metric_count(metrics, "one_shot_join_index_bytes"),
+            one_shot_join_materialization_bytes: metric_count(metrics, "one_shot_join_materialization_bytes"),
+            one_shot_join_output_bytes: metric_count(metrics, "one_shot_join_output_bytes"),
             join_gather_map_bytes: metric_count(metrics, "join_gather_map_bytes"),
         }
     }

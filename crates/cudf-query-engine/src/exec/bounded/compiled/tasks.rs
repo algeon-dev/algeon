@@ -9,6 +9,7 @@ use super::{
     state::CompiledPipelineState,
 };
 use crate::{
+    capability::{KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan},
     error::{QueryError, QueryErrorCode, Result},
     exec::{
         bounded::{
@@ -246,7 +247,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let input = single_input_resource(task)?;
         let input_payload = state.resource_payload(input)?;
         let node = join_node(self.plan, task, node_id)?;
-        let strategy = join_strategy(node, task, node_id)?;
+        let strategy = join_strategy(
+            self.plan,
+            node,
+            task,
+            node_id,
+            input_payload.num_rows() as u64,
+            input_payload.reservation_bytes(),
+        )?;
         let build = execute_bounded_compiled_join_build_from_frame(
             self.context,
             node_id,
@@ -560,18 +568,50 @@ fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> R
     Ok(join)
 }
 
-fn join_strategy(node: &JoinNode, task: &PipelineTask, node_id: NodeId) -> Result<CompiledJoinExecutionStrategy> {
-    CompiledJoinExecutionStrategy::from_join_node(node).ok_or_else(|| {
-        invalid("compiled join task references an unsupported join execution strategy")
-            .with_fact("compiled_task_id", task.id())
-            .with_fact("plan_node_id", node_id)
-            .with_fact("pipeline_task_kind", task.kind().as_str())
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", node.spec.build_side)
-            .with_fact("key_count", node.spec.keys.len())
-            .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
-            .with_fact("output_projection_len", node.spec.output_projection.len())
-    })
+fn join_strategy(
+    plan: &QueryPlan,
+    node: &JoinNode,
+    task: &PipelineTask,
+    node_id: NodeId,
+    observed_build_rows: u64,
+    build_side_bytes: u64,
+) -> Result<CompiledJoinExecutionStrategy> {
+    let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
+    let strategy_facts = KeyedHashJoinStrategyInputFacts {
+        estimated_build_rows: plan_facts.estimated_build_rows,
+        observed_build_rows: Some(observed_build_rows),
+        build_side_bytes: Some(build_side_bytes),
+        probe_reuse_count: plan_facts.probe_reuse_count,
+    };
+    CompiledJoinExecutionStrategy::from_join_node_with_strategy_facts(node, strategy_facts)
+        .map_err(|decision| {
+            let (reason, facts) = match decision {
+                crate::capability::KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),
+                crate::capability::KeyedHashJoinStrategyDecision::Selected { .. } => {
+                    unreachable!("selected strategy decisions do not map to strategy-selection errors")
+                },
+            };
+            let mut error = invalid("compiled join task rejected its keyed hash join execution strategy")
+                .with_fact("reason", reason)
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str());
+            for (key, value) in facts {
+                error = error.with_fact(key, value);
+            }
+            error
+        })?
+        .ok_or_else(|| {
+            invalid("compiled join task references an unsupported join execution strategy")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id)
+                .with_fact("pipeline_task_kind", task.kind().as_str())
+                .with_fact("join_type", node.spec.join_type)
+                .with_fact("build_side", node.spec.build_side)
+                .with_fact("key_count", node.spec.keys.len())
+                .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+                .with_fact("output_projection_len", node.spec.output_projection.len())
+        })
 }
 
 fn sort_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a SortNode> {

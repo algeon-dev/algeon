@@ -395,6 +395,10 @@ fn query_metrics_have_join_operator_contract() {
     metrics.record_filtered_join_hash_table_bytes(2048);
     metrics.record_filtered_join_probe_state_bytes(1024);
     metrics.record_mixed_join_size_data_bytes(512);
+    metrics.record_one_shot_join();
+    metrics.record_one_shot_join_index_bytes(128);
+    metrics.record_one_shot_join_materialization_bytes(256);
+    metrics.record_one_shot_join_output_bytes(384);
     metrics.record_hash_join_cache_hit();
     metrics.record_hash_join_durable_cache_miss();
     metrics.record_hash_join_durable_cache_insert();
@@ -402,6 +406,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(metrics.hash_join_cache_misses, 1);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert_eq!(metrics.filtered_join_build_count, 1);
+    assert_eq!(metrics.one_shot_join_count, 1);
     assert_eq!(metrics.hash_join_cache_hits, 1);
     assert_eq!(metrics.hash_join_durable_cache_misses, 1);
     assert_eq!(metrics.hash_join_durable_cache_inserts, 1);
@@ -410,4 +415,7 @@ fn query_metrics_have_join_operator_contract() {
     assert_eq!(metrics.filtered_join_hash_table_bytes, 2048);
     assert_eq!(metrics.filtered_join_probe_state_bytes, 1024);
     assert_eq!(metrics.mixed_join_size_data_bytes, 512);
+    assert_eq!(metrics.one_shot_join_index_bytes, 128);
+    assert_eq!(metrics.one_shot_join_materialization_bytes, 256);
+    assert_eq!(metrics.one_shot_join_output_bytes, 384);
 }

@@ -372,6 +372,7 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
         aggregate.hash_join_build_count = aggregate.hash_join_build_count.saturating_add(current.hash_join_build_count);
         aggregate.filtered_join_build_count =
             aggregate.filtered_join_build_count.saturating_add(current.filtered_join_build_count);
+        aggregate.one_shot_join_count = aggregate.one_shot_join_count.saturating_add(current.one_shot_join_count);
         aggregate.hash_join_cache_hits = aggregate.hash_join_cache_hits.saturating_add(current.hash_join_cache_hits);
         aggregate.hash_join_cache_misses =
             aggregate.hash_join_cache_misses.saturating_add(current.hash_join_cache_misses);
@@ -389,6 +390,12 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             aggregate.filtered_join_probe_state_bytes.saturating_add(current.filtered_join_probe_state_bytes);
         aggregate.mixed_join_size_data_bytes =
             aggregate.mixed_join_size_data_bytes.saturating_add(current.mixed_join_size_data_bytes);
+        aggregate.one_shot_join_index_bytes =
+            aggregate.one_shot_join_index_bytes.saturating_add(current.one_shot_join_index_bytes);
+        aggregate.one_shot_join_materialization_bytes =
+            aggregate.one_shot_join_materialization_bytes.saturating_add(current.one_shot_join_materialization_bytes);
+        aggregate.one_shot_join_output_bytes =
+            aggregate.one_shot_join_output_bytes.saturating_add(current.one_shot_join_output_bytes);
         aggregate.join_gather_map_bytes = aggregate.join_gather_map_bytes.saturating_add(current.join_gather_map_bytes);
     }
     aggregate
@@ -432,7 +439,10 @@ async fn collect_native_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionRes
 }
 
 fn cpu_session_config() -> SessionConfig {
-    tpch_report_session_config()
+    match std::env::var("CUDF_TPCH_CPU_PROFILE").as_deref().map(str::to_ascii_lowercase).as_deref() {
+        Ok("untuned") | Ok("report") => tpch_report_session_config(),
+        _ => datafusion_cudf::tpch_tuned_cpu_session_config(),
+    }
 }
 
 fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<QueryMeasurement> {

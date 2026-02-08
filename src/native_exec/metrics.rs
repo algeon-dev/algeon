@@ -72,6 +72,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "adaptive_memory_history_miss_count",
     "hash_join_build_count",
     "filtered_join_build_count",
+    "one_shot_join_count",
     "hash_join_cache_hits",
     "hash_join_cache_misses",
     "hash_join_durable_cache_hits",
@@ -81,6 +82,9 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "filtered_join_hash_table_bytes",
     "filtered_join_probe_state_bytes",
     "mixed_join_size_data_bytes",
+    "one_shot_join_index_bytes",
+    "one_shot_join_materialization_bytes",
+    "one_shot_join_output_bytes",
     "join_gather_map_bytes",
     "source_metadata_load_time",
     "source_read_queue_wait_time",
@@ -160,6 +164,7 @@ pub(super) struct NativeCudfMetrics {
     adaptive_memory_history_miss_count: Count,
     hash_join_build_count: Count,
     filtered_join_build_count: Count,
+    one_shot_join_count: Count,
     hash_join_cache_hits: Count,
     hash_join_cache_misses: Count,
     hash_join_durable_cache_hits: Count,
@@ -169,6 +174,9 @@ pub(super) struct NativeCudfMetrics {
     filtered_join_hash_table_bytes: Count,
     filtered_join_probe_state_bytes: Count,
     mixed_join_size_data_bytes: Count,
+    one_shot_join_index_bytes: Count,
+    one_shot_join_materialization_bytes: Count,
+    one_shot_join_output_bytes: Count,
     join_gather_map_bytes: Count,
     source_metadata_load_time: Time,
     source_read_queue_wait_time: Time,
@@ -283,6 +291,7 @@ impl NativeCudfMetrics {
             ),
             hash_join_build_count: summary_counter(metrics, "hash_join_build_count", partition),
             filtered_join_build_count: summary_counter(metrics, "filtered_join_build_count", partition),
+            one_shot_join_count: summary_counter(metrics, "one_shot_join_count", partition),
             hash_join_cache_hits: summary_counter(metrics, "hash_join_cache_hits", partition),
             hash_join_cache_misses: summary_counter(metrics, "hash_join_cache_misses", partition),
             hash_join_durable_cache_hits: summary_counter(metrics, "hash_join_durable_cache_hits", partition),
@@ -292,6 +301,13 @@ impl NativeCudfMetrics {
             filtered_join_hash_table_bytes: summary_counter(metrics, "filtered_join_hash_table_bytes", partition),
             filtered_join_probe_state_bytes: summary_counter(metrics, "filtered_join_probe_state_bytes", partition),
             mixed_join_size_data_bytes: summary_counter(metrics, "mixed_join_size_data_bytes", partition),
+            one_shot_join_index_bytes: summary_counter(metrics, "one_shot_join_index_bytes", partition),
+            one_shot_join_materialization_bytes: summary_counter(
+                metrics,
+                "one_shot_join_materialization_bytes",
+                partition,
+            ),
+            one_shot_join_output_bytes: summary_counter(metrics, "one_shot_join_output_bytes", partition),
             join_gather_map_bytes: summary_counter(metrics, "join_gather_map_bytes", partition),
             source_metadata_load_time: summary_timer(metrics, "source_metadata_load_time", partition),
             source_read_queue_wait_time: summary_timer(metrics, "source_read_queue_wait_time", partition),
@@ -370,6 +386,7 @@ impl NativeCudfMetrics {
         self.adaptive_memory_history_miss_count.add(count(metrics.adaptive_memory_history_miss_count));
         self.hash_join_build_count.add(count(metrics.hash_join_build_count));
         self.filtered_join_build_count.add(count(metrics.filtered_join_build_count));
+        self.one_shot_join_count.add(count(metrics.one_shot_join_count));
         self.hash_join_cache_hits.add(count(metrics.hash_join_cache_hits));
         self.hash_join_cache_misses.add(count(metrics.hash_join_cache_misses));
         self.hash_join_durable_cache_hits.add(count(metrics.hash_join_durable_cache_hits));
@@ -379,6 +396,9 @@ impl NativeCudfMetrics {
         self.filtered_join_hash_table_bytes.add(count(metrics.filtered_join_hash_table_bytes));
         self.filtered_join_probe_state_bytes.add(count(metrics.filtered_join_probe_state_bytes));
         self.mixed_join_size_data_bytes.add(count(metrics.mixed_join_size_data_bytes));
+        self.one_shot_join_index_bytes.add(count(metrics.one_shot_join_index_bytes));
+        self.one_shot_join_materialization_bytes.add(count(metrics.one_shot_join_materialization_bytes));
+        self.one_shot_join_output_bytes.add(count(metrics.one_shot_join_output_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
         self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);

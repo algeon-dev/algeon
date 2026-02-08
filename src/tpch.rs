@@ -7,7 +7,12 @@ use std::{
 
 use arrow::{error::ArrowError, record_batch::RecordBatch};
 use datafusion::{
+    catalog::TableProvider,
     common::{ScalarValue, utils::memory::get_record_batch_memory_size},
+    datasource::{
+        file_format::parquet::ParquetFormat,
+        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+    },
     error::DataFusionError,
     execution::{SessionStateBuilder, context::TaskContext},
     functions_aggregate::count::count_udaf,
@@ -26,7 +31,6 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use dataset::resolve_tpch_table_path;
 
 pub use crate::tpch_queries::{TPCH_QUERIES, TPCH_QUERY_COUNT, TpchQuery, tpch_query_ids};
 use crate::{
@@ -48,9 +52,10 @@ pub use ad_hoc_olap::{
 };
 pub use dataset::{
     CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV,
-    CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_TABLES, TpchDatasetMetadata, TpchTableFileMetadata, TpchTableMetadata,
-    describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint, external_tpch_dataset_metadata,
-    prepare_tpch_report_dataset, tiny_tpch_dataset_metadata,
+    CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_TABLES, TpchDatasetMetadata, TpchTableFileMetadata, TpchTableLayout,
+    TpchTableMetadata, describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint,
+    discover_tpch_table_layout, external_tpch_dataset_metadata, prepare_tpch_report_dataset,
+    tiny_tpch_dataset_metadata,
 };
 pub use tiny::write_tiny_tpch_parquet_dataset;
 
@@ -126,6 +131,23 @@ pub fn tpch_report_session_config() -> SessionConfig {
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;
+    config
+}
+
+pub fn tpch_tuned_cpu_session_config() -> SessionConfig {
+    let target_partitions = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
+    let mut config = SessionConfig::new()
+        .with_target_partitions(target_partitions)
+        .with_batch_size(8192)
+        .with_repartition_file_scans(true)
+        .with_repartition_aggregations(true)
+        .with_repartition_joins(true)
+        .with_repartition_sorts(true);
+    config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = true;
+    config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = true;
+    config.options_mut().optimizer.enable_join_dynamic_filter_pushdown = true;
+    config.options_mut().optimizer.enable_dynamic_filter_pushdown = true;
+    config.options_mut().execution.parquet.pushdown_filters = false;
     config
 }
 
@@ -391,9 +413,42 @@ WHERE EXTRACT(HOUR FROM o_orderdate) = 1
 
 async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> TpchWorkloadResult<()> {
     for table in TPCH_TABLES {
-        let path = resolve_tpch_table_path(root, table)?;
-        let path = path.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(path.clone()))?;
-        ctx.register_parquet(*table, path, ParquetReadOptions::default()).await?;
+        let layout = discover_tpch_table_layout(root, table)?;
+        register_tpch_table_layout(ctx, table, &layout).await?;
     }
+    Ok(())
+}
+
+/// Register a single TPC-H table from a discovered layout. Single-file and
+/// directory layouts go through `register_parquet`; sibling-split layouts
+/// (e.g. SF100's `lineitem_0000.parquet` + `lineitem_0001.parquet`) are
+/// registered as a multi-path `ListingTable` so every shard lands under the
+/// same logical table name.
+pub async fn register_tpch_table_layout(
+    ctx: &SessionContext,
+    table: &str,
+    layout: &TpchTableLayout,
+) -> TpchWorkloadResult<()> {
+    if layout.files.len() == 1 || layout.anchor.is_dir() {
+        let path = layout.anchor.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(layout.anchor.clone()))?;
+        ctx.register_parquet(table, path, ParquetReadOptions::default()).await?;
+        return Ok(());
+    }
+
+    let urls = layout
+        .files
+        .iter()
+        .map(|path| -> TpchWorkloadResult<ListingTableUrl> {
+            let path_str = path.to_str().ok_or_else(|| TpchWorkloadError::NonUtf8Path(path.clone()))?;
+            Ok(ListingTableUrl::parse(format!("file://{path_str}"))?)
+        })
+        .collect::<TpchWorkloadResult<Vec<_>>>()?;
+    let listing_options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
+    let inferred_schema = listing_options.infer_schema(&ctx.state(), &urls[0]).await?;
+    let config = ListingTableConfig::new_with_multi_paths(urls)
+        .with_listing_options(listing_options)
+        .with_schema(inferred_schema);
+    let listing_table: Arc<dyn TableProvider> = Arc::new(ListingTable::try_new(config)?);
+    ctx.register_table(table, listing_table)?;
     Ok(())
 }

@@ -9,26 +9,6 @@ use super::{
 };
 use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
 
-#[derive(Debug, Clone, Copy)]
-pub(in crate::exec::bounded) struct SourceReadSchedulerBoundaries {
-    required: &'static str,
-    prefetch: &'static str,
-}
-
-impl SourceReadSchedulerBoundaries {
-    pub(in crate::exec::bounded) const fn new(required: &'static str, prefetch: &'static str) -> Self {
-        Self { required, prefetch }
-    }
-
-    const fn required(self) -> &'static str {
-        self.required
-    }
-
-    const fn prefetch(self) -> &'static str {
-        self.prefetch
-    }
-}
-
 pub(super) fn execute_bounded_chunk_with_retry(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -167,19 +147,15 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
     Ok(partials)
 }
 
-pub(in crate::exec::bounded) fn read_local_parquet_chunks_ordered(
+pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
     context: &ExecutionContext,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-    boundaries: SourceReadSchedulerBoundaries,
+    memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    if !context.source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
-        return read_local_parquet_chunks_serial(context, source, chunks, reservations, metrics, boundaries);
-    }
-
-    read_local_parquet_chunks_with_ordered_scheduler(context, source, chunks, reservations, metrics, boundaries)
+    read_local_parquet_chunks_serial(context, source, chunks, reservations, metrics, memory_boundary)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -288,7 +264,7 @@ fn read_local_parquet_chunks_serial(
     chunks: &[SourceChunk],
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-    boundaries: SourceReadSchedulerBoundaries,
+    memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     let mut outputs = Vec::with_capacity(chunks.len());
     for chunk in chunks {
@@ -301,7 +277,7 @@ fn read_local_parquet_chunks_serial(
         let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
         let source_request = chunk_reservation_request(
             ReservationKind::SourceRead,
-            boundaries.required(),
+            memory_boundary,
             requested_bytes,
             reservations.budget(),
             chunk,
@@ -317,8 +293,7 @@ fn read_local_parquet_chunks_serial(
         };
         let source_token_budget = reservations.available_bytes_including(&reservation);
         let frame =
-            match read_local_parquet_chunk(context, source, chunk, source_token_budget, boundaries.required(), metrics)
-            {
+            match read_local_parquet_chunk(context, source, chunk, source_token_budget, memory_boundary, metrics) {
                 Ok(frame) => frame,
                 Err(error) => {
                     reservations.release(reservation);
@@ -334,7 +309,7 @@ fn read_local_parquet_chunks_serial(
             reservations,
             &output.chunk,
             metrics,
-            boundaries.required(),
+            memory_boundary,
             1,
             1,
         ) {
@@ -354,7 +329,7 @@ fn read_local_parquet_chunks_serial(
             &mut output.reservation,
             reservations,
             metrics,
-            boundaries.required(),
+            memory_boundary,
             1,
             1,
             output.observed_bytes,
@@ -363,111 +338,6 @@ fn read_local_parquet_chunks_serial(
         outputs.push(output);
     }
     Ok(outputs)
-}
-
-fn read_local_parquet_chunks_with_ordered_scheduler(
-    context: &ExecutionContext,
-    source: &LocalParquetSource,
-    chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-    boundaries: SourceReadSchedulerBoundaries,
-) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    let mut queue = OrderedSourceReadQueue::start_with_boundaries(
-        context,
-        source,
-        chunks,
-        reservations,
-        metrics,
-        1,
-        context.source_scheduler_policy().max_source_reads_in_flight(),
-        boundaries,
-    )?;
-    let mut outputs = Vec::with_capacity(chunks.len());
-    for (index, _chunk) in chunks.iter().enumerate() {
-        let scheduled =
-            queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
-        let output = match finish_ordered_scheduled_source_read(
-            scheduled,
-            context,
-            source,
-            reservations,
-            metrics,
-            boundaries.required(),
-        ) {
-            Ok(output) => output,
-            Err(error) => {
-                queue.abandon_all(index + 1, reservations, metrics);
-                release_source_read_outputs_reverse(reservations, outputs);
-                return Err(error);
-            },
-        };
-        metrics.record_source_chunk_commit(output.chunk.row_group_count() as u64);
-        outputs.push(output);
-        if let Err(error) =
-            queue.fill_optional_with_boundaries(context, source, chunks, reservations, metrics, 1, boundaries)
-        {
-            queue.abandon_all(index + 1, reservations, metrics);
-            release_source_read_outputs_reverse(reservations, outputs);
-            return Err(error);
-        }
-        if queue.pending.is_empty()
-            && index + 1 < chunks.len()
-            && let Err(error) = queue.ensure_current_required_with_boundary(
-                context,
-                source,
-                chunks,
-                reservations,
-                metrics,
-                1,
-                boundaries,
-            )
-        {
-            release_source_read_outputs_reverse(reservations, outputs);
-            return Err(error);
-        }
-    }
-    Ok(outputs)
-}
-
-fn finish_ordered_scheduled_source_read(
-    scheduled: ScheduledLocalParquetRead,
-    context: &ExecutionContext,
-    source: &LocalParquetSource,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-    cache_memory_boundary: &'static str,
-) -> Result<ScheduledLocalParquetReadOutput> {
-    let is_prefetch = scheduled.is_prefetch();
-    let memory_boundary = scheduled.budget_boundary();
-    let mut output = scheduled.finish(reservations, metrics)?;
-    output.observed_bytes = grow_source_reservation_to_observed(
-        &output.frame,
-        &mut output.reservation,
-        reservations,
-        &output.chunk,
-        metrics,
-        memory_boundary,
-        1,
-        1,
-    )?;
-    insert_bounded_local_parquet_source_cache(
-        context,
-        source,
-        &output.chunk,
-        &output.frame,
-        &mut output.reservation,
-        reservations,
-        metrics,
-        cache_memory_boundary,
-        1,
-        1,
-        output.observed_bytes,
-    )?;
-    if is_prefetch {
-        metrics.record_source_read_prefetch_completed();
-    }
-    Ok(output)
 }
 
 fn release_source_read_outputs_reverse(
@@ -504,40 +374,6 @@ impl OrderedSourceReadQueue {
     ) -> Result<Self> {
         let mut queue = Self { pending: VecDeque::new(), next_chunk_index: 0, max_in_flight: max_in_flight.max(1) };
         queue.ensure_current_required(context, source, chunks, reservations, metrics, max_attempts)?;
-        queue.fill_optional(context, source, chunks, reservations, metrics, max_attempts)?;
-        Ok(queue)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn start_with_boundaries(
-        context: &ExecutionContext,
-        source: &LocalParquetSource,
-        chunks: &[SourceChunk],
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-        max_attempts: usize,
-        max_in_flight: usize,
-        boundaries: SourceReadSchedulerBoundaries,
-    ) -> Result<Self> {
-        let mut queue = Self { pending: VecDeque::new(), next_chunk_index: 0, max_in_flight: max_in_flight.max(1) };
-        queue.ensure_current_required_with_boundary(
-            context,
-            source,
-            chunks,
-            reservations,
-            metrics,
-            max_attempts,
-            boundaries,
-        )?;
-        queue.fill_optional_with_boundaries(
-            context,
-            source,
-            chunks,
-            reservations,
-            metrics,
-            max_attempts,
-            boundaries,
-        )?;
         Ok(queue)
     }
 
@@ -571,38 +407,6 @@ impl OrderedSourceReadQueue {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn ensure_current_required_with_boundary(
-        &mut self,
-        context: &ExecutionContext,
-        source: &LocalParquetSource,
-        chunks: &[SourceChunk],
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-        max_attempts: usize,
-        boundaries: SourceReadSchedulerBoundaries,
-    ) -> Result<()> {
-        if self.pending.is_empty()
-            && let Some(chunk) = chunks.get(self.next_chunk_index)
-        {
-            self.pending.push_back(start_scheduled_source_read(
-                context,
-                source,
-                chunk,
-                reservations,
-                metrics,
-                chunk_requested_bytes(context.memory_control_policy(), chunk),
-                boundaries.required(),
-                1,
-                max_attempts,
-                false,
-                false,
-            )?);
-            self.next_chunk_index += 1;
-        }
-        Ok(())
-    }
-
     fn fill_optional(
         &mut self,
         context: &ExecutionContext,
@@ -612,7 +416,7 @@ impl OrderedSourceReadQueue {
         metrics: &mut QueryMetrics,
         max_attempts: usize,
     ) -> Result<()> {
-        while self.pending.len() < self.max_in_flight {
+        while self.pending.len() < optional_prefetch_target(self.max_in_flight) {
             let Some(chunk) = chunks.get(self.next_chunk_index) else {
                 break;
             };
@@ -634,45 +438,6 @@ impl OrderedSourceReadQueue {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn fill_optional_with_boundaries(
-        &mut self,
-        context: &ExecutionContext,
-        source: &LocalParquetSource,
-        chunks: &[SourceChunk],
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-        max_attempts: usize,
-        boundaries: SourceReadSchedulerBoundaries,
-    ) -> Result<()> {
-        while self.pending.len() < self.max_in_flight {
-            let Some(chunk) = chunks.get(self.next_chunk_index) else {
-                break;
-            };
-            let requested_bytes = prefetch_requested_bytes(context.memory_control_policy(), chunk);
-            if !reservations.can_reserve(requested_bytes) {
-                metrics.record_source_read_prefetch_skipped();
-                break;
-            }
-            metrics.record_source_read_prefetch_started();
-            self.pending.push_back(start_scheduled_source_read(
-                context,
-                source,
-                chunk,
-                reservations,
-                metrics,
-                requested_bytes,
-                boundaries.prefetch(),
-                1,
-                max_attempts,
-                true,
-                true,
-            )?);
-            self.next_chunk_index += 1;
-        }
-        Ok(())
-    }
-
     fn abandon_all(
         &mut self,
         next_chunk_index: usize,
@@ -684,6 +449,14 @@ impl OrderedSourceReadQueue {
         }
         self.next_chunk_index = next_chunk_index;
     }
+}
+
+fn optional_prefetch_target(max_in_flight: usize) -> usize {
+    // libcudf does not expose exact decoded Parquet output preflight sizing.
+    // Keep only one unobserved optional source read ahead so that a later
+    // front-of-queue read can grow to its observed output without being
+    // starved by deeper speculative reservations.
+    usize::from(max_in_flight > 1)
 }
 
 #[allow(clippy::too_many_arguments)]

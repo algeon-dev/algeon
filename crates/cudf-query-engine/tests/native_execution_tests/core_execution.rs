@@ -237,7 +237,7 @@ fn bounded_native_local_parquet_source_materializes_missing_nullable_columns() {
 }
 
 #[test]
-fn bounded_generic_local_parquet_pipeline_uses_ordered_source_scheduler() {
+fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-generic-source-scheduler");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -286,22 +286,18 @@ fn bounded_generic_local_parquet_pipeline_uses_ordered_source_scheduler() {
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.source_read_prefetches_started, 2);
-    assert_eq!(metrics.source_read_prefetches_completed, 2);
+    assert_eq!(metrics.source_read_prefetches_started, 0);
+    assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    let first_generic_operator = metrics
+    let source_read_prefetches = metrics
         .reservation_events
-        .iter()
-        .position(|event| event.outcome.as_str() == "granted" && event.memory_boundary == "bounded_generic_filter")
-        .expect("bounded generic filter reservation should be recorded");
-    let prefetches_before_first_operator = metrics.reservation_events[..first_generic_operator]
         .iter()
         .filter(|event| {
             event.outcome.as_str() == "granted" && event.memory_boundary == "bounded_generic_source_read_prefetch"
         })
         .count();
-    assert_eq!(prefetches_before_first_operator, 2);
+    assert_eq!(source_read_prefetches, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

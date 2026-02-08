@@ -63,6 +63,33 @@ fn benchmark_planning_row_selection_rejects_ambiguous_reports() {
 }
 
 #[test]
+fn benchmark_query_progress_line_identifies_query_and_profile() {
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q07".to_string()],
+        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
+            device_budget_bytes: 94_489_280_512,
+            max_source_chunk_bytes: 34_359_738_368,
+            max_row_groups_per_chunk: 1024,
+            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+        },
+        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let query = TPCH_QUERIES.iter().find(|query| query.id == "q07").unwrap();
+
+    let line = benchmark_query_progress_line(&config, query, 2, 3);
+
+    assert!(line.starts_with("[native_tpch_benchmark] phase=query_start query=q07 index=3/3"));
+    assert!(line.contains("dataset_mode=sf100_external"));
+    assert!(line.contains("execution_mode=strict_bounded"));
+    assert!(line.contains("memory_policy=bounded"));
+    assert!(line.contains("max_row_groups_per_chunk=1024"));
+    assert!(line.contains("max_source_chunk_bytes=34359738368"));
+    assert!(line.contains("skip_cpu="));
+}
+
+#[test]
 fn accepted_planning_row_must_use_native_execution_path() {
     execution::validate_decision_grade_native_planning_row("q01", &accepted_planning_row("q01")).unwrap();
 

@@ -795,10 +795,44 @@ fn compiled_pipeline_validate_rejects_unresolved_preflight_gate_mislabeled_as_ex
 
     let error = pipeline.validate().expect_err("hard-budgeted source read gate should keep unresolved quality");
 
-    assert_pipeline_validation_error(&error, "pipeline hard-budgeted gate is not labeled as unresolved preflight");
+    assert_pipeline_validation_error(
+        &error,
+        "pipeline unresolved-preflight gate is not labeled with unresolved-preflight quality",
+    );
     assert_eq!(error.fact_value("gate_id"), Some("g0"));
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
+}
+
+#[test]
+fn compiled_pipeline_validate_rejects_hard_budgeted_quality_without_tracked_gap() {
+    let pipeline = strict_validation_fixture_with(|parts| {
+        parts.gates[0] = ReservationGate::new(
+            ReservationGateId::new(0),
+            ReservationGateOwner::Edge(PipelineEdgeId::new(0)),
+            ReservationKind::SourceRead,
+            ReservationRequirementScope::Edge,
+            "source_read",
+            "libcudf_decoded_output_preflight_contract_after_api_lands",
+            ContractStatus::Modeled,
+            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+        );
+    });
+
+    let error = pipeline
+        .validate()
+        .expect_err("F.6 should reject unresolved quality after the placeholder contract is replaced");
+
+    assert_pipeline_validation_error(
+        &error,
+        "pipeline hard-budgeted gate is missing lower-level unresolved preflight gap",
+    );
+    assert_eq!(error.fact_value("gate_id"), Some("g0"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(
+        error.fact_value("required_contract"),
+        Some("libcudf_decoded_output_preflight_contract_after_api_lands")
+    );
 }
 
 #[test]

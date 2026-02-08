@@ -83,7 +83,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
             metrics,
         )
         .map(BoundedCompiledJoinBuildState::Filtered),
-        CompiledJoinExecutionStrategy::KeylessConditional { .. }
+        CompiledJoinExecutionStrategy::OneShotEqui
+        | CompiledJoinExecutionStrategy::KeylessConditional { .. }
         | CompiledJoinExecutionStrategy::ProjectedCross
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
@@ -450,6 +451,15 @@ fn execute_compiled_prepared_join_materialize(
             reservations,
             metrics,
         ),
+        CompiledJoinExecutionStrategy::OneShotEqui => execute_compiled_one_shot_equi_join_materialize(
+            context,
+            node_id,
+            node,
+            state.left,
+            state.right,
+            reservations,
+            metrics,
+        ),
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             Err(unsupported_bounded_shape(
                 "compiled prepared join state received an incompatible strategy",
@@ -490,6 +500,12 @@ fn compiled_join_input_columns(
                 side,
             ))
         },
+        CompiledJoinExecutionStrategy::OneShotEqui => {
+            let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+            let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+            let keys = if side == JoinSide::Left { &left_keys } else { &right_keys };
+            Ok(projected_input_columns(keys, &node.spec.output_projection, [], side))
+        },
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             let _ = context;
             Err(unsupported_bounded_shape(
@@ -514,6 +530,22 @@ fn orient_prepared_inputs(
             "compiled_join_input_orientation_invalid",
         )),
     }
+}
+
+fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
+    validate_executable_join_subset(node)?;
+    if node.spec.join_type == JoinType::Inner && !node.spec.keys.is_empty() && node.spec.residual_predicate.is_none() {
+        return Ok(());
+    }
+    Err(unsupported_bounded_shape(
+        "compiled one-shot equi join execution currently supports keyed inner joins without residual predicates",
+        "compiled_join_strategy_unsupported",
+    )
+    .with_fact("join_type", node.spec.join_type)
+    .with_fact("build_side", node.spec.build_side)
+    .with_fact("key_count", node.spec.keys.len())
+    .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+    .with_fact("output_projection_len", node.spec.output_projection.len()))
 }
 
 // The remaining prepared materializers intentionally mirror the root bounded
@@ -635,6 +667,7 @@ fn execute_compiled_keyless_join_materialize(
         expected_output_rows,
         gather_map_reservation,
         timer,
+        None,
         reservations,
         metrics,
     )
@@ -728,6 +761,77 @@ fn execute_compiled_mixed_join_materialize(
         expected_output_rows,
         gather_map_reservation,
         timer,
+        None,
+        reservations,
+        metrics,
+    )
+}
+
+fn execute_compiled_one_shot_equi_join_materialize(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: BoundedJoinSideFrame,
+    right: BoundedJoinSideFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    validate_one_shot_equi_join(node)?;
+    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+    let options = dataframe_join_options(&left_keys, &right_keys, node.spec.null_equality);
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let pair_indices = left
+        .frame
+        .with_execution(&overrides)
+        .inner_join_indices(&right.frame, options)
+        .map_err(|error| join_index_error(error, node))?;
+    let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.one_shot_index_bytes",
+            "failed to observe compiled one-shot join index memory",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+    })?;
+    let gather_map_reservation = match reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_one_shot_indices",
+            index_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(pair_indices);
+            return Err(error);
+        },
+    };
+    let output_rows = pair_indices.len() as u64;
+    let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
+    drop(pair_indices);
+    materialize_compiled_indices_output(
+        context,
+        node_id,
+        node,
+        "bounded_one_shot_equi_join",
+        node.spec.keys.len(),
+        false,
+        node.spec.build_side,
+        probe_side(node.spec.build_side),
+        left,
+        right,
+        indices,
+        0,
+        0,
+        output_rows,
+        gather_map_reservation,
+        timer,
+        Some(index_bytes),
         reservations,
         metrics,
     )
@@ -994,6 +1098,7 @@ fn materialize_compiled_indices_output(
     expected_output_rows: u64,
     gather_map_reservation: ActiveReservation,
     timer: Instant,
+    one_shot_index_bytes: Option<u64>,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
@@ -1001,6 +1106,11 @@ fn materialize_compiled_indices_output(
     let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
     let output_reservation_bytes =
         indices.output_reservation_size_bytes(&left.frame, &right.frame, &overrides, &node.spec.output_projection)?;
+    if let Some(index_bytes) = one_shot_index_bytes {
+        metrics.record_one_shot_join();
+        metrics.record_one_shot_join_index_bytes(index_bytes);
+        metrics.record_one_shot_join_materialization_bytes(output_reservation_bytes);
+    }
     let output_reservation = reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
@@ -1016,6 +1126,9 @@ fn materialize_compiled_indices_output(
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    if one_shot_index_bytes.is_some() {
+        metrics.record_one_shot_join_output_bytes(output_bytes);
+    }
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {

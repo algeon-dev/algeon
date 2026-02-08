@@ -100,3 +100,48 @@ async fn tpch_workload_builder_registers_multi_file_directory_layout() {
     fs::remove_dir_all(source).unwrap();
     fs::remove_dir_all(layout).unwrap();
 }
+
+// SF100 emits one Parquet file per table for everything except lineitem, which
+// trips the 20 GiB max-file-size rule and is sharded into siblings named
+// `lineitem_0000.parquet`, `lineitem_0001.parquet`, ... at the dataset root
+// (no `lineitem/` subdirectory). Pin that layout end-to-end: metadata discovery,
+// fingerprinting, and workload registration must all treat the shards as one
+// logical `lineitem` table.
+#[tokio::test]
+async fn tpch_workload_builder_accepts_sf100_sibling_split_layout() {
+    let source = unique_temp_dir("datafusion-cudf-tpch-sibling-split-source");
+    let layout = unique_temp_dir("datafusion-cudf-tpch-sibling-split-layout");
+    write_tiny_tpch_parquet_dataset(&source).unwrap();
+    copy_tiny_tpch_as_sibling_split_layout(&source, &layout, &["lineitem"], 2);
+
+    assert!(layout.join("customer.parquet").is_file());
+    assert!(layout.join("lineitem_0000.parquet").is_file());
+    assert!(layout.join("lineitem_0001.parquet").is_file());
+    assert!(!layout.join("lineitem.parquet").exists());
+    assert!(!layout.join("lineitem").exists());
+
+    let metadata =
+        describe_tpch_dataset_with_content_fingerprint(&layout, "tiny", "sibling_split_layout", "copy_tiny", true)
+            .unwrap();
+    assert_eq!(metadata.table_count, TPCH_TABLES.len());
+    assert_eq!(metadata.file_count, TPCH_TABLES.len() + 1);
+    assert_eq!(
+        metadata.table_file_counts(),
+        "customer=1,lineitem=2,nation=1,orders=1,part=1,partsupp=1,region=1,supplier=1"
+    );
+    assert_eq!(
+        metadata.table_row_counts(),
+        "customer=3,lineitem=6,nation=5,orders=3,part=3,partsupp=3,region=3,supplier=3"
+    );
+    let lineitem = metadata.tables.iter().find(|table| table.table == "lineitem").unwrap();
+    assert_eq!(lineitem.file_count, 2);
+    let relative_paths: Vec<_> = lineitem.files.iter().map(|file| file.relative_path.as_str()).collect();
+    assert_eq!(relative_paths, vec!["lineitem_0000.parquet", "lineitem_0001.parquet"]);
+    assert!(metadata.content_fingerprint.as_deref().unwrap().starts_with("content-fnv1a64:"));
+
+    let items = tpch_fallback_pressure_workload_items(&layout, tpch_report_session_config()).await.unwrap();
+    assert_eq!(items.len(), TPCH_QUERY_COUNT);
+
+    fs::remove_dir_all(source).unwrap();
+    fs::remove_dir_all(layout).unwrap();
+}

@@ -32,6 +32,17 @@ const SF10_TABLE_ROW_COUNTS: &[(&str, u64)] = &[
     ("supplier", 100_000),
 ];
 
+const SF100_TABLE_ROW_COUNTS: &[(&str, u64)] = &[
+    ("customer", 15_000_000),
+    ("lineitem", 600_037_902),
+    ("nation", 25),
+    ("orders", 150_000_000),
+    ("part", 20_000_000),
+    ("partsupp", 80_000_000),
+    ("region", 5),
+    ("supplier", 1_000_000),
+];
+
 const REQUIRED_COLUMNS: &[(&str, &[&str])] = &[
     (
         "customer",
@@ -238,16 +249,14 @@ fn expected_table_row_counts(scale_factor: NativeTpchScaleFactor) -> &'static [(
     match scale_factor {
         NativeTpchScaleFactor::Sf1 => SF1_TABLE_ROW_COUNTS,
         NativeTpchScaleFactor::Sf10 => SF10_TABLE_ROW_COUNTS,
+        NativeTpchScaleFactor::Sf100 => SF100_TABLE_ROW_COUNTS,
     }
 }
 
 pub(super) async fn register_tpch_tables(ctx: &SessionContext, metadata: &TpchDatasetMetadata) -> DataFusionResult<()> {
     for table in &metadata.tables {
-        let path = table
-            .path
-            .to_str()
-            .ok_or_else(|| plan_error(format!("TPC-H table path is not valid UTF-8: {}", table.path.display())))?;
-        ctx.register_parquet(&table.table, path, ParquetReadOptions::default()).await?;
+        let layout = TpchTableLayout::from_metadata(table);
+        register_tpch_table_layout(ctx, &table.table, &layout).await.map_err(tpch_error)?;
     }
     Ok(())
 }

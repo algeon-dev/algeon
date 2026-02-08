@@ -159,30 +159,86 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
     })
 }
 
-pub(super) fn resolve_tpch_table_path(root: &Path, table: &str) -> TpchWorkloadResult<PathBuf> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TpchTableLayout {
+    pub anchor: PathBuf,
+    pub files: Vec<PathBuf>,
+}
+
+impl TpchTableLayout {
+    pub fn from_metadata(table: &TpchTableMetadata) -> Self {
+        Self { anchor: table.path.clone(), files: table.files.iter().map(|file| file.path.clone()).collect() }
+    }
+}
+
+pub fn discover_tpch_table_layout(root: &Path, table: &str) -> TpchWorkloadResult<TpchTableLayout> {
     let file_path = root.join(format!("{table}.parquet"));
     if file_path.is_file() {
-        return Ok(file_path);
+        return Ok(TpchTableLayout { anchor: file_path.clone(), files: vec![file_path] });
     }
 
     let directory_path = root.join(table);
     if directory_path.is_dir() {
-        return Ok(directory_path);
+        let mut files = Vec::new();
+        collect_parquet_files(&directory_path, &mut files)?;
+        files.sort();
+        if files.is_empty() {
+            return Err(TpchWorkloadError::InvalidDataset(format!(
+                "expected at least one Parquet file under {}",
+                directory_path.display()
+            )));
+        }
+        return Ok(TpchTableLayout { anchor: directory_path, files });
+    }
+
+    let sibling_shards = discover_sibling_split_shards(root, table)?;
+    if !sibling_shards.is_empty() {
+        let anchor = sibling_shards.first().cloned().expect("non-empty sibling_shards guarantees a first element");
+        return Ok(TpchTableLayout { anchor, files: sibling_shards });
     }
 
     Err(TpchWorkloadError::InvalidDataset(format!(
-        "expected TPC-H table {table} at either {} or {}",
+        "expected TPC-H table {table} at {}, {}/, or {}_NNNN.parquet siblings under {}",
         file_path.display(),
-        directory_path.display()
+        directory_path.display(),
+        table,
+        root.display()
     )))
 }
 
+fn discover_sibling_split_shards(root: &Path, table: &str) -> TpchWorkloadResult<Vec<PathBuf>> {
+    if !root.is_dir() {
+        return Ok(Vec::new());
+    }
+    let prefix = format!("{table}_");
+    let mut shards = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&prefix) || !name.ends_with(".parquet") {
+            continue;
+        }
+        let shard_suffix = &name[prefix.len()..name.len() - ".parquet".len()];
+        if shard_suffix.is_empty() || !shard_suffix.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        shards.push(path);
+    }
+    shards.sort();
+    Ok(shards)
+}
+
 fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<TpchTableMetadata> {
-    let path = resolve_tpch_table_path(root, table)?;
-    let file_paths = resolve_tpch_table_files(&path)?;
-    let mut files = Vec::with_capacity(file_paths.len());
-    for file_path in file_paths {
-        files.push(read_tpch_table_file_metadata(root, &file_path)?);
+    let layout = discover_tpch_table_layout(root, table)?;
+    let mut files = Vec::with_capacity(layout.files.len());
+    for file_path in &layout.files {
+        files.push(read_tpch_table_file_metadata(root, file_path)?);
     }
 
     let schema = files
@@ -204,7 +260,7 @@ fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<Tpch
     let row_group_bytes = files.iter().flat_map(|file| file.row_group_bytes.iter().copied()).collect();
     Ok(TpchTableMetadata {
         table: table.to_string(),
-        path,
+        path: layout.anchor,
         schema,
         files,
         file_count,
@@ -214,23 +270,6 @@ fn read_tpch_table_metadata(root: &Path, table: &str) -> TpchWorkloadResult<Tpch
         row_group_rows,
         row_group_bytes,
     })
-}
-
-fn resolve_tpch_table_files(path: &Path) -> TpchWorkloadResult<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
-    }
-
-    let mut files = Vec::new();
-    collect_parquet_files(path, &mut files)?;
-    files.sort();
-    if files.is_empty() {
-        return Err(TpchWorkloadError::InvalidDataset(format!(
-            "expected at least one Parquet file under {}",
-            path.display()
-        )));
-    }
-    Ok(files)
 }
 
 fn collect_parquet_files(path: &Path, files: &mut Vec<PathBuf>) -> TpchWorkloadResult<()> {
