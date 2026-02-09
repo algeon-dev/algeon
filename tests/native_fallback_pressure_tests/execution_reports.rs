@@ -92,18 +92,26 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.one_shot_join_materialization_bytes, 8192);
     assert_eq!(row.metrics.one_shot_join_output_bytes, 16384);
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
+    assert_eq!(row.metrics.join_strategy_rows.len(), 1);
+    assert_eq!(row.metrics.join_strategy_rows[0].node_id, "n2");
+    assert_eq!(row.metrics.join_strategy_rows[0].join_strategy, "one_shot_equi");
+    assert_eq!(
+        row.metrics.join_strategy_rows[0].reusable_hash_join_rejected_reason.as_deref(),
+        Some("build_side_too_large")
+    );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 14);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 83);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 15);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 84);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=14\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=15\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality=query_engine_owned_boundary"));
     assert!(!text.contains("bounded_join_execution_status"));
     assert!(!text.contains("bounded_join_reservation_facts"));
+    assert!(text.contains("node_id=n2,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
     assert!(text.contains("\tNativeCudfExec\tnative\tfalse\ttrue\tsucceeded\tnone\t1\t4\t256\t"));
 }
 

@@ -257,6 +257,33 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
     ] {
         MetricBuilder::new(&metrics).with_type(MetricType::SUMMARY).counter(name, 0).add(value);
     }
+    MetricBuilder::new(&metrics)
+        .with_type(MetricType::SUMMARY)
+        .with_new_label("node_id", "n2")
+        .with_new_label("join_strategy", "one_shot_equi")
+        .with_new_label("execution_strategy", "bounded_one_shot_equi_join")
+        .with_new_label("join_type", "inner")
+        .with_new_label("build_side", "right")
+        .with_new_label("key_count", "1")
+        .with_new_label("estimated_build_rows", "100")
+        .with_new_label("observed_build_rows", "101")
+        .with_new_label("build_side_bytes", "1024")
+        .with_new_label("probe_reuse_count", "1")
+        .with_new_label("reusable_hash_join_rejected_reason", "build_side_too_large")
+        .with_new_label("one_shot_equi_rejected_reason", "none")
+        .with_new_label("hash_join_build_count", "0")
+        .with_new_label("hash_join_hash_table_bytes", "0")
+        .with_new_label("filtered_join_build_count", "0")
+        .with_new_label("filtered_join_hash_table_bytes", "0")
+        .with_new_label("filtered_join_probe_state_bytes", "0")
+        .with_new_label("mixed_join_size_data_bytes", "0")
+        .with_new_label("one_shot_join_count", "1")
+        .with_new_label("one_shot_join_index_bytes", "2048")
+        .with_new_label("one_shot_join_materialization_bytes", "4096")
+        .with_new_label("one_shot_join_output_bytes", "8192")
+        .with_new_label("join_gather_map_bytes", "2048")
+        .global_counter("native_join_strategy_rows")
+        .add(1);
     metrics.clone_inner()
 }
 

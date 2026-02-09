@@ -258,6 +258,7 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.one_shot_join_materialization_bytes.to_string(),
                 row.metrics.one_shot_join_output_bytes.to_string(),
                 row.metrics.join_gather_map_bytes.to_string(),
+                format_join_strategy_rows(&row.metrics.join_strategy_rows),
                 format_source_diagnostics(&row.source_diagnostics),
             ];
             let _ = writeln!(output, "{}", fields.join("\t"));

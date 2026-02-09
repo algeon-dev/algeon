@@ -30,7 +30,7 @@ pub use native_report::{
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
-    NativePlanningFailure, NativeSourceDiagnosticSummary,
+    NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary,
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,

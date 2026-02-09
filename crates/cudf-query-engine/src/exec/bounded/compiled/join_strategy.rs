@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::{
     capability::{
         JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
@@ -24,6 +26,12 @@ pub(crate) enum CompiledJoinExecutionStrategy {
     MixedKeyedResidual,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompiledJoinStrategySelection {
+    pub(crate) strategy: CompiledJoinExecutionStrategy,
+    pub(crate) facts: Option<BTreeMap<&'static str, String>>,
+}
+
 impl CompiledJoinExecutionStrategy {
     pub(crate) fn from_plan_join_node(
         plan: &QueryPlan,
@@ -36,23 +44,34 @@ impl CompiledJoinExecutionStrategy {
         }
     }
 
-    pub(crate) fn from_join_node_with_strategy_facts(
+    pub(crate) fn select_from_join_node_with_strategy_facts(
         join: &JoinNode,
         facts: KeyedHashJoinStrategyInputFacts,
-    ) -> std::result::Result<Option<Self>, KeyedHashJoinStrategyDecision> {
+    ) -> std::result::Result<Option<CompiledJoinStrategySelection>, KeyedHashJoinStrategyDecision> {
         if join_node_execution_capability(join) != Some(JoinExecutionCapability::KeyedHash) {
-            return Ok(Self::from_non_keyed_hash_join_node(join));
+            return Ok(Self::from_non_keyed_hash_join_node(join)
+                .map(|strategy| CompiledJoinStrategySelection { strategy, facts: None }));
         }
-        Self::from_keyed_hash_strategy_decision(keyed_hash_join_strategy_decision(join, facts)).map(Some)
+        Self::select_from_keyed_hash_strategy_decision(keyed_hash_join_strategy_decision(join, facts)).map(Some)
     }
 
     fn from_keyed_hash_strategy_decision(
         decision: KeyedHashJoinStrategyDecision,
     ) -> std::result::Result<Self, KeyedHashJoinStrategyDecision> {
+        Self::select_from_keyed_hash_strategy_decision(decision).map(|selection| selection.strategy)
+    }
+
+    fn select_from_keyed_hash_strategy_decision(
+        decision: KeyedHashJoinStrategyDecision,
+    ) -> std::result::Result<CompiledJoinStrategySelection, KeyedHashJoinStrategyDecision> {
         match decision {
-            KeyedHashJoinStrategyDecision::Selected { strategy, .. } => match strategy {
-                KeyedHashJoinStrategy::ReusableHashEqui => Ok(Self::HashEqui),
-                KeyedHashJoinStrategy::OneShotEqui => Ok(Self::OneShotEqui),
+            KeyedHashJoinStrategyDecision::Selected { strategy, facts } => match strategy {
+                KeyedHashJoinStrategy::ReusableHashEqui => {
+                    Ok(CompiledJoinStrategySelection { strategy: Self::HashEqui, facts: Some(facts) })
+                },
+                KeyedHashJoinStrategy::OneShotEqui => {
+                    Ok(CompiledJoinStrategySelection { strategy: Self::OneShotEqui, facts: Some(facts) })
+                },
             },
             rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => Err(rejected),
         }

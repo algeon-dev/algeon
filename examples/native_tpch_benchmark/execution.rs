@@ -397,6 +397,7 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
         aggregate.one_shot_join_output_bytes =
             aggregate.one_shot_join_output_bytes.saturating_add(current.one_shot_join_output_bytes);
         aggregate.join_gather_map_bytes = aggregate.join_gather_map_bytes.saturating_add(current.join_gather_map_bytes);
+        aggregate.merge_join_strategy_rows(current.join_strategy_rows);
     }
     aggregate
 }

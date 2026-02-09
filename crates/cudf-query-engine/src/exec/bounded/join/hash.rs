@@ -270,6 +270,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
             filtered_probe_state_bytes: 0,
             mixed_size_data_bytes: 0,
             gather_map_bytes,
+            output_reservation_bytes,
             output_rows,
             output_bytes,
         },
