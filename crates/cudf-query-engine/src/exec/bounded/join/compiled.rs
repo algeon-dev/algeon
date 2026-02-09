@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
@@ -8,6 +10,7 @@ use super::{
 use crate::{
     capability::{KeylessConditionalJoinKind, keyed_filtered_semi_anti_join_capable},
     exec::bounded::strict::CompiledJoinExecutionStrategy,
+    expr::{ColumnQualifier, ColumnRef},
 };
 
 pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
@@ -502,10 +505,16 @@ fn compiled_join_input_columns(
             ))
         },
         CompiledJoinExecutionStrategy::OneShotEqui => {
+            let residual_columns = residual_input_columns(node)?;
             let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
             let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
             let keys = if side == JoinSide::Left { &left_keys } else { &right_keys };
-            Ok(projected_input_columns(keys, &node.spec.output_projection, [], side))
+            Ok(projected_input_columns(
+                keys,
+                &node.spec.output_projection,
+                residual_columns.names(side).iter().map(String::as_str),
+                side,
+            ))
         },
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             let _ = context;
@@ -535,11 +544,15 @@ fn orient_prepared_inputs(
 
 fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
     validate_executable_join_subset(node)?;
-    if node.spec.join_type == JoinType::Inner && !node.spec.keys.is_empty() && node.spec.residual_predicate.is_none() {
+    if matches!(node.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
+        && !node.spec.keys.is_empty()
+        && (node.spec.residual_predicate.is_none() || node.spec.join_type == JoinType::Inner)
+        && (node.spec.join_type != JoinType::Left || node.spec.build_side == JoinSide::Right)
+    {
         return Ok(());
     }
     Err(unsupported_bounded_shape(
-        "compiled one-shot equi join execution currently supports keyed inner joins without residual predicates",
+        "compiled one-shot equi join execution supports keyed inner joins with optional residual predicates and keyed left/full joins without residual predicates",
         "compiled_join_strategy_unsupported",
     )
     .with_fact("join_type", node.spec.join_type)
@@ -783,11 +796,13 @@ fn execute_compiled_one_shot_equi_join_materialize(
     let options = dataframe_join_options(&left_keys, &right_keys, node.spec.null_equality);
     let overrides = execution_overrides(context);
     let timer = Instant::now();
-    let pair_indices = left
-        .frame
-        .with_execution(&overrides)
-        .inner_join_indices(&right.frame, options)
-        .map_err(|error| join_index_error(error, node))?;
+    let pair_indices = match node.spec.join_type {
+        JoinType::Inner => left.frame.with_execution(&overrides).inner_join_indices(&right.frame, options),
+        JoinType::Left => left.frame.with_execution(&overrides).left_join_indices(&right.frame, options),
+        JoinType::Full => left.frame.with_execution(&overrides).full_join_indices(&right.frame, options),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
     let index_bytes = pair_indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.bounded.join.one_shot_index_bytes",
@@ -815,6 +830,22 @@ fn execute_compiled_one_shot_equi_join_materialize(
     let output_rows = pair_indices.len() as u64;
     let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
     drop(pair_indices);
+    if node.spec.residual_predicate.is_some() {
+        return materialize_compiled_one_shot_residual_output(
+            context,
+            node_id,
+            node,
+            left,
+            right,
+            indices,
+            output_rows,
+            gather_map_reservation,
+            timer,
+            index_bytes,
+            reservations,
+            metrics,
+        );
+    }
     materialize_compiled_indices_output(
         context,
         node_id,
@@ -836,6 +867,322 @@ fn execute_compiled_one_shot_equi_join_materialize(
         reservations,
         metrics,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn materialize_compiled_one_shot_residual_output(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    left: BoundedJoinSideFrame,
+    right: BoundedJoinSideFrame,
+    indices: CompiledJoinIndices,
+    candidate_rows: u64,
+    gather_map_reservation: ActiveReservation,
+    timer: Instant,
+    index_bytes: u64,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let overrides = execution_overrides(context);
+    let residual_candidate = one_shot_residual_candidate_projection(node)?;
+    let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
+    let candidate_reservation_bytes =
+        indices.output_reservation_size_bytes(&left.frame, &right.frame, &overrides, &residual_candidate.projection)?;
+    metrics.record_one_shot_join();
+    metrics.record_one_shot_join_index_bytes(index_bytes);
+    metrics.record_one_shot_join_materialization_bytes(candidate_reservation_bytes);
+    let candidate_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_residual_candidate_output",
+            candidate_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let candidate =
+        indices.materialize_output(&left.frame, &right.frame, &overrides, &residual_candidate.projection)?;
+    let candidate_output_rows = candidate.num_rows() as u64;
+    debug_assert_eq!(candidate_output_rows, candidate_rows);
+    drop(indices);
+    reservations.release(gather_map_reservation);
+
+    let mut filtered_reservation = match reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_residual_filter_output",
+            candidate_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(candidate);
+            reservations.release(candidate_reservation);
+            return Err(error);
+        },
+    };
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&filtered_reservation),
+        "join_residual_filter_output",
+        "cudf_query_engine.bounded.join.one_shot_residual_filter.budget_token",
+        "failed to create bounded native one-shot residual filter budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            drop(candidate);
+            reservations.release(filtered_reservation);
+            reservations.release(candidate_reservation);
+            return Err(error);
+        },
+    };
+    let predicate = lower_expr(&residual_candidate.predicate)?;
+    let filter_overrides = token.execution_overrides();
+    let filtered = match candidate.with_execution(&filter_overrides).filter_expr(predicate) {
+        Ok(filtered) => filtered,
+        Err(error) => {
+            drop(candidate);
+            reservations.release(filtered_reservation);
+            reservations.release(candidate_reservation);
+            return Err(attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "cudf_query_engine.bounded.join.one_shot_residual_filter",
+                    "failed to filter compiled one-shot residual join candidates",
+                    error,
+                )
+                .with_fact("join_type", node.spec.join_type)
+                .with_fact("key_count", node.spec.keys.len())
+                .with_fact("build_side", node.spec.build_side),
+                &token,
+            ));
+        },
+    };
+    drop(candidate);
+    reservations.release(candidate_reservation);
+
+    let output =
+        filtered.select(residual_candidate.final_output_names.iter().map(String::as_str)).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.one_shot_residual_output_projection",
+                "failed to project compiled one-shot residual join output columns",
+                error,
+            )
+        })?;
+    drop(filtered);
+    metrics.operator_time += timer.elapsed();
+    let output_rows = output.num_rows() as u64;
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    metrics.record_one_shot_join_output_bytes(output_bytes);
+    if output_bytes > filtered_reservation.bytes() {
+        let grow_request = bounded_join_request(
+            ReservationKind::JoinOutput,
+            "join_residual_filter_output",
+            output_bytes.saturating_sub(filtered_reservation.bytes()),
+            reservations.budget(),
+            node_id,
+        );
+        if let Err(error) = reservations.try_grow(&mut filtered_reservation, grow_request, metrics) {
+            drop(output);
+            reservations.release(filtered_reservation);
+            drop(left);
+            drop(right);
+            return Err(error);
+        }
+    } else {
+        reservations.shrink_to_observed(&mut filtered_reservation, output_bytes);
+    }
+    let final_output_reservation_bytes = filtered_reservation.bytes();
+    let build_side = node.spec.build_side;
+    let probe_side = probe_side(build_side);
+    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+        node_id,
+        crate::metrics::JoinOperatorMetrics {
+            join_type: node.spec.join_type.to_string(),
+            execution_strategy: "bounded_one_shot_equi_join".to_string(),
+            key_count: node.spec.keys.len(),
+            residual_predicate: true,
+            null_equality: node.spec.null_equality.to_string(),
+            build_side: build_side.to_string(),
+            probe_side: probe_side.to_string(),
+            build_rows: side_metric(build_side, left.rows, right.rows),
+            build_bytes: side_metric(build_side, left.bytes, right.bytes),
+            probe_rows: side_metric(probe_side, left.rows, right.rows),
+            probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
+            hash_table_bytes: 0,
+            filtered_probe_state_bytes: 0,
+            mixed_size_data_bytes: 0,
+            gather_map_bytes,
+            output_reservation_bytes: final_output_reservation_bytes,
+            output_rows,
+            output_bytes,
+        },
+    ));
+    drop(left);
+    drop(right);
+    Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: filtered_reservation })
+}
+
+struct OneShotResidualCandidateProjection {
+    projection: Vec<JoinOutputColumn>,
+    predicate: Expr,
+    final_output_names: Vec<String>,
+}
+
+fn one_shot_residual_candidate_projection(node: &JoinNode) -> Result<OneShotResidualCandidateProjection> {
+    let residual_columns = residual_input_columns(node)?;
+    let mut projection = node.spec.output_projection.clone();
+    let final_output_names = node.spec.output_projection.iter().map(|column| column.output_name.clone()).collect();
+    let mut used_names = projection.iter().map(|column| column.output_name.clone()).collect::<BTreeSet<_>>();
+    let mut residual_output_names = BTreeMap::new();
+
+    for side in [JoinSide::Left, JoinSide::Right] {
+        for (index, name) in residual_columns.names(side).iter().enumerate() {
+            let output_name = residual_candidate_column_name(side, index, name, &mut used_names);
+            residual_output_names.insert((residual_candidate_side_key(side), name.clone()), output_name.clone());
+            let input_index = match side {
+                JoinSide::Left => 0,
+                JoinSide::Right => 1,
+            };
+            projection.push(JoinOutputColumn::new(
+                side,
+                ColumnRef::input(input_index, name.clone(), output_name.clone()),
+                output_name,
+            ));
+        }
+    }
+
+    let predicate = rewrite_join_residual_for_candidate(
+        node.spec.residual_predicate.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.bounded.join.one_shot_residual_projection",
+                "one-shot residual projection requires a residual predicate",
+            )
+        })?,
+        &residual_output_names,
+    )?;
+
+    Ok(OneShotResidualCandidateProjection { projection, predicate, final_output_names })
+}
+
+fn residual_candidate_column_name(
+    side: JoinSide,
+    index: usize,
+    name: &str,
+    used_names: &mut BTreeSet<String>,
+) -> String {
+    let side_label = match side {
+        JoinSide::Left => "left",
+        JoinSide::Right => "right",
+    };
+    let mut sanitized = name.chars().map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' }).collect::<String>();
+    if sanitized.is_empty() {
+        sanitized.push_str("column");
+    }
+    let base = format!("__cudf_one_shot_residual_{side_label}_{index}_{sanitized}");
+    let mut candidate = base.clone();
+    let mut suffix = 0_usize;
+    while !used_names.insert(candidate.clone()) {
+        suffix += 1;
+        candidate = format!("{base}_{suffix}");
+    }
+    candidate
+}
+
+fn residual_candidate_side_key(side: JoinSide) -> u8 {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
+    }
+}
+
+fn rewrite_join_residual_for_candidate(
+    expr: &Expr,
+    residual_output_names: &BTreeMap<(u8, String), String>,
+) -> Result<Expr> {
+    match expr {
+        Expr::Column(column) => {
+            let side = match column.qualifier() {
+                Some(ColumnQualifier::Input { index: 0 }) => JoinSide::Left,
+                Some(ColumnQualifier::Input { index: 1 }) => JoinSide::Right,
+                qualifier => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.bounded.join.one_shot_residual_projection",
+                        "one-shot residual predicates require input-qualified column references",
+                    )
+                    .with_fact("column", column.name())
+                    .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string())));
+                },
+            };
+            let name = residual_output_names
+                .get(&(residual_candidate_side_key(side), column.name().to_string()))
+                .ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "cudf_query_engine.bounded.join.one_shot_residual_projection",
+                        "one-shot residual predicate column was not materialized into the candidate frame",
+                    )
+                    .with_fact("side", side)
+                    .with_fact("column", column.name())
+                })?;
+            Ok(Expr::column(name.clone()))
+        },
+        Expr::Literal(value) => Ok(Expr::Literal(value.clone())),
+        Expr::Not(input) => Ok(Expr::logical_not(rewrite_join_residual_for_candidate(input, residual_output_names)?)),
+        Expr::IsNull(input) => Ok(Expr::is_null(rewrite_join_residual_for_candidate(input, residual_output_names)?)),
+        Expr::IsNotNull(input) => {
+            Ok(Expr::is_not_null(rewrite_join_residual_for_candidate(input, residual_output_names)?))
+        },
+        Expr::Cast { expr, target_type } => {
+            Ok(Expr::cast(rewrite_join_residual_for_candidate(expr, residual_output_names)?, target_type.clone()))
+        },
+        Expr::Binary { left, op, right } => Ok(Expr::binary(
+            rewrite_join_residual_for_candidate(left, residual_output_names)?,
+            *op,
+            rewrite_join_residual_for_candidate(right, residual_output_names)?,
+        )),
+        Expr::Like { expr, pattern, escape, negated } => Ok(Expr::Like {
+            expr: Box::new(rewrite_join_residual_for_candidate(expr, residual_output_names)?),
+            pattern: pattern.clone(),
+            escape: escape.clone(),
+            negated: *negated,
+        }),
+        Expr::Substring { expr, start, length } => {
+            Ok(Expr::substring(rewrite_join_residual_for_candidate(expr, residual_output_names)?, *start, *length))
+        },
+        Expr::InList { expr, list, negated } => Ok(Expr::InList {
+            expr: Box::new(rewrite_join_residual_for_candidate(expr, residual_output_names)?),
+            list: list
+                .iter()
+                .map(|item| rewrite_join_residual_for_candidate(item, residual_output_names))
+                .collect::<Result<Vec<_>>>()?,
+            negated: *negated,
+        }),
+        Expr::Case { branches, else_expr } => Ok(Expr::case(
+            branches
+                .iter()
+                .map(|branch| {
+                    Ok(crate::expr::CaseWhen {
+                        when: rewrite_join_residual_for_candidate(&branch.when, residual_output_names)?,
+                        then: rewrite_join_residual_for_candidate(&branch.then, residual_output_names)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?,
+            rewrite_join_residual_for_candidate(else_expr, residual_output_names)?,
+        )),
+        Expr::Extract { field, expr } => {
+            Ok(Expr::extract(*field, rewrite_join_residual_for_candidate(expr, residual_output_names)?))
+        },
+        Expr::Alias { expr, alias } => {
+            Ok(rewrite_join_residual_for_candidate(expr, residual_output_names)?.alias(alias.clone()))
+        },
+    }
 }
 
 fn execute_compiled_projected_cross_join_materialize(

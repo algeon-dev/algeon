@@ -4,7 +4,7 @@ use crate::{
     capability::{
         JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
         KeylessConditionalJoinKind, join_node_execution_capability, keyed_hash_join_strategy_decision,
-        keyed_hash_join_strategy_decision_for_plan,
+        keyed_hash_join_strategy_decision_for_plan, one_shot_equi_join_supported,
     },
     plan::{JoinNode, NodeId, QueryPlan},
 };
@@ -49,6 +49,19 @@ impl CompiledJoinExecutionStrategy {
         facts: KeyedHashJoinStrategyInputFacts,
     ) -> std::result::Result<Option<CompiledJoinStrategySelection>, KeyedHashJoinStrategyDecision> {
         if join_node_execution_capability(join) != Some(JoinExecutionCapability::KeyedHash) {
+            if one_shot_equi_join_supported(join) {
+                match keyed_hash_join_strategy_decision(join, facts) {
+                    decision @ KeyedHashJoinStrategyDecision::Selected {
+                        strategy: KeyedHashJoinStrategy::OneShotEqui,
+                        ..
+                    } => return Self::select_from_keyed_hash_strategy_decision(decision).map(Some),
+                    KeyedHashJoinStrategyDecision::Selected {
+                        strategy: KeyedHashJoinStrategy::ReusableHashEqui,
+                        ..
+                    } => {},
+                    rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => return Err(rejected),
+                }
+            }
             return Ok(Self::from_non_keyed_hash_join_node(join)
                 .map(|strategy| CompiledJoinStrategySelection { strategy, facts: None }));
         }
