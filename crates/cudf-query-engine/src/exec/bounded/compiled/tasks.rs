@@ -14,11 +14,13 @@ use crate::{
     exec::{
         bounded::{
             BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, ReservationTracker, ResidentGpuFrame,
-            execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_materialize,
-            execute_bounded_compiled_join_probe_from_frame, execute_bounded_generic_gpu_resident_source,
-            execute_bounded_generic_local_parquet_source, execute_bounded_generic_unary_from_frame,
-            execute_bounded_generic_unary_from_frame_with_reservation_kind, execute_bounded_join_leaf_source,
-            execute_compiled_bounded_aggregate_from_frame, execute_final_sort_node_from_frame_with_retry,
+            execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
+            execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
+            execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_generic_gpu_resident_source,
+            execute_bounded_generic_local_parquet_source, execute_bounded_generic_unary,
+            execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
+            execute_bounded_join_leaf_source, execute_compiled_bounded_aggregate_from_frame,
+            execute_final_sort_node_from_frame_with_retry,
         },
         materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap},
@@ -165,7 +167,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     fn execute_unary_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
         let input = *task.input_resources().first().ok_or_else(|| {
@@ -174,55 +176,104 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("pipeline_task_kind", task.kind().as_str())
         })?;
         let output = single_output_resource(task)?;
-        let input_payload = state.resource_payload(input)?;
-        let input_frame = input_payload.clone_frame();
-        let input_reserved_bytes = input_payload.reservation_bytes();
         let node = self.plan.node(node_id).ok_or_else(|| {
             invalid("compiled unary task references a missing plan node")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
         })?;
         let frame = match &node.kind {
-            PlanNode::Filter(filter) => execute_bounded_generic_unary_from_frame(
-                self.context,
-                node_id,
-                "compiled_filter",
-                "compiled_filter_output",
-                input_frame,
-                input_reserved_bytes,
-                &mut self.reservations,
-                self.metrics,
-                true,
-                |context, input, token, metrics| {
-                    crate::exec::operators::execute_filter_with_budget(
-                        context,
-                        filter,
-                        input,
-                        token.expect("budget token is created for compiled bounded filter stages"),
-                        metrics,
+            PlanNode::Filter(filter) => {
+                if state.can_consume_task_input_resource(task, input) {
+                    let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+                    execute_bounded_generic_unary(
+                        self.context,
+                        node_id,
+                        "compiled_filter",
+                        "compiled_filter_output",
+                        input_payload.into_resident_frame(),
+                        &mut self.reservations,
+                        self.metrics,
+                        true,
+                        |context, input, token, metrics| {
+                            crate::exec::operators::execute_filter_with_budget(
+                                context,
+                                filter,
+                                input,
+                                token.expect("budget token is created for compiled bounded filter stages"),
+                                metrics,
+                            )
+                        },
                     )
-                },
-            ),
-            PlanNode::Projection(projection) => execute_bounded_generic_unary_from_frame(
-                self.context,
-                node_id,
-                "compiled_projection",
-                "compiled_projection_output",
-                input_frame,
-                input_reserved_bytes,
-                &mut self.reservations,
-                self.metrics,
-                true,
-                |context, input, token, metrics| {
-                    crate::exec::operators::execute_projection_with_budget(
-                        context,
-                        projection,
-                        input,
-                        token.expect("budget token is created for compiled bounded projection stages"),
-                        metrics,
+                } else {
+                    let input_payload = state.resource_payload(input)?;
+                    execute_bounded_generic_unary_from_frame(
+                        self.context,
+                        node_id,
+                        "compiled_filter",
+                        "compiled_filter_output",
+                        input_payload.clone_frame(),
+                        input_payload.reservation_bytes(),
+                        &mut self.reservations,
+                        self.metrics,
+                        true,
+                        |context, input, token, metrics| {
+                            crate::exec::operators::execute_filter_with_budget(
+                                context,
+                                filter,
+                                input,
+                                token.expect("budget token is created for compiled bounded filter stages"),
+                                metrics,
+                            )
+                        },
                     )
-                },
-            ),
+                }
+            },
+            PlanNode::Projection(projection) => {
+                if state.can_consume_task_input_resource(task, input) {
+                    let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+                    execute_bounded_generic_unary(
+                        self.context,
+                        node_id,
+                        "compiled_projection",
+                        "compiled_projection_output",
+                        input_payload.into_resident_frame(),
+                        &mut self.reservations,
+                        self.metrics,
+                        true,
+                        |context, input, token, metrics| {
+                            crate::exec::operators::execute_projection_with_budget(
+                                context,
+                                projection,
+                                input,
+                                token.expect("budget token is created for compiled bounded projection stages"),
+                                metrics,
+                            )
+                        },
+                    )
+                } else {
+                    let input_payload = state.resource_payload(input)?;
+                    execute_bounded_generic_unary_from_frame(
+                        self.context,
+                        node_id,
+                        "compiled_projection",
+                        "compiled_projection_output",
+                        input_payload.clone_frame(),
+                        input_payload.reservation_bytes(),
+                        &mut self.reservations,
+                        self.metrics,
+                        true,
+                        |context, input, token, metrics| {
+                            crate::exec::operators::execute_projection_with_budget(
+                                context,
+                                projection,
+                                input,
+                                token.expect("budget token is created for compiled bounded projection stages"),
+                                metrics,
+                            )
+                        },
+                    )
+                }
+            },
             _ => Err(invalid("compiled unary task does not reference a filter or projection plan node")
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id)
@@ -235,7 +286,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     fn execute_join_build_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
         if self.join_builds.contains_key(&node_id) || self.join_probes.contains_key(&node_id) {
@@ -245,29 +296,40 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
         let input = single_input_resource(task)?;
-        let input_payload = state.resource_payload(input)?;
         let node = join_node(self.plan, task, node_id)?;
-        let strategy = join_strategy(
-            self.plan,
-            node,
-            task,
-            node_id,
-            input_payload.num_rows() as u64,
-            input_payload.reservation_bytes(),
-        )?;
+        let (input_rows, input_reserved_bytes) = {
+            let input_payload = state.resource_payload(input)?;
+            (input_payload.num_rows() as u64, input_payload.reservation_bytes())
+        };
+        let strategy = join_strategy(self.plan, node, task, node_id, input_rows, input_reserved_bytes)?;
         if let Some(facts) = strategy.facts.as_ref() {
             self.metrics.record_join_strategy_decision(node_id, facts);
         }
-        let build = execute_bounded_compiled_join_build_from_frame(
-            self.context,
-            node_id,
-            node,
-            strategy.strategy,
-            input_payload.clone_frame(),
-            input_payload.reservation_bytes(),
-            &mut self.reservations,
-            self.metrics,
-        )
+        let build = if state.can_consume_task_input_resource(task, input) {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
+            execute_bounded_compiled_join_build_from_resident_frame(
+                self.context,
+                node_id,
+                node,
+                strategy.strategy,
+                input_payload.into_resident_frame(),
+                &mut self.reservations,
+                self.metrics,
+            )
+        } else {
+            let input_payload = state.resource_payload(input)?;
+            execute_bounded_compiled_join_build_from_frame(
+                self.context,
+                node_id,
+                node,
+                strategy.strategy,
+                input_payload.clone_frame(),
+                input_payload.reservation_bytes(),
+                &mut self.reservations,
+                self.metrics,
+            )
+        }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_builds.insert(node_id, build);
         Ok(CompiledTaskOutput::empty())
@@ -276,11 +338,10 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     fn execute_join_probe_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
-        let input_payload = state.resource_payload(input)?;
         let node = join_node(self.plan, task, node_id)?;
         let build = self.join_builds.remove(&node_id).ok_or_else(|| {
             invalid("compiled join probe task ran before join build state was available")
@@ -294,16 +355,31 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
-        let probe = execute_bounded_compiled_join_probe_from_frame(
-            self.context,
-            node_id,
-            node,
-            build,
-            input_payload.clone_frame(),
-            input_payload.reservation_bytes(),
-            &mut self.reservations,
-            self.metrics,
-        )
+        let probe = if state.can_consume_task_input_resource(task, input) {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
+            execute_bounded_compiled_join_probe_from_resident_frame(
+                self.context,
+                node_id,
+                node,
+                build,
+                input_payload.into_resident_frame(),
+                &mut self.reservations,
+                self.metrics,
+            )
+        } else {
+            let input_payload = state.resource_payload(input)?;
+            execute_bounded_compiled_join_probe_from_frame(
+                self.context,
+                node_id,
+                node,
+                build,
+                input_payload.clone_frame(),
+                input_payload.reservation_bytes(),
+                &mut self.reservations,
+                self.metrics,
+            )
+        }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_probes.insert(node_id, probe);
         Ok(CompiledTaskOutput::empty())
@@ -505,7 +581,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
     fn execute_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<Self::Resource>,
+        state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         validate_task_runtime_gates(self.pipeline, task)?;
         self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));

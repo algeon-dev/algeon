@@ -20,7 +20,7 @@ pub trait CompiledTaskExecutor {
     fn execute_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<Self::Resource>,
+        state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>>;
 
     fn release_resource(&mut self, _resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
@@ -70,7 +70,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
         while state.completed_task_count() < self.pipeline.tasks().len() {
             let task = self.next_runnable_task(&state)?;
             state.prepare_task(task)?;
-            let output = executor.execute_task(task, &state)?;
+            let output = executor.execute_task(task, &mut state)?;
             let released = state.complete_task(task, output.into_produced_resources())?;
             for resource in released {
                 executor.release_resource(resource.id(), resource.into_payload())?;

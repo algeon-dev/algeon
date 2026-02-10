@@ -58,10 +58,8 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
         &[
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
             (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
             (ReservationKind::GatherMap, "join_gather_map"),
@@ -100,10 +98,8 @@ fn bounded_native_query_executes_root_filtered_semi_anti_joins_with_ordered_rese
         &[
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
             (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::FilteredProbeState, "join_filtered_probe_state"),
             (ReservationKind::GatherMap, "join_gather_map"),

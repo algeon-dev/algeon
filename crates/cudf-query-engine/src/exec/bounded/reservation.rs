@@ -59,12 +59,21 @@ impl ActiveReservationEventContext {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::exec) enum ActiveReservationSemantics {
+    OwnedResident,
+    Work,
+    Alias,
+}
+
 pub(in crate::exec) struct ActiveReservation {
     memory_space: MemorySpaceId,
     reserved_bytes: Rc<Cell<u64>>,
     protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
     source_cache_key: Option<GpuLocalParquetSourceCacheKey>,
     event_context: ActiveReservationEventContext,
+    semantics: ActiveReservationSemantics,
+    alias_count: Option<Rc<Cell<usize>>>,
     release_action: MemoryReservationEventAction,
     bytes: u64,
     charged_bytes: u64,
@@ -72,12 +81,47 @@ pub(in crate::exec) struct ActiveReservation {
 }
 
 impl ActiveReservation {
-    pub(in crate::exec) fn new(
+    pub(in crate::exec) fn owned_resident(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
         protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
         bytes: u64,
         request: &MemoryReservationRequest,
+    ) -> Self {
+        Self::charged(
+            memory_space,
+            reserved_bytes,
+            protected_source_cache_keys,
+            bytes,
+            request,
+            ActiveReservationSemantics::OwnedResident,
+        )
+    }
+
+    pub(in crate::exec) fn work(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+    ) -> Self {
+        Self::charged(
+            memory_space,
+            reserved_bytes,
+            protected_source_cache_keys,
+            bytes,
+            request,
+            ActiveReservationSemantics::Work,
+        )
+    }
+
+    fn charged(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+        semantics: ActiveReservationSemantics,
     ) -> Self {
         Self {
             memory_space,
@@ -85,6 +129,8 @@ impl ActiveReservation {
             protected_source_cache_keys,
             source_cache_key: None,
             event_context: ActiveReservationEventContext::from_request(request),
+            semantics,
+            alias_count: Some(Rc::new(Cell::new(0))),
             release_action: MemoryReservationEventAction::Release,
             bytes,
             charged_bytes: bytes,
@@ -111,6 +157,32 @@ impl ActiveReservation {
             protected_source_cache_keys,
             source_cache_key: Some(source_cache_key),
             event_context: ActiveReservationEventContext::from_request(request),
+            semantics: ActiveReservationSemantics::Alias,
+            alias_count: None,
+            release_action: MemoryReservationEventAction::AliasRelease,
+            bytes,
+            charged_bytes: 0,
+            released: false,
+        }
+    }
+
+    pub(in crate::exec) fn alias(
+        memory_space: MemorySpaceId,
+        reserved_bytes: Rc<Cell<u64>>,
+        protected_source_cache_keys: Rc<RefCell<HashMap<GpuLocalParquetSourceCacheKey, usize>>>,
+        alias_count: Rc<Cell<usize>>,
+        bytes: u64,
+        request: &MemoryReservationRequest,
+    ) -> Self {
+        alias_count.set(alias_count.get().saturating_add(1));
+        Self {
+            memory_space,
+            reserved_bytes,
+            protected_source_cache_keys,
+            source_cache_key: None,
+            event_context: ActiveReservationEventContext::from_request(request),
+            semantics: ActiveReservationSemantics::Alias,
+            alias_count: Some(alias_count),
             release_action: MemoryReservationEventAction::AliasRelease,
             bytes,
             charged_bytes: 0,
@@ -130,6 +202,32 @@ impl ActiveReservation {
         self.charged_bytes
     }
 
+    pub(in crate::exec) fn is_alias(&self) -> bool {
+        matches!(self.semantics, ActiveReservationSemantics::Alias)
+    }
+
+    fn transferred(mut self, request: &MemoryReservationRequest) -> Self {
+        assert!(!self.released, "cannot transfer a released reservation");
+        assert!(!self.is_alias(), "cannot transfer an alias reservation");
+        let charged_bytes = self.charged_bytes;
+        let semantics = self.semantics;
+        self.charged_bytes = 0;
+        self.released = true;
+        Self {
+            memory_space: self.memory_space,
+            reserved_bytes: Rc::clone(&self.reserved_bytes),
+            protected_source_cache_keys: Rc::clone(&self.protected_source_cache_keys),
+            source_cache_key: None,
+            event_context: ActiveReservationEventContext::from_request(request),
+            semantics,
+            alias_count: self.alias_count.clone(),
+            release_action: MemoryReservationEventAction::Release,
+            bytes: request.requested_bytes,
+            charged_bytes,
+            released: false,
+        }
+    }
+
     fn release(&mut self) -> Option<MemoryReservationEvent> {
         if self.released {
             return None;
@@ -141,6 +239,21 @@ impl ActiveReservation {
                 if *count == 0 {
                     protected.remove(&source_cache_key);
                 }
+            }
+        }
+        if self.source_cache_key.is_none() {
+            match (self.semantics, self.alias_count.as_ref()) {
+                (ActiveReservationSemantics::Alias, Some(alias_count)) => {
+                    alias_count.set(alias_count.get().saturating_sub(1));
+                },
+                (_, Some(alias_count)) => {
+                    assert_eq!(
+                        alias_count.get(),
+                        0,
+                        "cannot release a charged reservation while alias reservations are live"
+                    );
+                },
+                (_, None) => {},
             }
         }
         let charged_delta_bytes = -i128::from(self.charged_bytes);
@@ -271,6 +384,31 @@ impl ReservationTracker {
         request: MemoryReservationRequest,
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
+        self.try_reserve_owned_resident(request, metrics)
+    }
+
+    pub(in crate::exec) fn try_reserve_owned_resident(
+        &mut self,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> Result<ActiveReservation> {
+        self.try_reserve_charged(request, ActiveReservationSemantics::OwnedResident, metrics)
+    }
+
+    pub(in crate::exec) fn try_reserve_work(
+        &mut self,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> Result<ActiveReservation> {
+        self.try_reserve_charged(request, ActiveReservationSemantics::Work, metrics)
+    }
+
+    fn try_reserve_charged(
+        &mut self,
+        request: MemoryReservationRequest,
+        semantics: ActiveReservationSemantics,
+        metrics: &mut QueryMetrics,
+    ) -> Result<ActiveReservation> {
         let request = self.stamp_request(request);
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
@@ -295,13 +433,74 @@ impl ReservationTracker {
             i128::from(request.requested_bytes),
             self.raw_reserved_bytes(),
         );
-        Ok(ActiveReservation::new(
+        let reservation = match semantics {
+            ActiveReservationSemantics::OwnedResident => ActiveReservation::owned_resident(
+                self.memory_space,
+                Rc::clone(&self.reserved_bytes),
+                Rc::clone(&self.protected_source_cache_keys),
+                request.requested_bytes,
+                &request,
+            ),
+            ActiveReservationSemantics::Work => ActiveReservation::work(
+                self.memory_space,
+                Rc::clone(&self.reserved_bytes),
+                Rc::clone(&self.protected_source_cache_keys),
+                request.requested_bytes,
+                &request,
+            ),
+            ActiveReservationSemantics::Alias => unreachable!("alias reservations do not charge capacity"),
+        };
+        Ok(reservation)
+    }
+
+    pub(in crate::exec) fn alias_reservation(
+        &mut self,
+        source: &ActiveReservation,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> ActiveReservation {
+        self.assert_reservation_belongs_to_tracker(source, "alias_reservation");
+        let request = self.stamp_request(request);
+        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+            &request,
+            MemoryReservationEventOutcome::Applied,
+            MemoryReservationEventAction::AliasAcquire,
+            0,
+            0,
+            self.raw_reserved_bytes(),
+        ));
+        ActiveReservation::alias(
             self.memory_space,
             Rc::clone(&self.reserved_bytes),
             Rc::clone(&self.protected_source_cache_keys),
+            Rc::clone(source.alias_count.as_ref().expect("generic alias requires a reservation lineage")),
             request.requested_bytes,
             &request,
-        ))
+        )
+    }
+
+    pub(in crate::exec) fn transfer(
+        &mut self,
+        reservation: ActiveReservation,
+        request: MemoryReservationRequest,
+        metrics: &mut QueryMetrics,
+    ) -> ActiveReservation {
+        self.assert_reservation_belongs_to_tracker(&reservation, "transfer");
+        assert!(
+            !reservation.is_alias(),
+            "reservation tracker invariant failed during transfer: alias reservations cannot transfer ownership"
+        );
+        let request = self.stamp_request(request);
+        let transferred = reservation.transferred(&request);
+        metrics.record_reservation_timeline_event(MemoryReservationEvent::from_request(
+            &request,
+            MemoryReservationEventOutcome::Applied,
+            MemoryReservationEventAction::Transfer,
+            0,
+            0,
+            self.raw_reserved_bytes(),
+        ));
+        transferred
     }
 
     pub(in crate::exec) fn borrow_accounted_source_cache(

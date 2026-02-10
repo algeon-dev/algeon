@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
-        prepare_bounded_join_side_input_from_frame,
+        prepare_bounded_join_side_input_from_frame, prepare_bounded_join_side_input_from_resident_frame,
     },
     *,
 };
@@ -107,6 +107,54 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
     }
 }
 
+pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_resident_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    strategy: CompiledJoinExecutionStrategy,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedCompiledJoinBuildState> {
+    match strategy {
+        CompiledJoinExecutionStrategy::HashEqui => execute_bounded_root_hash_join_build_from_resident_frame(
+            context,
+            node_id,
+            node,
+            input,
+            reservations,
+            metrics,
+        )
+        .map(BoundedCompiledJoinBuildState::Hash),
+        CompiledJoinExecutionStrategy::FilteredSemiAnti => execute_compiled_filtered_join_build_from_resident_frame(
+            context,
+            node_id,
+            node,
+            input,
+            reservations,
+            metrics,
+        )
+        .map(BoundedCompiledJoinBuildState::Filtered),
+        CompiledJoinExecutionStrategy::OneShotEqui
+        | CompiledJoinExecutionStrategy::KeylessConditional { .. }
+        | CompiledJoinExecutionStrategy::ProjectedCross
+        | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
+            let side = node.spec.build_side;
+            let columns = compiled_join_input_columns(context, node, strategy, side)?;
+            let input = prepare_bounded_join_side_input_from_resident_frame(
+                input,
+                &columns,
+                side,
+                node_id,
+                node.spec.build_side,
+                reservations,
+                metrics,
+            )?;
+            Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState { strategy, side, input }))
+        },
+    }
+}
+
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -146,6 +194,58 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
             let probe = prepare_bounded_join_side_input_from_frame(
                 input,
                 input_reserved_bytes,
+                &columns,
+                side,
+                node_id,
+                node.spec.build_side,
+                reservations,
+                metrics,
+            )?;
+            let (left, right) = orient_prepared_inputs(build.side, build.input, side, probe)?;
+            Ok(BoundedCompiledJoinProbeState::Prepared(BoundedCompiledPreparedJoinProbeState {
+                strategy: build.strategy,
+                left,
+                right,
+            }))
+        },
+    }
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_resident_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: BoundedCompiledJoinBuildState,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedCompiledJoinProbeState> {
+    match build {
+        BoundedCompiledJoinBuildState::Hash(build) => execute_bounded_root_hash_join_probe_from_resident_frame(
+            context,
+            node_id,
+            node,
+            build,
+            input,
+            reservations,
+            metrics,
+        )
+        .map(BoundedCompiledJoinProbeState::Hash),
+        BoundedCompiledJoinBuildState::Filtered(build) => execute_compiled_filtered_join_probe_from_resident_frame(
+            context,
+            node_id,
+            node,
+            build,
+            input,
+            reservations,
+            metrics,
+        )
+        .map(BoundedCompiledJoinProbeState::Filtered),
+        BoundedCompiledJoinBuildState::Prepared(build) => {
+            let side = probe_side(build.side);
+            let columns = compiled_join_input_columns(context, node, build.strategy, side)?;
+            let probe = prepare_bounded_join_side_input_from_resident_frame(
+                input,
                 &columns,
                 side,
                 node_id,
@@ -274,6 +374,94 @@ fn execute_compiled_filtered_join_build_from_frame(
     })
 }
 
+fn execute_compiled_filtered_join_build_from_resident_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedCompiledFilteredJoinBuildState> {
+    validate_executable_join_subset(node)?;
+    if !keyed_filtered_semi_anti_join_capable(node) {
+        return Err(unsupported_bounded_shape(
+            "compiled filtered join build requires a filtered semi/anti join node",
+            "compiled_join_strategy_unsupported",
+        ));
+    }
+    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+    let left_columns = projected_input_columns(&left_keys, &node.spec.output_projection, [], JoinSide::Left);
+    let right_columns = projected_input_columns(&right_keys, &node.spec.output_projection, [], JoinSide::Right);
+    let build = prepare_bounded_join_side_input_from_resident_frame(
+        input,
+        &right_columns,
+        JoinSide::Right,
+        node_id,
+        JoinSide::Right,
+        reservations,
+        metrics,
+    )?;
+    let overrides = execution_overrides(context);
+    let filtered_options =
+        cudf::DataFrameFilteredJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
+    let hash_table_reservation_bytes = build
+        .frame
+        .with_execution(&overrides)
+        .filtered_join_pre_build_reservation_size_bytes(&right_keys, filtered_options)
+        .map(|bytes| bytes as u64)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.filtered_hash_table_reservation",
+                "failed to size compiled bounded filtered join build",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", JoinSide::Right)
+        })?;
+    let hash_table_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::HashTable,
+            "join_hash_table",
+            hash_table_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let timer = Instant::now();
+    let filtered_join =
+        build.frame.with_execution(&overrides).build_filtered_join(&right_keys, filtered_options).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.build_filtered_join",
+                "failed to build compiled bounded filtered join",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("key_count", node.spec.keys.len())
+            .with_fact("build_side", JoinSide::Right)
+        })?;
+    let filtered_join =
+        GpuFilteredJoinBuildHandle::new(context, filtered_join, node.spec.null_equality).map_err(|error| {
+            error
+                .with_fact("join_type", node.spec.join_type)
+                .with_fact("key_count", node.spec.keys.len())
+                .with_fact("build_side", JoinSide::Right)
+        })?;
+    let hash_table_bytes = filtered_join.device_allocated_size_bytes();
+    metrics.record_filtered_join_build();
+    metrics.record_filtered_join_hash_table_bytes(hash_table_bytes);
+    Ok(BoundedCompiledFilteredJoinBuildState {
+        left_keys,
+        left_columns,
+        build,
+        filtered_join,
+        hash_table_reservation,
+        hash_table_bytes,
+        timer,
+    })
+}
+
 fn execute_compiled_filtered_join_probe_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -287,6 +475,58 @@ fn execute_compiled_filtered_join_probe_from_frame(
     let probe = prepare_bounded_join_side_input_from_frame(
         input,
         input_reserved_bytes,
+        &build.left_columns,
+        JoinSide::Left,
+        node_id,
+        JoinSide::Right,
+        reservations,
+        metrics,
+    )?;
+    let overrides = execution_overrides(context);
+    let probe_state = match node.spec.join_type {
+        JoinType::LeftSemi => {
+            build.filtered_join.filtered_join().begin_left_semi_probe_in(&probe.frame, &build.left_keys, &overrides)
+        },
+        JoinType::LeftAnti => {
+            build.filtered_join.filtered_join().begin_left_anti_probe_in(&probe.frame, &build.left_keys, &overrides)
+        },
+        JoinType::Inner | JoinType::Left | JoinType::Full | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
+    let probe_state_bytes = probe_state.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.filtered_probe_state_bytes",
+            "failed to observe compiled bounded filtered join probe-state memory",
+            error,
+        )
+        .with_fact("join_type", node.spec.join_type)
+        .with_fact("build_side", JoinSide::Right)
+    })?;
+    let probe_state_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::FilteredProbeState,
+            "join_filtered_probe_state",
+            probe_state_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    metrics.record_filtered_join_probe_state_bytes(probe_state_bytes);
+    Ok(BoundedCompiledFilteredJoinProbeState { build, probe, probe_state, probe_state_reservation, probe_state_bytes })
+}
+
+fn execute_compiled_filtered_join_probe_from_resident_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: BoundedCompiledFilteredJoinBuildState,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedCompiledFilteredJoinProbeState> {
+    let probe = prepare_bounded_join_side_input_from_resident_frame(
+        input,
         &build.left_columns,
         JoinSide::Left,
         node_id,

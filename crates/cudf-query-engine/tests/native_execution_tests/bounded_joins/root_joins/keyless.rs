@@ -221,9 +221,7 @@ fn bounded_native_query_executes_root_keyless_conditional_full_join_with_retaine
         &[
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::MixedSizeData, "join_mixed_size_data"),
             (ReservationKind::GatherMap, "join_gather_map"),

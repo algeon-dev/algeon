@@ -45,6 +45,124 @@ pub use types::{
     GpuResultHandle, QueryExecutionResult, QueryOutput, QueryOutputMode,
 };
 
+#[doc(hidden)]
+pub mod reservation_contract_testing {
+    use super::bounded::ReservationTracker;
+    use crate::{
+        error::{QueryError, Result},
+        metrics::QueryMetrics,
+        runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
+    };
+
+    #[derive(Debug)]
+    pub struct ReservationTrackerContractProbe {
+        pub metrics: QueryMetrics,
+        pub reserved_after_reserve: u64,
+        pub reserved_after_alias_or_transfer: u64,
+        pub reserved_after_intermediate_release: u64,
+        pub reserved_after_final_release: u64,
+    }
+
+    #[derive(Debug)]
+    pub struct ReservationTrackerDenialProbe {
+        pub metrics: QueryMetrics,
+        pub error: QueryError,
+        pub reserved_after_denial: u64,
+    }
+
+    pub fn probe_alias_contract() -> Result<ReservationTrackerContractProbe> {
+        let mut metrics = QueryMetrics::default();
+        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let owned = tracker.try_reserve_owned_resident(
+            request(ReservationKind::SourceRead, "source_read", 60, tracker.budget()),
+            &mut metrics,
+        )?;
+        let reserved_after_reserve = tracker.reserved_bytes();
+        let alias = tracker.alias_reservation(
+            &owned,
+            request(ReservationKind::OperatorOutput, "schema_only_projection", 60, tracker.budget()),
+            &mut metrics,
+        );
+        let reserved_after_alias_or_transfer = tracker.reserved_bytes();
+        tracker.release(alias, &mut metrics);
+        let reserved_after_intermediate_release = tracker.reserved_bytes();
+        tracker.release(owned, &mut metrics);
+        let reserved_after_final_release = tracker.reserved_bytes();
+        Ok(ReservationTrackerContractProbe {
+            metrics,
+            reserved_after_reserve,
+            reserved_after_alias_or_transfer,
+            reserved_after_intermediate_release,
+            reserved_after_final_release,
+        })
+    }
+
+    pub fn probe_transfer_contract() -> Result<ReservationTrackerContractProbe> {
+        let mut metrics = QueryMetrics::default();
+        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let work = tracker.try_reserve_work(
+            request(ReservationKind::OperatorOutput, "join_input_projection", 60, tracker.budget()),
+            &mut metrics,
+        )?;
+        let reserved_after_reserve = tracker.reserved_bytes();
+        let transferred = tracker.transfer(
+            work,
+            request(ReservationKind::ProbeSide, "join_probe_side", 60, tracker.budget()),
+            &mut metrics,
+        );
+        let reserved_after_alias_or_transfer = tracker.reserved_bytes();
+        let reserved_after_intermediate_release = tracker.reserved_bytes();
+        tracker.release(transferred, &mut metrics);
+        let reserved_after_final_release = tracker.reserved_bytes();
+        Ok(ReservationTrackerContractProbe {
+            metrics,
+            reserved_after_reserve,
+            reserved_after_alias_or_transfer,
+            reserved_after_intermediate_release,
+            reserved_after_final_release,
+        })
+    }
+
+    pub fn probe_denial_capacity_after_alias() -> Result<ReservationTrackerDenialProbe> {
+        let mut metrics = QueryMetrics::default();
+        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let owned = tracker.try_reserve_owned_resident(
+            request(ReservationKind::SourceRead, "source_read", 70, tracker.budget()),
+            &mut metrics,
+        )?;
+        let alias = tracker.alias_reservation(
+            &owned,
+            request(ReservationKind::OperatorOutput, "schema_only_projection", 70, tracker.budget()),
+            &mut metrics,
+        );
+        let error = match tracker.try_reserve_owned_resident(
+            request(ReservationKind::ProbeSide, "join_probe_side", 40, tracker.budget()),
+            &mut metrics,
+        ) {
+            Ok(reservation) => {
+                tracker.release(reservation, &mut metrics);
+                unreachable!("reservation denial probe unexpectedly admitted over-budget request")
+            },
+            Err(error) => error,
+        };
+        let reserved_after_denial = tracker.reserved_bytes();
+        tracker.release(alias, &mut metrics);
+        tracker.release(owned, &mut metrics);
+        Ok(ReservationTrackerDenialProbe { metrics, error, reserved_after_denial })
+    }
+
+    fn request(
+        kind: ReservationKind,
+        memory_boundary: &'static str,
+        requested_bytes: u64,
+        budget_bytes: u64,
+    ) -> MemoryReservationRequest {
+        MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
+            .with_memory_boundary(memory_boundary)
+            .with_stage("reservation_contract_probe")
+    }
+}
+
 use self::{
     bounded::*,
     join::*,

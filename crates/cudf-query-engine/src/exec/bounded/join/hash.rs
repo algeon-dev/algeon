@@ -1,7 +1,7 @@
 use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
-        prepare_bounded_join_side_input_from_frame,
+        prepare_bounded_join_side_input_from_frame, prepare_bounded_join_side_input_from_resident_frame,
     },
     *,
 };
@@ -95,6 +95,69 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
     })
 }
 
+pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_resident_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedRootHashJoinBuildState> {
+    validate_root_hash_join(node)?;
+    let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
+    let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
+    let left_columns = projected_input_columns(&left_keys, &node.spec.output_projection, [], JoinSide::Left);
+    let right_columns = projected_input_columns(&right_keys, &node.spec.output_projection, [], JoinSide::Right);
+    let build_side = node.spec.build_side;
+    let build_columns = match build_side {
+        JoinSide::Left => &left_columns,
+        JoinSide::Right => &right_columns,
+    };
+    let build_keys = match build_side {
+        JoinSide::Left => &left_keys,
+        JoinSide::Right => &right_keys,
+    };
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let build = prepare_bounded_join_side_input_from_resident_frame(
+        input,
+        build_columns,
+        build_side,
+        node_id,
+        build_side,
+        reservations,
+        metrics,
+    )?;
+    let hash_options =
+        cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
+    let (hash_join, hash_table_reservation, hash_table_bytes) = reserve_and_build_bounded_hash_join(
+        context,
+        node_id,
+        node,
+        &build.frame,
+        build_keys,
+        hash_options,
+        build_side,
+        reservations,
+        metrics,
+        &overrides,
+    )?;
+    Ok(BoundedRootHashJoinBuildState {
+        build_side,
+        probe_side: probe_side(build_side),
+        left_keys,
+        right_keys,
+        left_columns,
+        right_columns,
+        build,
+        hash_join,
+        hash_table_reservation,
+        hash_table_bytes,
+        left_indices_from_probe: build_side == JoinSide::Right,
+        timer,
+    })
+}
+
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -113,6 +176,98 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
     let probe = prepare_bounded_join_side_input_from_frame(
         input,
         input_reserved_bytes,
+        probe_columns,
+        build.probe_side,
+        node_id,
+        build.build_side,
+        reservations,
+        metrics,
+    )?;
+    let probe_keys = match build.probe_side {
+        JoinSide::Left => &build.left_keys,
+        JoinSide::Right => &build.right_keys,
+    };
+    let overrides = execution_overrides(context);
+
+    let output_size = match node.spec.join_type {
+        JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
+        JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
+        JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
+    let gather_map_reservation_bytes = build
+        .hash_join
+        .hash_join()
+        .probe_gather_map_reservation_size_bytes(output_size)
+        .map(|bytes| bytes as u64)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.gather_map_reservation",
+                "failed to size bounded native reusable hash join gather maps",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", build.build_side)
+        })?;
+    let gather_map_reservation = reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_gather_map",
+            gather_map_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    )?;
+    let indices = match node.spec.join_type {
+        JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
+            &probe.frame,
+            probe_keys,
+            output_size,
+            &overrides,
+        ),
+        JoinType::Left => build.hash_join.hash_join().left_probe_with_output_size_in(
+            &probe.frame,
+            probe_keys,
+            output_size,
+            &overrides,
+        ),
+        JoinType::Full => build.hash_join.hash_join().full_probe_with_output_size_in(
+            &probe.frame,
+            probe_keys,
+            output_size,
+            &overrides,
+        ),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+    }
+    .map_err(|error| join_index_error(error, node))?;
+    let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.gather_map_bytes",
+            "failed to observe bounded native join gather-map memory",
+            error,
+        )
+    })?;
+    Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes })
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_resident_frame(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: BoundedRootHashJoinBuildState,
+    input: ResidentGpuFrame,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<BoundedRootHashJoinProbeState> {
+    validate_root_hash_join(node)?;
+    let probe_columns = match build.probe_side {
+        JoinSide::Left => &build.left_columns,
+        JoinSide::Right => &build.right_columns,
+    };
+    let probe = prepare_bounded_join_side_input_from_resident_frame(
+        input,
         probe_columns,
         build.probe_side,
         node_id,

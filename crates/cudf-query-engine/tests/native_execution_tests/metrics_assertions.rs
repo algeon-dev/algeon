@@ -262,7 +262,7 @@ pub(super) fn assert_granted_reservation_trace(metrics: &QueryMetrics, expected:
     let actual = metrics
         .reservation_events
         .iter()
-        .filter(|event| is_granted_admission_event(event))
+        .filter(|event| is_ordered_reservation_trace_event(event))
         .map(|event| (event.reservation_kind, event.memory_boundary.as_str()))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
@@ -364,6 +364,11 @@ fn is_granted_admission_event(event: &MemoryReservationEvent) -> bool {
         && matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow)
 }
 
+fn is_ordered_reservation_trace_event(event: &MemoryReservationEvent) -> bool {
+    is_granted_admission_event(event)
+        || (event.outcome.as_str() == "applied" && event.action == MemoryReservationEventAction::Transfer)
+}
+
 pub(super) fn assert_bounded_mixed_left_only_join_metrics(metrics: &QueryMetrics, join_type: &str, output_rows: u64) {
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);
@@ -373,9 +378,7 @@ pub(super) fn assert_bounded_mixed_left_only_join_metrics(metrics: &QueryMetrics
         &[
             (ReservationKind::SourceRead, "join_source_read"),
             (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::OperatorOutput, "join_input_projection"),
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::MixedSizeData, "join_mixed_size_data"),
             (ReservationKind::GatherMap, "join_gather_map"),
