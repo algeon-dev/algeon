@@ -109,11 +109,11 @@ pub(super) fn execute_bounded_query_plan(
             let handle = match GpuResultHandle::new(context, frame.frame, Arc::clone(plan.output_schema())) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    reservations.release(frame.reservation);
+                    reservations.release(frame.reservation, metrics);
                     return Err(error);
                 },
             };
-            reservations.release(frame.reservation);
+            reservations.release(frame.reservation, metrics);
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::GpuResident(handle))
         },
@@ -185,11 +185,11 @@ fn execute_bounded_generic_query_plan(
             let handle = match GpuResultHandle::new(context, committed.frame, Arc::clone(plan.output_schema())) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    reservations.release(committed.reservation);
+                    reservations.release(committed.reservation, metrics);
                     return Err(error);
                 },
             };
-            reservations.release(committed.reservation);
+            reservations.release(committed.reservation, metrics);
             debug_assert_eq!(reservations.reserved_bytes(), 0);
             Ok(QueryOutput::GpuResident(handle))
         },
@@ -411,7 +411,7 @@ fn execute_bounded_generic_unary(
         use_budget_token,
         execute,
     );
-    reservations.release(input.reservation);
+    reservations.release(input.reservation, metrics);
     result
 }
 
@@ -485,7 +485,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
         ) {
             Ok(token) => Some(token),
             Err(error) => {
-                reservations.release(work_reservation);
+                reservations.release(work_reservation, metrics);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         }
@@ -496,14 +496,14 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(work_reservation);
+            reservations.release(work_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
     let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(work_reservation);
+            reservations.release(work_reservation, metrics);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -517,11 +517,11 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(work_reservation);
+            reservations.release(work_reservation, metrics);
             return Err(error);
         },
     };
-    reservations.release(work_reservation);
+    reservations.release(work_reservation, metrics);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 

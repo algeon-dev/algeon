@@ -187,7 +187,7 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            release_source_read_outputs_reverse(reservations, chunks);
+            release_source_read_outputs_reverse(reservations, chunks, metrics);
             return Err(error);
         },
     };
@@ -209,8 +209,8 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
             drop(rest_frame_refs);
             drop(frames);
             drop(first_frame);
-            release_source_reservations_reverse(reservations, input_reservations);
-            reservations.release(output_reservation);
+            release_source_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
             return Err(QueryError::from_cudf(operation, message, error)
                 .with_fact("node_id", node_id)
                 .with_fact("chunk_count", chunk_count));
@@ -226,8 +226,8 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
             drop(rest_frame_refs);
             drop(frames);
             drop(first_frame);
-            release_source_reservations_reverse(reservations, input_reservations);
-            reservations.release(output_reservation);
+            release_source_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
             return Err(error);
         },
     };
@@ -246,15 +246,15 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
             drop(rest_frame_refs);
             drop(frames);
             drop(first_frame);
-            release_source_reservations_reverse(reservations, input_reservations);
-            reservations.release(output_reservation);
+            release_source_reservations_reverse(reservations, input_reservations, metrics);
+            reservations.release(output_reservation, metrics);
             return Err(error);
         }
     }
     drop(rest_frame_refs);
     drop(frames);
     drop(first_frame);
-    release_source_reservations_reverse(reservations, input_reservations);
+    release_source_reservations_reverse(reservations, input_reservations, metrics);
     Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
 }
 
@@ -287,7 +287,7 @@ fn read_local_parquet_chunks_serial(
         let reservation = match reservations.try_reserve(source_request, metrics) {
             Ok(reservation) => reservation,
             Err(error) => {
-                release_source_read_outputs_reverse(reservations, outputs);
+                release_source_read_outputs_reverse(reservations, outputs, metrics);
                 return Err(error);
             },
         };
@@ -296,8 +296,8 @@ fn read_local_parquet_chunks_serial(
             match read_local_parquet_chunk(context, source, chunk, source_token_budget, memory_boundary, metrics) {
                 Ok(frame) => frame,
                 Err(error) => {
-                    reservations.release(reservation);
-                    release_source_read_outputs_reverse(reservations, outputs);
+                    reservations.release(reservation, metrics);
+                    release_source_read_outputs_reverse(reservations, outputs, metrics);
                     return Err(error);
                 },
             };
@@ -316,8 +316,8 @@ fn read_local_parquet_chunks_serial(
             Ok(bytes) => bytes,
             Err(error) => {
                 drop(output.frame);
-                reservations.release(output.reservation);
-                release_source_read_outputs_reverse(reservations, outputs);
+                reservations.release(output.reservation, metrics);
+                release_source_read_outputs_reverse(reservations, outputs, metrics);
                 return Err(error);
             },
         };
@@ -343,16 +343,21 @@ fn read_local_parquet_chunks_serial(
 fn release_source_read_outputs_reverse(
     reservations: &mut ReservationTracker,
     mut chunks: Vec<ScheduledLocalParquetReadOutput>,
+    metrics: &mut QueryMetrics,
 ) {
     while let Some(chunk) = chunks.pop() {
         drop(chunk.frame);
-        reservations.release(chunk.reservation);
+        reservations.release(chunk.reservation, metrics);
     }
 }
 
-fn release_source_reservations_reverse(reservations: &mut ReservationTracker, mut active: Vec<ActiveReservation>) {
+fn release_source_reservations_reverse(
+    reservations: &mut ReservationTracker,
+    mut active: Vec<ActiveReservation>,
+    metrics: &mut QueryMetrics,
+) {
     while let Some(reservation) = active.pop() {
-        reservations.release(reservation);
+        reservations.release(reservation, metrics);
     }
 }
 
@@ -622,7 +627,7 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
         return Ok(Some(ScheduledLocalParquetReadOutput {
             chunk: chunk.clone(),
             frame: handle.into_gpu_frame(),
-            reservation: reservations.borrow_accounted_source_cache(key, retained_device_bytes),
+            reservation: reservations.borrow_accounted_source_cache(key, retained_device_bytes, metrics),
             observed_bytes: retained_device_bytes,
         }));
     }
@@ -652,7 +657,7 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     let handle = GpuResultHandle::new(context, frame.clone(), schema)?;
     let protected_keys = reservations.source_cache_protected_keys_with(&key);
     let insert = cache.insert_if_absent_protecting(key.clone(), handle, retained_device_bytes, &protected_keys)?;
-    reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes);
+    reservations.release_source_cache_baseline_bytes(insert.evicted_device_bytes, metrics);
     match insert.outcome {
         GpuLocalParquetSourceCacheInsert::Inserted => {
             metrics.record_source_cache_insert(insert.retained_device_bytes);
@@ -808,7 +813,7 @@ fn read_bounded_chunk_source(
         match read_local_parquet_chunk(context, source, chunk, source_token_budget, "source_chunk_read", metrics) {
             Ok(frame) => frame,
             Err(error) => {
-                reservations.release(source_reservation);
+                reservations.release(source_reservation, metrics);
                 return Err(error);
             },
         };
@@ -876,7 +881,7 @@ fn execute_bounded_chunk_operator_from_source(
         Ok(reservation) => reservation,
         Err(error) => {
             drop(frame);
-            reservations.release(source_reservation);
+            reservations.release(source_reservation, metrics);
             return Err(error);
         },
     };
@@ -890,14 +895,14 @@ fn execute_bounded_chunk_operator_from_source(
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(operator_reservation);
-            reservations.release(source_reservation);
+            reservations.release(operator_reservation, metrics);
+            reservations.release(source_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, &chunk, "chunk_operator", attempt, max_attempts, metrics));
         },
     };
     if let Err(error) = before_operator(reservations, metrics) {
-        reservations.release(operator_reservation);
-        reservations.release(source_reservation);
+        reservations.release(operator_reservation, metrics);
+        reservations.release(source_reservation, metrics);
         return Err(error);
     }
 
@@ -928,14 +933,14 @@ fn execute_bounded_chunk_operator_from_source(
     let frame = match chunk_output {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(operator_reservation);
-            reservations.release(source_reservation);
+            reservations.release(operator_reservation, metrics);
+            reservations.release(source_reservation, metrics);
             return Err(attach_chunk_resource_facts(error, &chunk, "chunk_operator", attempt, max_attempts, metrics));
         },
     };
 
-    reservations.release(operator_reservation);
-    reservations.release(source_reservation);
+    reservations.release(operator_reservation, metrics);
+    reservations.release(source_reservation, metrics);
 
     let partial_bytes = observe_device_memory_bytes(&frame, metrics)
         .map_err(|error| attach_chunk_resource_facts(error, &chunk, "partial_state", attempt, max_attempts, metrics))?;

@@ -360,7 +360,7 @@ fn execute_compiled_filtered_join_materialize(
         metrics,
     )?;
     let indices = probe_state.materialize_indices_in(&overrides).map_err(|error| join_index_error(error, node))?;
-    reservations.release(probe_state_reservation);
+    reservations.release(probe_state_reservation, metrics);
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.bounded.join.filtered_gather_map_bytes",
@@ -410,9 +410,9 @@ fn execute_compiled_filtered_join_materialize(
         },
     ));
     drop(indices);
-    reservations.release(gather_map_reservation);
+    reservations.release(gather_map_reservation, metrics);
     drop(build.filtered_join);
-    reservations.release(build.hash_table_reservation);
+    reservations.release(build.hash_table_reservation, metrics);
     drop(probe);
     drop(build.build);
     Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })
@@ -649,7 +649,7 @@ fn execute_compiled_keyless_join_materialize(
     let indices = match work {
         CompiledKeylessWork::Full { size_data, size_data_reservation } => {
             let indices = (*size_data).materialize_indices_in(&overrides);
-            reservations.release(size_data_reservation);
+            reservations.release(size_data_reservation, metrics);
             let indices = indices.map_err(|error| join_index_error(error, node))?;
             CompiledJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
         },
@@ -757,7 +757,7 @@ fn execute_compiled_mixed_join_materialize(
         metrics,
     )?;
     let indices = size_data.materialize_indices_in(&overrides, node)?;
-    reservations.release(size_data_reservation);
+    reservations.release(size_data_reservation, metrics);
     materialize_compiled_indices_output(
         context,
         node_id,
@@ -907,7 +907,7 @@ fn materialize_compiled_one_shot_residual_output(
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
     drop(indices);
-    reservations.release(gather_map_reservation);
+    reservations.release(gather_map_reservation, metrics);
 
     let mut filtered_reservation = match reservations.try_reserve(
         bounded_join_request(
@@ -922,7 +922,7 @@ fn materialize_compiled_one_shot_residual_output(
         Ok(reservation) => reservation,
         Err(error) => {
             drop(candidate);
-            reservations.release(candidate_reservation);
+            reservations.release(candidate_reservation, metrics);
             return Err(error);
         },
     };
@@ -936,8 +936,8 @@ fn materialize_compiled_one_shot_residual_output(
         Ok(token) => token,
         Err(error) => {
             drop(candidate);
-            reservations.release(filtered_reservation);
-            reservations.release(candidate_reservation);
+            reservations.release(filtered_reservation, metrics);
+            reservations.release(candidate_reservation, metrics);
             return Err(error);
         },
     };
@@ -947,8 +947,8 @@ fn materialize_compiled_one_shot_residual_output(
         Ok(filtered) => filtered,
         Err(error) => {
             drop(candidate);
-            reservations.release(filtered_reservation);
-            reservations.release(candidate_reservation);
+            reservations.release(filtered_reservation, metrics);
+            reservations.release(candidate_reservation, metrics);
             return Err(attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "cudf_query_engine.bounded.join.one_shot_residual_filter",
@@ -963,7 +963,7 @@ fn materialize_compiled_one_shot_residual_output(
         },
     };
     drop(candidate);
-    reservations.release(candidate_reservation);
+    reservations.release(candidate_reservation, metrics);
 
     let output =
         filtered.select(residual_candidate.final_output_names.iter().map(String::as_str)).map_err(|error| {
@@ -988,13 +988,13 @@ fn materialize_compiled_one_shot_residual_output(
         );
         if let Err(error) = reservations.try_grow(&mut filtered_reservation, grow_request, metrics) {
             drop(output);
-            reservations.release(filtered_reservation);
+            reservations.release(filtered_reservation, metrics);
             drop(left);
             drop(right);
             return Err(error);
         }
     } else {
-        reservations.shrink_to_observed(&mut filtered_reservation, output_bytes);
+        reservations.shrink_to_observed(&mut filtered_reservation, output_bytes, metrics);
     }
     let final_output_reservation_bytes = filtered_reservation.bytes();
     let build_side = node.spec.build_side;
@@ -1502,7 +1502,7 @@ fn materialize_compiled_indices_output(
         },
     ));
     drop(indices);
-    reservations.release(gather_map_reservation);
+    reservations.release(gather_map_reservation, metrics);
     drop(left);
     drop(right);
     Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation })

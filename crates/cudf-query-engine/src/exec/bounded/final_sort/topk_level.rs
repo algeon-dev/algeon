@@ -9,6 +9,7 @@ pub(super) fn commit_topk_merge_level(
     candidates: Vec<CommittedPartial>,
     level_output: Vec<TopKLevelItem>,
     reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
 ) -> Vec<CommittedPartial> {
     let mut candidates = candidates.into_iter().map(Some).collect::<Vec<_>>();
     let mut next_candidates = Vec::with_capacity(level_output.len());
@@ -24,23 +25,31 @@ pub(super) fn commit_topk_merge_level(
     }
 
     for partial in candidates.into_iter().flatten() {
-        reservations.release(partial.reservation);
+        reservations.release(partial.reservation, metrics);
     }
 
     next_candidates
 }
 
-pub(super) fn release_topk_level_items(items: Vec<TopKLevelItem>, reservations: &mut ReservationTracker) {
+pub(super) fn release_topk_level_items(
+    items: Vec<TopKLevelItem>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
     for item in items {
         if let TopKLevelItem::Merged(partial) = item {
             let partial = *partial;
-            reservations.release(partial.reservation);
+            reservations.release(partial.reservation, metrics);
         }
     }
 }
 
-pub(super) fn release_committed_partials(partials: Vec<CommittedPartial>, reservations: &mut ReservationTracker) {
+pub(super) fn release_committed_partials(
+    partials: Vec<CommittedPartial>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
     for partial in partials {
-        reservations.release(partial.reservation);
+        reservations.release(partial.reservation, metrics);
     }
 }

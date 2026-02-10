@@ -55,7 +55,7 @@ pub(super) fn execute_final_sort_node_with_retry(
     match result {
         Ok(output) => {
             final_sort.metrics.final_sort_time += timer.elapsed();
-            final_sort.reservations.release(input.reservation);
+            final_sort.reservations.release(input.reservation, final_sort.metrics);
             Ok(output)
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
@@ -75,13 +75,13 @@ pub(super) fn execute_final_sort_node_with_retry(
                 }
             } else {
                 final_sort.metrics.final_sort_time += timer.elapsed();
-                final_sort.reservations.release(input.reservation);
+                final_sort.reservations.release(input.reservation, final_sort.metrics);
                 Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error))
             }
         },
         Err(error) => {
             final_sort.metrics.final_sort_time += timer.elapsed();
-            final_sort.reservations.release(input.reservation);
+            final_sort.reservations.release(input.reservation, final_sort.metrics);
             Err(error)
         },
     }

@@ -12,6 +12,8 @@ mod rejected_rows;
 mod report_rows;
 #[path = "tests/runtime_failures.rs"]
 mod runtime_failures;
+#[path = "tests/strategy_gate.rs"]
+mod strategy_gate_tests;
 
 #[test]
 fn allocator_high_water_placeholder_is_none_without_runtime_contract() {

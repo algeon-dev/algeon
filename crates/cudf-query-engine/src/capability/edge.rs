@@ -194,29 +194,41 @@ pub(super) fn append_producer_output_edge_requirements(
     requirements: &mut Vec<ReservationRequirement>,
 ) {
     if let Some(PlanNode::Join(join)) = plan.node(producer).map(|node| &node.kind) {
-        let gather_map_requirement = match keyed_hash_join_strategy_decision_for_plan(plan, producer, join) {
-            Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }) => {
-                ReservationRequirement::modeled(
-                    ReservationKind::GatherMap,
-                    "join_one_shot_indices",
-                    "one_shot_join_indices_observed_retained_bytes",
-                    ContractQuality::ObservedRetainedState,
-                )
-            },
-            _ => ReservationRequirement::modeled(
+        let one_shot_equi = matches!(
+            keyed_hash_join_strategy_decision_for_plan(plan, producer, join),
+            Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. })
+        );
+        let gather_map_requirement = if one_shot_equi {
+            ReservationRequirement::modeled(
+                ReservationKind::GatherMap,
+                "join_one_shot_indices",
+                "one_shot_join_indices_observed_retained_bytes",
+                ContractQuality::ObservedRetainedState,
+            )
+        } else {
+            ReservationRequirement::modeled(
                 ReservationKind::GatherMap,
                 "join_gather_map",
                 "join_gather_map_reservation_size_bytes",
                 ContractQuality::ExactPreflight,
-            ),
+            )
         };
         requirements.push(gather_map_requirement);
-        requirements.push(ReservationRequirement::modeled(
-            ReservationKind::JoinOutput,
-            "join_output",
-            "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
-            ContractQuality::ExactPreflight,
-        ));
+        if one_shot_equi {
+            requirements.push(ReservationRequirement::modeled(
+                ReservationKind::JoinOutput,
+                "join_output",
+                "one_shot_equality_join_output_size_preflight",
+                ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            ));
+        } else {
+            requirements.push(ReservationRequirement::modeled(
+                ReservationKind::JoinOutput,
+                "join_output",
+                "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+                ContractQuality::ExactPreflight,
+            ));
+        }
     }
 }
 

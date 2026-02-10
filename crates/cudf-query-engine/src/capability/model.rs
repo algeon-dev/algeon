@@ -113,6 +113,12 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
         unresolved_gap: "libcudf_final_sort_order_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf final sort or top-k output and temporary-workspace preflight",
     },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::JoinOutput,
+        required_contract: "one_shot_equality_join_output_size_preflight",
+        unresolved_gap: "libcudf_equality_join_output_size_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf exact output row-count preflight for one-shot inner/left/full equality join indices",
+    },
 ];
 
 impl ReservationRequirement {

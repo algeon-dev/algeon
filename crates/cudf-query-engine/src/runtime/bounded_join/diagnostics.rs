@@ -95,6 +95,10 @@ impl BoundedJoinReservationContract {
             ),
             ("cudf_rs_hash_join_output_size_observability", "hash_join_exact_output_size".to_string()),
             ("cudf_rs_hash_join_probe_output_size_hint", "hash_join_probe_with_output_size".to_string()),
+            (
+                "cudf_rs_one_shot_equality_join_output_size_preflight_gap",
+                "libcudf_equality_join_output_size_preflight_unavailable".to_string(),
+            ),
             ("cudf_rs_filtered_join_hash_table_observability", "filtered_join_device_allocated_size_bytes".to_string()),
             ("cudf_rs_filtered_join_probe_state_contract", "filtered_join_retained_probe_state".to_string()),
             (

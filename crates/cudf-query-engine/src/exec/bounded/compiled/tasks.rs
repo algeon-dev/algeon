@@ -508,7 +508,8 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         state: &CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         validate_task_runtime_gates(self.pipeline, task)?;
-        match task.kind() {
+        self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));
+        let result = match task.kind() {
             PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => self.execute_source_task(task),
             PipelineTaskKind::Unary => self.execute_unary_task(task, state),
             PipelineTaskKind::JoinBuild => self.execute_join_build_task(task, state),
@@ -518,12 +519,16 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::FinalSort => self.execute_final_sort_task(task, state),
             PipelineTaskKind::Limit => self.execute_limit_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
-        }
+        };
+        self.reservations.clear_diagnostic_context();
+        result
     }
 
-    fn release_resource(&mut self, _resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
+    fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         let frame = payload.into_resident_frame();
-        self.reservations.release(frame.reservation);
+        self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
+        self.reservations.release(frame.reservation, self.metrics);
+        self.reservations.clear_diagnostic_context();
         Ok(())
     }
 }
@@ -554,6 +559,16 @@ fn single_input_resource(task: &PipelineTask) -> Result<ResidentResourceId> {
             .with_fact("input_resource_count", task.input_resources().len()));
     }
     Ok(task.input_resources()[0])
+}
+
+fn task_diagnostic_resident_resource(task: &PipelineTask) -> Option<ResidentResourceId> {
+    if task.output_resources().len() == 1 {
+        Some(task.output_resources()[0])
+    } else if task.input_resources().len() == 1 {
+        Some(task.input_resources()[0])
+    } else {
+        None
+    }
 }
 
 fn join_node<'a>(plan: &'a QueryPlan, task: &PipelineTask, node_id: NodeId) -> Result<&'a JoinNode> {

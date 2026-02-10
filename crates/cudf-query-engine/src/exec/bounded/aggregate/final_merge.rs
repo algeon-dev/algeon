@@ -31,7 +31,7 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
             ) {
                 Ok(level_output) => {
                     metrics.record_final_merge_level();
-                    partials = commit_final_merge_level(partials, level_output, reservations);
+                    partials = commit_final_merge_level(partials, level_output, reservations, metrics);
                     merge_level += 1;
                     break;
                 },
@@ -79,7 +79,7 @@ fn execute_final_merge_level_attempt(
         match execute_final_merge_group_attempt(context, bounded, group, attempt, max_attempts, reservations, metrics) {
             Ok(partial) => output.push(MergeLevelItem::Merged(Box::new(partial))),
             Err(error) => {
-                release_merge_level_items(output, reservations);
+                release_merge_level_items(output, reservations, metrics);
                 return Err(error);
             },
         }
@@ -116,7 +116,7 @@ fn execute_final_merge_group_attempt(
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(merge_reservation);
+            reservations.release(merge_reservation, metrics);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "final_aggregate_merge",
                 stage: "final_merge",
@@ -143,7 +143,7 @@ fn execute_final_merge_group_attempt(
         metrics,
     );
     let merge_elapsed = timer.elapsed();
-    reservations.release(merge_reservation);
+    reservations.release(merge_reservation, metrics);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
@@ -239,6 +239,7 @@ fn commit_final_merge_level(
     partials: Vec<CommittedPartial>,
     level_output: Vec<MergeLevelItem>,
     reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
 ) -> Vec<CommittedPartial> {
     let mut partials = partials.into_iter().map(Some).collect::<Vec<_>>();
     let mut next_partials = Vec::with_capacity(level_output.len());
@@ -254,17 +255,21 @@ fn commit_final_merge_level(
     }
 
     for partial in partials.into_iter().flatten() {
-        reservations.release(partial.reservation);
+        reservations.release(partial.reservation, metrics);
     }
 
     next_partials
 }
 
-fn release_merge_level_items(items: Vec<MergeLevelItem>, reservations: &mut ReservationTracker) {
+fn release_merge_level_items(
+    items: Vec<MergeLevelItem>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
     for item in items {
         if let MergeLevelItem::Merged(partial) = item {
             let partial = *partial;
-            reservations.release(partial.reservation);
+            reservations.release(partial.reservation, metrics);
         }
     }
 }

@@ -32,7 +32,7 @@ pub(super) fn materialize_bounded_to_host(
         reservations,
         metrics,
     );
-    reservations.release(input.reservation);
+    reservations.release(input.reservation, metrics);
     result
 }
 
@@ -60,7 +60,7 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
     let handle = match GpuResultHandle::new(context, frame, Arc::clone(executable_schema)) {
         Ok(handle) => handle,
         Err(error) => {
-            reservations.release(materialization_reservation);
+            reservations.release(materialization_reservation, metrics);
             return Err(host_materialization_failure_facts(metrics).attach_to_error(error));
         },
     };
@@ -76,7 +76,7 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
         }
         .attach_to(error)
     });
-    reservations.release(materialization_reservation);
+    reservations.release(materialization_reservation, metrics);
     result.map_err(|error| host_materialization_failure_facts(metrics).attach_to_error(error))
 }
 

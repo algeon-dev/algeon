@@ -32,7 +32,7 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     let selected = match select_join_input(input.into_frame(), columns, join_side_label(input_side)) {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(work_reservation);
+            reservations.release(work_reservation, metrics);
             return Err(error);
         },
     };
@@ -40,7 +40,7 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     let bytes = match observe_device_memory_bytes(&GpuDataFrame::new(selected.clone()), metrics) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(work_reservation);
+            reservations.release(work_reservation, metrics);
             return Err(error);
         },
     };
@@ -50,11 +50,11 @@ pub(in crate::exec::bounded) fn prepare_bounded_join_side_input_from_frame(
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(work_reservation);
+            reservations.release(work_reservation, metrics);
             return Err(error);
         },
     };
-    reservations.release(work_reservation);
+    reservations.release(work_reservation, metrics);
     Ok(BoundedJoinSideFrame { frame: selected, _reservation: reservation, rows, bytes })
 }
 

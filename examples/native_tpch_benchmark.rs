@@ -36,6 +36,8 @@ mod errors;
 mod execution;
 #[path = "native_tpch_benchmark/reports.rs"]
 mod reports;
+#[path = "native_tpch_benchmark/strategy_gate.rs"]
+mod strategy_gate;
 #[path = "native_tpch_benchmark/validation.rs"]
 mod validation;
 
@@ -49,8 +51,18 @@ async fn main() -> DataFusionResult<()> {
     let config = NativeTpchBenchmarkConfig::from_env()?;
     let work_dir = unique_temp_dir("datafusion-cudf-native-tpch-benchmark");
     let report = run_native_tpch_benchmark(&config, &work_dir).await?;
-    print!("{}", report.to_tsv());
+    let text = report.to_tsv();
+    print!("{text}");
+    let gate_result = strategy_gate::validate_large_keyed_join_strategy_gate_from_env(&text);
     fs::remove_dir_all(work_dir).ok();
+    match gate_result {
+        Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
+        Ok(None) => {},
+        Err(error) => {
+            eprintln!("[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=failed error={error}");
+            return Err(error);
+        },
+    }
     Ok(())
 }
 
