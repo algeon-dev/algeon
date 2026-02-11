@@ -67,6 +67,52 @@ fn large_keyed_join_strategy_gate_can_select_q7_from_larger_report() {
     assert_eq!(summary.large_one_shot_sites, 1);
 }
 
+#[test]
+fn sf100_bounded_reservation_gate_accepts_q09_q18_q19_skip_cpu_success() {
+    let report = sf100_q09_q18_q19_report(false, 82_000_000_000, 83_000_000_000, 84_000_000_000, 0);
+
+    let summary = strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&report.to_tsv(), &report.config)
+        .expect("gate should parse")
+        .expect("sf100 q09/q18/q19 bounded run should enable reservation gate");
+
+    assert_eq!(summary.query_ids, vec!["q09", "q18", "q19"]);
+    assert_eq!(summary.reservation_denied_count, 0);
+    assert_eq!(summary.reservation_live_peak_bytes, 84_000_000_000);
+    assert_eq!(summary.device_budget_bytes, 94_489_280_512);
+    assert!(summary.progress_line().contains("phase=sf100_bounded_reservation_gate outcome=passed"));
+}
+
+#[test]
+fn sf100_bounded_reservation_gate_rejects_denials() {
+    let report = sf100_q09_q18_q19_report(false, 82_000_000_000, 83_000_000_000, 84_000_000_000, 1);
+
+    let error = strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&report.to_tsv(), &report.config)
+        .expect_err("denials must fail before manual SF100 inspection");
+
+    assert!(error.to_string().contains("reservation_denied_count=0"));
+}
+
+#[test]
+fn sf100_bounded_reservation_gate_rejects_budget_peak() {
+    let report = sf100_q09_q18_q19_report(false, 82_000_000_000, 83_000_000_000, 94_489_280_512, 0);
+
+    let error = strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&report.to_tsv(), &report.config)
+        .expect_err("live reservation peak at the configured budget must fail the gate");
+
+    assert!(error.to_string().contains("reservation_live_peak_bytes below device budget"));
+}
+
+#[test]
+fn sf100_bounded_reservation_gate_checks_parity_when_cpu_runs() {
+    let report = sf100_q09_q18_q19_report(true, 82_000_000_000, 83_000_000_000, 84_000_000_000, 0);
+
+    let error = strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&report.to_tsv(), &report.config)
+        .expect_err("CPU-enabled mismatched parity must fail the gate");
+
+    assert!(error.to_string().contains("matched parity when CPU runtime starts"));
+    assert!(error.to_string().contains("q19:mismatched"));
+}
+
 fn sf100_matrix_report(q07_join_strategy_rows: Vec<NativeJoinStrategyMetricRow>) -> NativeTpchBenchmarkReport {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q03".to_string(), "q04".to_string(), "q07".to_string()],
@@ -98,6 +144,68 @@ fn sf100_matrix_report(q07_join_strategy_rows: Vec<NativeJoinStrategyMetricRow>)
             ),
         ],
     }
+}
+
+fn sf100_q09_q18_q19_report(
+    cpu_enabled_with_q19_mismatch: bool,
+    q09_live_peak: usize,
+    q18_live_peak: usize,
+    q19_live_peak: usize,
+    q19_denials: usize,
+) -> NativeTpchBenchmarkReport {
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q09".to_string(), "q18".to_string(), "q19".to_string()],
+        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
+        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
+            device_budget_bytes: 94_489_280_512,
+            max_source_chunk_bytes: 34_359_738_368,
+            max_row_groups_per_chunk: 1024,
+            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+        },
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let q09 = skip_cpu_accepted_row(
+        "q09",
+        NativeDataFusionExecutionMetrics { reservation_live_peak_bytes: q09_live_peak, ..Default::default() },
+    );
+    let q18 = skip_cpu_accepted_row(
+        "q18",
+        NativeDataFusionExecutionMetrics { reservation_live_peak_bytes: q18_live_peak, ..Default::default() },
+    );
+    let q19 = if cpu_enabled_with_q19_mismatch {
+        cpu_enabled_mismatched_row(
+            "q19",
+            NativeDataFusionExecutionMetrics {
+                reservation_live_peak_bytes: q19_live_peak,
+                reservation_denied_count: q19_denials,
+                ..Default::default()
+            },
+        )
+    } else {
+        skip_cpu_accepted_row(
+            "q19",
+            NativeDataFusionExecutionMetrics {
+                reservation_live_peak_bytes: q19_live_peak,
+                reservation_denied_count: q19_denials,
+                ..Default::default()
+            },
+        )
+    };
+    NativeTpchBenchmarkReport { metadata: benchmark_sf100_metadata(), config, rows: vec![q09, q18, q19] }
+}
+
+fn cpu_enabled_mismatched_row(query_id: &str, metrics: NativeDataFusionExecutionMetrics) -> NativeTpchBenchmarkRow {
+    let mut planning = accepted_planning_row(query_id);
+    planning.native_candidate_shape_family = Some("sort_hash_join_aggregate".to_string());
+    let mut native = timed_native_run("output-fnv1a64:0000000000000019");
+    native.metrics = metrics;
+    NativeTpchBenchmarkRow::accepted(
+        query_id,
+        planning,
+        Ok(timed_cpu_run("output-fnv1a64:0000000000000009")),
+        Ok(native),
+    )
 }
 
 fn benchmark_sf100_metadata() -> TpchDatasetMetadata {

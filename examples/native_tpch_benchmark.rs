@@ -53,13 +53,23 @@ async fn main() -> DataFusionResult<()> {
     let report = run_native_tpch_benchmark(&config, &work_dir).await?;
     let text = report.to_tsv();
     print!("{text}");
-    let gate_result = strategy_gate::validate_large_keyed_join_strategy_gate_from_env(&text);
+    let large_keyed_gate_result = strategy_gate::validate_large_keyed_join_strategy_gate_from_env(&text);
+    let sf100_reservation_gate_result =
+        strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&text, &config);
     fs::remove_dir_all(work_dir).ok();
-    match gate_result {
+    match large_keyed_gate_result {
         Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
         Ok(None) => {},
         Err(error) => {
             eprintln!("[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=failed error={error}");
+            return Err(error);
+        },
+    }
+    match sf100_reservation_gate_result {
+        Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
+        Ok(None) => {},
+        Err(error) => {
+            eprintln!("[native_tpch_benchmark] phase=sf100_bounded_reservation_gate outcome=failed error={error}");
             return Err(error);
         },
     }

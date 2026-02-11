@@ -274,11 +274,10 @@ fn read_local_parquet_chunks_serial(
             outputs.push(output);
             continue;
         }
-        let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
-        let source_request = chunk_reservation_request(
+        let source_request = source_read_reservation_request(
+            context.memory_control_policy(),
             ReservationKind::SourceRead,
             memory_boundary,
-            requested_bytes,
             reservations.budget(),
             chunk,
             1,
@@ -543,6 +542,7 @@ fn start_scheduled_source_read(
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         return Ok(ScheduledLocalParquetRead::ready(output, budget_boundary, prefetch));
     }
+    let contract = source_read_reservation_contract(context.memory_control_policy(), chunk);
     let request = chunk_reservation_request(
         ReservationKind::SourceRead,
         budget_boundary,
@@ -551,7 +551,8 @@ fn start_scheduled_source_read(
         chunk,
         attempt,
         max_attempts,
-    );
+    )
+    .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes);
     let reservation = reservations.try_reserve(request, metrics)?;
     let source_token_budget =
         if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
@@ -798,10 +799,10 @@ fn read_bounded_chunk_source(
         return Ok(output);
     }
 
-    let source_request = chunk_reservation_request(
+    let source_request = source_read_reservation_request(
+        context.memory_control_policy(),
         ReservationKind::SourceRead,
         "source_chunk_read",
-        chunk_requested_bytes(context.memory_control_policy(), chunk),
         reservations.budget(),
         chunk,
         attempt,
@@ -978,41 +979,99 @@ fn grow_source_reservation_to_observed(
         },
     };
     if source_observed_bytes <= source_reservation.bytes() {
+        reservations.shrink_to_observed_with_request(
+            source_reservation,
+            source_observed_bytes,
+            observed_source_read_reservation_request(
+                memory_boundary,
+                reservations.budget(),
+                chunk,
+                attempt,
+                max_attempts,
+            ),
+            metrics,
+        );
         return Ok(source_observed_bytes);
     }
 
     let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
-    let grow_request = chunk_reservation_request(
-        ReservationKind::SourceRead,
-        memory_boundary,
-        source_delta,
-        reservations.budget(),
-        chunk,
-        attempt,
-        max_attempts,
-    );
+    let grow_request =
+        observed_source_read_reservation_request(memory_boundary, reservations.budget(), chunk, attempt, max_attempts)
+            .with_requested_bytes(source_delta);
     reservations.try_grow(source_reservation, grow_request, metrics)?;
     Ok(source_observed_bytes)
 }
 
 pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
+    source_read_reservation_contract(policy, chunk).requested_bytes
+}
+
+pub(super) fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
+    let contract = source_read_reservation_contract(policy, chunk);
+    match (policy, contract.quality) {
+        (MemoryControlPolicy::Unbounded, _) => contract.requested_bytes,
+        (
+            MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. },
+            SourceReadReservationContractQuality::ConservativeEstimate,
+        ) => contract.requested_bytes.max(max_source_chunk_bytes),
+        (MemoryControlPolicy::Bounded { .. }, _) => contract.requested_bytes,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SourceReadReservationContractQuality {
+    #[allow(dead_code)]
+    ExactLowerLevelContract,
+    ObservedGrowShrink,
+    ConservativeEstimate,
+}
+
+impl SourceReadReservationContractQuality {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExactLowerLevelContract => "exact_lower_level_contract",
+            Self::ObservedGrowShrink => "observed_grow_shrink",
+            Self::ConservativeEstimate => "conservative_estimate",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SourceReadReservationContract {
+    pub(super) requested_bytes: u64,
+    pub(super) planning_bytes: Option<u64>,
+    pub(super) estimated_bytes: Option<u64>,
+    pub(super) quality: SourceReadReservationContractQuality,
+}
+
+pub(super) fn source_read_reservation_contract(
+    policy: MemoryControlPolicy,
+    chunk: &SourceChunk,
+) -> SourceReadReservationContract {
     let fallback = match policy {
         MemoryControlPolicy::Unbounded => 0,
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => max_source_chunk_bytes,
     };
-    chunk
+    let planning_bytes = chunk
+        .estimated_chunk_bytes
+        .or(chunk.known_projected_uncompressed_bytes)
+        .or(chunk.known_row_group_bytes)
+        .or(chunk.known_file_bytes);
+    let estimated_bytes = chunk
         .estimated_source_read_bytes
         .or(chunk.known_row_group_bytes)
         .or(chunk.estimated_chunk_bytes)
-        .or(chunk.known_file_bytes)
-        .unwrap_or(fallback)
-}
-
-pub(super) fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
-    let requested = chunk_requested_bytes(policy, chunk);
-    match policy {
-        MemoryControlPolicy::Unbounded => requested,
-        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => requested.max(max_source_chunk_bytes),
+        .or(chunk.known_file_bytes);
+    let conservative_bytes = estimated_bytes.unwrap_or(fallback);
+    let requested_bytes = match policy {
+        MemoryControlPolicy::Unbounded => conservative_bytes,
+        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => conservative_bytes.min(max_source_chunk_bytes),
+    };
+    SourceReadReservationContract {
+        requested_bytes,
+        planning_bytes,
+        estimated_bytes,
+        quality: SourceReadReservationContractQuality::ConservativeEstimate,
     }
 }
 
@@ -1037,6 +1096,51 @@ pub(super) fn chunk_reservation_request(
         request = request.with_row_groups(chunk.row_group_indexes.clone());
     }
     request
+}
+
+pub(super) fn source_read_reservation_request(
+    policy: MemoryControlPolicy,
+    kind: ReservationKind,
+    memory_boundary: &'static str,
+    budget_bytes: u64,
+    chunk: &SourceChunk,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let contract = source_read_reservation_contract(policy, chunk);
+    chunk_reservation_request(
+        kind,
+        memory_boundary,
+        contract.requested_bytes,
+        budget_bytes,
+        chunk,
+        attempt,
+        max_attempts,
+    )
+    .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes)
+}
+
+pub(super) fn observed_source_read_reservation_request(
+    memory_boundary: &'static str,
+    budget_bytes: u64,
+    chunk: &SourceChunk,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    chunk_reservation_request(
+        ReservationKind::SourceRead,
+        memory_boundary,
+        0,
+        budget_bytes,
+        chunk,
+        attempt,
+        max_attempts,
+    )
+    .with_source_read_contract(
+        SourceReadReservationContractQuality::ObservedGrowShrink.as_str(),
+        chunk.estimated_chunk_bytes,
+        chunk.estimated_source_read_bytes,
+    )
 }
 
 pub(super) fn is_retryable_chunk_error(error: &QueryError) -> bool {

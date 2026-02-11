@@ -55,6 +55,76 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
 }
 
 #[test]
+fn bounded_native_query_caps_conservative_source_read_admission_and_shrinks_to_observed() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-read-sizing-contract");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_row_grouped_input_parquet(&path);
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_m00", DataType::Int64, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![1, 1, 1])
+                .with_projected_row_group_bytes(vec![1, 1, 1], vec![1, 1, 1])
+                .with_pure_filter_row_group_bytes(vec![2_000_000, 2_000_000, 2_000_000], vec![2_000_000; 3])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string(), "payload".to_string()],
+    )
+    .with_column_roles(vec!["key".to_string(), "m00".to_string()], vec!["payload".to_string()]);
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0)));
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+    let max_source_chunk_bytes = 1024 * 1024;
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: max_source_chunk_bytes * 4,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::SourceRead
+            && event.memory_boundary == "source_chunk_read"
+            && event.requested_bytes == max_source_chunk_bytes
+            && event.source_read_contract_quality.as_deref() == Some("conservative_estimate")
+            && event.source_read_planning_bytes == Some(1)
+            && event.source_read_estimated_bytes == Some(2_000_001)
+    }));
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.action == MemoryReservationEventAction::Shrink
+            && event.reservation_kind == ReservationKind::SourceRead
+            && event.memory_boundary == "source_chunk_read"
+            && event.source_read_contract_quality.as_deref() == Some("observed_grow_shrink")
+    }));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-chunk-retry-exhausted");
     let path = dir.join("input.parquet");
@@ -468,16 +538,16 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
-    assert_eq!(metrics.source_chunks_retried, 2);
-    assert_eq!(metrics.retry_count, 2);
+    assert_eq!(metrics.source_chunks_retried, 1);
+    assert_eq!(metrics.retry_count, 1);
     assert_eq!(metrics.retry_reservation_failure_count, 1);
-    assert_eq!(metrics.retry_resource_exhausted_count, 1);
+    assert_eq!(metrics.retry_resource_exhausted_count, 0);
     assert_eq!(metrics.reservation_denied_count, 1);
     assert_reservation_events_memory_space(metrics, MemorySpaceId::Device { device_ordinal: 0 });
-    assert_eq!(metrics.source_chunks_attempted, 5);
-    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.source_chunks_attempted, 3);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.row_groups_committed, 3);
-    assert_eq!(metrics.partial_aggregate_count, 3);
+    assert_eq!(metrics.partial_aggregate_count, 2);
     assert_eq!(metrics.final_merge_attempts, 1);
 
     let QueryOutput::HostArrow(batch) = result.output() else {

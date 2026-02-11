@@ -48,6 +48,7 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.read_columns, 4);
     assert_eq!(row.metrics.resident_dataframe_peak_bytes, Some(4096));
     assert_eq!(row.metrics.allocator_high_water_bytes, Some(8192));
+    assert_eq!(row.metrics.reservation_live_peak_bytes, 96);
     assert_eq!(row.metrics.source_chunks_planned, 6);
     assert_eq!(row.metrics.source_chunks_attempted, 7);
     assert_eq!(row.metrics.source_chunks_committed, 5);
@@ -101,10 +102,13 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 15);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 84);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 16);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 85);
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
+        "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
+    ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=15\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=16\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("execution_mode=strict_bounded"));
     assert!(text.contains("contract_status=modeled"));

@@ -130,7 +130,7 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
             device_budget_bytes: retained_join_subtree_bytes,
-            max_source_chunk_bytes: 1024,
+            max_source_chunk_bytes: 16 * 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
@@ -147,6 +147,7 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
     assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
+    assert_eq!(error.fact_value("source_read_contract_quality"), Some("conservative_estimate"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
     assert!(error.fact_value("compiled_task_id").is_some());

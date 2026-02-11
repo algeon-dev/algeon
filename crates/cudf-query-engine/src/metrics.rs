@@ -76,6 +76,9 @@ pub struct MemoryReservationEvent {
     pub stage: Option<String>,
     pub compiled_task_id: Option<String>,
     pub resident_resource_id: Option<String>,
+    pub source_read_contract_quality: Option<String>,
+    pub source_read_planning_bytes: Option<u64>,
+    pub source_read_estimated_bytes: Option<u64>,
 }
 
 impl MemoryReservationEvent {
@@ -124,6 +127,9 @@ impl MemoryReservationEvent {
             stage: request.stage.clone(),
             compiled_task_id: request.compiled_task_id.clone(),
             resident_resource_id: request.resident_resource_id.clone(),
+            source_read_contract_quality: request.source_read_contract_quality.clone(),
+            source_read_planning_bytes: request.source_read_planning_bytes,
+            source_read_estimated_bytes: request.source_read_estimated_bytes,
         }
     }
 }
@@ -145,6 +151,7 @@ pub struct QueryMetrics {
     pub allocator_high_water_bytes: Option<u64>,
     pub reservation_requested_bytes: u64,
     pub reservation_granted_bytes: u64,
+    pub reservation_live_peak_bytes: u64,
     pub reservation_denied_count: u64,
     pub reservation_events: Vec<MemoryReservationEvent>,
     /// Successful lower-level cuDF calls that returned an execution-budget report.
@@ -285,12 +292,16 @@ impl QueryMetrics {
 
     pub fn record_reservation_granted_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
         self.record_reservation_granted(request.requested_bytes, granted_bytes);
-        self.reservation_events.push(MemoryReservationEvent::granted(request, granted_bytes));
+        let event = MemoryReservationEvent::granted(request, granted_bytes);
+        self.record_reservation_live_peak(event.current_reserved_bytes);
+        self.reservation_events.push(event);
     }
 
     pub fn record_reservation_denied_event(&mut self, request: &MemoryReservationRequest, granted_bytes: u64) {
         self.record_reservation_denied(request.requested_bytes);
-        self.reservation_events.push(MemoryReservationEvent::denied(request, granted_bytes));
+        let event = MemoryReservationEvent::denied(request, granted_bytes);
+        self.record_reservation_live_peak(event.current_reserved_bytes);
+        self.reservation_events.push(event);
     }
 
     pub fn record_reservation_granted_timeline_event(
@@ -302,14 +313,16 @@ impl QueryMetrics {
         current_reserved_bytes: u64,
     ) {
         self.record_reservation_granted(request.requested_bytes, granted_bytes);
-        self.reservation_events.push(MemoryReservationEvent::from_request(
+        let event = MemoryReservationEvent::from_request(
             request,
             MemoryReservationEventOutcome::Granted,
             action,
             granted_bytes,
             charged_delta_bytes,
             current_reserved_bytes,
-        ));
+        );
+        self.record_reservation_live_peak(event.current_reserved_bytes);
+        self.reservation_events.push(event);
     }
 
     pub fn record_reservation_denied_timeline_event(
@@ -320,18 +333,25 @@ impl QueryMetrics {
         current_reserved_bytes: u64,
     ) {
         self.record_reservation_denied(request.requested_bytes);
-        self.reservation_events.push(MemoryReservationEvent::from_request(
+        let event = MemoryReservationEvent::from_request(
             request,
             MemoryReservationEventOutcome::Denied,
             action,
             granted_bytes,
             0,
             current_reserved_bytes,
-        ));
+        );
+        self.record_reservation_live_peak(event.current_reserved_bytes);
+        self.reservation_events.push(event);
     }
 
     pub fn record_reservation_timeline_event(&mut self, event: MemoryReservationEvent) {
+        self.record_reservation_live_peak(event.current_reserved_bytes);
         self.reservation_events.push(event);
+    }
+
+    fn record_reservation_live_peak(&mut self, current_reserved_bytes: u64) {
+        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(current_reserved_bytes);
     }
 
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
@@ -528,6 +548,7 @@ impl QueryMetrics {
         self.reservation_requested_bytes =
             self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
         self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
+        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
         self.reservation_denied_count = self.reservation_denied_count.saturating_add(other.reservation_denied_count);
         self.reservation_events.extend(other.reservation_events);
         self.budgeted_execution_events.extend(other.budgeted_execution_events);

@@ -54,6 +54,7 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     assert_eq!(metrics.reservation_denied_count, 0);
     assert!(metrics.reservation_requested_bytes > 0);
     assert!(metrics.reservation_granted_bytes > 0);
+    assert!(metrics.reservation_live_peak_bytes > 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert!(metrics.hash_join_hash_table_bytes > 0);
     let join_metrics =
@@ -75,6 +76,10 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
             (ReservationKind::JoinOutput, "join_output"),
             (ReservationKind::Materialization, "host_materialization"),
         ],
+    );
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_input_projection"),
+        "schema-only join input selection must alias or transfer the resident input instead of charging a projection"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -499,6 +504,25 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
     assert_eq!(
         left_source_read_reserves, 4,
         "multi-chunk join probe source should stream chunk reads without an extra full-source concat reservation"
+    );
+    let left_source_read_bytes = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.reservation_kind == ReservationKind::SourceRead
+                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
+                && event.node_id.as_deref() == Some(left_node_id.as_str())
+        })
+        .map(|event| event.requested_bytes)
+        .sum::<u64>();
+    assert!(left_source_read_bytes > 0);
+    assert!(
+        metrics.reservation_events.iter().all(|event| {
+            event.memory_boundary != "join_source_concat" || event.requested_bytes < left_source_read_bytes
+        }),
+        "streamed join probe leaves must not reserve all source chunks again as a full concat output"
     );
     let join_source_reads = metrics
         .reservation_events

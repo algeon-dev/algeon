@@ -213,6 +213,7 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.allocator_high_water_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 row.metrics.reservation_requested_bytes.to_string(),
                 row.metrics.reservation_granted_bytes.to_string(),
+                row.metrics.reservation_live_peak_bytes.to_string(),
                 row.metrics.reservation_denied_count.to_string(),
                 row.metrics.source_chunks_planned.to_string(),
                 row.metrics.source_chunks_attempted.to_string(),

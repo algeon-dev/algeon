@@ -109,6 +109,35 @@ fn source_chunk_planning_uses_projected_uncompressed_bytes_before_read_bytes() {
 }
 
 #[test]
+fn source_chunk_planning_does_not_double_count_overlapping_projected_filter_columns() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/part-000.parquet")
+                .with_row_groups(vec![0, 1])
+                .with_row_group_bytes(vec![1_000, 1_000])
+                .with_projected_row_group_bytes(vec![50, 50], vec![100, 100])
+                .with_pure_filter_row_group_bytes(vec![50, 50], vec![100, 100])
+                .with_row_group_rows(vec![10, 10]),
+        ],
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    )
+    .with_column_roles(vec!["key".to_string()], vec!["key".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(250), 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 1);
+    assert_eq!(plan.chunks[0].known_projected_uncompressed_bytes, Some(200));
+    assert_eq!(plan.chunks[0].known_pure_filter_uncompressed_bytes, Some(200));
+    assert_eq!(plan.chunks[0].estimated_chunk_bytes, Some(200));
+    assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(200));
+}
+
+#[test]
 fn source_chunk_planning_applies_scan_limit_to_planned_chunks() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let source = LocalParquetSource::from_files(
