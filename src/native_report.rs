@@ -45,7 +45,7 @@ use diagnostics::{
     candidate_shape_family, join_diagnostics, physical_plan_shape, post_native_execution_path,
     summarize_source_diagnostics, unsupported_category,
 };
-pub use metrics::{NativeDataFusionExecutionMetrics, NativeJoinStrategyMetricRow};
+pub use metrics::{NativeDataFusionExecutionMetrics, NativeJoinStrategyMetricRow, NativeTaskOperatorMetricRow};
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{
     NativeDataFusionExecutionRow, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningRow,
@@ -72,8 +72,8 @@ pub use schema::{
 };
 use tsv::{
     format_adaptive_pipeline_rows, format_join_diagnostics, format_join_strategy_rows, format_source_diagnostics,
-    format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, stable_tsv_field,
-    write_tpch_dataset_metadata,
+    format_strict_bounded_compiled_graphs, format_strict_bounded_contract_rows, format_task_operator_rows,
+    stable_tsv_field, write_tpch_dataset_metadata,
 };
 pub use workload::{
     NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,

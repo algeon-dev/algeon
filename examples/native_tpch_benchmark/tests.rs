@@ -480,36 +480,3 @@ fn query_measurement(fingerprint: &str) -> execution::QueryMeasurement {
 fn header_index(header: &[&str], name: &str) -> usize {
     header.iter().position(|field| *field == name).unwrap_or_else(|| panic!("missing TSV field {name}"))
 }
-
-fn expected_key_value_facts(facts: &BTreeMap<String, String>) -> String {
-    if facts.is_empty() {
-        return "none".to_string();
-    }
-
-    facts
-        .iter()
-        .map(|(key, value)| format!("{}={}", expected_stable_tsv_field(key), expected_stable_tsv_field(value)))
-        .collect::<Vec<_>>()
-        .join(";")
-}
-
-fn expected_stable_tsv_field(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-fn expanded_mixed_residual_multi_join_facts() -> BTreeMap<String, String> {
-    let mut facts = cudf_query_engine::BoundedJoinReservationContract
-        .facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
-        .into_iter()
-        .map(|(key, value)| (key.to_string(), value))
-        .collect::<BTreeMap<_, _>>();
-    facts.insert(
-        "bounded_join_mixed_keyed_residual_multi_join_capability".to_string(),
-        "multi_join_mixed_keyed_residual_inner_left_semi_left_anti_pipeline".to_string(),
-    );
-    facts.insert(
-        "bounded_join_mixed_keyed_residual_multi_join_capability_detail".to_string(),
-        "mixed_keyed_residual_multi_join_types=inner,left_semi,left_anti".to_string(),
-    );
-    facts
-}

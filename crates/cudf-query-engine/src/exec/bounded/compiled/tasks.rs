@@ -724,6 +724,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
         validate_task_runtime_gates(self.pipeline, task)?;
+        self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
         self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));
         let result = match task.kind() {
             PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => self.execute_source_task(task),

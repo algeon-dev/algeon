@@ -55,6 +55,14 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             reservation_granted_bytes: 17,
             reservation_live_peak_bytes: 18,
             reservation_denied_count: 19,
+            max_task_reservation_bytes: 64,
+            max_task_observed_peak_bytes: Some(65),
+            max_task_retained_bytes: Some(66),
+            task_operator_rows: vec![NativeTaskOperatorMetricRow {
+                operator_kind: "source_read".to_string(),
+                task_count: 3,
+                reservation_live_peak_bytes: 64,
+            }],
             source_chunks_planned: 20,
             source_chunks_attempted: 21,
             source_chunks_committed: 22,
@@ -149,6 +157,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t52\t"
     ));
+    assert!(text.contains("\t64\t65\t66\toperator_kind=source_read,task_count=3,reservation_live_peak_bytes=64\t"));
     assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
     assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\n"));
 }
