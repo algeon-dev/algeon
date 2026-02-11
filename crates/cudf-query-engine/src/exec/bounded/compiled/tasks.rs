@@ -101,15 +101,6 @@ impl CompiledGpuResource {
         }
     }
 
-    pub(in crate::exec::bounded) fn into_resident_frame(self) -> ResidentGpuFrame {
-        match self.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => frame,
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
-                unreachable!("deferred join leaf sources must be materialized before resident-frame use")
-            },
-        }
-    }
-
     fn as_join_leaf_local_parquet_source(&self) -> Option<&BoundedJoinLeafLocalParquetSourceStream> {
         match &self.payload {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => Some(stream),
@@ -181,8 +172,27 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let resource = match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source)
-                    if self.task_directly_feeds_reusable_hash_join_probe_input(task.id()) =>
+                    if self.task_feeds_reusable_hash_join_probe_input_through_unary_chain(task.id()) =>
                 {
+                    let stream = plan_bounded_join_leaf_local_parquet_source_stream(
+                        self.context,
+                        source,
+                        node_id,
+                        self.metrics,
+                    )?;
+                    if stream.chunk_count() > 1 {
+                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
+                    } else {
+                        materialize_bounded_join_leaf_local_parquet_source_stream(
+                            self.context,
+                            stream,
+                            &mut self.reservations,
+                            self.metrics,
+                        )
+                        .map(CompiledGpuResource::new)
+                    }
+                },
+                SourceNode::LocalParquet(source) if self.task_feeds_join_build_input_through_unary_chain(task.id()) => {
                     let stream = plan_bounded_join_leaf_local_parquet_source_stream(
                         self.context,
                         source,
@@ -258,93 +268,123 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             PlanNode::Filter(filter) => {
                 if state.can_consume_task_input_resource(task, input) {
                     let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-                    execute_bounded_generic_unary(
-                        self.context,
-                        node_id,
-                        "compiled_filter",
-                        "compiled_filter_output",
-                        input_payload.into_resident_frame(),
-                        &mut self.reservations,
-                        self.metrics,
-                        true,
-                        |context, input, token, metrics| {
-                            crate::exec::operators::execute_filter_with_budget(
-                                context,
-                                filter,
-                                input,
-                                token.expect("budget token is created for compiled bounded filter stages"),
-                                metrics,
-                            )
+                    match input_payload.payload {
+                        CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                            Ok(CompiledGpuResource::join_leaf_local_parquet_source(
+                                stream.with_filter_stage(node_id, filter.clone()),
+                            ))
                         },
-                    )
+                        CompiledGpuResourcePayload::ResidentFrame(frame) => execute_bounded_generic_unary(
+                            self.context,
+                            node_id,
+                            "compiled_filter",
+                            "compiled_filter_output",
+                            frame,
+                            &mut self.reservations,
+                            self.metrics,
+                            true,
+                            |context, input, token, metrics| {
+                                crate::exec::operators::execute_filter_with_budget(
+                                    context,
+                                    filter,
+                                    input,
+                                    token.expect("budget token is created for compiled bounded filter stages"),
+                                    metrics,
+                                )
+                            },
+                        )
+                        .map(CompiledGpuResource::new),
+                    }
                 } else {
                     let input_payload = state.resource_payload(input)?;
-                    execute_bounded_generic_unary_from_frame(
-                        self.context,
-                        node_id,
-                        "compiled_filter",
-                        "compiled_filter_output",
-                        input_payload.clone_frame(),
-                        input_payload.reservation_bytes(),
-                        &mut self.reservations,
-                        self.metrics,
-                        true,
-                        |context, input, token, metrics| {
-                            crate::exec::operators::execute_filter_with_budget(
-                                context,
-                                filter,
-                                input,
-                                token.expect("budget token is created for compiled bounded filter stages"),
-                                metrics,
-                            )
-                        },
-                    )
+                    if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(
+                            stream.with_filter_stage(node_id, filter.clone()),
+                        ))
+                    } else {
+                        execute_bounded_generic_unary_from_frame(
+                            self.context,
+                            node_id,
+                            "compiled_filter",
+                            "compiled_filter_output",
+                            input_payload.clone_frame(),
+                            input_payload.reservation_bytes(),
+                            &mut self.reservations,
+                            self.metrics,
+                            true,
+                            |context, input, token, metrics| {
+                                crate::exec::operators::execute_filter_with_budget(
+                                    context,
+                                    filter,
+                                    input,
+                                    token.expect("budget token is created for compiled bounded filter stages"),
+                                    metrics,
+                                )
+                            },
+                        )
+                        .map(CompiledGpuResource::new)
+                    }
                 }
             },
             PlanNode::Projection(projection) => {
                 if state.can_consume_task_input_resource(task, input) {
                     let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
-                    execute_bounded_generic_unary(
-                        self.context,
-                        node_id,
-                        "compiled_projection",
-                        "compiled_projection_output",
-                        input_payload.into_resident_frame(),
-                        &mut self.reservations,
-                        self.metrics,
-                        true,
-                        |context, input, token, metrics| {
-                            crate::exec::operators::execute_projection_with_budget(
-                                context,
-                                projection,
-                                input,
-                                token.expect("budget token is created for compiled bounded projection stages"),
-                                metrics,
-                            )
+                    match input_payload.payload {
+                        CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                            Ok(CompiledGpuResource::join_leaf_local_parquet_source(
+                                stream.with_projection_stage(node_id, projection.clone()),
+                            ))
                         },
-                    )
+                        CompiledGpuResourcePayload::ResidentFrame(frame) => execute_bounded_generic_unary(
+                            self.context,
+                            node_id,
+                            "compiled_projection",
+                            "compiled_projection_output",
+                            frame,
+                            &mut self.reservations,
+                            self.metrics,
+                            true,
+                            |context, input, token, metrics| {
+                                crate::exec::operators::execute_projection_with_budget(
+                                    context,
+                                    projection,
+                                    input,
+                                    token.expect("budget token is created for compiled bounded projection stages"),
+                                    metrics,
+                                )
+                            },
+                        )
+                        .map(CompiledGpuResource::new),
+                    }
                 } else {
                     let input_payload = state.resource_payload(input)?;
-                    execute_bounded_generic_unary_from_frame(
-                        self.context,
-                        node_id,
-                        "compiled_projection",
-                        "compiled_projection_output",
-                        input_payload.clone_frame(),
-                        input_payload.reservation_bytes(),
-                        &mut self.reservations,
-                        self.metrics,
-                        true,
-                        |context, input, token, metrics| {
-                            crate::exec::operators::execute_projection_with_budget(
-                                context,
-                                projection,
-                                input,
-                                token.expect("budget token is created for compiled bounded projection stages"),
-                                metrics,
-                            )
-                        },
-                    )
+                    if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(
+                            stream.with_projection_stage(node_id, projection.clone()),
+                        ))
+                    } else {
+                        execute_bounded_generic_unary_from_frame(
+                            self.context,
+                            node_id,
+                            "compiled_projection",
+                            "compiled_projection_output",
+                            input_payload.clone_frame(),
+                            input_payload.reservation_bytes(),
+                            &mut self.reservations,
+                            self.metrics,
+                            true,
+                            |context, input, token, metrics| {
+                                crate::exec::operators::execute_projection_with_budget(
+                                    context,
+                                    projection,
+                                    input,
+                                    token.expect("budget token is created for compiled bounded projection stages"),
+                                    metrics,
+                                )
+                            },
+                        )
+                        .map(CompiledGpuResource::new)
+                    }
                 }
             },
             _ => Err(invalid("compiled unary task does not reference a filter or projection plan node")
@@ -353,7 +393,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("pipeline_task_kind", task.kind().as_str())),
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        Ok(CompiledTaskOutput::new(vec![(output, frame)]))
     }
 
     fn execute_join_build_task(
@@ -370,38 +410,92 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         }
         let input = single_input_resource(task)?;
         let node = join_node(self.plan, task, node_id)?;
-        let (input_rows, input_reserved_bytes) = {
-            let input_payload = state.resource_payload(input)?;
-            (input_payload.num_rows() as u64, input_payload.reservation_bytes())
-        };
-        let strategy = join_strategy(self.plan, node, task, node_id, input_rows, input_reserved_bytes)?;
-        if let Some(facts) = strategy.facts.as_ref() {
-            self.metrics.record_join_strategy_decision(node_id, facts);
-        }
         let build = if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
             self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
+            let input_frame = match input_payload.payload {
+                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
+                    materialize_bounded_join_leaf_local_parquet_source_stream(
+                        self.context,
+                        stream,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                },
+                CompiledGpuResourcePayload::ResidentFrame(frame) => Ok(frame),
+            }?;
+            let strategy = join_strategy(
+                self.plan,
+                node,
+                task,
+                node_id,
+                input_frame.frame.num_rows() as u64,
+                input_frame.reservation.bytes(),
+            )?;
+            if let Some(facts) = strategy.facts.as_ref() {
+                self.metrics.record_join_strategy_decision(node_id, facts);
+            }
             execute_bounded_compiled_join_build_from_resident_frame(
                 self.context,
                 node_id,
                 node,
                 strategy.strategy,
-                input_payload.into_resident_frame(),
+                input_frame,
                 &mut self.reservations,
                 self.metrics,
             )
         } else {
             let input_payload = state.resource_payload(input)?;
-            execute_bounded_compiled_join_build_from_frame(
-                self.context,
-                node_id,
-                node,
-                strategy.strategy,
-                input_payload.clone_frame(),
-                input_payload.reservation(),
-                &mut self.reservations,
-                self.metrics,
-            )
+            if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
+                let input_frame = materialize_bounded_join_leaf_local_parquet_source_stream(
+                    self.context,
+                    stream,
+                    &mut self.reservations,
+                    self.metrics,
+                )?;
+                let strategy = join_strategy(
+                    self.plan,
+                    node,
+                    task,
+                    node_id,
+                    input_frame.frame.num_rows() as u64,
+                    input_frame.reservation.bytes(),
+                )?;
+                if let Some(facts) = strategy.facts.as_ref() {
+                    self.metrics.record_join_strategy_decision(node_id, facts);
+                }
+                execute_bounded_compiled_join_build_from_resident_frame(
+                    self.context,
+                    node_id,
+                    node,
+                    strategy.strategy,
+                    input_frame,
+                    &mut self.reservations,
+                    self.metrics,
+                )
+            } else {
+                let strategy = join_strategy(
+                    self.plan,
+                    node,
+                    task,
+                    node_id,
+                    input_payload.num_rows() as u64,
+                    input_payload.reservation_bytes(),
+                )?;
+                if let Some(facts) = strategy.facts.as_ref() {
+                    self.metrics.record_join_strategy_decision(node_id, facts);
+                }
+                execute_bounded_compiled_join_build_from_frame(
+                    self.context,
+                    node_id,
+                    node,
+                    strategy.strategy,
+                    input_payload.clone_frame(),
+                    input_payload.reservation(),
+                    &mut self.reservations,
+                    self.metrics,
+                )
+            }
         }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         self.join_builds.insert(node_id, build);
@@ -674,44 +768,79 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         false
     }
 
-    fn task_directly_feeds_reusable_hash_join_probe_input(&self, task: PipelineTaskId) -> bool {
-        let Some(source_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == task) else {
-            return false;
-        };
-        let [output_resource] = source_task.output_resources() else {
-            return false;
-        };
-        let Some(resource) = self.pipeline.resources().iter().find(|resource| resource.id() == *output_resource) else {
-            return false;
-        };
-        if resource.consumers().len() != 1 {
-            return false;
+    fn task_feeds_reusable_hash_join_probe_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
+        self.task_feeds_join_input_through_unary_chain(task, PipelineEdgeKind::JoinProbeInput)
+            .is_some_and(|join_task| self.task_is_reusable_hash_join_probe(join_task))
+    }
+
+    fn task_feeds_join_build_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
+        self.task_feeds_join_input_through_unary_chain(task, PipelineEdgeKind::JoinBuildInput).is_some()
+    }
+
+    fn task_feeds_join_input_through_unary_chain(
+        &self,
+        task: PipelineTaskId,
+        target_kind: PipelineEdgeKind,
+    ) -> Option<PipelineTaskId> {
+        let mut current = task;
+        loop {
+            let Some(current_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == current) else {
+                return None;
+            };
+            let [output_resource] = current_task.output_resources() else {
+                return None;
+            };
+            let Some(resource) = self.pipeline.resources().iter().find(|resource| resource.id() == *output_resource)
+            else {
+                return None;
+            };
+            let [consumer] = resource.consumers() else {
+                return None;
+            };
+            let Some(edge) = self.pipeline.edges().iter().find(|edge| edge.from() == current && edge.to() == *consumer)
+            else {
+                return None;
+            };
+            match edge.kind() {
+                kind if kind == target_kind => return Some(*consumer),
+                PipelineEdgeKind::ResidentFrame => {
+                    let Some(consumer_task) =
+                        self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer)
+                    else {
+                        return None;
+                    };
+                    if consumer_task.kind() != PipelineTaskKind::Unary {
+                        return None;
+                    }
+                    current = *consumer;
+                },
+                PipelineEdgeKind::Control
+                | PipelineEdgeKind::SharedResidentProducer
+                | PipelineEdgeKind::BarrierOutput
+                | PipelineEdgeKind::JoinBuildInput
+                | PipelineEdgeKind::JoinProbeInput
+                | PipelineEdgeKind::SinkInput => return None,
+            }
         }
-        self.pipeline
-            .edges()
-            .iter()
-            .filter(|edge| edge.from() == task && edge.kind() == PipelineEdgeKind::JoinProbeInput)
-            .any(|edge| {
-                if resource.consumers() != [edge.to()] {
-                    return false;
-                }
-                let Some(join_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == edge.to()) else {
-                    return false;
-                };
-                let Some(node_id) = join_task.plan_node() else {
-                    return false;
-                };
-                let Some(node) = self.plan.node(node_id) else {
-                    return false;
-                };
-                let PlanNode::Join(join) = &node.kind else {
-                    return false;
-                };
-                matches!(
-                    CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
-                    Ok(Some(CompiledJoinExecutionStrategy::HashEqui))
-                )
-            })
+    }
+
+    fn task_is_reusable_hash_join_probe(&self, task: PipelineTaskId) -> bool {
+        let Some(join_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == task) else {
+            return false;
+        };
+        let Some(node_id) = join_task.plan_node() else {
+            return false;
+        };
+        let Some(node) = self.plan.node(node_id) else {
+            return false;
+        };
+        let PlanNode::Join(join) = &node.kind else {
+            return false;
+        };
+        matches!(
+            CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
+            Ok(Some(CompiledJoinExecutionStrategy::HashEqui))
+        )
     }
 }
 

@@ -164,4 +164,8 @@ impl<'a> BoundedPlan<'a> {
 
         Ok(())
     }
+
+    pub(in crate::exec::bounded) fn has_source_adjacent_stages(&self) -> bool {
+        !self.pre_filter_projections.is_empty() || self.filter.is_some() || !self.post_filter_projections.is_empty()
+    }
 }

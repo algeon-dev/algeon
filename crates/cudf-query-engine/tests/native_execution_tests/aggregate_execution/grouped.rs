@@ -64,6 +64,26 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.source_read_prefetches_completed, 2);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
+    assert!(
+        metrics.reservation_events.iter().all(|event| {
+            !(event.memory_boundary == "source_chunk_read" && event.action == MemoryReservationEventAction::Grow)
+        }),
+        "source-adjacent aggregate filtering/projection should not grow raw source-read reservations to observed bytes"
+    );
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "source_chunk_filter_output"
+                && event.action == MemoryReservationEventAction::Transfer
+        }),
+        "source-adjacent aggregate filtering should transfer ownership to the filtered output boundary"
+    );
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "source_chunk_projection_output"
+                && event.action == MemoryReservationEventAction::Transfer
+        }),
+        "source-adjacent aggregate projection should transfer ownership to the projected output boundary"
+    );
     let first_chunk_operator = metrics
         .reservation_events
         .iter()

@@ -558,6 +558,231 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
 }
 
 #[test]
+fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_probe() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-streamed-source-unary");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_parquet(&left_path);
+    let right_schema = write_row_grouped_join_right_parquet(&right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(
+        join_left_source(&left_path, &left_schema, &["order_id", "qty"])
+            .with_column_roles(vec!["order_id".to_string()], vec!["qty".to_string()]),
+    ));
+    let filtered_left = builder.add_filter(
+        left,
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15))),
+        Arc::clone(&left_schema),
+    );
+    let projected_left = builder.add_projection(
+        filtered_left,
+        vec![ProjectionOutput::new(Expr::column("order_id"), Field::new("order_id", DataType::Int32, false))],
+    );
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        projected_left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    assert!(
+        plan.capability_analysis().admits_strict_bounded_join(),
+        "source-adjacent filter/projection hash probe plan should stay capability-admitted:\n{plan}"
+    );
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 7);
+    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    let left_node_id = left.to_string();
+    let left_source_read_reserves = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.reservation_kind == ReservationKind::SourceRead
+                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
+                && event.node_id.as_deref() == Some(left_node_id.as_str())
+        })
+        .count();
+    assert_eq!(left_source_read_reserves, 4);
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),
+        "source-adjacent unary probe stream should not materialize and concat the full source before probing"
+    );
+    let streamed_filter_outputs = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "applied"
+                && event.action == MemoryReservationEventAction::Transfer
+                && event.reservation_kind == ReservationKind::OperatorOutput
+                && event.memory_boundary == "join_source_filter_output"
+        })
+        .count();
+    let streamed_projection_outputs = metrics
+        .reservation_events
+        .iter()
+        .filter(|event| {
+            event.outcome.as_str() == "applied"
+                && event.action == MemoryReservationEventAction::Transfer
+                && event.reservation_kind == ReservationKind::OperatorOutput
+                && event.memory_boundary == "join_source_projection_output"
+        })
+        .count();
+    assert_eq!(streamed_filter_outputs, 4);
+    assert_eq!(streamed_projection_outputs, 4);
+    assert!(
+        metrics.reservation_events.iter().all(|event| {
+            event.memory_boundary != "compiled_filter_output" && event.memory_boundary != "compiled_projection_output"
+        }),
+        "source-adjacent filter/projection should be fused into the source stream consumer path"
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
+    assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_build() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-streamed-build-source-unary");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_parquet(&left_path);
+    let right_schema = write_row_grouped_join_right_parquet(&right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(
+        join_left_source(&left_path, &left_schema, &["order_id", "qty"])
+            .with_column_roles(vec!["order_id".to_string()], vec!["qty".to_string()]),
+    ));
+    let filtered_left = builder.add_filter(
+        left,
+        Expr::binary(Expr::column("qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(15))),
+        Arc::clone(&left_schema),
+    );
+    let projected_left = builder.add_projection(
+        filtered_left,
+        vec![ProjectionOutput::new(Expr::column("order_id"), Field::new("order_id", DataType::Int32, false))],
+    );
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        projected_left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Left),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 7);
+    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),
+        "source-adjacent unary build stream should not concat the raw source before filtering/projection"
+    );
+    assert_eq!(
+        metrics
+            .reservation_events
+            .iter()
+            .filter(|event| {
+                event.outcome.as_str() == "applied"
+                    && event.action == MemoryReservationEventAction::Transfer
+                    && event.reservation_kind == ReservationKind::OperatorOutput
+                    && event.memory_boundary == "join_source_filter_output"
+            })
+            .count(),
+        4
+    );
+    assert_eq!(
+        metrics
+            .reservation_events
+            .iter()
+            .filter(|event| {
+                event.outcome.as_str() == "applied"
+                    && event.action == MemoryReservationEventAction::Transfer
+                    && event.reservation_kind == ReservationKind::OperatorOutput
+                    && event.memory_boundary == "join_source_projection_output"
+            })
+            .count(),
+        4
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
+    assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-source-retry-split");
     let left_path = dir.join("lineitem.parquet");
