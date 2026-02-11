@@ -123,6 +123,33 @@ pub mod reservation_contract_testing {
         })
     }
 
+    pub fn probe_alias_outlives_source_release_contract() -> Result<ReservationTrackerContractProbe> {
+        let mut metrics = QueryMetrics::default();
+        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let owned = tracker.try_reserve_owned_resident(
+            request(ReservationKind::SourceRead, "join_source_read", 60, tracker.budget()),
+            &mut metrics,
+        )?;
+        let reserved_after_reserve = tracker.reserved_bytes();
+        let alias = tracker.alias_reservation(
+            &owned,
+            request(ReservationKind::ProbeSide, "join_probe_side", 25, tracker.budget()),
+            &mut metrics,
+        );
+        let reserved_after_alias_or_transfer = tracker.reserved_bytes();
+        tracker.release(owned, &mut metrics);
+        let reserved_after_intermediate_release = tracker.reserved_bytes();
+        tracker.release(alias, &mut metrics);
+        let reserved_after_final_release = tracker.reserved_bytes();
+        Ok(ReservationTrackerContractProbe {
+            metrics,
+            reserved_after_reserve,
+            reserved_after_alias_or_transfer,
+            reserved_after_intermediate_release,
+            reserved_after_final_release,
+        })
+    }
+
     pub fn probe_denial_capacity_after_alias() -> Result<ReservationTrackerDenialProbe> {
         let mut metrics = QueryMetrics::default();
         let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
