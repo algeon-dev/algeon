@@ -76,6 +76,26 @@ impl TpchDatasetMetadata {
     pub fn table_row_group_counts(&self) -> String {
         format_table_metadata(&self.tables, |table| table.row_group_count as u64)
     }
+
+    pub fn to_workload_dataset_metadata(&self) -> crate::native_report::WorkloadDatasetMetadata {
+        crate::native_report::WorkloadDatasetMetadata {
+            workload: "tpch",
+            root: self.root.clone(),
+            scale_factor: Some(self.scale_factor.clone()),
+            provenance: self.provenance.clone(),
+            generation_command: self.generation_command.clone(),
+            table_count: self.table_count,
+            file_count: self.file_count,
+            total_rows: self.total_rows,
+            total_bytes: self.total_bytes,
+            metadata_fingerprint: self.metadata_fingerprint.clone(),
+            content_fingerprint: self.content_fingerprint.clone(),
+            table_file_counts: self.table_file_counts(),
+            table_row_counts: self.table_row_counts(),
+            table_byte_sizes: self.table_byte_sizes(),
+            table_row_group_counts: self.table_row_group_counts(),
+        }
+    }
 }
 
 pub fn tiny_tpch_dataset_metadata(root: &Path) -> TpchWorkloadResult<TpchDatasetMetadata> {

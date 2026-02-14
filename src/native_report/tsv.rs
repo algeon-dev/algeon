@@ -164,29 +164,31 @@ pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) ->
     rows.iter().map(|row| stable_tsv_field(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
 }
 
-pub(super) fn write_tpch_dataset_metadata(output: &mut String, metadata: Option<&TpchDatasetMetadata>) {
+pub(super) fn write_workload_dataset_metadata(output: &mut String, metadata: Option<&WorkloadDatasetMetadata>) {
     let Some(metadata) = metadata else {
         return;
     };
 
-    let _ = writeln!(output, "# tpch_dataset_root={}", metadata.root.display());
-    let _ = writeln!(output, "# tpch_dataset_scale_factor={}", metadata_value(&metadata.scale_factor));
-    let _ = writeln!(output, "# tpch_dataset_provenance={}", metadata_value(&metadata.provenance));
-    let _ = writeln!(output, "# tpch_dataset_generation_command={}", metadata_value(&metadata.generation_command));
-    let _ = writeln!(output, "# tpch_dataset_table_count={}", metadata.table_count);
-    let _ = writeln!(output, "# tpch_dataset_file_count={}", metadata.file_count);
-    let _ = writeln!(output, "# tpch_dataset_total_rows={}", metadata.total_rows);
-    let _ = writeln!(output, "# tpch_dataset_total_bytes={}", metadata.total_bytes);
-    let _ = writeln!(output, "# tpch_dataset_metadata_fingerprint={}", metadata.metadata_fingerprint);
+    let _ = writeln!(output, "# workload={}", metadata.workload);
+    let _ = writeln!(output, "# dataset_root={}", metadata.root.display());
+    let _ =
+        writeln!(output, "# dataset_scale_factor={}", metadata.scale_factor.as_deref().map_or("none", |value| value));
+    let _ = writeln!(output, "# dataset_provenance={}", metadata_value(&metadata.provenance));
+    let _ = writeln!(output, "# dataset_generation_command={}", metadata_value(&metadata.generation_command));
+    let _ = writeln!(output, "# dataset_table_count={}", metadata.table_count);
+    let _ = writeln!(output, "# dataset_file_count={}", metadata.file_count);
+    let _ = writeln!(output, "# dataset_total_rows={}", metadata.total_rows);
+    let _ = writeln!(output, "# dataset_total_bytes={}", metadata.total_bytes);
+    let _ = writeln!(output, "# dataset_metadata_fingerprint={}", metadata.metadata_fingerprint);
     let _ = writeln!(
         output,
-        "# tpch_dataset_content_fingerprint={}",
+        "# dataset_content_fingerprint={}",
         metadata.content_fingerprint.as_deref().unwrap_or("not_computed")
     );
-    let _ = writeln!(output, "# tpch_dataset_table_file_counts={}", metadata.table_file_counts());
-    let _ = writeln!(output, "# tpch_dataset_table_row_counts={}", metadata.table_row_counts());
-    let _ = writeln!(output, "# tpch_dataset_table_byte_sizes={}", metadata.table_byte_sizes());
-    let _ = writeln!(output, "# tpch_dataset_table_row_group_counts={}", metadata.table_row_group_counts());
+    let _ = writeln!(output, "# dataset_table_file_counts={}", metadata.table_file_counts);
+    let _ = writeln!(output, "# dataset_table_row_counts={}", metadata.table_row_counts);
+    let _ = writeln!(output, "# dataset_table_byte_sizes={}", metadata.table_byte_sizes);
+    let _ = writeln!(output, "# dataset_table_row_group_counts={}", metadata.table_row_group_counts);
 }
 
 fn metadata_value(value: &str) -> String {

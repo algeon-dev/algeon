@@ -15,7 +15,7 @@ const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXEC
 async fn main() {
     let dir = unique_temp_dir("datafusion-cudf-native-tpch-execution");
     let TpchExecutionReport { report, metadata } = tpch_report(&dir).await.unwrap();
-    print!("{}", report.with_tpch_dataset_metadata(metadata).to_tsv());
+    print!("{}", report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata()).to_tsv());
     fs::remove_dir_all(dir).unwrap();
 }
 

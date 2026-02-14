@@ -3,7 +3,7 @@ use super::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFallbackPressureReport {
     pub rows: Vec<NativeFallbackPressureRow>,
-    pub tpch_dataset: Option<TpchDatasetMetadata>,
+    pub workload_dataset: Option<WorkloadDatasetMetadata>,
 }
 
 impl NativeFallbackPressureReport {
@@ -17,11 +17,11 @@ impl NativeFallbackPressureReport {
         execution_config: &NativeCudfExecutionConfig,
     ) -> Self {
         let rows = items.into_iter().flat_map(|item| report_rows_for_item(item, execution_config)).collect();
-        Self { rows, tpch_dataset: None }
+        Self { rows, workload_dataset: None }
     }
 
-    pub fn with_tpch_dataset_metadata(mut self, metadata: TpchDatasetMetadata) -> Self {
-        self.tpch_dataset = Some(metadata);
+    pub fn with_workload_dataset_metadata(mut self, metadata: WorkloadDatasetMetadata) -> Self {
+        self.workload_dataset = Some(metadata);
         self
     }
 
@@ -39,7 +39,7 @@ impl NativeFallbackPressureReport {
             output,
             "# native_fallback_pressure_tsv_schema_version={NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION}"
         );
-        write_tpch_dataset_metadata(&mut output, self.tpch_dataset.as_ref());
+        write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         output.push_str(NATIVE_FALLBACK_PRESSURE_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {
@@ -67,13 +67,13 @@ impl NativeFallbackPressureReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeDataFusionPlanningReport {
     pub rows: Vec<NativeDataFusionPlanningRow>,
-    pub tpch_dataset: Option<TpchDatasetMetadata>,
+    pub workload_dataset: Option<WorkloadDatasetMetadata>,
 }
 
 impl NativeDataFusionPlanningReport {
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionPlanningWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_planning_rows_for_item).collect();
-        Self { rows, tpch_dataset: None }
+        Self { rows, workload_dataset: None }
     }
 
     pub fn from_retained_rule(
@@ -92,8 +92,8 @@ impl NativeDataFusionPlanningReport {
         Self::collect([NativeDataFusionPlanningWorkloadItem::new(query_id, planned_plan, diagnostics)])
     }
 
-    pub fn with_tpch_dataset_metadata(mut self, metadata: TpchDatasetMetadata) -> Self {
-        self.tpch_dataset = Some(metadata);
+    pub fn with_workload_dataset_metadata(mut self, metadata: WorkloadDatasetMetadata) -> Self {
+        self.workload_dataset = Some(metadata);
         self
     }
 
@@ -111,7 +111,7 @@ impl NativeDataFusionPlanningReport {
             output,
             "# native_datafusion_planning_tsv_schema_version={NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION}"
         );
-        write_tpch_dataset_metadata(&mut output, self.tpch_dataset.as_ref());
+        write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         output.push_str(NATIVE_DATAFUSION_PLANNING_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {
@@ -143,17 +143,17 @@ impl NativeDataFusionPlanningReport {
 #[derive(Debug, Clone)]
 pub struct NativeDataFusionExecutionReport {
     pub rows: Vec<NativeDataFusionExecutionRow>,
-    pub tpch_dataset: Option<TpchDatasetMetadata>,
+    pub workload_dataset: Option<WorkloadDatasetMetadata>,
 }
 
 impl NativeDataFusionExecutionReport {
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionExecutionWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_execution_rows_for_item).collect();
-        Self { rows, tpch_dataset: None }
+        Self { rows, workload_dataset: None }
     }
 
-    pub fn with_tpch_dataset_metadata(mut self, metadata: TpchDatasetMetadata) -> Self {
-        self.tpch_dataset = Some(metadata);
+    pub fn with_workload_dataset_metadata(mut self, metadata: WorkloadDatasetMetadata) -> Self {
+        self.workload_dataset = Some(metadata);
         self
     }
 
@@ -171,7 +171,7 @@ impl NativeDataFusionExecutionReport {
             output,
             "# native_datafusion_execution_tsv_schema_version={NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION}"
         );
-        write_tpch_dataset_metadata(&mut output, self.tpch_dataset.as_ref());
+        write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         output.push_str(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
         output.push('\n');
         for row in &self.rows {

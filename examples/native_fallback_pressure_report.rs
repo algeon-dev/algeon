@@ -28,15 +28,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure");
     let workload = std::env::var("CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD").unwrap_or_else(|_| "synthetic".to_string());
 
-    let (items, tpch_dataset) = match workload.as_str() {
+    let (items, workload_dataset) = match workload.as_str() {
         "synthetic" => (synthetic_workload_items(&dir).await, None),
         "tpch" => {
             let TpchWorkload { items, metadata } = tpch_workload_items(&dir).await?;
-            (items, Some(metadata))
+            (items, Some(metadata.to_workload_dataset_metadata()))
         },
         "tpch_scalar" => {
             let TpchWorkload { items, metadata } = tpch_scalar_workload_items(&dir).await?;
-            (items, Some(metadata))
+            (items, Some(metadata.to_workload_dataset_metadata()))
         },
         value => {
             return Err(format!(
@@ -49,8 +49,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let execution_config = NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1)
         .with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());
     let mut report = NativeFallbackPressureReport::collect_with_native_execution_config(items, &execution_config);
-    if let Some(metadata) = tpch_dataset {
-        report = report.with_tpch_dataset_metadata(metadata);
+    if let Some(metadata) = workload_dataset {
+        report = report.with_workload_dataset_metadata(metadata);
     }
     print!("{}", report.to_tsv());
 
