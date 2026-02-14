@@ -5,7 +5,7 @@ use cudf_query_engine::{
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 use datafusion::{
-    datasource::physical_plan::ParquetSource,
+    datasource::physical_plan::{FileSource, ParquetSource},
     physical_plan::{ExecutionPlan, projection::ProjectionExec},
 };
 
@@ -18,7 +18,7 @@ use super::{
         validate_joined_aggregate_scalar_expressions, validate_required_scalar_expressions,
     },
     executable_schema_and_bindings,
-    expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
+    expr::{collect_required_field_indices, lower_physical_expr, lower_physical_expr_with_bindings},
     lower_native_input, projection_outputs,
     sort::lower_sort_spec_with_input,
     source::{
@@ -31,6 +31,7 @@ use super::{
 use crate::{
     native::{
         normalize::{NormalizedNativeAggregateRoot, NormalizedNativeInputRoot, NormalizedNativePlan},
+        pruning::scan_predicate_without_dynamic_filter_hints,
         source::{
             local_parquet_files, local_parquet_source_diagnostics, native_source_output_schema,
             required_parquet_column_requirements, validate_slice1_parquet_scan,
@@ -167,6 +168,11 @@ pub(super) fn lower_slice1_plan(
     } else {
         RequiredFields::all()
     };
+    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
+        parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
+    } else {
+        None
+    };
     let filtered = if let Some(filter) = filter {
         if reader_pushdown_covers_filter {
             if let Some(projection) = filter.projection() {
@@ -204,6 +210,13 @@ pub(super) fn lower_slice1_plan(
                 LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings)
             }
         }
+    } else if let Some(predicate) = scan_only_post_scan_predicate {
+        let filtered_node = builder.add_filter(
+            scan_output.node,
+            lower_physical_expr(&predicate, &scan_output.schema)?,
+            Arc::clone(&scan_output.schema),
+        );
+        LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings)
     } else {
         scan_output
     };

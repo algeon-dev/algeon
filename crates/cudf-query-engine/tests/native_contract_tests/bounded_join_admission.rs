@@ -51,7 +51,7 @@ fn assert_modeled_reservation_facts_are_consistent(
                     "source_contract"
                         | "aggregate_contract"
                         | "final_sort_contract"
-                        | "one_shot_equality_join_output_size_preflight"
+                        | "keyed_equality_join_output_size_preflight"
                 ),
                 "{label}: {kind} hard-budgeted requirement must name a lower-level preflight contract"
             );
@@ -79,7 +79,7 @@ fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'s
 }
 
 #[test]
-fn large_keyed_inner_build_selects_one_shot_strategy_without_hash_table_gate() {
+fn large_keyed_inner_build_selects_partitioned_strategy_without_hash_table_gate() {
     let plan = large_keyed_join_strategy_plan(JoinType::Inner);
     let analysis = plan.capability_analysis();
 
@@ -91,41 +91,43 @@ fn large_keyed_inner_build_selects_one_shot_strategy_without_hash_table_gate() {
         .expect("plan should contain a join capability row");
     assert!(
         join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
-        "large one-shot keyed joins must not require a reusable hash-table gate"
+        "large partitioned keyed joins must not require a reusable hash-table gate"
     );
 
     let facts = plan
         .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
         .expect("large one-shot join should still be admitted");
-    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:100000000"));
+    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:9663676416"));
+    assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
 
-    let pipeline = cudf_query_engine::compile_pipeline(&plan, &analysis).expect("one-shot join should compile");
+    let pipeline = cudf_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
     assert!(
         pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-        "compiled one-shot join pipeline must not carry a reusable hash-table gate"
+        "compiled partitioned join pipeline must not carry a reusable hash-table gate"
     );
     assert!(
         pipeline.gates().iter().any(|gate| {
             gate.reservation_kind() == ReservationKind::GatherMap
                 && gate.memory_boundary() == "join_one_shot_indices"
-                && gate.required_contract() == "one_shot_join_indices_observed_retained_bytes"
+                && gate.required_contract() == "keyed_join_indices_observed_retained_bytes"
                 && gate.quality() == ContractQuality::ObservedRetainedState
         }),
-        "compiled one-shot join pipeline should report observed retained index bytes honestly"
+        "compiled partitioned join pipeline should report observed retained index bytes honestly"
     );
     assert_one_shot_output_preflight_gap(&pipeline, "large keyed inner join");
 }
 
 #[test]
-fn large_keyed_left_and_full_builds_select_one_shot_strategy_without_hash_table_gate() {
+fn large_keyed_left_and_full_builds_select_partitioned_strategy_without_hash_table_gate() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type);
         let analysis = plan.capability_analysis();
 
-        assert!(!analysis.has_rejections(), "{join_type} large one-shot join should be admitted");
+        assert!(!analysis.has_rejections(), "{join_type} large partitioned join should be admitted");
         let join = analysis
             .nodes
             .iter()
@@ -133,23 +135,25 @@ fn large_keyed_left_and_full_builds_select_one_shot_strategy_without_hash_table_
             .expect("plan should contain a join capability row");
         assert!(
             join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
-            "{join_type} large one-shot keyed joins must not require a reusable hash-table gate"
+            "{join_type} large partitioned keyed joins must not require a reusable hash-table gate"
         );
 
         let facts = plan
             .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
-            .expect("large one-shot join should report modeled bounded facts");
-        assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+            .expect("large partitioned join should report modeled bounded facts");
+        assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
         assert_eq!(
             facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
             Some("n2:build_side_too_large")
         );
-        assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
+        assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:9663676416"));
+        assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
+        assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 
-        let pipeline = cudf_query_engine::compile_pipeline(&plan, &analysis).expect("one-shot join should compile");
+        let pipeline = cudf_query_engine::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
         assert!(
             pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-            "{join_type} compiled one-shot join pipeline must not carry a reusable hash-table gate"
+            "{join_type} compiled partitioned join pipeline must not carry a reusable hash-table gate"
         );
         assert_one_shot_output_preflight_gap(&pipeline, &format!("large keyed {join_type} join"));
     }
@@ -179,6 +183,12 @@ fn large_keyed_inner_residual_build_selects_one_shot_strategy_without_hash_or_mi
         .expect("large one-shot residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
+    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:9663676416"));
+    assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
+    assert_eq!(
+        facts.get("partitioned_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:partitioned_hash_equi_unsupported")
+    );
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 
     let pipeline =
@@ -193,7 +203,7 @@ fn large_keyed_inner_residual_build_selects_one_shot_strategy_without_hash_or_mi
         pipeline.gates().iter().any(|gate| {
             gate.reservation_kind() == ReservationKind::GatherMap
                 && gate.memory_boundary() == "join_one_shot_indices"
-                && gate.required_contract() == "one_shot_join_indices_observed_retained_bytes"
+                && gate.required_contract() == "keyed_join_indices_observed_retained_bytes"
                 && gate.quality() == ContractQuality::ObservedRetainedState
         }),
         "compiled one-shot residual join pipeline should report observed retained index bytes honestly"
@@ -208,7 +218,7 @@ fn assert_one_shot_output_preflight_gap(pipeline: &cudf_query_engine::CompiledPi
         .find(|gate| {
             gate.reservation_kind() == ReservationKind::JoinOutput
                 && gate.memory_boundary() == "join_output"
-                && gate.required_contract() == "one_shot_equality_join_output_size_preflight"
+                && gate.required_contract() == "keyed_equality_join_output_size_preflight"
         })
         .unwrap_or_else(|| panic!("{label}: compiled one-shot join should name the output-size preflight gap"));
     assert_eq!(
@@ -235,12 +245,20 @@ pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> cudf_query_
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/large-join-left.parquet").with_row_group_rows(vec![10])],
+        vec![
+            LocalParquetFile::new("/tmp/large-join-left.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/large-join-right.parquet").with_row_group_rows(vec![100_000_000])],
+        vec![
+            LocalParquetFile::new("/tmp/large-join-right.parquet")
+                .with_row_group_rows(vec![100_000_000])
+                .with_row_group_bytes(vec![9 * 1024 * 1024 * 1024]),
+        ],
         Arc::clone(&right_schema),
         vec!["order_id".to_string(), "category".to_string()],
     )));
@@ -282,12 +300,20 @@ fn large_keyed_residual_join_strategy_plan() -> cudf_query_engine::QueryPlan {
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/large-residual-join-left.parquet").with_row_group_rows(vec![10])],
+        vec![
+            LocalParquetFile::new("/tmp/large-residual-join-left.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
         Arc::clone(&left_schema),
         vec!["order_id".to_string(), "qty".to_string()],
     )));
     let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/large-residual-join-right.parquet").with_row_group_rows(vec![100_000_000])],
+        vec![
+            LocalParquetFile::new("/tmp/large-residual-join-right.parquet")
+                .with_row_group_rows(vec![100_000_000])
+                .with_row_group_bytes(vec![9 * 1024 * 1024 * 1024]),
+        ],
         Arc::clone(&right_schema),
         vec!["order_id".to_string(), "category".to_string()],
     )));

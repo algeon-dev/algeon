@@ -1145,6 +1145,7 @@ fn join_strategy(
         estimated_build_rows: plan_facts.estimated_build_rows,
         observed_build_rows: Some(observed_build_rows),
         build_side_bytes: Some(build_side_bytes),
+        probe_side_bytes: plan_facts.probe_side_bytes,
         probe_reuse_count: plan_facts.probe_reuse_count,
     };
     CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(node, strategy_facts)

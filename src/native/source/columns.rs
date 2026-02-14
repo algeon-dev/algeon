@@ -293,6 +293,7 @@ fn collect_scan_predicate_source_columns(
         return Ok(());
     };
     collect_source_required_columns(&predicate, scan_projection, table_schema, required)
+        .or_else(|_| collect_required_columns(&predicate, table_schema, required))
 }
 
 fn collect_source_projection_indices(

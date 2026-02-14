@@ -95,9 +95,9 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
 }
 
 #[test]
-fn bounded_native_query_routes_large_keyed_inner_build_to_one_shot() {
+fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-inner-one-shot");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-inner-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
     let left_schema = write_join_left_parquet(&runtime, &left_path);
@@ -143,18 +143,22 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_one_shot() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
-    assert_eq!(metrics.one_shot_join_count, 1);
-    assert!(metrics.one_shot_join_index_bytes > 0);
-    assert!(metrics.one_shot_join_materialization_bytes > 0);
-    assert!(metrics.one_shot_join_output_bytes > 0);
+    assert_eq!(metrics.one_shot_join_count, 0);
     assert!(
         metrics.reservation_events.iter().all(|event| event.reservation_kind != ReservationKind::HashTable),
-        "large one-shot join should not reserve reusable hash-table memory"
+        "large partitioned join should not reserve reusable hash-table memory"
     );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
-    assert_eq!(join_metrics.execution_strategy, "bounded_one_shot_equi_join");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
+    assert!(join_metrics.gather_map_bytes > 0);
     assert_eq!(join_metrics.output_rows, 3);
+    assert!(metrics.join_strategy_decisions.iter().any(|decision| {
+        decision.node_id == "n2"
+            && decision.facts.get("join_strategy").map(String::as_str) == Some("partitioned_hash_equi")
+            && decision.facts.get("partition_count").map(String::as_str) == Some("2")
+            && decision.facts.get("partition_target_bytes").map(String::as_str) == Some("134217728")
+    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -245,9 +249,9 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_one_shot() {
 }
 
 #[test]
-fn bounded_native_query_routes_large_keyed_left_build_to_one_shot_with_null_padding() {
+fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_null_padding() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-left-one-shot");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-left-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
     let left_schema = write_join_left_parquet(&runtime, &left_path);
@@ -292,15 +296,15 @@ fn bounded_native_query_routes_large_keyed_left_build_to_one_shot_with_null_padd
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
-    assert_eq!(metrics.one_shot_join_count, 1);
+    assert_eq!(metrics.one_shot_join_count, 0);
     assert!(
         metrics.reservation_events.iter().all(|event| event.reservation_kind != ReservationKind::HashTable),
-        "large one-shot left join should not reserve reusable hash-table memory"
+        "large partitioned left join should not reserve reusable hash-table memory"
     );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "left");
-    assert_eq!(join_metrics.execution_strategy, "bounded_one_shot_equi_join");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
     assert_eq!(join_metrics.output_rows, 6);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -321,9 +325,9 @@ fn bounded_native_query_routes_large_keyed_left_build_to_one_shot_with_null_padd
 }
 
 #[test]
-fn bounded_native_query_routes_large_keyed_full_build_to_one_shot_with_null_padding() {
+fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_null_padding() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-full-one-shot");
+    let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-full-partitioned-hash");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
     let left_schema = write_join_left_parquet(&runtime, &left_path);
@@ -377,15 +381,15 @@ fn bounded_native_query_routes_large_keyed_full_build_to_one_shot_with_null_padd
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
-    assert_eq!(metrics.one_shot_join_count, 1);
+    assert_eq!(metrics.one_shot_join_count, 0);
     assert!(
         metrics.reservation_events.iter().all(|event| event.reservation_kind != ReservationKind::HashTable),
-        "large one-shot full join should not reserve reusable hash-table memory"
+        "large partitioned full join should not reserve reusable hash-table memory"
     );
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "full");
-    assert_eq!(join_metrics.execution_strategy, "bounded_one_shot_equi_join");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
     assert_eq!(join_metrics.output_rows, 7);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -960,6 +964,9 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.one_shot_join_count, 1);
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.execution_strategy, "bounded_one_shot_equi_join");
     assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.source_read_prefetches_started, 0);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
@@ -1135,6 +1142,13 @@ fn bounded_native_query_preserves_one_shot_stream_through_filtered_join_into_agg
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.one_shot_join_count, 1);
+    assert!(
+        metrics
+            .operators
+            .iter()
+            .filter_map(|operator| operator.join.as_ref())
+            .any(|join| join.execution_strategy == "bounded_one_shot_equi_join")
+    );
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert!(metrics.partial_aggregate_count > 1);
     assert!(metrics.final_merge_attempts > 0);

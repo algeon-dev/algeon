@@ -168,11 +168,13 @@ fn join_strategy_specific_reservations_are_modeled(
                     ReservationKind::GatherMap,
                 )
         },
-        CompiledJoinExecutionStrategy::OneShotEqui => task_runtime_attachment_has_modeled_reservation_gate(
-            pipeline,
-            group.materialize,
-            ReservationKind::GatherMap,
-        ),
+        CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui => {
+            task_runtime_attachment_has_modeled_reservation_gate(
+                pipeline,
+                group.materialize,
+                ReservationKind::GatherMap,
+            )
+        },
         CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
                 && task_runtime_attachment_has_modeled_reservation_gate(

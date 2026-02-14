@@ -57,7 +57,7 @@ pub(super) fn validate_slice1_parquet_scan(
     }
     if parquet_source
         .filter()
-        .is_some_and(|predicate| filter.is_some() || scan_predicate_is_dynamic_filter_hint(predicate.as_ref()))
+        .is_some_and(|predicate| filter.is_none() && scan_predicate_is_dynamic_filter_hint(predicate.as_ref()))
     {
         validate_pruning_only_parquet_predicate(parquet_source, filter, &source_schema)?;
     }

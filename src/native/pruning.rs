@@ -181,7 +181,7 @@ pub(super) fn parquet_predicate_disposition(
     if validate_pruning_only_parquet_predicate(parquet_source, filter, source_schema).is_ok() {
         NativePredicateDisposition::PruningOnly
     } else {
-        NativePredicateDisposition::Rejected
+        NativePredicateDisposition::NativePostScanOnly
     }
 }
 

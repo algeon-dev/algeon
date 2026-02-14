@@ -351,6 +351,24 @@ pub(super) fn parquet_scan_with_pushed_down_predicate_value(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_pushed_down_decimal_predicate(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let scan_schema = scan.schema();
+    let predicate = binary(
+        col("payload", &scan_schema).unwrap(),
+        Operator::GtEq,
+        lit(ScalarValue::Decimal128(Some(1_000), 15, 2)),
+        &scan_schema,
+    )
+    .unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone()).with_source(Arc::new(parquet_source)).build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {

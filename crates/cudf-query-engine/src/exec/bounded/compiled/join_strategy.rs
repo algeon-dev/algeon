@@ -20,6 +20,7 @@ use crate::{
 pub(crate) enum CompiledJoinExecutionStrategy {
     HashEqui,
     OneShotEqui,
+    PartitionedHashEqui,
     FilteredSemiAnti,
     KeylessConditional { join_type: KeylessConditionalJoinKind },
     ProjectedCross,
@@ -59,6 +60,10 @@ impl CompiledJoinExecutionStrategy {
                         strategy: KeyedHashJoinStrategy::ReusableHashEqui,
                         ..
                     } => {},
+                    KeyedHashJoinStrategyDecision::Selected {
+                        strategy: KeyedHashJoinStrategy::PartitionedHashEqui,
+                        ..
+                    } => {},
                     rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => return Err(rejected),
                 }
             }
@@ -84,6 +89,9 @@ impl CompiledJoinExecutionStrategy {
                 },
                 KeyedHashJoinStrategy::OneShotEqui => {
                     Ok(CompiledJoinStrategySelection { strategy: Self::OneShotEqui, facts: Some(facts) })
+                },
+                KeyedHashJoinStrategy::PartitionedHashEqui => {
+                    Ok(CompiledJoinStrategySelection { strategy: Self::PartitionedHashEqui, facts: Some(facts) })
                 },
             },
             rejected @ KeyedHashJoinStrategyDecision::Rejected { .. } => Err(rejected),

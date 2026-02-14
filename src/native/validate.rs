@@ -224,7 +224,12 @@ fn collect_required_columns_for_scalar_function(
             }
             collect_required_columns(expr, input_schema, required)
         },
-        _ => Err(FallbackReason::UnsupportedExpression),
+        _ => {
+            for arg in function.args() {
+                collect_required_columns(arg, input_schema, required)?;
+            }
+            Ok(())
+        },
     }
 }
 

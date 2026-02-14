@@ -469,16 +469,18 @@ impl NativeCudfMetrics {
     }
 
     fn record_join_strategy_rows(&self, metrics: &QueryMetrics) {
-        let decision_facts_by_node = metrics
-            .join_strategy_decisions
-            .iter()
-            .map(|decision| (decision.node_id.as_str(), &decision.facts))
-            .collect::<BTreeMap<_, _>>();
+        let mut decision_facts_by_node: BTreeMap<&str, BTreeMap<String, String>> = BTreeMap::new();
+        for decision in &metrics.join_strategy_decisions {
+            decision_facts_by_node
+                .entry(decision.node_id.as_str())
+                .or_default()
+                .extend(decision.facts.iter().map(|(key, value)| (key.clone(), value.clone())));
+        }
         for operator in metrics.operators.iter().filter(|operator| operator.operator_kind == "join") {
             let Some(join) = operator.join.as_ref() else {
                 continue;
             };
-            let facts = decision_facts_by_node.get(operator.node_id.as_str()).copied();
+            let facts = decision_facts_by_node.get(operator.node_id.as_str());
             let join_strategy = facts
                 .and_then(|facts| facts.get("join_strategy").map(String::as_str))
                 .unwrap_or_else(|| join_strategy_label(join));
@@ -505,9 +507,16 @@ impl NativeCudfMetrics {
                         .unwrap_or_else(|| join.build_bytes.to_string()),
                 )
                 .with_new_label("probe_reuse_count", optional_fact(facts, "probe_reuse_count"))
+                .with_new_label("probe_side_bytes", optional_fact(facts, "probe_side_bytes"))
+                .with_new_label("partition_count", optional_fact(facts, "partition_count"))
+                .with_new_label("partition_target_bytes", optional_fact(facts, "partition_target_bytes"))
                 .with_new_label(
                     "reusable_hash_join_rejected_reason",
                     optional_fact(facts, "reusable_hash_join_rejected_reason"),
+                )
+                .with_new_label(
+                    "partitioned_hash_join_rejected_reason",
+                    optional_fact(facts, "partitioned_hash_join_rejected_reason"),
                 )
                 .with_new_label("one_shot_equi_rejected_reason", optional_fact(facts, "one_shot_equi_rejected_reason"))
                 .with_new_label("hash_join_build_count", runtime.hash_join_build_count.to_string())
@@ -578,6 +587,7 @@ fn optional_fact(facts: Option<&BTreeMap<String, String>>, key: &str) -> String 
 fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
     match join.execution_strategy.as_str() {
         "bounded_one_shot_equi_join" => "one_shot_equi",
+        "bounded_partitioned_hash_equi_join" => "partitioned_hash_equi",
         "bounded_reusable_hash_join" | "hash_join" => "reusable_hash_equi",
         "bounded_reusable_filtered_join" => "filtered_join",
         "bounded_mixed_keyed_residual_join" | "mixed_join" => "mixed_keyed_residual",

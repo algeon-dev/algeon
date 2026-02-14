@@ -462,7 +462,7 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
             let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
                 return false;
             };
-            source.read_column_file_indices.iter().any(|index| *index == file_index)
+            source.read_column_file_indices.contains(&file_index)
                 && source
                     .schema
                     .field_with_name(column.name())
