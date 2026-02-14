@@ -40,6 +40,15 @@ impl NativeTpchBenchmarkReport {
         push_line(
             &mut output,
             format_args!(
+                "# tpch_benchmark_parquet_pushdown_filters={}",
+                self.config
+                    .parquet_pushdown_filters
+                    .map_or_else(|| "session_default".to_string(), |value| value.to_string())
+            ),
+        );
+        push_line(
+            &mut output,
+            format_args!(
                 "# tpch_benchmark_native_pipeline_execution_mode={}",
                 self.config.native_pipeline_execution_mode.as_str()
             ),

@@ -49,6 +49,54 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_sets_reader_pushdown_diagnostics() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let predicate = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate.parquet")
+                .with_stable_id("reader-predicate")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["key".to_string(), "payload".to_string()],
+    )
+    .with_column_roles(vec!["key".to_string()], vec!["payload".to_string()])
+    .with_reader_predicate(predicate);
+
+    validate_local_parquet_source(&source).unwrap();
+    assert_eq!(source.diagnostics.predicate_disposition, PredicateDisposition::ReaderPushdown);
+    assert!(source.reader_predicate.is_some());
+}
+
+#[test]
+fn local_parquet_source_reader_predicate_rejects_decimal_contract_gap() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-decimal.parquet")
+                .with_stable_id("reader-predicate-decimal")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["key".to_string(), "amount".to_string()],
+    );
+    let predicate = Expr::binary(
+        Expr::column("amount"),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 15, scale: 2 }),
+    );
+
+    assert!(!source.reader_predicate_is_supported(&predicate));
+}
+
+#[test]
 fn local_parquet_source_represents_order_insensitive_scan_limit() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
     let source = LocalParquetSource::from_files(
@@ -199,6 +247,8 @@ fn source_disposition_names_are_stable_manifest_values() {
     let dispositions = [
         (PredicateDisposition::Absent, "absent"),
         (PredicateDisposition::PruningOnly, "pruning_only"),
+        (PredicateDisposition::ReaderPushdown, "reader_pushdown"),
+        (PredicateDisposition::NativePostScanOnly, "native_post_scan_only"),
         (PredicateDisposition::Rejected, "rejected"),
     ];
 

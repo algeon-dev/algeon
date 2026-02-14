@@ -97,7 +97,7 @@ async fn plan_native_query_with_resources(
         .with_native_execution_config(config.native_execution_config_with_resources(resources));
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(tpch_report_session_config())
+        .with_config(native_session_config(config))
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -108,6 +108,14 @@ async fn plan_native_query_with_resources(
         NativeDataFusionPlanningReport::from_retained_rule(query.id, Arc::clone(&plan), native_rule.as_ref());
     let planning_row = select_benchmark_planning_row(query.id, planning_report.rows)?;
     Ok(PlannedNativeQuery { plan, planning_row })
+}
+
+fn native_session_config(config: &NativeTpchBenchmarkConfig) -> SessionConfig {
+    let mut session_config = tpch_report_session_config();
+    if let Some(pushdown_filters) = config.parquet_pushdown_filters {
+        session_config.options_mut().execution.parquet.pushdown_filters = pushdown_filters;
+    }
+    session_config
 }
 
 pub(super) fn select_benchmark_planning_row(

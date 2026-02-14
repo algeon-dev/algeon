@@ -27,6 +27,7 @@ async fn default_sql_physical_plan_lowers_to_native_plan() {
     assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_none());
     assert_eq!(
         source.read_columns,
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()]

@@ -247,8 +247,10 @@ fn validate_column_type(column: &Column, input_schema: &SchemaRef) -> Result<(),
     let data_type = input_schema
         .fields()
         .get(column.index())
+        .filter(|field| field.name() == column.name())
         .map(|field| field.data_type())
         .or_else(|| input_schema.field_with_name(column.name()).ok().map(|field| field.data_type()))
+        .or_else(|| input_schema.fields().get(column.index()).map(|field| field.data_type()))
         .ok_or(FallbackReason::UnsupportedExpression)?;
     if is_supported_native_type(data_type) { Ok(()) } else { Err(FallbackReason::UnsupportedType) }
 }
@@ -280,15 +282,19 @@ pub(super) fn resolved_column_name<'a>(
     if let Some(bindings) = bindings {
         return bindings
             .iter()
-            .find(|binding| binding.frontend_index == column.index())
+            .find(|binding| binding.frontend_index == column.index() && binding.frontend_name == column.name())
+            .or_else(|| bindings.iter().find(|binding| binding.frontend_index == column.index()))
+            .or_else(|| bindings.iter().find(|binding| binding.frontend_name == column.name()))
             .map(|binding| binding.native_name.as_str())
             .ok_or(FallbackReason::UnsupportedExpression);
     }
     input_schema
         .fields()
         .get(column.index())
+        .filter(|field| field.name() == column.name())
         .map(|field| field.name().as_str())
         .or_else(|| input_schema.field_with_name(column.name()).ok().map(|field| field.name().as_str()))
+        .or_else(|| input_schema.fields().get(column.index()).map(|field| field.name().as_str()))
         .ok_or(FallbackReason::UnsupportedExpression)
 }
 

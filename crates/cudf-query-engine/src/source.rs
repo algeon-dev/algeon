@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
-use crate::expr::LiteralValue;
+use crate::expr::{Expr, LiteralValue};
 
 mod diagnostics;
 
@@ -175,6 +175,12 @@ pub struct LocalParquetSource {
     pub missing_columns: Vec<MissingColumn>,
     /// Source-level scan limit applied before source-adjacent native filters.
     pub scan_limit: Option<usize>,
+    /// Reader-level Parquet predicate applied by the cuDF reader before source-local native filters.
+    ///
+    /// This predicate is expressed over `read_columns`; every referenced column
+    /// must resolve to a physical file column that is present in the read
+    /// projection. Partition and missing-null columns are not reader-visible.
+    pub reader_predicate: Option<Expr>,
     /// Source capability and rejection details captured during lowering.
     pub diagnostics: SourceDiagnostics,
 }
@@ -220,6 +226,7 @@ impl LocalParquetSource {
             partition_columns,
             missing_columns,
             scan_limit: None,
+            reader_predicate: None,
             diagnostics,
         }
     }
@@ -320,10 +327,30 @@ impl LocalParquetSource {
         self
     }
 
+    /// Sets a reader-level Parquet predicate.
+    ///
+    /// Callers should only set predicates for expressions accepted by
+    /// [`Self::reader_predicate_is_supported`]. Validation also checks this
+    /// before execution.
+    pub fn with_reader_predicate(mut self, predicate: Expr) -> Self {
+        self.reader_predicate = Some(predicate);
+        self.refresh_diagnostics();
+        self
+    }
+
+    /// Returns true if `predicate` can be lowered to the cuDF Parquet reader AST
+    /// using this source's read-column projection.
+    pub fn reader_predicate_is_supported(&self, predicate: &Expr) -> bool {
+        reader_predicate_expr_is_supported(self, predicate)
+    }
+
     /// Recomputes diagnostics from the current source metadata.
     pub fn refresh_diagnostics(&mut self) {
         let zero_column_count_represented = self.is_zero_column_count_source();
         self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
+        if self.reader_predicate.is_some() {
+            self.diagnostics.predicate_disposition = PredicateDisposition::ReaderPushdown;
+        }
         if zero_column_count_represented {
             self.mark_zero_column_count_represented();
         }
@@ -344,6 +371,9 @@ impl LocalParquetSource {
         self.partition_columns.clear();
         self.missing_columns.clear();
         self.diagnostics = SourceDiagnostics::for_local_parquet_files(&self.files, self.diagnostic_columns());
+        if self.reader_predicate.is_some() {
+            self.diagnostics.predicate_disposition = PredicateDisposition::ReaderPushdown;
+        }
         self.diagnostics.zero_column_count_disposition = ZeroColumnCountDisposition::Represented;
         self.diagnostics.rejected_features.retain(|feature| *feature != RejectedSourceFeature::ZeroColumnCount);
         self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty();
@@ -424,6 +454,52 @@ impl LocalParquetSource {
                     })
             })
     }
+}
+
+fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(column) => {
+            let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
+                return false;
+            };
+            source.read_column_file_indices.iter().any(|index| *index == file_index)
+                && source
+                    .schema
+                    .field_with_name(column.name())
+                    .ok()
+                    .is_some_and(|field| reader_predicate_column_type_is_supported(field.data_type()))
+        },
+        Expr::Literal(value) => reader_predicate_literal_is_supported(value),
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::Alias { expr: inner, .. } => {
+            reader_predicate_expr_is_supported(source, inner)
+        },
+        Expr::Cast { expr, target_type } => {
+            matches!(target_type, DataType::Int64 | DataType::UInt64 | DataType::Float64)
+                && reader_predicate_expr_is_supported(source, expr)
+        },
+        Expr::Binary { left, right, .. } => {
+            reader_predicate_expr_is_supported(source, left) && reader_predicate_expr_is_supported(source, right)
+        },
+        Expr::InList { expr, list, .. } => {
+            !list.is_empty()
+                && reader_predicate_expr_is_supported(source, expr)
+                && list
+                    .iter()
+                    .all(|value| matches!(value, Expr::Literal(_)) && reader_predicate_expr_is_supported(source, value))
+        },
+        Expr::Like { .. } | Expr::Substring { .. } | Expr::Case { .. } | Expr::Extract { .. } => false,
+    }
+}
+
+fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
+    !matches!(data_type, DataType::Decimal128(_, _))
+}
+
+fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
+    !matches!(
+        value,
+        LiteralValue::Null(_) | LiteralValue::IntervalMonthDayNano { .. } | LiteralValue::Decimal128 { .. }
+    )
 }
 
 #[derive(Debug, Clone, PartialEq)]

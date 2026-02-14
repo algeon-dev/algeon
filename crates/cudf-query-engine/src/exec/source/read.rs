@@ -4,19 +4,34 @@ pub(super) fn read_local_parquet_file(
     context: &ExecutionContext,
     file: &LocalParquetFile,
     columns: &[&str],
+    predicate: Option<Arc<cudf::ops::ast::AstExpression>>,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
     let row_groups = cudf_row_groups(file)?;
     let read_timer = Instant::now();
-    let options = if let Some(row_groups) = &row_groups {
-        ParquetReadOptions::builder()
+    let options = match (&row_groups, predicate) {
+        (Some(row_groups), Some(predicate)) => ParquetReadOptions::builder()
+            .filepath(&file.path)
+            .columns(columns)
+            .row_groups(row_groups)
+            .predicate(predicate)
+            .with_runtime(context.runtime())
+            .build(),
+        (Some(row_groups), None) => ParquetReadOptions::builder()
             .filepath(&file.path)
             .columns(columns)
             .row_groups(row_groups)
             .with_runtime(context.runtime())
-            .build()
-    } else {
-        ParquetReadOptions::builder().filepath(&file.path).columns(columns).with_runtime(context.runtime()).build()
+            .build(),
+        (None, Some(predicate)) => ParquetReadOptions::builder()
+            .filepath(&file.path)
+            .columns(columns)
+            .predicate(predicate)
+            .with_runtime(context.runtime())
+            .build(),
+        (None, None) => {
+            ParquetReadOptions::builder().filepath(&file.path).columns(columns).with_runtime(context.runtime()).build()
+        },
     };
 
     let frame = DataFrame::read_parquet_with_options(options).map_err(|error| {

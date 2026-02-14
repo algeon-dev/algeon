@@ -234,16 +234,10 @@ fn every_rejected_native_candidate_has_stable_rejection_code() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-rejection-codes");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
-    let rejected_results = [
-        lower_physical_plan_to_native(aggregate_sort_limit_plan(
-            parquet_scan_with_partial_byte_range(&path),
-            Operator::Plus,
-        )),
-        lower_physical_plan_to_native(aggregate_sort_limit_plan_without_filter(
-            parquet_scan_with_pushed_down_predicate(&path),
-            Operator::Plus,
-        )),
-    ];
+    let rejected_results = [lower_physical_plan_to_native(aggregate_sort_limit_plan(
+        parquet_scan_with_partial_byte_range(&path),
+        Operator::Plus,
+    ))];
 
     for result in rejected_results {
         assert_eq!(result.rejected_count(), 1);

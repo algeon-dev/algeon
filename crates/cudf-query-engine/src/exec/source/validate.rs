@@ -1,4 +1,5 @@
 use super::*;
+use crate::source::PredicateDisposition;
 
 pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> {
     if source.files.is_empty() {
@@ -73,6 +74,17 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("stable_id", file.stable_id.as_str()));
             }
         }
+    }
+    if let Some(predicate) = &source.reader_predicate
+        && !source.reader_predicate_is_supported(predicate)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_source.validate",
+            "local parquet reader predicate cannot be represented by the cudf reader contract",
+        )
+        .with_fact("reason", "unsupported_reader_predicate")
+        .with_fact("predicate", predicate));
     }
 
     validate_local_parquet_source_contract(source)?;
@@ -221,6 +233,21 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
                 "schema_mapping",
                 diagnostics.schema_mapping_disposition.as_str(),
             ));
+        },
+    }
+    match diagnostics.predicate_disposition {
+        PredicateDisposition::ReaderPushdown => {
+            if source.reader_predicate.is_none() {
+                return Err(unsupported_source_contract_fact("predicate", "reader_pushdown_but_absent"));
+            }
+        },
+        PredicateDisposition::Absent
+        | PredicateDisposition::PruningOnly
+        | PredicateDisposition::NativePostScanOnly
+        | PredicateDisposition::Rejected => {
+            if source.reader_predicate.is_some() {
+                return Err(unsupported_source_contract_fact("predicate", "reader_predicate_without_diagnostic"));
+            }
         },
     }
     if diagnostics.read_column_count != source.read_columns.len()

@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn pushed_down_parquet_predicate_with_filter_is_pruning_only_evidence() {
+fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -15,14 +15,17 @@ fn pushed_down_parquet_predicate_with_filter_is_pruning_only_evidence() {
     assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
-    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_some());
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn pushed_down_parquet_predicate_subset_of_filter_is_pruning_only_evidence() {
+fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native_verification() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-subset");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -44,8 +47,11 @@ fn pushed_down_parquet_predicate_subset_of_filter_is_pruning_only_evidence() {
     assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
-    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_some());
+    assert_eq!(native_filter_exprs(&result.plans[0]).len(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -72,14 +78,17 @@ fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
-    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "pruning_only");
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_some());
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn pushed_down_parquet_predicate_without_filter_is_rejected_with_source_reason() {
+fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-without-filter");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -88,20 +97,16 @@ fn pushed_down_parquet_predicate_without_filter_is_rejected_with_source_reason()
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert!(result.plans.is_empty());
-    assert_eq!(result.rejected_count(), 1);
-    assert!(matches!(
-        result.report.outcomes()[0],
-        CandidateOutcome::Rejected { reason: FallbackReason::NativeSourcePushedDownParquetPredicate, .. }
-    ));
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert!(matches!(result.report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
     assert_eq!(result.source_diagnostics.len(), 1);
-    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "rejected");
-    assert!(
-        result.source_diagnostics[0]
-            .rejected_features
-            .iter()
-            .any(|feature| feature.as_str() == "pushed_down_parquet_predicate")
-    );
+    assert!(result.source_diagnostics[0].direct_device_read);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(source.reader_predicate.is_some());
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }
