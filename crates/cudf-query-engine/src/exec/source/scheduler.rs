@@ -15,7 +15,7 @@ pub(in crate::exec) struct ScheduledLocalParquetRead {
 
 enum ScheduledLocalParquetReadState {
     Ready(Box<ScheduledLocalParquetReadOutput>),
-    Running { reservation: ActiveReservation, handle: JoinHandle<ScheduledLocalParquetReadResult> },
+    Running { reservation: Box<ActiveReservation>, handle: JoinHandle<ScheduledLocalParquetReadResult> },
 }
 
 pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
@@ -50,7 +50,7 @@ impl ScheduledLocalParquetRead {
         });
         Self {
             chunk,
-            state: ScheduledLocalParquetReadState::Running { reservation, handle },
+            state: ScheduledLocalParquetReadState::Running { reservation: Box::new(reservation), handle },
             budget_boundary,
             prefetch,
         }
@@ -85,7 +85,7 @@ impl ScheduledLocalParquetRead {
         let ScheduledLocalParquetRead { chunk, state, budget_boundary: _, prefetch: _ } = self;
         let (reservation, handle) = match state {
             ScheduledLocalParquetReadState::Ready(output) => return Ok(*output),
-            ScheduledLocalParquetReadState::Running { reservation, handle } => (reservation, handle),
+            ScheduledLocalParquetReadState::Running { reservation, handle } => (*reservation, handle),
         };
         let wait_timer = Instant::now();
         let result = handle.join().map_err(|_panic| {
@@ -121,7 +121,7 @@ impl ScheduledLocalParquetRead {
             },
             ScheduledLocalParquetReadState::Running { reservation, handle } => {
                 let result = handle.join();
-                reservations.release(reservation, metrics);
+                reservations.release(*reservation, metrics);
                 result
             },
         };

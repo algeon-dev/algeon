@@ -13,16 +13,18 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{
         bounded::{
-            ActiveReservation, BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState,
-            BoundedJoinLeafLocalParquetSourceStream, ReservationTracker, ResidentGpuFrame,
-            execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
-            execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_probe_from_frame,
+            ActiveReservation, BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput,
+            BoundedCompiledJoinProbeState, BoundedJoinLeafLocalParquetSourceStream, ReservationTracker,
+            ResidentGpuFrame, execute_bounded_compiled_join_build_from_frame,
+            execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
+            execute_bounded_compiled_join_materialize_preserving_stream,
+            execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
             execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
             execute_bounded_generic_gpu_resident_source, execute_bounded_generic_local_parquet_source,
             execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
             execute_bounded_generic_unary_from_frame_with_reservation_kind, execute_bounded_join_leaf_source,
-            execute_compiled_bounded_aggregate_from_frame, execute_final_sort_node_from_frame_with_retry,
-            materialize_bounded_join_leaf_local_parquet_source_stream,
+            execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_aggregate_from_stream,
+            execute_final_sort_node_from_frame_with_retry, materialize_bounded_join_leaf_local_parquet_source_stream,
             plan_bounded_join_leaf_local_parquet_source_stream,
         },
         materialize_bounded_frame_to_host,
@@ -33,7 +35,7 @@ use crate::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
         SinkBoundaryKind,
     },
-    plan::{JoinNode, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
+    plan::{JoinNode, JoinType, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
     runtime::{ExecutionContext, MemoryControlPolicy, ReservationKind},
     source::SourceNode,
 };
@@ -48,6 +50,7 @@ pub struct CompiledGpuResource {
 
 enum CompiledGpuResourcePayload {
     ResidentFrame(ResidentGpuFrame),
+    ResidentFrameStream(Vec<ResidentGpuFrame>),
     JoinLeafLocalParquetSource(BoundedJoinLeafLocalParquetSourceStream),
 }
 
@@ -62,9 +65,16 @@ impl CompiledGpuResource {
         Self { payload: CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) }
     }
 
+    pub(in crate::exec::bounded) fn frame_stream(frames: Vec<ResidentGpuFrame>) -> Self {
+        Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(frames) }
+    }
+
     pub fn num_rows(&self) -> usize {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame(frame) => frame.frame.num_rows(),
+            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                frames.iter().map(|frame| frame.frame.num_rows()).sum()
+            },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
         }
     }
@@ -72,6 +82,9 @@ impl CompiledGpuResource {
     pub fn num_columns(&self) -> usize {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame(frame) => frame.frame.num_columns(),
+            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                frames.first().map_or(0, |frame| frame.frame.num_columns())
+            },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
         }
     }
@@ -79,6 +92,9 @@ impl CompiledGpuResource {
     pub(in crate::exec::bounded) fn clone_frame(&self) -> GpuDataFrame {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame(frame) => frame.frame.clone(),
+            CompiledGpuResourcePayload::ResidentFrameStream(_) => {
+                unreachable!("resident frame streams must be consumed by stream-aware compiled tasks")
+            },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                 unreachable!("deferred join leaf sources must be consumed by join probe tasks")
             },
@@ -88,6 +104,9 @@ impl CompiledGpuResource {
     pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame(frame) => frame.reservation.bytes(),
+            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.reservation.bytes()))
+            },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
         }
     }
@@ -95,6 +114,9 @@ impl CompiledGpuResource {
     pub(in crate::exec::bounded) fn reservation(&self) -> &ActiveReservation {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame(frame) => &frame.reservation,
+            CompiledGpuResourcePayload::ResidentFrameStream(_) => {
+                unreachable!("resident frame streams do not expose a single reservation")
+            },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                 unreachable!("deferred join leaf sources do not own a resident reservation")
             },
@@ -104,7 +126,7 @@ impl CompiledGpuResource {
     fn as_join_leaf_local_parquet_source(&self) -> Option<&BoundedJoinLeafLocalParquetSourceStream> {
         match &self.payload {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => Some(stream),
-            CompiledGpuResourcePayload::ResidentFrame(_) => None,
+            CompiledGpuResourcePayload::ResidentFrame(_) | CompiledGpuResourcePayload::ResidentFrameStream(_) => None,
         }
     }
 }
@@ -172,34 +194,19 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let resource = match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source)
-                    if self.task_feeds_reusable_hash_join_probe_input_through_unary_chain(task.id()) =>
+                    if !self.resource_has_multiple_consumers(output)
+                        && (self.task_feeds_direct_join_input(task.id())
+                            || self.task_feeds_any_join_input_through_unary_chain(task.id())) =>
                 {
+                    let has_source_adjacent_stages = self.task_feeds_any_join_input_through_unary_chain(task.id());
                     let stream = plan_bounded_join_leaf_local_parquet_source_stream(
                         self.context,
                         source,
                         node_id,
+                        has_source_adjacent_stages,
                         self.metrics,
                     )?;
-                    if stream.chunk_count() > 1 {
-                        Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
-                    } else {
-                        materialize_bounded_join_leaf_local_parquet_source_stream(
-                            self.context,
-                            stream,
-                            &mut self.reservations,
-                            self.metrics,
-                        )
-                        .map(CompiledGpuResource::new)
-                    }
-                },
-                SourceNode::LocalParquet(source) if self.task_feeds_join_build_input_through_unary_chain(task.id()) => {
-                    let stream = plan_bounded_join_leaf_local_parquet_source_stream(
-                        self.context,
-                        source,
-                        node_id,
-                        self.metrics,
-                    )?;
-                    if stream.chunk_count() > 1 {
+                    if has_source_adjacent_stages || stream.chunk_count() > 1 {
                         Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
                     } else {
                         materialize_bounded_join_leaf_local_parquet_source_stream(
@@ -294,6 +301,41 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             },
                         )
                         .map(CompiledGpuResource::new),
+                        CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                            let mut outputs = Vec::with_capacity(frames.len());
+                            for frame in frames {
+                                match execute_bounded_generic_unary(
+                                    self.context,
+                                    node_id,
+                                    "compiled_filter",
+                                    "compiled_filter_output",
+                                    frame,
+                                    &mut self.reservations,
+                                    self.metrics,
+                                    true,
+                                    |context, input, token, metrics| {
+                                        crate::exec::operators::execute_filter_with_budget(
+                                            context,
+                                            filter,
+                                            input,
+                                            token.expect("budget token is created for compiled bounded filter stages"),
+                                            metrics,
+                                        )
+                                    },
+                                ) {
+                                    Ok(output) => outputs.push(output),
+                                    Err(error) => {
+                                        release_resident_frame_stream_reverse(
+                                            &mut self.reservations,
+                                            outputs,
+                                            self.metrics,
+                                        );
+                                        return Err(attach_task_facts(error, task, node_id));
+                                    },
+                                }
+                            }
+                            Ok(CompiledGpuResource::frame_stream(outputs))
+                        },
                     }
                 } else {
                     let input_payload = state.resource_payload(input)?;
@@ -355,6 +397,43 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             },
                         )
                         .map(CompiledGpuResource::new),
+                        CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                            let mut outputs = Vec::with_capacity(frames.len());
+                            for frame in frames {
+                                match execute_bounded_generic_unary(
+                                    self.context,
+                                    node_id,
+                                    "compiled_projection",
+                                    "compiled_projection_output",
+                                    frame,
+                                    &mut self.reservations,
+                                    self.metrics,
+                                    true,
+                                    |context, input, token, metrics| {
+                                        crate::exec::operators::execute_projection_with_budget(
+                                            context,
+                                            projection,
+                                            input,
+                                            token.expect(
+                                                "budget token is created for compiled bounded projection stages",
+                                            ),
+                                            metrics,
+                                        )
+                                    },
+                                ) {
+                                    Ok(output) => outputs.push(output),
+                                    Err(error) => {
+                                        release_resident_frame_stream_reverse(
+                                            &mut self.reservations,
+                                            outputs,
+                                            self.metrics,
+                                        );
+                                        return Err(attach_task_facts(error, task, node_id));
+                                    },
+                                }
+                            }
+                            Ok(CompiledGpuResource::frame_stream(outputs))
+                        },
                     }
                 } else {
                     let input_payload = state.resource_payload(input)?;
@@ -423,6 +502,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     )
                 },
                 CompiledGpuResourcePayload::ResidentFrame(frame) => Ok(frame),
+                CompiledGpuResourcePayload::ResidentFrameStream(_) => {
+                    Err(invalid("compiled join build task cannot consume a resident frame stream")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id))
+                },
             }?;
             let strategy = join_strategy(
                 self.plan,
@@ -548,6 +632,17 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         self.metrics,
                     )
                 },
+                CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                    execute_bounded_compiled_join_probe_from_frame_stream(
+                        self.context,
+                        node_id,
+                        node,
+                        build,
+                        frames,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                },
             }
         } else {
             let input_payload = state.resource_payload(input)?;
@@ -592,27 +687,43 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str())
         })?;
-        let frame = execute_bounded_compiled_join_materialize(
-            self.context,
-            node_id,
-            node,
-            probe,
-            &mut self.reservations,
-            self.metrics,
-        )
-        .map_err(|error| attach_task_facts(error, task, node_id))?;
-        Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
+        let resource = if self.join_materialize_output_can_preserve_stream(task.id(), output) {
+            match execute_bounded_compiled_join_materialize_preserving_stream(
+                self.context,
+                node_id,
+                node,
+                probe,
+                &mut self.reservations,
+                self.metrics,
+            )
+            .map_err(|error| attach_task_facts(error, task, node_id))?
+            {
+                BoundedCompiledJoinMaterializeOutput::Frame(frame) => CompiledGpuResource::new(*frame),
+                BoundedCompiledJoinMaterializeOutput::Stream(frames) => CompiledGpuResource::frame_stream(frames),
+            }
+        } else {
+            let frame = execute_bounded_compiled_join_materialize(
+                self.context,
+                node_id,
+                node,
+                probe,
+                &mut self.reservations,
+                self.metrics,
+            )
+            .map_err(|error| attach_task_facts(error, task, node_id))?;
+            CompiledGpuResource::new(frame)
+        };
+        Ok(CompiledTaskOutput::new(vec![(output, resource)]))
     }
 
     fn execute_aggregate_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
-        let input_payload = state.resource_payload(input)?;
         let node = self.plan.node(node_id).ok_or_else(|| {
             invalid("compiled aggregate task references a missing plan node")
                 .with_fact("compiled_task_id", task.id())
@@ -624,16 +735,50 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         };
-        let frame = execute_compiled_bounded_aggregate_from_frame(
-            self.context,
-            node_id,
-            aggregate,
-            node.output_schema(),
-            input_payload.clone_frame(),
-            input_payload.reservation_bytes(),
-            &mut self.reservations,
-            self.metrics,
-        )
+        let can_consume_stream = state.can_consume_task_input_resource(task, input)
+            && matches!(state.resource_payload(input)?.payload, CompiledGpuResourcePayload::ResidentFrameStream(_));
+        let frame = if can_consume_stream {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            match input_payload.payload {
+                CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                    execute_compiled_bounded_aggregate_from_stream(
+                        self.context,
+                        node_id,
+                        aggregate,
+                        self.plan
+                            .node(aggregate.input)
+                            .ok_or_else(|| {
+                                invalid("compiled aggregate task references a missing aggregate input node")
+                                    .with_fact("compiled_task_id", task.id())
+                                    .with_fact("plan_node_id", aggregate.input)
+                            })?
+                            .output_schema(),
+                        node.output_schema(),
+                        frames,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                },
+                CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
+                    Err(invalid("compiled aggregate task cannot consume a deferred join leaf source stream")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id))
+                },
+                CompiledGpuResourcePayload::ResidentFrame(_) => unreachable!("only frame streams are consumed here"),
+            }
+        } else {
+            let input_payload = state.resource_payload(input)?;
+            execute_compiled_bounded_aggregate_from_frame(
+                self.context,
+                node_id,
+                aggregate,
+                node.output_schema(),
+                input_payload.clone_frame(),
+                input_payload.reservation_bytes(),
+                &mut self.reservations,
+                self.metrics,
+            )
+        }
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
@@ -768,13 +913,74 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         false
     }
 
-    fn task_feeds_reusable_hash_join_probe_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
-        self.task_feeds_join_input_through_unary_chain(task, PipelineEdgeKind::JoinProbeInput)
-            .is_some_and(|join_task| self.task_is_reusable_hash_join_probe(join_task))
+    fn task_feeds_direct_join_input(&self, task: PipelineTaskId) -> bool {
+        self.pipeline.edges().iter().any(|edge| {
+            edge.from() == task
+                && matches!(edge.kind(), PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput)
+        })
     }
 
-    fn task_feeds_join_build_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
+    fn resource_has_multiple_consumers(&self, resource: ResidentResourceId) -> bool {
+        self.pipeline
+            .resources()
+            .iter()
+            .find(|candidate| candidate.id() == resource)
+            .is_some_and(|resource| resource.consumers().len() > 1)
+    }
+
+    fn join_materialize_output_can_preserve_stream(&self, task: PipelineTaskId, resource: ResidentResourceId) -> bool {
+        let Some(first_resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == resource) else {
+            return false;
+        };
+        if first_resource.producer() != task {
+            return false;
+        }
+        let mut current_resource = resource;
+        let mut visited = BTreeSet::new();
+        loop {
+            if !visited.insert(current_resource) {
+                return false;
+            }
+            let Some(resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == current_resource)
+            else {
+                return false;
+            };
+            let [consumer] = resource.consumers() else {
+                return false;
+            };
+            let Some(consumer_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer) else {
+                return false;
+            };
+            match consumer_task.kind() {
+                PipelineTaskKind::Aggregate => return true,
+                PipelineTaskKind::JoinProbe => return self.join_probe_task_can_consume_frame_stream(consumer_task),
+                PipelineTaskKind::Unary => {
+                    let [next_resource] = consumer_task.output_resources() else {
+                        return false;
+                    };
+                    current_resource = *next_resource;
+                },
+                _ => return false,
+            }
+        }
+    }
+
+    fn join_probe_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
+        let Some(node_id) = task.plan_node() else {
+            return false;
+        };
+        let Some(node) = self.plan.node(node_id) else {
+            return false;
+        };
+        let PlanNode::Join(join) = &node.kind else {
+            return false;
+        };
+        join.spec.residual_predicate.is_none() && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+    }
+
+    fn task_feeds_any_join_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {
         self.task_feeds_join_input_through_unary_chain(task, PipelineEdgeKind::JoinBuildInput).is_some()
+            || self.task_feeds_join_input_through_unary_chain(task, PipelineEdgeKind::JoinProbeInput).is_some()
     }
 
     fn task_feeds_join_input_through_unary_chain(
@@ -783,35 +989,26 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         target_kind: PipelineEdgeKind,
     ) -> Option<PipelineTaskId> {
         let mut current = task;
+        let mut saw_unary = false;
         loop {
-            let Some(current_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == current) else {
-                return None;
-            };
+            let current_task = self.pipeline.tasks().iter().find(|candidate| candidate.id() == current)?;
             let [output_resource] = current_task.output_resources() else {
                 return None;
             };
-            let Some(resource) = self.pipeline.resources().iter().find(|resource| resource.id() == *output_resource)
-            else {
-                return None;
-            };
+            let resource = self.pipeline.resources().iter().find(|resource| resource.id() == *output_resource)?;
             let [consumer] = resource.consumers() else {
                 return None;
             };
-            let Some(edge) = self.pipeline.edges().iter().find(|edge| edge.from() == current && edge.to() == *consumer)
-            else {
-                return None;
-            };
+            let edge = self.pipeline.edges().iter().find(|edge| edge.from() == current && edge.to() == *consumer)?;
             match edge.kind() {
-                kind if kind == target_kind => return Some(*consumer),
+                kind if kind == target_kind && saw_unary => return Some(*consumer),
+                kind if kind == target_kind => return None,
                 PipelineEdgeKind::ResidentFrame => {
-                    let Some(consumer_task) =
-                        self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer)
-                    else {
-                        return None;
-                    };
+                    let consumer_task = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer)?;
                     if consumer_task.kind() != PipelineTaskKind::Unary {
                         return None;
                     }
+                    saw_unary = true;
                     current = *consumer;
                 },
                 PipelineEdgeKind::Control
@@ -822,25 +1019,6 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 | PipelineEdgeKind::SinkInput => return None,
             }
         }
-    }
-
-    fn task_is_reusable_hash_join_probe(&self, task: PipelineTaskId) -> bool {
-        let Some(join_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == task) else {
-            return false;
-        };
-        let Some(node_id) = join_task.plan_node() else {
-            return false;
-        };
-        let Some(node) = self.plan.node(node_id) else {
-            return false;
-        };
-        let PlanNode::Join(join) = &node.kind else {
-            return false;
-        };
-        matches!(
-            CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
-            Ok(Some(CompiledJoinExecutionStrategy::HashEqui))
-        )
     }
 }
 
@@ -871,10 +1049,20 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
     }
 
     fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
-        if let CompiledGpuResourcePayload::ResidentFrame(frame) = payload.payload {
-            self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
-            self.reservations.release(frame.reservation, self.metrics);
-            self.reservations.clear_diagnostic_context();
+        match payload.payload {
+            CompiledGpuResourcePayload::ResidentFrame(frame) => {
+                self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
+                self.reservations.release(frame.reservation, self.metrics);
+                self.reservations.clear_diagnostic_context();
+            },
+            CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
+                self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
+                for frame in frames {
+                    self.reservations.release(frame.reservation, self.metrics);
+                }
+                self.reservations.clear_diagnostic_context();
+            },
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {},
         }
         Ok(())
     }
@@ -915,6 +1103,17 @@ fn task_diagnostic_resident_resource(task: &PipelineTask) -> Option<ResidentReso
         Some(task.input_resources()[0])
     } else {
         None
+    }
+}
+
+fn release_resident_frame_stream_reverse(
+    reservations: &mut ReservationTracker,
+    mut frames: Vec<ResidentGpuFrame>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some(frame) = frames.pop() {
+        drop(frame.frame);
+        reservations.release(frame.reservation, metrics);
     }
 }
 

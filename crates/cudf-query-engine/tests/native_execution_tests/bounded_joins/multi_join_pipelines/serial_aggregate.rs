@@ -151,7 +151,9 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
             .reservation_events
             .iter()
             .filter(|event| {
-                event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_output"
+                event.outcome.as_str() == "applied"
+                    && event.action == MemoryReservationEventAction::Transfer
+                    && event.memory_boundary == "compiled_aggregate_output"
             })
             .count(),
         2

@@ -986,6 +986,47 @@ fn compiled_scheduler_runs_tasks_from_dependencies_and_releases_after_all_consum
 }
 
 #[test]
+fn compiled_scheduler_prioritizes_independent_join_build_branch_before_probe_branch() {
+    let pipeline = downstream_build_branch_after_completed_upstream_build_pipeline();
+    let scheduler = CompiledPipelineScheduler::new_with_prioritized_join_builds(
+        &pipeline,
+        BTreeSet::from([PipelineTaskId::new(5)]),
+    )
+    .expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute");
+
+    assert_eq!(
+        state.execution_order(),
+        &[
+            PipelineTaskId::new(0),
+            PipelineTaskId::new(1),
+            PipelineTaskId::new(3),
+            PipelineTaskId::new(5),
+            PipelineTaskId::new(2),
+            PipelineTaskId::new(4),
+            PipelineTaskId::new(6),
+            PipelineTaskId::new(7),
+            PipelineTaskId::new(8),
+            PipelineTaskId::new(9),
+        ]
+    );
+    assert_eq!(executor.executed, state.execution_order());
+    assert_eq!(
+        executor.released,
+        vec![
+            ResidentResourceId::new(0),
+            ResidentResourceId::new(2),
+            ResidentResourceId::new(1),
+            ResidentResourceId::new(3),
+            ResidentResourceId::new(4),
+        ]
+    );
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
 fn compiled_scheduler_runs_shared_resident_fanout_and_releases_after_all_consumers() {
     let pipeline = shared_resident_fanout_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("shared fan-out pipeline should be schedulable");
@@ -1094,6 +1135,20 @@ fn compiled_scheduler_errors_when_task_omits_declared_output_resource() {
 }
 
 #[test]
+fn compiled_scheduler_releases_live_resources_when_executor_fails() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().fail_task_for(PipelineTaskId::new(1));
+
+    let error = scheduler.run(&mut executor).expect_err("downstream executor failure should fail the pipeline");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::Internal);
+    assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
+    assert_eq!(executor.executed, vec![PipelineTaskId::new(0), PipelineTaskId::new(1)]);
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+}
+
+#[test]
 fn compiled_scheduler_state_errors_when_input_resource_is_missing() {
     let pipeline = simple_unary_pipeline();
     let state = CompiledPipelineState::<String>::new(&pipeline).expect("state should initialize");
@@ -1116,6 +1171,7 @@ fn compiled_scheduler_errors_when_task_reports_duplicate_produced_resource() {
     assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
     assert_eq!(error.facts().get("compiled_task_id"), Some("t0"));
     assert_eq!(error.facts().get("resident_resource_id"), Some("r0"));
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
 }
 
 #[test]
@@ -2068,6 +2124,7 @@ struct MockExecutor {
     executed: Vec<PipelineTaskId>,
     released: Vec<ResidentResourceId>,
     consumed: Vec<ResidentResourceId>,
+    fail_tasks: Vec<PipelineTaskId>,
     omit_outputs: Vec<PipelineTaskId>,
     duplicate_outputs: Vec<PipelineTaskId>,
     consume_inputs: Vec<PipelineTaskId>,
@@ -2079,10 +2136,16 @@ impl MockExecutor {
             executed: Vec::new(),
             released: Vec::new(),
             consumed: Vec::new(),
+            fail_tasks: Vec::new(),
             omit_outputs: Vec::new(),
             duplicate_outputs: Vec::new(),
             consume_inputs: Vec::new(),
         }
+    }
+
+    fn fail_task_for(mut self, task: PipelineTaskId) -> Self {
+        self.fail_tasks.push(task);
+        self
     }
 
     fn omit_output_for(mut self, task: PipelineTaskId) -> Self {
@@ -2110,6 +2173,14 @@ impl CompiledTaskExecutor for MockExecutor {
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> cudf_query_engine::Result<CompiledTaskOutput<Self::Resource>> {
         self.executed.push(task.id());
+        if self.fail_tasks.contains(&task.id()) {
+            return Err(cudf_query_engine::QueryError::new(
+                cudf_query_engine::QueryErrorCode::Internal,
+                "cudf_query_engine.tests.mock_executor",
+                "mock compiled executor failure",
+            )
+            .with_fact("compiled_task_id", task.id()));
+        }
         if self.consume_inputs.contains(&task.id()) {
             for resource in task.input_resources() {
                 let consumed = state.consume_task_input_resource(task, *resource)?;
@@ -3037,6 +3108,139 @@ fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
                 materialize,
                 vec![sink],
                 ResidentLifetime::BetweenTasks { producer: materialize },
+            ),
+        ],
+        vec![],
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink),
+    )
+}
+
+fn downstream_build_branch_after_completed_upstream_build_pipeline() -> CompiledPipeline {
+    let first_build_source = PipelineTaskId::new(0);
+    let first_build = PipelineTaskId::new(1);
+    let first_probe_source = PipelineTaskId::new(2);
+    let second_build_source = PipelineTaskId::new(3);
+    let first_probe = PipelineTaskId::new(4);
+    let second_build = PipelineTaskId::new(5);
+    let first_materialize = PipelineTaskId::new(6);
+    let second_probe = PipelineTaskId::new(7);
+    let second_materialize = PipelineTaskId::new(8);
+    let sink = PipelineTaskId::new(9);
+    let first_build_frame = ResidentResourceId::new(0);
+    let first_probe_frame = ResidentResourceId::new(1);
+    let second_build_frame = ResidentResourceId::new(2);
+    let first_join_output = ResidentResourceId::new(3);
+    let second_join_output = ResidentResourceId::new(4);
+
+    CompiledPipeline::new(
+        vec![
+            PipelineTask::new(first_build_source, PipelineTaskKind::SourceRead)
+                .with_output_resources(vec![first_build_frame]),
+            PipelineTask::new(first_build, PipelineTaskKind::JoinBuild).with_input_resources(vec![first_build_frame]),
+            PipelineTask::new(first_probe_source, PipelineTaskKind::SourceRead)
+                .with_output_resources(vec![first_probe_frame]),
+            PipelineTask::new(second_build_source, PipelineTaskKind::SourceRead)
+                .with_output_resources(vec![second_build_frame]),
+            PipelineTask::new(first_probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![first_probe_frame]),
+            PipelineTask::new(second_build, PipelineTaskKind::JoinBuild).with_input_resources(vec![second_build_frame]),
+            PipelineTask::new(first_materialize, PipelineTaskKind::JoinMaterialize)
+                .with_output_resources(vec![first_join_output]),
+            PipelineTask::new(second_probe, PipelineTaskKind::JoinProbe).with_input_resources(vec![first_join_output]),
+            PipelineTask::new(second_materialize, PipelineTaskKind::JoinMaterialize)
+                .with_output_resources(vec![second_join_output]),
+            PipelineTask::new(sink, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![second_join_output]),
+        ],
+        vec![
+            PipelineEdge::new(
+                PipelineEdgeId::new(0),
+                first_build_source,
+                first_build,
+                PipelineEdgeKind::JoinBuildInput,
+            )
+            .with_resources(vec![first_build_frame]),
+            PipelineEdge::new(
+                PipelineEdgeId::new(1),
+                first_probe_source,
+                first_probe,
+                PipelineEdgeKind::JoinProbeInput,
+            )
+            .with_resources(vec![first_probe_frame]),
+            PipelineEdge::new(PipelineEdgeId::new(2), first_build, first_probe, PipelineEdgeKind::Control),
+            PipelineEdge::new(PipelineEdgeId::new(3), first_probe, first_materialize, PipelineEdgeKind::Control),
+            PipelineEdge::new(
+                PipelineEdgeId::new(4),
+                second_build_source,
+                second_build,
+                PipelineEdgeKind::JoinBuildInput,
+            )
+            .with_resources(vec![second_build_frame]),
+            PipelineEdge::new(
+                PipelineEdgeId::new(5),
+                first_materialize,
+                second_probe,
+                PipelineEdgeKind::JoinProbeInput,
+            )
+            .with_resources(vec![first_join_output]),
+            PipelineEdge::new(PipelineEdgeId::new(6), second_build, second_probe, PipelineEdgeKind::Control),
+            PipelineEdge::new(PipelineEdgeId::new(7), second_probe, second_materialize, PipelineEdgeKind::Control),
+            PipelineEdge::new(PipelineEdgeId::new(8), second_materialize, sink, PipelineEdgeKind::SinkInput)
+                .with_resources(vec![second_join_output]),
+        ],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![first_build_source])
+                .with_downstream_tasks(vec![first_build]),
+            PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![first_probe_source])
+                .with_downstream_tasks(vec![first_probe]),
+            PipelineBarrier::new(PipelineBarrierId::new(2), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![second_build_source])
+                .with_downstream_tasks(vec![second_build]),
+            PipelineBarrier::new(PipelineBarrierId::new(3), PipelineBarrierKind::JoinBuildBeforeProbe)
+                .with_upstream_tasks(vec![first_build])
+                .with_downstream_tasks(vec![first_probe]),
+            PipelineBarrier::new(PipelineBarrierId::new(4), PipelineBarrierKind::JoinMaterialization)
+                .with_upstream_tasks(vec![first_probe])
+                .with_downstream_tasks(vec![first_materialize]),
+            PipelineBarrier::new(PipelineBarrierId::new(5), PipelineBarrierKind::JoinBuildBeforeProbe)
+                .with_upstream_tasks(vec![second_build])
+                .with_downstream_tasks(vec![second_probe]),
+            PipelineBarrier::new(PipelineBarrierId::new(6), PipelineBarrierKind::JoinMaterialization)
+                .with_upstream_tasks(vec![second_probe])
+                .with_downstream_tasks(vec![second_materialize]),
+            PipelineBarrier::new(PipelineBarrierId::new(7), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(vec![sink]),
+        ],
+        vec![
+            ResidentResource::new(
+                first_build_frame,
+                first_build_source,
+                vec![first_build],
+                ResidentLifetime::BetweenTasks { producer: first_build_source },
+            ),
+            ResidentResource::new(
+                first_probe_frame,
+                first_probe_source,
+                vec![first_probe],
+                ResidentLifetime::BetweenTasks { producer: first_probe_source },
+            ),
+            ResidentResource::new(
+                second_build_frame,
+                second_build_source,
+                vec![second_build],
+                ResidentLifetime::BetweenTasks { producer: second_build_source },
+            ),
+            ResidentResource::new(
+                first_join_output,
+                first_materialize,
+                vec![second_probe],
+                ResidentLifetime::BetweenTasks { producer: first_materialize },
+            ),
+            ResidentResource::new(
+                second_join_output,
+                second_materialize,
+                vec![sink],
+                ResidentLifetime::BetweenTasks { producer: second_materialize },
             ),
         ],
         vec![],

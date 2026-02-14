@@ -1,6 +1,81 @@
 use super::*;
 
 #[test]
+fn source_task_memory_model_derives_chunk_target_from_live_budget_slots() {
+    let memory_policy = MemoryControlPolicy::Bounded {
+        device_budget_bytes: 2_000,
+        max_source_chunk_bytes: 1_600,
+        max_row_groups_per_chunk: 512,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    };
+
+    let aggregate_model = SourceTaskMemoryModel::aggregate_pipeline(true);
+    assert_eq!(aggregate_model.source_read_slots(), 1);
+    assert_eq!(aggregate_model.source_adjacent_operator_slots(), 1);
+    assert_eq!(aggregate_model.downstream_operator_slots(), 1);
+    assert_eq!(aggregate_model.retained_output_slots(), 1);
+    assert_eq!(aggregate_model.source_read_preflight_slack_slots(), 1);
+    assert_eq!(aggregate_model.live_slot_count(), 5);
+    let aggregate = SourceChunkPlanningPolicy::for_source_task(memory_policy, aggregate_model);
+    assert_eq!(aggregate.max_source_chunk_bytes, Some(400));
+    assert_eq!(aggregate.max_row_groups_per_chunk, 512);
+
+    let join_model = SourceTaskMemoryModel::join_leaf_stream(true);
+    assert_eq!(join_model.source_read_slots(), 1);
+    assert_eq!(join_model.source_adjacent_operator_slots(), 1);
+    assert_eq!(join_model.downstream_operator_slots(), 1);
+    assert_eq!(join_model.retained_output_slots(), 2);
+    assert_eq!(join_model.source_read_preflight_slack_slots(), 1);
+    assert_eq!(join_model.live_slot_count(), 6);
+    let join = SourceChunkPlanningPolicy::for_source_task(memory_policy, join_model);
+    assert_eq!(join.max_source_chunk_bytes, Some(333));
+    assert_eq!(join.max_row_groups_per_chunk, 512);
+}
+
+#[test]
+fn source_task_memory_model_preserves_configured_cap_when_budget_slots_allow_it() {
+    let memory_policy = MemoryControlPolicy::Bounded {
+        device_budget_bytes: 8 * 1024 * 1024 * 1024,
+        max_source_chunk_bytes: 1_600,
+        max_row_groups_per_chunk: 512,
+        max_retry_attempts: 1,
+        min_retry_chunk_row_groups: 1,
+    };
+
+    let policy =
+        SourceChunkPlanningPolicy::for_source_task(memory_policy, SourceTaskMemoryModel::aggregate_pipeline(false));
+    assert_eq!(policy.max_source_chunk_bytes, Some(1_600));
+    assert_eq!(policy.max_row_groups_per_chunk, 512);
+}
+
+#[test]
+fn source_task_memory_model_preserves_configured_cap_when_retry_admission_owns_an_oversized_source_read() {
+    let memory_policy = MemoryControlPolicy::Bounded {
+        device_budget_bytes: 1_000,
+        max_source_chunk_bytes: 1_600,
+        max_row_groups_per_chunk: 512,
+        max_retry_attempts: 2,
+        min_retry_chunk_row_groups: 1,
+    };
+
+    let policy =
+        SourceChunkPlanningPolicy::for_source_task(memory_policy, SourceTaskMemoryModel::aggregate_pipeline(true));
+    assert_eq!(policy.max_source_chunk_bytes, Some(1_600));
+    assert_eq!(policy.max_row_groups_per_chunk, 512);
+}
+
+#[test]
+fn source_task_memory_model_leaves_unbounded_planning_unchanged() {
+    let policy = SourceChunkPlanningPolicy::for_source_task(
+        MemoryControlPolicy::Unbounded,
+        SourceTaskMemoryModel::join_leaf_stream(true),
+    );
+
+    assert_eq!(policy, SourceChunkPlanningPolicy::default());
+}
+
+#[test]
 fn source_chunk_planning_preserves_selected_row_groups_and_file_order() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let source = LocalParquetSource::from_files(
@@ -67,6 +142,36 @@ fn source_chunk_planning_uses_contract_row_group_bytes_without_file_metadata() {
     assert_eq!(plan.chunks[0].known_row_group_bytes, Some(100));
     assert_eq!(plan.chunks[1].row_group_indexes, vec![2]);
     assert_eq!(plan.chunks[1].known_row_group_bytes, Some(300));
+}
+
+#[test]
+fn source_chunk_planning_uses_proportional_file_bytes_when_row_group_bytes_are_unknown() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/part-000.parquet")
+                .with_file_size_bytes(1_200)
+                .with_row_groups(vec![0, 1, 2, 3]),
+        ],
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(500), 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 4);
+    assert_eq!(plan.row_group_count(), 4);
+    assert!(!plan.row_group_metadata_available);
+    assert!(plan.size_estimate_based);
+    assert_eq!(plan.metadata_unavailable_files, 1);
+    for (index, chunk) in plan.chunks.iter().enumerate() {
+        assert_eq!(chunk.row_group_indexes, vec![index]);
+        assert_eq!(chunk.known_row_group_bytes, None);
+        assert_eq!(chunk.estimated_chunk_bytes, Some(300));
+    }
 }
 
 #[test]

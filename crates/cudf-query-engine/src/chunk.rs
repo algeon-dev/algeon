@@ -24,9 +24,86 @@ pub struct SourceChunkPlanningPolicy {
     pub max_row_groups_per_chunk: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SourceTaskMemoryModel {
+    source_read_slots: u64,
+    source_adjacent_operator_slots: u64,
+    downstream_operator_slots: u64,
+    retained_output_slots: u64,
+    source_read_preflight_slack_slots: u64,
+}
+
+impl SourceTaskMemoryModel {
+    /// Source -> optional source-local unary stages -> aggregate.
+    pub const fn aggregate_pipeline(has_source_adjacent_stages: bool) -> Self {
+        Self {
+            source_read_slots: 1,
+            source_adjacent_operator_slots: if has_source_adjacent_stages { 1 } else { 0 },
+            downstream_operator_slots: 1,
+            retained_output_slots: 1,
+            source_read_preflight_slack_slots: 1,
+        }
+    }
+
+    /// Source -> optional source-local unary stages -> join build/probe.
+    pub const fn join_leaf_stream(has_source_adjacent_stages: bool) -> Self {
+        Self {
+            source_read_slots: 1,
+            source_adjacent_operator_slots: if has_source_adjacent_stages { 1 } else { 0 },
+            downstream_operator_slots: 1,
+            retained_output_slots: 2,
+            source_read_preflight_slack_slots: 1,
+        }
+    }
+
+    pub const fn source_read_slots(self) -> u64 {
+        self.source_read_slots
+    }
+
+    pub const fn source_adjacent_operator_slots(self) -> u64 {
+        self.source_adjacent_operator_slots
+    }
+
+    pub const fn downstream_operator_slots(self) -> u64 {
+        self.downstream_operator_slots
+    }
+
+    pub const fn retained_output_slots(self) -> u64 {
+        self.retained_output_slots
+    }
+
+    pub const fn source_read_preflight_slack_slots(self) -> u64 {
+        self.source_read_preflight_slack_slots
+    }
+
+    pub const fn live_slot_count(self) -> u64 {
+        self.source_read_slots
+            + self.source_adjacent_operator_slots
+            + self.downstream_operator_slots
+            + self.retained_output_slots
+            + self.source_read_preflight_slack_slots
+    }
+}
+
 impl SourceChunkPlanningPolicy {
     pub const fn new(max_source_chunk_bytes: Option<u64>, max_row_groups_per_chunk: usize) -> Self {
         Self { max_source_chunk_bytes, max_row_groups_per_chunk }
+    }
+
+    pub fn for_source_task(memory_policy: MemoryControlPolicy, model: SourceTaskMemoryModel) -> Self {
+        let base = Self::from(memory_policy);
+        let MemoryControlPolicy::Bounded {
+            device_budget_bytes, max_source_chunk_bytes, max_row_groups_per_chunk, ..
+        } = memory_policy
+        else {
+            return base;
+        };
+        if max_source_chunk_bytes > device_budget_bytes {
+            return base;
+        }
+        let budget_target = device_budget_bytes / model.live_slot_count().max(1);
+        let task_target = max_source_chunk_bytes.min(budget_target.max(1));
+        Self::new(Some(task_target), max_row_groups_per_chunk)
     }
 
     fn effective_max_row_groups_per_chunk(self) -> usize {
@@ -600,10 +677,13 @@ fn append_row_group_chunks(
     chunks: &mut Vec<SourceChunk>,
 ) {
     let max_row_groups = policy.effective_max_row_groups_per_chunk();
+    let row_group_count_basis = metadata.map_or(row_groups.len(), RowGroupMetadata::row_group_count).max(1);
     let mut current = PendingChunk::default();
 
     for row_group in row_groups {
         let row_group_bytes = metadata.and_then(|metadata| metadata.row_group_bytes(*row_group));
+        let estimated_row_group_bytes =
+            row_group_bytes.or_else(|| proportional_bytes(file.file_size_bytes, 1, row_group_count_basis));
         let projected_compressed_bytes = metadata.and_then(|metadata| metadata.projected_compressed_bytes(*row_group));
         let projected_uncompressed_bytes =
             metadata.and_then(|metadata| metadata.projected_uncompressed_bytes(*row_group));
@@ -612,7 +692,7 @@ fn append_row_group_chunks(
         let pure_filter_uncompressed_bytes =
             metadata.and_then(|metadata| metadata.pure_filter_uncompressed_bytes(*row_group));
         let row_group_rows = metadata.and_then(|metadata| metadata.row_group_rows(*row_group));
-        let planning_bytes = projected_uncompressed_bytes.or(row_group_bytes);
+        let planning_bytes = projected_uncompressed_bytes.or(estimated_row_group_bytes);
         if current.should_flush_before(planning_bytes, max_row_groups, policy.max_source_chunk_bytes) {
             push_pending_chunk(
                 source_node_id,

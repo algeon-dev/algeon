@@ -21,8 +21,8 @@ use cudf_query_engine::{
     QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
     ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
     SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
-    SourceNode, SourceReadBoundary, SourceSchedulerPolicy, StrictBoundedContractOwner, StrictBoundedExecutionMode,
-    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,
+    StrictBoundedExecutionMode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, EdgeConsumer, EdgeContractKind, InputRole, NodeOperator,
         OrderingRequirement, RequiredProperty, ReservationRequirementScope, ResidualRequirement, ResultSinkKind,

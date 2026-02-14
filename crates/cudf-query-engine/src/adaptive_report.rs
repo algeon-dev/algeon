@@ -218,8 +218,9 @@ impl AdaptiveRuntimeActionsAllowed {
 }
 
 /// Adaptive memory-history evidence used by admission.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum AdaptiveMemoryHistoryEvidence {
+    #[default]
     NotUsed,
     LookupMiss,
     Observed(AdaptiveMemoryHistorySummary),
@@ -256,12 +257,6 @@ impl AdaptiveMemoryHistoryEvidence {
                 summary.max_source_chunks_committed
             ),
         }
-    }
-}
-
-impl Default for AdaptiveMemoryHistoryEvidence {
-    fn default() -> Self {
-        Self::NotUsed
     }
 }
 

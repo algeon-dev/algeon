@@ -63,7 +63,7 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
     assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("subgraph"));
     assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("missing_subgraph_invariant"));
-    assert!(facts.get("bounded_join_rejection_reason").is_some());
+    assert!(facts.contains_key("bounded_join_rejection_reason"));
     assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
     assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     assert!(facts.iter().all(|(key, value)| !key.contains("estimate") && !value.contains("estimate")));
@@ -102,7 +102,7 @@ fn bounded_multi_join_reports_left_full_blocker_after_valid_mixed_residual_semi_
             facts.get("bounded_join_rejection_category").map(String::as_str),
             Some("missing_subgraph_invariant")
         );
-        assert!(facts.get("bounded_join_rejection_reason").is_some());
+        assert!(facts.contains_key("bounded_join_rejection_reason"));
         assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
         assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
     }

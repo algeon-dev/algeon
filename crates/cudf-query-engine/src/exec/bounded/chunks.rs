@@ -107,6 +107,7 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
             Err(error) => return Err(error),
         };
 
+        let prefetch_during_operator = !bounded.has_source_adjacent_stages();
         let result = execute_bounded_chunk_operator_from_source(
             context,
             bounded,
@@ -116,7 +117,11 @@ pub(super) fn execute_bounded_chunks_with_source_scheduler(
             1,
             max_attempts,
             |reservations, metrics| {
-                queue.fill_optional(context, bounded.source, chunks, reservations, metrics, max_attempts)
+                if prefetch_during_operator {
+                    queue.fill_optional(context, bounded.source, chunks, reservations, metrics, max_attempts)
+                } else {
+                    Ok(())
+                }
             },
         );
 
@@ -194,7 +199,7 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     mut chunks: Vec<ScheduledLocalParquetReadOutput>,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-    memory_boundary: &'static str,
+    concat_output_boundary: &'static str,
     operation: &'static str,
     message: &'static str,
 ) -> Result<ResidentGpuFrame> {
@@ -208,9 +213,9 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
         chunks.iter().fold(0u64, |total, chunk| total.saturating_add(chunk.reservation.bytes()));
     let mut output_reservation = match reservations.try_reserve(
         MemoryReservationRequest::new(ReservationKind::SourceRead, output_reservation_bytes, reservations.budget())
-            .with_memory_boundary(memory_boundary)
+            .with_memory_boundary(concat_output_boundary)
             .with_node_id(node_id)
-            .with_stage(memory_boundary)
+            .with_stage(concat_output_boundary)
             .with_attempt(1, 1),
         metrics,
     ) {
@@ -265,9 +270,9 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
         if let Err(error) = reservations.try_grow(
             &mut output_reservation,
             MemoryReservationRequest::new(ReservationKind::SourceRead, delta, reservations.budget())
-                .with_memory_boundary(memory_boundary)
+                .with_memory_boundary(concat_output_boundary)
                 .with_node_id(node_id)
-                .with_stage(memory_boundary)
+                .with_stage(concat_output_boundary)
                 .with_attempt(1, 1),
             metrics,
         ) {
@@ -1007,17 +1012,15 @@ fn execute_bounded_chunk_operator_from_source(
     }
 
     let chunk_operator_timer = Instant::now();
-    let chunk_output = (|| {
-        execute_partial_aggregate_with_budget(
-            context,
-            bounded.aggregate.0,
-            bounded.aggregate_input_schema,
-            bounded.aggregate.1,
-            frame,
-            &operator_token,
-            metrics,
-        )
-    })();
+    let chunk_output = execute_partial_aggregate_with_budget(
+        context,
+        bounded.aggregate.0,
+        bounded.aggregate_input_schema,
+        bounded.aggregate.1,
+        frame,
+        &operator_token,
+        metrics,
+    );
     metrics.chunk_operator_time += chunk_operator_timer.elapsed();
     let frame = match chunk_output {
         Ok(frame) => frame,

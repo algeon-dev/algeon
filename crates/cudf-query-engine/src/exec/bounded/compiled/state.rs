@@ -108,6 +108,20 @@ impl<T> CompiledPipelineState<T> {
         self.resources.values().filter(|slot| slot.payload.is_some() && !slot.released).count()
     }
 
+    pub fn drain_live_resources(&mut self) -> Vec<ReleasedCompiledResource<T>> {
+        let mut released = Vec::new();
+        for (id, slot) in &mut self.resources {
+            if slot.released {
+                continue;
+            }
+            if let Some(payload) = slot.payload.take() {
+                slot.released = true;
+                released.push(ReleasedCompiledResource { id: *id, payload });
+            }
+        }
+        released
+    }
+
     pub fn resource_payload(&self, resource: ResidentResourceId) -> Result<&T> {
         let slot = self.resource_slot(resource)?;
         if slot.released {
