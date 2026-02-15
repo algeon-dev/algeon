@@ -173,7 +173,7 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
 }
 
 #[test]
-fn bounded_native_query_routes_large_keyed_inner_residual_build_to_one_shot() {
+fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_mixed_join() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-large-keyed-inner-residual-one-shot");
     let left_path = dir.join("lineitem.parquet");
@@ -212,29 +212,28 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_one_shot() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
-    assert_eq!(metrics.mixed_join_size_data_bytes, 0);
-    assert_eq!(metrics.one_shot_join_count, 1);
-    assert!(metrics.one_shot_join_index_bytes > 0);
-    assert!(metrics.one_shot_join_materialization_bytes > 0);
-    assert!(metrics.one_shot_join_output_bytes > 0);
+    assert_eq!(metrics.one_shot_join_count, 0);
+    assert!(metrics.mixed_join_size_data_bytes > 0);
     assert!(
-        metrics.reservation_events.iter().all(|event| !matches!(
-            event.reservation_kind,
-            ReservationKind::HashTable | ReservationKind::MixedSizeData
-        )),
-        "large one-shot residual join should not reserve reusable hash-table or mixed size-data memory"
+        metrics.reservation_events.iter().all(|event| !matches!(event.reservation_kind, ReservationKind::HashTable)),
+        "large partitioned residual join should not reserve reusable hash-table memory"
     );
     assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_residual_candidate_output"
+        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data"
     }));
     assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_residual_filter_output"
+        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_indices"
     }));
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
-    assert_eq!(join_metrics.execution_strategy, "bounded_one_shot_equi_join");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_mixed_keyed_residual_join");
     assert!(join_metrics.residual_predicate);
     assert_eq!(join_metrics.output_rows, 1);
+    assert!(metrics.join_strategy_decisions.iter().any(|decision| {
+        decision.node_id == "n2"
+            && decision.facts.get("join_strategy").map(String::as_str) == Some("partitioned_mixed_keyed_residual")
+            && decision.facts.get("partition_count").map(String::as_str) == Some("2")
+    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -906,7 +905,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
 }
 
 #[test]
-fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_probe_materialization() {
+fn bounded_native_query_streams_source_adjacent_filter_projection_into_partitioned_probe_materialization() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-one-shot-probe-streamed-source-unary");
     let left_path = dir.join("lineitem.parquet");
@@ -963,10 +962,10 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.one_shot_join_count, 1);
+    assert_eq!(metrics.one_shot_join_count, 0);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
-    assert_eq!(join_metrics.execution_strategy, "bounded_one_shot_equi_join");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
     assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.source_read_prefetches_started, 0);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
@@ -974,11 +973,11 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_read_prefetch"),
-        "one-shot source-adjacent materialization should not prefetch while transformed chunks are retained"
+        "partitioned source-adjacent materialization should not prefetch while transformed chunks are retained"
     );
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat_output"),
-        "one-shot source-adjacent probe streaming should not concatenate the source before join materialization"
+        "partitioned source-adjacent probe streaming should not concatenate the source before join materialization"
     );
     assert!(
         metrics.reservation_events.iter().any(|event| {
@@ -986,7 +985,15 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
                 && event.action == MemoryReservationEventAction::Reserve
                 && event.reservation_kind == ReservationKind::JoinOutput
         }),
-        "one-shot source-adjacent probe streaming should concatenate join output chunks at the output boundary"
+        "partitioned source-adjacent probe streaming should concatenate join output chunks at the output boundary"
+    );
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.memory_boundary == "join_hash_partitioned_left_side"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.reservation_kind == ReservationKind::OperatorOutput
+        }),
+        "partitioned probe streaming should hash-partition each streamed probe chunk"
     );
     assert_eq!(
         metrics
@@ -1018,7 +1025,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
         metrics.reservation_events.iter().all(|event| {
             event.memory_boundary != "compiled_filter_output" && event.memory_boundary != "compiled_projection_output"
         }),
-        "source-adjacent one-shot probe filtering/projection should be fused into the join source stream"
+        "source-adjacent partitioned probe filtering/projection should be fused into the join source stream"
     );
     let left_node_id = left.to_string();
     let second_left_read = metrics
@@ -1042,7 +1049,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
     });
     assert!(
         first_projection_transfer.zip(second_left_read).is_some_and(|(projection, read)| projection < read),
-        "one-shot probe stream should filter/project the first source chunk before reading later chunks"
+        "partitioned probe stream should filter/project the first source chunk before reading later chunks"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1057,7 +1064,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_one_shot_
 }
 
 #[test]
-fn bounded_native_query_preserves_one_shot_stream_through_filtered_join_into_aggregate() {
+fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_into_aggregate() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-one-shot-filtered-aggregate-stream");
     let left_path = dir.join("lineitem.parquet");
@@ -1141,13 +1148,13 @@ fn bounded_native_query_preserves_one_shot_stream_through_filtered_join_into_agg
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.one_shot_join_count, 1);
+    assert_eq!(metrics.one_shot_join_count, 0);
     assert!(
         metrics
             .operators
             .iter()
             .filter_map(|operator| operator.join.as_ref())
-            .any(|join| join.execution_strategy == "bounded_one_shot_equi_join")
+            .any(|join| join.execution_strategy == "bounded_partitioned_hash_equi_join")
     );
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert!(metrics.partial_aggregate_count > 1);

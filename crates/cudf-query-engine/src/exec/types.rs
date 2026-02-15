@@ -629,10 +629,19 @@ pub enum GpuLocalParquetSourceCacheInsert {
     CapacitySkipped,
 }
 
+/// Accounting returned by a GPU-local Parquet source cache insert attempt.
+///
+/// `evicted_device_bytes` reports cache entries removed to make room, while
+/// `retained_device_bytes` reports how many bytes the inserted or existing
+/// entry contributes to cache residency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct GpuLocalParquetSourceCacheInsertResult {
+    /// Whether the cache inserted the entry, found it already present, or
+    /// skipped insertion because capacity could not be made available.
     pub(crate) outcome: GpuLocalParquetSourceCacheInsert,
+    /// Device bytes released from evicted cache entries during this attempt.
     pub(crate) evicted_device_bytes: u64,
+    /// Device bytes retained by the inserted or already-present entry.
     pub(crate) retained_device_bytes: u64,
 }
 

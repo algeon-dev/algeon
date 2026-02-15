@@ -485,7 +485,7 @@ impl NativeCudfMetrics {
                 .and_then(|facts| facts.get("join_strategy").map(String::as_str))
                 .unwrap_or_else(|| join_strategy_label(join));
             let runtime = join_runtime_counters(join_strategy, join);
-            let mut builder = MetricBuilder::new(&self.metrics_set)
+            let builder = MetricBuilder::new(&self.metrics_set)
                 .with_type(MetricType::SUMMARY)
                 .with_new_label("node_id", operator.node_id.clone())
                 .with_new_label("join_strategy", join_strategy.to_string())
@@ -510,6 +510,10 @@ impl NativeCudfMetrics {
                 .with_new_label("probe_side_bytes", optional_fact(facts, "probe_side_bytes"))
                 .with_new_label("partition_count", optional_fact(facts, "partition_count"))
                 .with_new_label("partition_target_bytes", optional_fact(facts, "partition_target_bytes"))
+                .with_new_label("build_partition_batch_count", optional_fact(facts, "build_partition_batch_count"))
+                .with_new_label("probe_partition_batch_count", optional_fact(facts, "probe_partition_batch_count"))
+                .with_new_label("build_partitioned_bytes", optional_fact(facts, "build_partitioned_bytes"))
+                .with_new_label("probe_partitioned_bytes", optional_fact(facts, "probe_partitioned_bytes"))
                 .with_new_label(
                     "reusable_hash_join_rejected_reason",
                     optional_fact(facts, "reusable_hash_join_rejected_reason"),
@@ -519,6 +523,7 @@ impl NativeCudfMetrics {
                     optional_fact(facts, "partitioned_hash_join_rejected_reason"),
                 )
                 .with_new_label("one_shot_equi_rejected_reason", optional_fact(facts, "one_shot_equi_rejected_reason"))
+                .with_new_label("partitioned_hash_join_count", runtime.partitioned_hash_join_count.to_string())
                 .with_new_label("hash_join_build_count", runtime.hash_join_build_count.to_string())
                 .with_new_label("hash_join_hash_table_bytes", runtime.hash_join_hash_table_bytes.to_string())
                 .with_new_label("filtered_join_build_count", runtime.filtered_join_build_count.to_string())
@@ -532,11 +537,10 @@ impl NativeCudfMetrics {
                     runtime.one_shot_join_materialization_bytes.to_string(),
                 )
                 .with_new_label("one_shot_join_output_bytes", runtime.one_shot_join_output_bytes.to_string())
-                .with_new_label("join_gather_map_bytes", join.gather_map_bytes.to_string());
-            if join.output_reservation_bytes > 0 {
-                builder =
-                    builder.with_new_label("join_output_reservation_bytes", join.output_reservation_bytes.to_string());
-            }
+                .with_new_label("join_gather_map_bytes", join.gather_map_bytes.to_string())
+                .with_new_label("join_output_reservation_bytes", join.output_reservation_bytes.to_string())
+                .with_new_label("join_output_rows", join.output_rows.to_string())
+                .with_new_label("join_output_bytes", join.output_bytes.to_string());
             builder.global_counter("native_join_strategy_rows").add(1);
         }
     }
@@ -568,6 +572,7 @@ impl NativeCudfMetrics {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct JoinRuntimeCounters {
+    partitioned_hash_join_count: u64,
     hash_join_build_count: u64,
     hash_join_hash_table_bytes: u64,
     filtered_join_build_count: u64,
@@ -588,6 +593,7 @@ fn join_strategy_label(join: &JoinOperatorMetrics) -> &'static str {
     match join.execution_strategy.as_str() {
         "bounded_one_shot_equi_join" => "one_shot_equi",
         "bounded_partitioned_hash_equi_join" => "partitioned_hash_equi",
+        "bounded_partitioned_mixed_keyed_residual_join" => "partitioned_mixed_keyed_residual",
         "bounded_reusable_hash_join" | "hash_join" => "reusable_hash_equi",
         "bounded_reusable_filtered_join" => "filtered_join",
         "bounded_mixed_keyed_residual_join" | "mixed_join" => "mixed_keyed_residual",
@@ -615,6 +621,12 @@ fn join_runtime_counters(join_strategy: &str, join: &JoinOperatorMetrics) -> Joi
             one_shot_join_index_bytes: join.gather_map_bytes,
             one_shot_join_materialization_bytes: join.output_reservation_bytes,
             one_shot_join_output_bytes: join.output_bytes,
+            ..Default::default()
+        },
+        "partitioned_hash_equi" => JoinRuntimeCounters { partitioned_hash_join_count: 1, ..Default::default() },
+        "partitioned_mixed_keyed_residual" => JoinRuntimeCounters {
+            partitioned_hash_join_count: 1,
+            mixed_join_size_data_bytes: join.mixed_size_data_bytes,
             ..Default::default()
         },
         "mixed_keyed_residual" => {

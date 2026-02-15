@@ -1,5 +1,12 @@
 use super::{edge::*, expr::*, graph::*, invariant::expr_references_input, model::*, *};
 
+/// Root keyed/residual join whose inputs are a resident multi-join subtree and
+/// a projection-wrapped grouped aggregate, followed by projection, scalar
+/// aggregate, and final projection stages.
+///
+/// The stored ids name the root join, the resident subtree root and wrapper
+/// projection, the grouped aggregate and wrapper projection, and each post-root
+/// stage that must remain ordered above the join.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MixedResidualResidentGroupedAggregateInputShape {
     pub(super) root_join_id: NodeId,
@@ -12,6 +19,13 @@ pub(super) struct MixedResidualResidentGroupedAggregateInputShape {
     pub(super) final_projection_id: NodeId,
 }
 
+/// Left-semi hash join from a resident multi-join subtree into a resident
+/// grouped aggregate, followed by post-join projection, grouped aggregate,
+/// projection, sort, and limit.
+///
+/// The stored ids identify the join, the aggregate-side resident producer and
+/// projection, plus the post-root aggregate/top-k chain admitted as one
+/// compiled pipeline envelope.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape {
     pub(super) root_join_id: NodeId,
@@ -24,6 +38,11 @@ pub(super) struct HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShap
     pub(super) final_limit_id: NodeId,
 }
 
+/// Top-k query whose root join combines a deep multi-join side with a grouped
+/// aggregate computed over a separate join subplan.
+///
+/// The stored ids pin the root join, aggregate-over-join branch and projection,
+/// and the projection/sort/limit stages that consume the joined resident result.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MultiJoinAggregateOverJoinSubplanTopKShape {
     pub(super) root_join_id: NodeId,
@@ -34,6 +53,12 @@ pub(super) struct MultiJoinAggregateOverJoinSubplanTopKShape {
     pub(super) final_limit_id: NodeId,
 }
 
+/// Final-sort query where a keyed hash join matches a joined grouped branch
+/// against a scalar aggregate derived from the same grouped aggregate producer.
+///
+/// The stored ids record the final sort, the root join, the branch join, the
+/// shared grouped aggregate node that must be common after CSE, and the scalar
+/// aggregate consuming that shared producer.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct KeyedHashJoinResidentSubplanShape {
     pub(super) final_sort_id: NodeId,
@@ -43,12 +68,23 @@ pub(super) struct KeyedHashJoinResidentSubplanShape {
     pub(super) scalar_aggregate_id: NodeId,
 }
 
+/// Keyless conditional root join whose input tree contains at least one
+/// resident subplan and whose post-root stages are general unary/barrier stages.
+///
+/// The root join id locates the conditional join; the reachable join count lets
+/// admission decide whether multi-join lifetime and schedule invariants are
+/// required.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct KeylessConditionalJoinInputSubplanShape {
     pub(super) root_join_id: NodeId,
     pub(super) reachable_join_count: usize,
 }
 
+/// Keyless conditional root join over grouped and scalar aggregate inputs, where
+/// both aggregates are projection-wrapped computations over join subplans.
+///
+/// The stored ids name the root join, both aggregate inputs and their wrapper
+/// projections, plus optional projection/sort stages above the root join.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct KeylessConditionalJoinAggregateOverJoinSubplanInputsShape {
     pub(super) root_join_id: NodeId,
@@ -60,6 +96,12 @@ pub(super) struct KeylessConditionalJoinAggregateOverJoinSubplanInputsShape {
     pub(super) final_sort_id: Option<NodeId>,
 }
 
+/// Final-sort query whose left-semi root join filters a resident multi-join
+/// output using a subquery side containing one grouped aggregate comparison.
+///
+/// The stored ids identify the sort and root join, the grouped aggregate and
+/// projection used by the residual comparison, and the residual join that
+/// compares the aggregate branch against the rest of the subquery side.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct MultiJoinResidentGroupedAggregateSubqueryFilterShape {
     pub(super) final_sort_id: NodeId,

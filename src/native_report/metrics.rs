@@ -211,9 +211,14 @@ pub struct NativeJoinStrategyMetricRow {
     pub probe_reuse_count: Option<usize>,
     pub partition_count: Option<usize>,
     pub partition_target_bytes: Option<usize>,
+    pub build_partition_batch_count: Option<usize>,
+    pub probe_partition_batch_count: Option<usize>,
+    pub build_partitioned_bytes: Option<usize>,
+    pub probe_partitioned_bytes: Option<usize>,
     pub reusable_hash_join_rejected_reason: Option<String>,
     pub partitioned_hash_join_rejected_reason: Option<String>,
     pub one_shot_equi_rejected_reason: Option<String>,
+    pub partitioned_hash_join_count: usize,
     pub hash_join_build_count: usize,
     pub hash_join_hash_table_bytes: usize,
     pub filtered_join_build_count: usize,
@@ -225,12 +230,15 @@ pub struct NativeJoinStrategyMetricRow {
     pub one_shot_join_materialization_bytes: usize,
     pub one_shot_join_output_bytes: usize,
     pub join_gather_map_bytes: usize,
+    pub join_output_reservation_bytes: usize,
+    pub join_output_rows: usize,
+    pub join_output_bytes: usize,
 }
 
 impl NativeJoinStrategyMetricRow {
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},join_strategy={},execution_strategy={},join_type={},build_side={},key_count={},estimated_build_rows={},observed_build_rows={},build_side_bytes={},probe_side_bytes={},probe_reuse_count={},partition_count={},partition_target_bytes={},reusable_hash_join_rejected_reason={},partitioned_hash_join_rejected_reason={},one_shot_equi_rejected_reason={},hash_join_build_count={},hash_join_hash_table_bytes={},filtered_join_build_count={},filtered_join_hash_table_bytes={},filtered_join_probe_state_bytes={},mixed_join_size_data_bytes={},one_shot_join_count={},one_shot_join_index_bytes={},one_shot_join_materialization_bytes={},one_shot_join_output_bytes={},join_gather_map_bytes={}",
+            "node_id={},join_strategy={},execution_strategy={},join_type={},build_side={},key_count={},estimated_build_rows={},observed_build_rows={},build_side_bytes={},probe_side_bytes={},probe_reuse_count={},partition_count={},partition_target_bytes={},build_partition_batch_count={},probe_partition_batch_count={},build_partitioned_bytes={},probe_partitioned_bytes={},reusable_hash_join_rejected_reason={},partitioned_hash_join_rejected_reason={},one_shot_equi_rejected_reason={},partitioned_hash_join_count={},hash_join_build_count={},hash_join_hash_table_bytes={},filtered_join_build_count={},filtered_join_hash_table_bytes={},filtered_join_probe_state_bytes={},mixed_join_size_data_bytes={},one_shot_join_count={},one_shot_join_index_bytes={},one_shot_join_materialization_bytes={},one_shot_join_output_bytes={},join_gather_map_bytes={},join_output_reservation_bytes={},join_output_rows={},join_output_bytes={}",
             self.node_id,
             self.join_strategy,
             self.execution_strategy,
@@ -244,9 +252,14 @@ impl NativeJoinStrategyMetricRow {
             optional_usize(self.probe_reuse_count),
             optional_usize(self.partition_count),
             optional_usize(self.partition_target_bytes),
+            optional_usize(self.build_partition_batch_count),
+            optional_usize(self.probe_partition_batch_count),
+            optional_usize(self.build_partitioned_bytes),
+            optional_usize(self.probe_partitioned_bytes),
             optional_str(self.reusable_hash_join_rejected_reason.as_deref()),
             optional_str(self.partitioned_hash_join_rejected_reason.as_deref()),
             optional_str(self.one_shot_equi_rejected_reason.as_deref()),
+            self.partitioned_hash_join_count,
             self.hash_join_build_count,
             self.hash_join_hash_table_bytes,
             self.filtered_join_build_count,
@@ -258,6 +271,9 @@ impl NativeJoinStrategyMetricRow {
             self.one_shot_join_materialization_bytes,
             self.one_shot_join_output_bytes,
             self.join_gather_map_bytes,
+            self.join_output_reservation_bytes,
+            self.join_output_rows,
+            self.join_output_bytes,
         )
     }
 
@@ -281,6 +297,14 @@ impl NativeJoinStrategyMetricRow {
         self.observed_build_rows = max_optional_usize(self.observed_build_rows, other.observed_build_rows);
         self.build_side_bytes = max_optional_usize(self.build_side_bytes, other.build_side_bytes);
         self.probe_side_bytes = max_optional_usize(self.probe_side_bytes, other.probe_side_bytes);
+        self.build_partition_batch_count =
+            max_optional_usize(self.build_partition_batch_count, other.build_partition_batch_count);
+        self.probe_partition_batch_count =
+            max_optional_usize(self.probe_partition_batch_count, other.probe_partition_batch_count);
+        self.build_partitioned_bytes = max_optional_usize(self.build_partitioned_bytes, other.build_partitioned_bytes);
+        self.probe_partitioned_bytes = max_optional_usize(self.probe_partitioned_bytes, other.probe_partitioned_bytes);
+        self.partitioned_hash_join_count =
+            self.partitioned_hash_join_count.saturating_add(other.partitioned_hash_join_count);
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);
         self.hash_join_hash_table_bytes =
             self.hash_join_hash_table_bytes.saturating_add(other.hash_join_hash_table_bytes);
@@ -298,6 +322,10 @@ impl NativeJoinStrategyMetricRow {
         self.one_shot_join_output_bytes =
             self.one_shot_join_output_bytes.saturating_add(other.one_shot_join_output_bytes);
         self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(other.join_gather_map_bytes);
+        self.join_output_reservation_bytes =
+            self.join_output_reservation_bytes.saturating_add(other.join_output_reservation_bytes);
+        self.join_output_rows = self.join_output_rows.saturating_add(other.join_output_rows);
+        self.join_output_bytes = self.join_output_bytes.saturating_add(other.join_output_bytes);
     }
 
     fn sort_key(&self) -> (&str, &str, &str, &str, &str, usize) {
@@ -353,9 +381,14 @@ fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrate
         probe_reuse_count: optional_usize_label(&labels, "probe_reuse_count"),
         partition_count: optional_usize_label(&labels, "partition_count"),
         partition_target_bytes: optional_usize_label(&labels, "partition_target_bytes"),
+        build_partition_batch_count: optional_usize_label(&labels, "build_partition_batch_count"),
+        probe_partition_batch_count: optional_usize_label(&labels, "probe_partition_batch_count"),
+        build_partitioned_bytes: optional_usize_label(&labels, "build_partitioned_bytes"),
+        probe_partitioned_bytes: optional_usize_label(&labels, "probe_partitioned_bytes"),
         reusable_hash_join_rejected_reason: optional_string_label(&labels, "reusable_hash_join_rejected_reason"),
         partitioned_hash_join_rejected_reason: optional_string_label(&labels, "partitioned_hash_join_rejected_reason"),
         one_shot_equi_rejected_reason: optional_string_label(&labels, "one_shot_equi_rejected_reason"),
+        partitioned_hash_join_count: usize_label(&labels, "partitioned_hash_join_count"),
         hash_join_build_count: usize_label(&labels, "hash_join_build_count"),
         hash_join_hash_table_bytes: usize_label(&labels, "hash_join_hash_table_bytes"),
         filtered_join_build_count: usize_label(&labels, "filtered_join_build_count"),
@@ -367,6 +400,9 @@ fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrate
         one_shot_join_materialization_bytes: usize_label(&labels, "one_shot_join_materialization_bytes"),
         one_shot_join_output_bytes: usize_label(&labels, "one_shot_join_output_bytes"),
         join_gather_map_bytes: usize_label(&labels, "join_gather_map_bytes"),
+        join_output_reservation_bytes: usize_label(&labels, "join_output_reservation_bytes"),
+        join_output_rows: usize_label(&labels, "join_output_rows"),
+        join_output_bytes: usize_label(&labels, "join_output_bytes"),
     }
 }
 

@@ -30,6 +30,18 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         self.chunks.len()
     }
 
+    pub(in crate::exec::bounded) fn estimated_source_read_bytes(&self) -> Option<u64> {
+        self.chunks.iter().try_fold(0_u64, |total, chunk| {
+            total.checked_add(
+                chunk
+                    .estimated_source_read_bytes
+                    .or(chunk.known_row_group_bytes)
+                    .or(chunk.estimated_chunk_bytes)
+                    .or(chunk.known_file_bytes)?,
+            )
+        })
+    }
+
     fn has_stages(&self) -> bool {
         !self.stages.is_empty()
     }

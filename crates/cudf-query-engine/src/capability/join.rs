@@ -7,6 +7,7 @@ use crate::{
 
 pub(crate) const LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
 pub(crate) const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
+pub(crate) const LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Node-local native join execution capability.
 ///
@@ -27,6 +28,7 @@ pub(crate) enum KeyedHashJoinStrategy {
     ReusableHashEqui,
     OneShotEqui,
     PartitionedHashEqui,
+    PartitionedMixedKeyedResidual,
 }
 
 impl KeyedHashJoinStrategy {
@@ -35,6 +37,7 @@ impl KeyedHashJoinStrategy {
             Self::ReusableHashEqui => "reusable_hash_equi",
             Self::OneShotEqui => "one_shot_equi",
             Self::PartitionedHashEqui => "partitioned_hash_equi",
+            Self::PartitionedMixedKeyedResidual => "partitioned_mixed_keyed_residual",
         }
     }
 }
@@ -152,7 +155,10 @@ pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
             keyed_hash_join_strategy_decision(join, keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join));
         if matches!(
             decision,
-            KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }
+            KeyedHashJoinStrategyDecision::Selected {
+                strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
+                ..
+            }
         ) {
             return Some(decision);
         }
@@ -185,8 +191,17 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     let large_build = input.observed_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.estimated_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.build_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD);
+    let large_probe = input.probe_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD);
+    let reusable_rejected_reason = if large_build {
+        Some("build_side_too_large")
+    } else if large_probe {
+        Some("probe_side_too_large")
+    } else {
+        None
+    };
 
-    let prefer_reusable = join.spec.build_artifact_id.is_some() || input.probe_reuse_count > 1 || !large_build;
+    let prefer_reusable =
+        join.spec.build_artifact_id.is_some() || input.probe_reuse_count > 1 || reusable_rejected_reason.is_none();
     if prefer_reusable {
         return KeyedHashJoinStrategyDecision::Selected {
             strategy: KeyedHashJoinStrategy::ReusableHashEqui,
@@ -201,7 +216,21 @@ pub(crate) fn keyed_hash_join_strategy_decision(
                 join,
                 input,
                 KeyedHashJoinStrategy::PartitionedHashEqui,
-                Some("build_side_too_large"),
+                reusable_rejected_reason,
+                None,
+                None,
+            ),
+        };
+    }
+
+    if partitioned_keyed_residual_join_supported(join) {
+        return KeyedHashJoinStrategyDecision::Selected {
+            strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
+            facts: strategy_facts(
+                join,
+                input,
+                KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
+                reusable_rejected_reason,
                 None,
                 None,
             ),
@@ -215,7 +244,7 @@ pub(crate) fn keyed_hash_join_strategy_decision(
                 join,
                 input,
                 KeyedHashJoinStrategy::OneShotEqui,
-                Some("build_side_too_large"),
+                reusable_rejected_reason,
                 Some("partitioned_hash_equi_unsupported"),
                 None,
             ),
@@ -228,7 +257,7 @@ pub(crate) fn keyed_hash_join_strategy_decision(
             join,
             input,
             KeyedHashJoinStrategy::OneShotEqui,
-            Some("build_side_too_large"),
+            reusable_rejected_reason,
             Some("partitioned_hash_equi_unsupported"),
             Some("one_shot_equi_requires_keyed_inner_left_or_full_join"),
         ),
@@ -241,6 +270,10 @@ pub(crate) fn partitioned_equi_join_supported(join: &JoinNode) -> bool {
         && !join.spec.output_projection.is_empty()
         && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
+}
+
+pub(crate) fn partitioned_keyed_residual_join_supported(join: &JoinNode) -> bool {
+    keyed_residual_mixed_join_capable(join)
 }
 
 pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
@@ -268,6 +301,7 @@ fn strategy_facts(
         ("build_artifact_id_present", join.spec.build_artifact_id.is_some().to_string()),
         ("large_keyed_hash_build_row_threshold", LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD.to_string()),
         ("large_keyed_hash_build_bytes_threshold", LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD.to_string()),
+        ("large_keyed_hash_probe_bytes_threshold", LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD.to_string()),
     ]);
     if let Some(rows) = input.estimated_build_rows {
         facts.insert("estimated_build_rows", rows.to_string());
