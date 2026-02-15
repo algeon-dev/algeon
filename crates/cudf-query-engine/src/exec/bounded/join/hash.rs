@@ -2,6 +2,7 @@ use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
         prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
+        release_bounded_join_side_frame,
     },
     *,
 };
@@ -486,7 +487,19 @@ pub(in crate::exec::bounded) fn release_bounded_root_hash_join_build_state(
     let BoundedRootHashJoinBuildState { build: build_frame, hash_join, hash_table_reservation, .. } = build;
     drop(hash_join);
     reservations.release(hash_table_reservation, metrics);
-    drop(build_frame);
+    release_bounded_join_side_frame(build_frame, reservations, metrics);
+}
+
+pub(in crate::exec::bounded) fn release_bounded_root_hash_join_probe_state(
+    probe: BoundedRootHashJoinProbeState,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    let BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, .. } = probe;
+    drop(indices);
+    reservations.release(gather_map_reservation, metrics);
+    release_bounded_root_hash_join_build_state(build, reservations, metrics);
+    release_bounded_join_side_frame(probe, reservations, metrics);
 }
 
 #[allow(clippy::too_many_arguments)]

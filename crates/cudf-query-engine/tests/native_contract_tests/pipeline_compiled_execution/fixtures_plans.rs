@@ -815,6 +815,56 @@ pub(super) fn simple_unary_pipeline() -> CompiledPipeline {
     )
 }
 
+pub(super) fn independent_two_source_pipeline() -> CompiledPipeline {
+    let first_source = PipelineTaskId::new(0);
+    let second_source = PipelineTaskId::new(1);
+    let first_consumer = PipelineTaskId::new(2);
+    let second_consumer = PipelineTaskId::new(3);
+    let first_frame = ResidentResourceId::new(0);
+    let second_frame = ResidentResourceId::new(1);
+
+    CompiledPipeline::new(
+        vec![
+            PipelineTask::new(first_source, PipelineTaskKind::SourceRead).with_output_resources(vec![first_frame]),
+            PipelineTask::new(second_source, PipelineTaskKind::SourceRead).with_output_resources(vec![second_frame]),
+            PipelineTask::new(first_consumer, PipelineTaskKind::Unary).with_input_resources(vec![first_frame]),
+            PipelineTask::new(second_consumer, PipelineTaskKind::Unary).with_input_resources(vec![second_frame]),
+        ],
+        vec![
+            PipelineEdge::new(PipelineEdgeId::new(0), first_source, first_consumer, PipelineEdgeKind::ResidentFrame)
+                .with_resources(vec![first_frame]),
+            PipelineEdge::new(PipelineEdgeId::new(1), second_source, second_consumer, PipelineEdgeKind::ResidentFrame)
+                .with_resources(vec![second_frame]),
+        ],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![first_source])
+                .with_downstream_tasks(vec![first_consumer]),
+            PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![second_source])
+                .with_downstream_tasks(vec![second_consumer]),
+            PipelineBarrier::new(PipelineBarrierId::new(2), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(vec![first_consumer, second_consumer]),
+        ],
+        vec![
+            ResidentResource::new(
+                first_frame,
+                first_source,
+                vec![first_consumer],
+                ResidentLifetime::BetweenTasks { producer: first_source },
+            ),
+            ResidentResource::new(
+                second_frame,
+                second_source,
+                vec![second_consumer],
+                ResidentLifetime::BetweenTasks { producer: second_source },
+            ),
+        ],
+        vec![],
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, second_consumer),
+    )
+}
+
 pub(super) fn out_of_order_join_barrier_pipeline() -> CompiledPipeline {
     let source = PipelineTaskId::new(0);
     let probe = PipelineTaskId::new(1);

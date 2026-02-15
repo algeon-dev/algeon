@@ -29,6 +29,80 @@ pub trait CompiledTaskExecutor {
         drop(payload);
         Ok(())
     }
+
+    fn cleanup_after_error(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn live_reserved_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    fn remaining_reserved_bytes(&self) -> Option<u64> {
+        None
+    }
+
+    fn can_admit_task(
+        &self,
+        _task: &PipelineTask,
+        _state: &CompiledPipelineState<Self::Resource>,
+    ) -> Result<CompiledTaskAdmission> {
+        Ok(CompiledTaskAdmission::admitted())
+    }
+}
+
+/// A conservative scheduler-level task admission decision.
+///
+/// This is not an exact libcudf preflight. It lets an executor report whether
+/// the scheduler should start a dependency-ready task under the reservations
+/// currently visible to that executor.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledTaskAdmission {
+    admitted: bool,
+    estimated_required_bytes: Option<u64>,
+    remaining_bytes: Option<u64>,
+    reason: Option<&'static str>,
+}
+
+impl CompiledTaskAdmission {
+    pub fn admitted() -> Self {
+        Self { admitted: true, estimated_required_bytes: None, remaining_bytes: None, reason: None }
+    }
+
+    pub fn admitted_with_bytes(estimated_required_bytes: u64, remaining_bytes: u64) -> Self {
+        Self {
+            admitted: true,
+            estimated_required_bytes: Some(estimated_required_bytes),
+            remaining_bytes: Some(remaining_bytes),
+            reason: None,
+        }
+    }
+
+    pub fn not_ready(estimated_required_bytes: u64, remaining_bytes: u64, reason: &'static str) -> Self {
+        Self {
+            admitted: false,
+            estimated_required_bytes: Some(estimated_required_bytes),
+            remaining_bytes: Some(remaining_bytes),
+            reason: Some(reason),
+        }
+    }
+
+    pub fn is_admitted(&self) -> bool {
+        self.admitted
+    }
+
+    pub fn estimated_required_bytes(&self) -> Option<u64> {
+        self.estimated_required_bytes
+    }
+
+    pub fn remaining_bytes(&self) -> Option<u64> {
+        self.remaining_bytes
+    }
+
+    pub fn reason(&self) -> Option<&'static str> {
+        self.reason
+    }
 }
 
 /// The resident resources produced by one compiled task.
@@ -78,7 +152,7 @@ impl<'a> CompiledPipelineScheduler<'a> {
         let mut state = CompiledPipelineState::new(self.pipeline)?;
 
         while state.completed_task_count() < self.pipeline.tasks().len() {
-            let task = match self.next_runnable_task(&state) {
+            let task = match self.next_runnable_task(&state, executor) {
                 Ok(task) => task,
                 Err(error) => {
                     release_live_resources_on_error(executor, &mut state)?;
@@ -118,8 +192,17 @@ impl<'a> CompiledPipelineScheduler<'a> {
         Ok(state)
     }
 
-    fn next_runnable_task<T>(&self, state: &CompiledPipelineState<T>) -> Result<&'a PipelineTask> {
-        self.pipeline
+    fn next_runnable_task<E>(
+        &self,
+        state: &CompiledPipelineState<E::Resource>,
+        executor: &E,
+    ) -> Result<&'a PipelineTask>
+    where
+        E: CompiledTaskExecutor,
+    {
+        let live_reserved_bytes = executor.live_reserved_bytes().unwrap_or(0);
+        let ready_tasks = self
+            .pipeline
             .tasks()
             .iter()
             .filter(|task| {
@@ -128,20 +211,62 @@ impl<'a> CompiledPipelineScheduler<'a> {
                         dependencies.iter().all(|dependency| state.is_task_completed(*dependency))
                     })
             })
-            .min_by_key(|task| self.runnable_task_priority(task, state))
-            .ok_or_else(|| {
-                invalid("compiled pipeline has no runnable task before completion")
-                    .with_fact("completed_task_count", state.completed_task_count())
-                    .with_fact("pipeline_task_count", self.pipeline.tasks().len())
-            })
+            .collect::<Vec<_>>();
+        if ready_tasks.is_empty() {
+            return Err(invalid("compiled pipeline has no runnable task before completion")
+                .with_fact("completed_task_count", state.completed_task_count())
+                .with_fact("pipeline_task_count", self.pipeline.tasks().len()));
+        }
+
+        let admissions = ready_tasks
+            .into_iter()
+            .map(|task| executor.can_admit_task(task, state).map(|admission| (task, admission)))
+            .collect::<Result<Vec<_>>>()?;
+        if let Some((task, _)) = admissions
+            .iter()
+            .filter(|(_, admission)| admission.is_admitted())
+            .min_by_key(|(task, _)| self.runnable_task_priority(task, state, live_reserved_bytes))
+        {
+            return Ok(*task);
+        }
+
+        Err(resource_not_ready_error(&admissions, state, self.pipeline))
     }
 
-    fn runnable_task_priority<T>(&self, task: &PipelineTask, state: &CompiledPipelineState<T>) -> (u8, usize) {
+    fn runnable_task_priority<T>(
+        &self,
+        task: &PipelineTask,
+        state: &CompiledPipelineState<T>,
+        live_reserved_bytes: u64,
+    ) -> (u8, u8, u8, usize) {
         let build_priority = task.kind() == PipelineTaskKind::JoinBuild
             && self.prioritized_join_builds.contains(&task.id())
             || (self.has_completed_join_build_waiting_for_probe(state)
                 && self.task_feeds_incomplete_prioritized_join_build(task.id(), state));
-        if build_priority { (0, task.id().index()) } else { (1, task.id().index()) }
+        let build_rank = if build_priority { 0 } else { 1 };
+        let pressure_rank = if live_reserved_bytes > 0 { self.memory_pressure_task_rank(task, state) } else { 1 };
+        let operator_rank = if live_reserved_bytes > 0 { operator_class_rank(task.kind()) } else { 0 };
+        (build_rank, pressure_rank, operator_rank, task.id().index())
+    }
+
+    fn memory_pressure_task_rank<T>(&self, task: &PipelineTask, state: &CompiledPipelineState<T>) -> u8 {
+        if task.input_resources().iter().any(|resource| state.is_resource_live(*resource)) {
+            return 0;
+        }
+        if task.output_resources().is_empty() {
+            return 1;
+        }
+        match task.kind() {
+            PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => 3,
+            PipelineTaskKind::JoinMaterialize
+            | PipelineTaskKind::Aggregate
+            | PipelineTaskKind::FinalSort
+            | PipelineTaskKind::Limit => 2,
+            PipelineTaskKind::Unary
+            | PipelineTaskKind::JoinBuild
+            | PipelineTaskKind::JoinProbe
+            | PipelineTaskKind::SinkMaterialize => 1,
+        }
     }
 
     fn has_completed_join_build_waiting_for_probe<T>(&self, state: &CompiledPipelineState<T>) -> bool {
@@ -192,6 +317,7 @@ where E: CompiledTaskExecutor {
     for resource in state.drain_live_resources() {
         executor.release_resource(resource.id(), resource.into_payload())?;
     }
+    executor.cleanup_after_error()?;
     Ok(())
 }
 
@@ -211,6 +337,56 @@ fn build_dependencies(pipeline: &CompiledPipeline) -> BTreeMap<PipelineTaskId, B
     }
 
     dependencies
+}
+
+fn operator_class_rank(kind: PipelineTaskKind) -> u8 {
+    match kind {
+        PipelineTaskKind::SinkMaterialize => 0,
+        PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => 1,
+        PipelineTaskKind::Unary | PipelineTaskKind::Limit => 2,
+        PipelineTaskKind::Aggregate | PipelineTaskKind::JoinMaterialize | PipelineTaskKind::FinalSort => 3,
+        PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => 4,
+    }
+}
+
+fn resource_not_ready_error<T>(
+    admissions: &[(&PipelineTask, CompiledTaskAdmission)],
+    state: &CompiledPipelineState<T>,
+    pipeline: &CompiledPipeline,
+) -> QueryError {
+    let ready_task_ids = admissions.iter().map(|(task, _)| task.id().to_string()).collect::<Vec<_>>().join(",");
+    let ready_task_kinds = admissions.iter().map(|(task, _)| task.kind().as_str()).collect::<Vec<_>>().join(",");
+    let max_estimated_required_bytes = admissions
+        .iter()
+        .filter_map(|(_, admission)| admission.estimated_required_bytes())
+        .max()
+        .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
+    let max_remaining_bytes = admissions
+        .iter()
+        .filter_map(|(_, admission)| admission.remaining_bytes())
+        .max()
+        .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
+    let reasons = admissions
+        .iter()
+        .filter_map(|(_, admission)| admission.reason())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
+
+    QueryError::new(
+        QueryErrorCode::MemoryReservationFailed,
+        OPERATION,
+        "no dependency-ready compiled task can be admitted with currently available reservations",
+    )
+    .with_fact("completed_task_count", state.completed_task_count())
+    .with_fact("pipeline_task_count", pipeline.tasks().len())
+    .with_fact("ready_task_count", admissions.len())
+    .with_fact("ready_task_ids", ready_task_ids)
+    .with_fact("ready_task_kinds", ready_task_kinds)
+    .with_fact("max_estimated_required_bytes", max_estimated_required_bytes)
+    .with_fact("max_remaining_bytes", max_remaining_bytes)
+    .with_fact("admission_not_ready_reasons", reasons)
 }
 
 fn invalid(message: &'static str) -> QueryError {

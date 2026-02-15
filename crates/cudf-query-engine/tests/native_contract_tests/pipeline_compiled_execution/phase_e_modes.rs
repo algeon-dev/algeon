@@ -213,3 +213,76 @@ fn phase_e8_adaptive_memory_history_key_distinguishes_memory_shape_factors() {
     assert!(!int_sum_gt_key.as_str().contains("adaptive_key"));
     assert!(!int_sum_gt_key.as_str().contains("secret_literal"));
 }
+
+#[test]
+fn workstream5_adaptive_task_memory_history_records_compiled_task_observations() {
+    let plan = root_join_plan();
+    let strict_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should compile")
+        .expect("root join should compile");
+    let pipeline = strict_admission.pipeline();
+    let task = pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::SourceRead).unwrap();
+    let task_key = AdaptiveTaskMemoryHistoryKey::for_plan_task(&plan, task, 96);
+
+    let mut metrics = QueryMetrics::default();
+    metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
+    let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 96, 1024)
+        .with_compiled_task_id(task.id())
+        .with_memory_boundary("source_read");
+    metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 96, 96, 96);
+    metrics.record_reservation_timeline_event(cudf_query_engine::MemoryReservationEvent::from_request(
+        &request,
+        cudf_query_engine::MemoryReservationEventOutcome::Applied,
+        MemoryReservationEventAction::Release,
+        0,
+        -96,
+        0,
+    ));
+
+    let history = AdaptiveMemoryHistory::new();
+    history.record_task_observations_from_query_metrics(&plan, pipeline, &metrics);
+    let summary = history.lookup_task(&task_key).expect("task observation should be keyed by structural task shape");
+
+    assert_eq!(summary.observation_count, 1);
+    assert_eq!(summary.max_reservation_requested_bytes, 96);
+    assert_eq!(summary.max_reservation_granted_bytes, 96);
+    assert_eq!(summary.max_reservation_released_bytes, 96);
+    assert!(!task_key.as_str().contains("compiled-d1-left"));
+    assert!(!task_key.as_str().contains("left_id"));
+}
+
+#[test]
+fn workstream5_adaptive_task_memory_history_recommends_lower_reservation_with_headroom() {
+    let plan = root_join_plan();
+    let strict_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should compile")
+        .expect("root join should compile");
+    let pipeline = strict_admission.pipeline();
+    let task = pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::SourceRead).unwrap();
+    let history = AdaptiveMemoryHistory::new();
+    let task_key = AdaptiveTaskMemoryHistoryKey::for_plan_task(&plan, task, 1024);
+
+    history.record_task_observation(
+        task_key,
+        cudf_query_engine::AdaptiveTaskMemoryObservation {
+            reservation_requested_bytes: 1024,
+            reservation_granted_bytes: 1024,
+            observed_peak_bytes: Some(128),
+            retained_bytes: Some(96),
+            reservation_released_bytes: 1024,
+        },
+    );
+
+    let recommended = history
+        .recommended_task_reservation_bytes_for_plan_task(&plan, task, 1024, 1024)
+        .expect("observed task peak should produce an adaptive reservation recommendation");
+
+    assert_eq!(recommended, 144);
+    assert!(recommended < 1024);
+    assert!(recommended >= 128);
+    assert_eq!(
+        history.recommended_task_reservation_bytes_for_plan_task(&plan, task, 2048, 2048),
+        None,
+        "different input-basis bytes should not reuse an unrelated task observation"
+    );
+}

@@ -144,9 +144,19 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
     assert_eq!(metrics.reservation_events[3].compiled_task_id.as_deref(), Some("t3"));
     assert_eq!(metrics.max_task_reservation_bytes, 60);
     assert_eq!(metrics.task_operator_metrics["source_read"].task_count, 1);
+    assert_eq!(metrics.task_operator_metrics["source_read"].reservation_requested_bytes, 80);
+    assert_eq!(metrics.task_operator_metrics["source_read"].reservation_granted_bytes, 80);
+    assert_eq!(metrics.task_operator_metrics["source_read"].reservation_released_bytes, 30);
     assert_eq!(metrics.task_operator_metrics["source_read"].reservation_live_peak_bytes, 80);
     assert_eq!(metrics.task_operator_metrics["join_probe"].task_count, 1);
+    assert_eq!(metrics.task_operator_metrics["join_probe"].reservation_requested_bytes, 40);
+    assert_eq!(metrics.task_operator_metrics["join_probe"].reservation_granted_bytes, 0);
     assert_eq!(metrics.task_operator_metrics["join_probe"].reservation_live_peak_bytes, 0);
+    assert_eq!(metrics.task_runtime_metrics["t2"].operator_kind, "source_read");
+    assert_eq!(metrics.task_runtime_metrics["t2"].reservation_requested_bytes, 80);
+    assert_eq!(metrics.task_runtime_metrics["t2"].reservation_granted_bytes, 80);
+    assert_eq!(metrics.task_runtime_metrics["t2"].reservation_released_bytes, 30);
+    assert_eq!(metrics.task_runtime_metrics["t2"].reservation_live_peak_bytes, 80);
 }
 
 #[test]

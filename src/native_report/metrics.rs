@@ -176,8 +176,17 @@ impl NativeDataFusionExecutionMetrics {
                 self.task_operator_rows.iter_mut().find(|existing| existing.operator_kind == row.operator_kind)
             {
                 existing.task_count = existing.task_count.saturating_add(row.task_count);
+                existing.reservation_requested_bytes =
+                    existing.reservation_requested_bytes.saturating_add(row.reservation_requested_bytes);
+                existing.reservation_granted_bytes =
+                    existing.reservation_granted_bytes.saturating_add(row.reservation_granted_bytes);
+                existing.reservation_released_bytes =
+                    existing.reservation_released_bytes.saturating_add(row.reservation_released_bytes);
                 existing.reservation_live_peak_bytes =
                     existing.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
+                existing.max_observed_peak_bytes =
+                    max_optional_usize(existing.max_observed_peak_bytes, row.max_observed_peak_bytes);
+                existing.max_retained_bytes = max_optional_usize(existing.max_retained_bytes, row.max_retained_bytes);
             } else {
                 self.task_operator_rows.push(row);
             }
@@ -190,14 +199,26 @@ impl NativeDataFusionExecutionMetrics {
 pub struct NativeTaskOperatorMetricRow {
     pub operator_kind: String,
     pub task_count: usize,
+    pub reservation_requested_bytes: usize,
+    pub reservation_granted_bytes: usize,
+    pub reservation_released_bytes: usize,
     pub reservation_live_peak_bytes: usize,
+    pub max_observed_peak_bytes: Option<usize>,
+    pub max_retained_bytes: Option<usize>,
 }
 
 impl NativeTaskOperatorMetricRow {
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "operator_kind={},task_count={},reservation_live_peak_bytes={}",
-            self.operator_kind, self.task_count, self.reservation_live_peak_bytes
+            "operator_kind={},task_count={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            self.operator_kind,
+            self.task_count,
+            self.reservation_requested_bytes,
+            self.reservation_granted_bytes,
+            self.reservation_released_bytes,
+            self.reservation_live_peak_bytes,
+            optional_usize(self.max_observed_peak_bytes),
+            optional_usize(self.max_retained_bytes)
         )
     }
 }
@@ -416,7 +437,12 @@ fn labels_to_task_operator_row(labels: BTreeMap<&str, &str>) -> NativeTaskOperat
     NativeTaskOperatorMetricRow {
         operator_kind: string_label(&labels, "operator_kind"),
         task_count: usize_label(&labels, "task_count"),
+        reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
+        reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
+        reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),
         reservation_live_peak_bytes: usize_label(&labels, "reservation_live_peak_bytes"),
+        max_observed_peak_bytes: optional_usize_label(&labels, "max_observed_peak_bytes"),
+        max_retained_bytes: optional_usize_label(&labels, "max_retained_bytes"),
     }
 }
 

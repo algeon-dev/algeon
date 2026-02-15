@@ -4,6 +4,7 @@ use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
         prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
+        release_bounded_join_side_frame,
     },
     *,
 };
@@ -694,6 +695,64 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
         },
         other => execute_bounded_compiled_join_materialize(context, node_id, node, other, reservations, metrics)
             .map(|frame| BoundedCompiledJoinMaterializeOutput::Frame(Box::new(frame))),
+    }
+}
+
+pub(in crate::exec::bounded) fn release_bounded_compiled_join_build_state(
+    build: BoundedCompiledJoinBuildState,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    match build {
+        BoundedCompiledJoinBuildState::Hash(build) => {
+            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+        },
+        BoundedCompiledJoinBuildState::Filtered(build) => {
+            release_compiled_filtered_join_build_state(build, reservations, metrics);
+        },
+        BoundedCompiledJoinBuildState::Prepared(build) => {
+            let BoundedCompiledPreparedJoinBuildState { input, .. } = build;
+            release_bounded_join_side_frame(input, reservations, metrics);
+        },
+    }
+}
+
+pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
+    probe: BoundedCompiledJoinProbeState,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    match probe {
+        BoundedCompiledJoinProbeState::Hash(probe) => {
+            release_bounded_root_hash_join_probe_state(probe, reservations, metrics);
+        },
+        BoundedCompiledJoinProbeState::HashStreamed { build, outputs } => {
+            release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+        },
+        BoundedCompiledJoinProbeState::Filtered(probe) => {
+            release_compiled_filtered_join_probe_state(probe, reservations, metrics);
+        },
+        BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
+            release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+            release_compiled_filtered_join_build_state(build, reservations, metrics);
+        },
+        BoundedCompiledJoinProbeState::Prepared(probe) => {
+            let BoundedCompiledPreparedJoinProbeState { left, right, .. } = probe;
+            release_bounded_join_side_frame(left, reservations, metrics);
+            release_bounded_join_side_frame(right, reservations, metrics);
+        },
+        BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, .. } => {
+            release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+            release_bounded_compiled_join_build_state(
+                BoundedCompiledJoinBuildState::Prepared(build),
+                reservations,
+                metrics,
+            );
+        },
+        BoundedCompiledJoinProbeState::PartitionedStreamed { outputs, .. } => {
+            release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+        },
     }
 }
 

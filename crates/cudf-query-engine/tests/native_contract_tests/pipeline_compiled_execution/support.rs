@@ -306,10 +306,19 @@ pub(super) struct MockExecutor {
     pub(super) executed: Vec<PipelineTaskId>,
     pub(super) released: Vec<ResidentResourceId>,
     pub(super) consumed: Vec<ResidentResourceId>,
+    pub(super) task_local_live: Vec<&'static str>,
+    pub(super) task_local_released: Vec<&'static str>,
+    pub(super) cleanup_calls: usize,
     pub(super) fail_tasks: Vec<PipelineTaskId>,
     pub(super) omit_outputs: Vec<PipelineTaskId>,
     pub(super) duplicate_outputs: Vec<PipelineTaskId>,
     pub(super) consume_inputs: Vec<PipelineTaskId>,
+    pub(super) task_local_reservations: Vec<(PipelineTaskId, &'static str)>,
+    pub(super) simulate_scheduler_memory_pressure: bool,
+    pub(super) simulated_live_reserved_bytes: u64,
+    pub(super) simulated_remaining_bytes: Option<u64>,
+    pub(super) task_admission_required_bytes: Vec<(PipelineTaskId, u64)>,
+    pub(super) remaining_bytes_after_tasks: Vec<(PipelineTaskId, u64)>,
 }
 
 impl MockExecutor {
@@ -318,10 +327,19 @@ impl MockExecutor {
             executed: Vec::new(),
             released: Vec::new(),
             consumed: Vec::new(),
+            task_local_live: Vec::new(),
+            task_local_released: Vec::new(),
+            cleanup_calls: 0,
             fail_tasks: Vec::new(),
             omit_outputs: Vec::new(),
             duplicate_outputs: Vec::new(),
             consume_inputs: Vec::new(),
+            task_local_reservations: Vec::new(),
+            simulate_scheduler_memory_pressure: false,
+            simulated_live_reserved_bytes: 0,
+            simulated_remaining_bytes: None,
+            task_admission_required_bytes: Vec::new(),
+            remaining_bytes_after_tasks: Vec::new(),
         }
     }
 
@@ -343,6 +361,39 @@ impl MockExecutor {
     pub(super) fn consume_inputs_for(mut self, task: PipelineTaskId) -> Self {
         self.consume_inputs.push(task);
         self
+    }
+
+    pub(super) fn retain_task_local_reservation_for(mut self, task: PipelineTaskId, reservation: &'static str) -> Self {
+        self.task_local_reservations.push((task, reservation));
+        self
+    }
+
+    pub(super) fn with_scheduler_memory_pressure(mut self) -> Self {
+        self.simulate_scheduler_memory_pressure = true;
+        self
+    }
+
+    pub(super) fn with_admission_remaining_bytes(mut self, remaining_bytes: u64) -> Self {
+        self.simulated_remaining_bytes = Some(remaining_bytes);
+        self
+    }
+
+    pub(super) fn with_task_admission_required_bytes(mut self, task: PipelineTaskId, required_bytes: u64) -> Self {
+        self.task_admission_required_bytes.push((task, required_bytes));
+        self
+    }
+
+    pub(super) fn with_remaining_bytes_after_task(mut self, task: PipelineTaskId, remaining_bytes: u64) -> Self {
+        self.remaining_bytes_after_tasks.push((task, remaining_bytes));
+        self
+    }
+
+    fn task_admission_required_bytes(&self, task: PipelineTaskId) -> u64 {
+        self.task_admission_required_bytes
+            .iter()
+            .rev()
+            .find_map(|(candidate, bytes)| (*candidate == task).then_some(*bytes))
+            .unwrap_or(0)
     }
 }
 
@@ -370,6 +421,9 @@ impl CompiledTaskExecutor for MockExecutor {
                 drop(consumed.into_payload());
             }
         }
+        for (_, reservation) in self.task_local_reservations.iter().filter(|(owner, _)| *owner == task.id()) {
+            self.task_local_live.push(*reservation);
+        }
         if self.omit_outputs.contains(&task.id()) {
             return Ok(CompiledTaskOutput::empty());
         }
@@ -383,6 +437,15 @@ impl CompiledTaskExecutor for MockExecutor {
         {
             outputs.push((resource, payload));
         }
+        if self.simulate_scheduler_memory_pressure {
+            self.simulated_live_reserved_bytes =
+                self.simulated_live_reserved_bytes.saturating_add(outputs.len() as u64);
+        }
+        if let Some((_, remaining_bytes)) =
+            self.remaining_bytes_after_tasks.iter().rev().find(|(completed_task, _)| *completed_task == task.id())
+        {
+            self.simulated_remaining_bytes = Some(*remaining_bytes);
+        }
         Ok(CompiledTaskOutput::new(outputs))
     }
 
@@ -392,7 +455,39 @@ impl CompiledTaskExecutor for MockExecutor {
         _payload: Self::Resource,
     ) -> cudf_query_engine::Result<()> {
         self.released.push(resource);
+        if self.simulate_scheduler_memory_pressure {
+            self.simulated_live_reserved_bytes = self.simulated_live_reserved_bytes.saturating_sub(1);
+        }
         Ok(())
+    }
+
+    fn cleanup_after_error(&mut self) -> cudf_query_engine::Result<()> {
+        self.cleanup_calls = self.cleanup_calls.saturating_add(1);
+        self.task_local_released.extend(self.task_local_live.drain(..).rev());
+        Ok(())
+    }
+
+    fn live_reserved_bytes(&self) -> Option<u64> {
+        self.simulate_scheduler_memory_pressure.then_some(self.simulated_live_reserved_bytes)
+    }
+
+    fn remaining_reserved_bytes(&self) -> Option<u64> {
+        self.simulated_remaining_bytes
+    }
+
+    fn can_admit_task(
+        &self,
+        task: &PipelineTask,
+        _state: &CompiledPipelineState<Self::Resource>,
+    ) -> cudf_query_engine::Result<CompiledTaskAdmission> {
+        let Some(remaining_bytes) = self.simulated_remaining_bytes else {
+            return Ok(CompiledTaskAdmission::admitted());
+        };
+        let required_bytes = self.task_admission_required_bytes(task.id());
+        if required_bytes <= remaining_bytes {
+            return Ok(CompiledTaskAdmission::admitted_with_bytes(required_bytes, remaining_bytes));
+        }
+        Ok(CompiledTaskAdmission::not_ready(required_bytes, remaining_bytes, "mock_remaining_budget_too_small"))
     }
 }
 

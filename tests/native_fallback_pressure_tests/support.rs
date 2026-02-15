@@ -269,7 +269,12 @@ pub(super) fn native_execution_metrics_set() -> datafusion::physical_plan::metri
         .with_type(MetricType::SUMMARY)
         .with_new_label("operator_kind", "source_read")
         .with_new_label("task_count", "3")
+        .with_new_label("reservation_requested_bytes", "120")
+        .with_new_label("reservation_granted_bytes", "96")
+        .with_new_label("reservation_released_bytes", "32")
         .with_new_label("reservation_live_peak_bytes", "64")
+        .with_new_label("max_observed_peak_bytes", "72")
+        .with_new_label("max_retained_bytes", "48")
         .global_counter("native_task_operator_rows")
         .add(1);
     MetricBuilder::new(&metrics)

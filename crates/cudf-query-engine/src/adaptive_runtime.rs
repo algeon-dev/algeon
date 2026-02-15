@@ -10,7 +10,8 @@ use arrow::datatypes::DataType;
 
 use crate::{
     expr::{AggregateFunction, BinaryOp, Expr, LiteralValue},
-    metrics::QueryMetrics,
+    metrics::{QueryMetrics, TaskRuntimeMetrics},
+    pipeline::{CompiledPipeline, PipelineTask},
     plan::{PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
 };
@@ -49,12 +50,84 @@ impl AdaptiveMemoryHistoryKey {
     }
 }
 
+/// Structural key used to look up prior adaptive task memory observations.
+///
+/// The key is scoped to operator class, a coarse input-basis byte signal, output
+/// schema, and expression/operator shape. It intentionally excludes table names,
+/// file paths, column names, literals, physical ids, and benchmark query ids.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AdaptiveTaskMemoryHistoryKey(String);
+
+impl AdaptiveTaskMemoryHistoryKey {
+    pub fn for_plan_task(plan: &QueryPlan, task: &PipelineTask, input_basis_bytes: u64) -> Self {
+        Self::for_task_shape(&AdaptiveTaskMemoryHistoryShape::for_plan_task(plan, task), input_basis_bytes)
+    }
+
+    pub fn for_task_shape(shape: &AdaptiveTaskMemoryHistoryShape, input_basis_bytes: u64) -> Self {
+        Self(format!(
+            "operator_kind={}:input_basis_bytes={}:schema={}:expression={}",
+            shape.operator_kind, input_basis_bytes, shape.schema_signature, shape.expression_signature
+        ))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Reusable structural task shape used to build task memory-history keys.
+///
+/// This lets runtime code precompute task shape without keeping references to
+/// the query plan or compiled pipeline in the reservation tracker.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AdaptiveTaskMemoryHistoryShape {
+    operator_kind: String,
+    schema_signature: String,
+    expression_signature: String,
+}
+
+impl AdaptiveTaskMemoryHistoryShape {
+    pub fn for_plan_task(plan: &QueryPlan, task: &PipelineTask) -> Self {
+        let (schema, expression) = task.plan_node().and_then(|node_id| plan.node(node_id)).map_or_else(
+            || ("none".to_string(), "none".to_string()),
+            |node| (schema_signature(node.output_schema().fields()), node_signature(&node.kind)),
+        );
+        Self {
+            operator_kind: task.kind().as_str().to_string(),
+            schema_signature: schema,
+            expression_signature: expression,
+        }
+    }
+}
+
 /// One query observation that can be folded into adaptive memory history.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdaptiveMemoryObservation {
     pub resident_dataframe_peak_bytes: Option<u64>,
     pub reservation_granted_bytes: u64,
     pub source_chunks_committed: u64,
+}
+
+/// One compiled task observation that can be folded into adaptive memory history.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveTaskMemoryObservation {
+    pub reservation_requested_bytes: u64,
+    pub reservation_granted_bytes: u64,
+    pub observed_peak_bytes: Option<u64>,
+    pub retained_bytes: Option<u64>,
+    pub reservation_released_bytes: u64,
+}
+
+impl AdaptiveTaskMemoryObservation {
+    pub fn from_task_metrics(metrics: &TaskRuntimeMetrics) -> Self {
+        Self {
+            reservation_requested_bytes: metrics.reservation_requested_bytes,
+            reservation_granted_bytes: metrics.reservation_granted_bytes,
+            observed_peak_bytes: metrics.max_observed_peak_bytes,
+            retained_bytes: metrics.max_retained_bytes,
+            reservation_released_bytes: metrics.reservation_released_bytes,
+        }
+    }
 }
 
 impl AdaptiveMemoryObservation {
@@ -91,10 +164,44 @@ impl AdaptiveMemoryHistorySummary {
     }
 }
 
+/// Aggregated adaptive memory evidence for one structural task key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct AdaptiveTaskMemoryHistorySummary {
+    pub observation_count: u64,
+    pub max_reservation_requested_bytes: u64,
+    pub max_reservation_granted_bytes: u64,
+    pub max_observed_peak_bytes: Option<u64>,
+    pub max_retained_bytes: Option<u64>,
+    pub max_reservation_released_bytes: u64,
+}
+
+impl AdaptiveTaskMemoryHistorySummary {
+    fn record(&mut self, observation: &AdaptiveTaskMemoryObservation) {
+        self.observation_count = self.observation_count.saturating_add(1);
+        self.max_reservation_requested_bytes =
+            self.max_reservation_requested_bytes.max(observation.reservation_requested_bytes);
+        self.max_reservation_granted_bytes =
+            self.max_reservation_granted_bytes.max(observation.reservation_granted_bytes);
+        self.max_observed_peak_bytes = max_optional(self.max_observed_peak_bytes, observation.observed_peak_bytes);
+        self.max_retained_bytes = max_optional(self.max_retained_bytes, observation.retained_bytes);
+        self.max_reservation_released_bytes =
+            self.max_reservation_released_bytes.max(observation.reservation_released_bytes);
+    }
+
+    pub fn recommended_reservation_bytes(&self, conservative_bytes: u64) -> Option<u64> {
+        let observed_bytes = max_optional(self.max_observed_peak_bytes, self.max_retained_bytes)?;
+        if observed_bytes == 0 || observed_bytes >= conservative_bytes {
+            return None;
+        }
+        Some(add_adaptive_reservation_headroom(observed_bytes).min(conservative_bytes))
+    }
+}
+
 /// In-memory adaptive history store.
 #[derive(Debug, Default)]
 pub struct AdaptiveMemoryHistory {
     summaries: RwLock<BTreeMap<AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary>>,
+    task_summaries: RwLock<BTreeMap<AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistorySummary>>,
 }
 
 impl AdaptiveMemoryHistory {
@@ -114,6 +221,78 @@ impl AdaptiveMemoryHistory {
     pub fn lookup_query_plan(&self, plan: &QueryPlan) -> Option<AdaptiveMemoryHistorySummary> {
         self.lookup(&AdaptiveMemoryHistoryKey::for_query_plan(plan))
     }
+
+    pub fn record_task_observation(
+        &self,
+        key: AdaptiveTaskMemoryHistoryKey,
+        observation: AdaptiveTaskMemoryObservation,
+    ) {
+        let mut summaries = self.task_summaries.write().expect("adaptive task memory history lock poisoned");
+        summaries.entry(key).or_default().record(&observation);
+    }
+
+    pub fn lookup_task(&self, key: &AdaptiveTaskMemoryHistoryKey) -> Option<AdaptiveTaskMemoryHistorySummary> {
+        self.task_summaries.read().expect("adaptive task memory history lock poisoned").get(key).cloned()
+    }
+
+    pub fn recommended_task_reservation_bytes_for_shape(
+        &self,
+        shape: &AdaptiveTaskMemoryHistoryShape,
+        input_basis_bytes: u64,
+        conservative_bytes: u64,
+    ) -> Option<u64> {
+        self.lookup_task(&AdaptiveTaskMemoryHistoryKey::for_task_shape(shape, input_basis_bytes))?
+            .recommended_reservation_bytes(conservative_bytes)
+    }
+
+    pub fn recommended_task_reservation_bytes_for_plan_task(
+        &self,
+        plan: &QueryPlan,
+        task: &PipelineTask,
+        input_basis_bytes: u64,
+        conservative_bytes: u64,
+    ) -> Option<u64> {
+        self.recommended_task_reservation_bytes_for_shape(
+            &AdaptiveTaskMemoryHistoryShape::for_plan_task(plan, task),
+            input_basis_bytes,
+            conservative_bytes,
+        )
+    }
+
+    pub fn record_task_observations_from_query_metrics(
+        &self,
+        plan: &QueryPlan,
+        pipeline: &CompiledPipeline,
+        metrics: &QueryMetrics,
+    ) {
+        for task in pipeline.tasks() {
+            let task_id = task.id().to_string();
+            let Some(task_metrics) = metrics.task_runtime_metrics.get(&task_id) else {
+                continue;
+            };
+            let input_basis_bytes = task_metrics
+                .reservation_requested_bytes
+                .max(task_metrics.reservation_granted_bytes)
+                .max(task_metrics.max_observed_peak_bytes.unwrap_or(0))
+                .max(task_metrics.max_retained_bytes.unwrap_or(0));
+            self.record_task_observation(
+                AdaptiveTaskMemoryHistoryKey::for_plan_task(plan, task, input_basis_bytes),
+                AdaptiveTaskMemoryObservation::from_task_metrics(task_metrics),
+            );
+        }
+    }
+}
+
+fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn add_adaptive_reservation_headroom(observed_bytes: u64) -> u64 {
+    observed_bytes.saturating_add((observed_bytes / 8).max(1))
 }
 
 fn sink_signature(sink: &ResultSink) -> &'static str {

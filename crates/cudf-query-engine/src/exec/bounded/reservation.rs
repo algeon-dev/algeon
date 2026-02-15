@@ -1,9 +1,17 @@
-use std::{cell::RefCell, collections::HashSet};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+};
 
 use super::*;
 use crate::{
+    adaptive_runtime::{AdaptiveMemoryHistory, AdaptiveTaskMemoryHistoryShape},
     exec::types::{GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey},
     metrics::{MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome},
+    mode::NativePipelineExecutionMode,
+    pipeline::CompiledPipeline,
+    plan::QueryPlan,
     runtime::{ExecutionContext, MemorySpaceId},
 };
 
@@ -350,6 +358,13 @@ pub(in crate::exec) struct ReservationTracker {
     source_cache_baseline_bytes: u64,
     compiled_task_id: Option<String>,
     resident_resource_id: Option<String>,
+    adaptive_task_refinement: Option<AdaptiveTaskReservationRefinement>,
+}
+
+#[derive(Debug, Clone)]
+struct AdaptiveTaskReservationRefinement {
+    memory_history: Arc<AdaptiveMemoryHistory>,
+    task_shapes: BTreeMap<String, AdaptiveTaskMemoryHistoryShape>,
 }
 
 impl ReservationTracker {
@@ -363,6 +378,7 @@ impl ReservationTracker {
             source_cache_baseline_bytes: 0,
             compiled_task_id: None,
             resident_resource_id: None,
+            adaptive_task_refinement: None,
         }
     }
 
@@ -379,6 +395,29 @@ impl ReservationTracker {
                 tracker.try_reserve_source_cache_baseline(retained_bytes, metrics)?;
                 metrics.record_source_cache_retained_bytes(retained_bytes);
             }
+        }
+        Ok(tracker)
+    }
+
+    pub(in crate::exec) fn new_for_compiled_context(
+        context: &ExecutionContext,
+        plan: &QueryPlan,
+        pipeline: &CompiledPipeline,
+        budget_bytes: u64,
+        metrics: &mut QueryMetrics,
+    ) -> Result<Self> {
+        let mut tracker = Self::new_for_context(context, budget_bytes, metrics)?;
+        if context.native_pipeline_execution_mode() == NativePipelineExecutionMode::Adaptive
+            && let Some(memory_history) = context.adaptive_memory_history()
+        {
+            tracker.adaptive_task_refinement = Some(AdaptiveTaskReservationRefinement {
+                memory_history,
+                task_shapes: pipeline
+                    .tasks()
+                    .iter()
+                    .map(|task| (task.id().to_string(), AdaptiveTaskMemoryHistoryShape::for_plan_task(plan, task)))
+                    .collect(),
+            });
         }
         Ok(tracker)
     }
@@ -448,7 +487,7 @@ impl ReservationTracker {
         semantics: ActiveReservationSemantics,
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
-        let request = self.stamp_request(request);
+        let request = self.refine_adaptive_task_reservation_request(self.stamp_request(request));
         let remaining = self.remaining_bytes();
         if request.requested_bytes > remaining {
             self.reclaim_source_cache_for_request(request.requested_bytes, None, metrics)?;
@@ -490,6 +529,30 @@ impl ReservationTracker {
             ActiveReservationSemantics::Alias => unreachable!("alias reservations do not charge capacity"),
         };
         Ok(reservation)
+    }
+
+    fn refine_adaptive_task_reservation_request(&self, request: MemoryReservationRequest) -> MemoryReservationRequest {
+        let Some(refinement) = &self.adaptive_task_refinement else {
+            return request;
+        };
+        let Some(compiled_task_id) = request.compiled_task_id.as_deref() else {
+            return request;
+        };
+        let Some(shape) = refinement.task_shapes.get(compiled_task_id) else {
+            return request;
+        };
+        let Some(recommended_bytes) = refinement.memory_history.recommended_task_reservation_bytes_for_shape(
+            shape,
+            request.requested_bytes,
+            request.requested_bytes,
+        ) else {
+            return request;
+        };
+        if recommended_bytes < request.requested_bytes {
+            request.with_requested_bytes(recommended_bytes)
+        } else {
+            request
+        }
     }
 
     pub(in crate::exec) fn alias_reservation(

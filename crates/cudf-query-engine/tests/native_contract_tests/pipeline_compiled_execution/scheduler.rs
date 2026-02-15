@@ -67,6 +67,64 @@ fn compiled_scheduler_prioritizes_independent_join_build_branch_before_probe_bra
 }
 
 #[test]
+fn compiled_scheduler_prefers_live_input_consumers_under_reservation_pressure() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new().with_scheduler_memory_pressure();
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should execute under memory pressure");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(0), PipelineTaskId::new(2), PipelineTaskId::new(1), PipelineTaskId::new(3),],
+        "scheduler should consume live resident inputs before admitting another independent source"
+    );
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0), ResidentResourceId::new(1)]);
+    assert_eq!(executor.simulated_live_reserved_bytes, 0);
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
+fn compiled_scheduler_prefers_currently_admitted_ready_task() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .with_admission_remaining_bytes(50)
+        .with_task_admission_required_bytes(PipelineTaskId::new(0), 60)
+        .with_task_admission_required_bytes(PipelineTaskId::new(1), 10)
+        .with_remaining_bytes_after_task(PipelineTaskId::new(1), 70);
+
+    let state = scheduler.run(&mut executor).expect("mock pipeline should make progress through admitted tasks");
+
+    assert_eq!(
+        state.execution_order(),
+        &[PipelineTaskId::new(1), PipelineTaskId::new(0), PipelineTaskId::new(2), PipelineTaskId::new(3),],
+        "scheduler should skip a dependency-ready task whose coarse reservation estimate exceeds remaining budget"
+    );
+    assert_eq!(state.live_resource_count(), 0);
+}
+
+#[test]
+fn compiled_scheduler_errors_when_no_ready_task_can_be_admitted() {
+    let pipeline = independent_two_source_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .with_admission_remaining_bytes(50)
+        .with_task_admission_required_bytes(PipelineTaskId::new(0), 60)
+        .with_task_admission_required_bytes(PipelineTaskId::new(1), 70);
+
+    let error = scheduler.run(&mut executor).expect_err("all ready tasks are admission-not-ready");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.facts().get("ready_task_count"), Some("2"));
+    assert_eq!(error.facts().get("ready_task_ids"), Some("t0,t1"));
+    assert_eq!(error.facts().get("max_estimated_required_bytes"), Some("70"));
+    assert_eq!(error.facts().get("max_remaining_bytes"), Some("50"));
+    assert_eq!(error.facts().get("admission_not_ready_reasons"), Some("mock_remaining_budget_too_small"));
+    assert!(executor.executed.is_empty());
+}
+
+#[test]
 fn compiled_scheduler_runs_shared_resident_fanout_and_releases_after_all_consumers() {
     let pipeline = shared_resident_fanout_pipeline();
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("shared fan-out pipeline should be schedulable");
@@ -186,6 +244,40 @@ fn compiled_scheduler_releases_live_resources_when_executor_fails() {
     assert_eq!(error.facts().get("compiled_task_id"), Some("t1"));
     assert_eq!(executor.executed, vec![PipelineTaskId::new(0), PipelineTaskId::new(1)]);
     assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+}
+
+#[test]
+fn compiled_scheduler_cleans_task_local_reservations_when_executor_fails() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .retain_task_local_reservation_for(PipelineTaskId::new(0), "join_build_hash_table")
+        .fail_task_for(PipelineTaskId::new(1));
+
+    let error = scheduler.run(&mut executor).expect_err("downstream executor failure should clean task-local state");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::Internal);
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+    assert!(executor.task_local_live.is_empty());
+    assert_eq!(executor.task_local_released, vec!["join_build_hash_table"]);
+    assert_eq!(executor.cleanup_calls, 1);
+}
+
+#[test]
+fn compiled_scheduler_cleans_task_local_reservations_when_completion_validation_fails() {
+    let pipeline = simple_unary_pipeline();
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let mut executor = MockExecutor::new()
+        .retain_task_local_reservation_for(PipelineTaskId::new(0), "join_probe_gather_map")
+        .duplicate_output_for(PipelineTaskId::new(0));
+
+    let error = scheduler.run(&mut executor).expect_err("duplicate output should clean partial task state");
+
+    assert_eq!(error.code(), cudf_query_engine::QueryErrorCode::InvalidPlan);
+    assert_eq!(executor.released, vec![ResidentResourceId::new(0)]);
+    assert!(executor.task_local_live.is_empty());
+    assert_eq!(executor.task_local_released, vec!["join_probe_gather_map"]);
+    assert_eq!(executor.cleanup_calls, 1);
 }
 
 #[test]
