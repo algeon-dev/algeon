@@ -36,7 +36,7 @@ use crate::{
         CompiledPipeline, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId,
         SinkBoundaryKind,
     },
-    plan::{JoinNode, JoinType, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
+    plan::{JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryPlan, ResultSink, SortNode},
     runtime::{ExecutionContext, MemoryControlPolicy, ReservationKind},
     source::SourceNode,
 };
@@ -789,6 +789,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 self.context,
                 node_id,
                 aggregate,
+                self.plan
+                    .node(aggregate.input)
+                    .ok_or_else(|| {
+                        invalid("compiled aggregate task references a missing aggregate input node")
+                            .with_fact("compiled_task_id", task.id())
+                            .with_fact("plan_node_id", aggregate.input)
+                    })?
+                    .output_schema(),
                 node.output_schema(),
                 input_payload.clone_frame(),
                 input_payload.reservation_bytes(),
@@ -1065,7 +1073,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let PlanNode::Join(join) = &node.kind else {
             return false;
         };
-        join.spec.residual_predicate.is_none() && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+        join.spec.residual_predicate.is_none()
+            && match join.spec.join_type {
+                JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti => true,
+                JoinType::Left => join.spec.build_side == JoinSide::Right,
+                JoinType::Full | JoinType::Cross => false,
+            }
     }
 
     fn task_feeds_any_join_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {

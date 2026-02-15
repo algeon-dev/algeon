@@ -407,13 +407,13 @@ async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservati
 }
 
 #[tokio::test]
-async fn native_runtime_tpch_q17_tiny_decimal_residual_matches_cpu() {
+async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
     let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q17-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q17 = TPCH_QUERIES.iter().find(|query| query.id == "q17").expect("TPC-H Q17 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q17.sql).await;
 
-    let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql, unbounded_native_datafusion_config()).await;
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q17.sql, native_datafusion_config()).await;
     assert!(
         displayable(native_plan.as_ref()).indent(false).to_string().contains("NativeCudfExec"),
         "TPC-H Q17 should be replaced by NativeCudfExec"
