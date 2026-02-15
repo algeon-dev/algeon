@@ -39,6 +39,7 @@ pub const NATIVE_CUDF_DATAFUSION_METRIC_NAMES: &[&str] = &[
     "max_task_retained_bytes",
     "max_task_retained_bytes_observed",
     "native_task_operator_rows",
+    "native_task_runtime_rows",
     "peak_device_memory_bytes",
     "resident_dataframe_peak_bytes",
     "resident_dataframe_peak_bytes_observed",
@@ -217,6 +218,7 @@ impl NativeCudfMetrics {
     pub(super) fn new(metrics: &ExecutionPlanMetricsSet, partition: usize) -> Self {
         let _ = summary_counter(metrics, "native_join_strategy_rows", partition);
         let _ = summary_counter(metrics, "native_task_operator_rows", partition);
+        let _ = summary_counter(metrics, "native_task_runtime_rows", partition);
         Self {
             metrics_set: metrics.clone(),
             baseline: BaselineMetrics::new(metrics, partition),
@@ -455,6 +457,7 @@ impl NativeCudfMetrics {
         self.one_shot_join_output_bytes.add(count(metrics.one_shot_join_output_bytes));
         self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
         self.record_task_operator_rows(metrics);
+        self.record_task_runtime_rows(metrics);
         self.record_join_strategy_rows(metrics);
         self.source_metadata_load_time.add_duration(metrics.source_metadata_load_time);
         self.source_read_queue_wait_time.add_duration(metrics.source_read_queue_wait_time);
@@ -487,6 +490,29 @@ impl NativeCudfMetrics {
                     row.max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
                 .global_counter("native_task_operator_rows")
+                .add(1);
+        }
+    }
+
+    fn record_task_runtime_rows(&self, metrics: &QueryMetrics) {
+        for row in metrics.task_runtime_metrics.values() {
+            MetricBuilder::new(&self.metrics_set)
+                .with_type(MetricType::SUMMARY)
+                .with_new_label("compiled_task_id", row.compiled_task_id.clone())
+                .with_new_label("operator_kind", row.operator_kind.clone())
+                .with_new_label("reservation_requested_bytes", row.reservation_requested_bytes.to_string())
+                .with_new_label("reservation_granted_bytes", row.reservation_granted_bytes.to_string())
+                .with_new_label("reservation_released_bytes", row.reservation_released_bytes.to_string())
+                .with_new_label("reservation_live_peak_bytes", row.reservation_live_peak_bytes.to_string())
+                .with_new_label(
+                    "max_observed_peak_bytes",
+                    row.max_observed_peak_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "max_retained_bytes",
+                    row.max_retained_bytes.map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .global_counter("native_task_runtime_rows")
                 .add(1);
         }
     }

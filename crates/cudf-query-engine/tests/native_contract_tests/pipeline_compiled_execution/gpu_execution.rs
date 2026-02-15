@@ -253,6 +253,82 @@ fn execute_query_plan_routes_selected_adaptive_root_hash_join_through_adaptive_s
 }
 
 #[test]
+fn execute_query_plan_uses_adaptive_task_history_to_lower_repeated_reservations() {
+    let Ok(runtime) = cudf::Runtime::new() else {
+        return;
+    };
+    let runtime = Arc::new(runtime);
+    let dir = unique_temp_dir("cudf-query-engine-adaptive-w5-task-history");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+    let plan = root_join_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
+
+    let baseline_context = bounded_context_with_mode(Arc::clone(&runtime), NativePipelineExecutionMode::Adaptive);
+    let baseline_result =
+        execute_query_plan(&baseline_context, &plan).expect("baseline adaptive run should collect task metrics");
+    let baseline_metrics = baseline_result.metrics();
+    let (refined_task_id, baseline_requested_bytes) = baseline_metrics
+        .task_runtime_metrics
+        .iter()
+        .find_map(|(task_id, row)| {
+            (row.operator_kind == PipelineTaskKind::JoinMaterialize.as_str() && row.reservation_requested_bytes > 8)
+                .then_some((task_id.clone(), row.reservation_requested_bytes))
+        })
+        .expect("baseline join materialization task should request enough bytes to demonstrate downward refinement");
+    let refined_task = pipeline
+        .tasks()
+        .iter()
+        .find(|task| task.id().to_string() == refined_task_id)
+        .expect("baseline task metrics should reference a compiled task");
+
+    let history = Arc::new(AdaptiveMemoryHistory::new());
+    history.record_observation(
+        AdaptiveMemoryHistoryKey::for_query_plan(&plan),
+        AdaptiveMemoryObservation {
+            resident_dataframe_peak_bytes: baseline_metrics.resident_dataframe_peak_bytes,
+            reservation_granted_bytes: baseline_metrics.reservation_granted_bytes,
+            source_chunks_committed: baseline_metrics.source_chunks_committed,
+        },
+    );
+    let observed_peak_bytes = baseline_requested_bytes / 4;
+    history.record_task_observation(
+        AdaptiveTaskMemoryHistoryKey::for_plan_task(&plan, refined_task, baseline_requested_bytes),
+        cudf_query_engine::AdaptiveTaskMemoryObservation {
+            reservation_requested_bytes: baseline_requested_bytes,
+            reservation_granted_bytes: baseline_requested_bytes,
+            observed_peak_bytes: Some(observed_peak_bytes),
+            retained_bytes: Some(observed_peak_bytes),
+            reservation_released_bytes: baseline_requested_bytes,
+        },
+    );
+
+    let refined_context = bounded_context_with_mode_and_memory_history(
+        Arc::clone(&runtime),
+        NativePipelineExecutionMode::Adaptive,
+        Arc::clone(&history),
+    );
+    let refined_result =
+        execute_query_plan(&refined_context, &plan).expect("adaptive task-history run should still execute");
+    let refined_metrics = refined_result.metrics();
+    let refined_requested_bytes = refined_metrics
+        .task_runtime_metrics
+        .get(&refined_task_id)
+        .expect("refined run should report the same structural compiled task")
+        .reservation_requested_bytes;
+
+    assert!(
+        refined_requested_bytes < baseline_requested_bytes,
+        "adaptive task history should lower repeated task reservation requests: baseline={baseline_requested_bytes}, refined={refined_requested_bytes}"
+    );
+    assert_eq!(refined_metrics.adaptive_memory_history_lookup_count, 1);
+    assert_eq!(refined_metrics.adaptive_memory_history_hit_count, 1);
+    assert_eq!(refined_metrics.adaptive_memory_history_miss_count, 0);
+}
+
+#[test]
 fn execute_query_plan_rejects_selected_adaptive_unsupported_join_with_adaptive_labels() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
