@@ -835,7 +835,10 @@ fn fill_optional_join_leaf_reads(
         let Some(chunk) = chunks.get(*next_chunk_index) else {
             break;
         };
-        let requested_bytes = prefetch_requested_bytes(context.memory_control_policy(), chunk);
+        let Some(requested_bytes) = join_leaf_prefetch_requested_bytes(context.memory_control_policy(), chunk) else {
+            metrics.record_source_read_prefetch_skipped();
+            break;
+        };
         if !reservations.can_reserve(requested_bytes) {
             metrics.record_source_read_prefetch_skipped();
             break;
