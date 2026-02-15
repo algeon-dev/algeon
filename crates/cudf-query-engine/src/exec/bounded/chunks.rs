@@ -9,6 +9,8 @@ use super::{
 };
 use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
 
+const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
+
 pub(super) fn execute_bounded_chunk_with_retry(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -976,7 +978,7 @@ fn execute_bounded_chunk_operator_from_source(
     let operator_request = chunk_reservation_request(
         ReservationKind::ChunkOperator,
         "chunk_operator",
-        source_reservation.bytes(),
+        source_reservation.bytes().min(reservations.remaining_bytes()),
         reservations.budget(),
         &chunk,
         attempt,
@@ -1128,12 +1130,13 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     max_attempts: usize,
     execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionBudgetToken, &mut QueryMetrics) -> Result<GpuDataFrame>,
 ) -> Result<CommittedPartial> {
-    let input_reserved_bytes = input.reservation.bytes();
+    let work_request_bytes =
+        source_adjacent_chunk_unary_work_request_bytes(input.reservation.bytes(), reservations.remaining_bytes());
     let mut work_reservation = match reservations.try_reserve_work(
         chunk_reservation_request(
             ReservationKind::ChunkOperator,
             stage,
-            input_reserved_bytes,
+            work_request_bytes,
             reservations.budget(),
             chunk,
             attempt,
@@ -1205,15 +1208,15 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
             return Err(error);
         }
     } else {
-        reservations.shrink_to_observed_with_request(
-            &mut work_reservation,
-            output_bytes,
-            output_request.clone(),
-            metrics,
-        );
+        reservations.shrink_to_observed(&mut work_reservation, output_bytes, metrics);
     }
     let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
     Ok(CommittedPartial { frame, reservation: output_reservation })
+}
+
+fn source_adjacent_chunk_unary_work_request_bytes(input_reserved_bytes: u64, remaining_bytes: u64) -> u64 {
+    let admissible_work_bytes = remaining_bytes.saturating_sub(SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES);
+    input_reserved_bytes.min(admissible_work_bytes)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1311,6 +1314,9 @@ pub(super) enum SourceReadReservationContractQuality {
     /// source reads can reserve the required bytes before decoding starts.
     #[allow(dead_code)]
     ExactLowerLevelContract,
+    /// Parquet footer metadata gave projected uncompressed byte counts for the
+    /// columns that the source reader must decode.
+    ProjectedUncompressedEstimate,
     /// The read is admitted with an initial reservation and then reconciled to
     /// observed device bytes by growing or shrinking after decoding.
     ObservedGrowShrink,
@@ -1323,6 +1329,7 @@ impl SourceReadReservationContractQuality {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::ExactLowerLevelContract => "exact_lower_level_contract",
+            Self::ProjectedUncompressedEstimate => "projected_uncompressed_estimate",
             Self::ObservedGrowShrink => "observed_grow_shrink",
             Self::ConservativeEstimate => "conservative_estimate",
         }
@@ -1345,11 +1352,17 @@ pub(super) fn source_read_reservation_contract(
         MemoryControlPolicy::Unbounded => 0,
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => max_source_chunk_bytes,
     };
-    let planning_bytes = chunk
-        .estimated_chunk_bytes
-        .or(chunk.known_projected_uncompressed_bytes)
-        .or(chunk.known_row_group_bytes)
-        .or(chunk.known_file_bytes);
+    let has_projected_source_read_estimate = chunk.estimated_source_read_bytes.is_some()
+        && (chunk.known_projected_uncompressed_bytes.is_some() || chunk.known_pure_filter_uncompressed_bytes.is_some());
+    let planning_bytes = if has_projected_source_read_estimate {
+        chunk.estimated_source_read_bytes
+    } else {
+        chunk
+            .estimated_chunk_bytes
+            .or(chunk.known_projected_uncompressed_bytes)
+            .or(chunk.known_row_group_bytes)
+            .or(chunk.known_file_bytes)
+    };
     let estimated_bytes = chunk
         .estimated_source_read_bytes
         .or(chunk.known_row_group_bytes)
@@ -1364,7 +1377,11 @@ pub(super) fn source_read_reservation_contract(
         requested_bytes,
         planning_bytes,
         estimated_bytes,
-        quality: SourceReadReservationContractQuality::ConservativeEstimate,
+        quality: if has_projected_source_read_estimate {
+            SourceReadReservationContractQuality::ProjectedUncompressedEstimate
+        } else {
+            SourceReadReservationContractQuality::ConservativeEstimate
+        },
     }
 }
 
@@ -1388,7 +1405,44 @@ pub(super) fn chunk_reservation_request(
     if !chunk.reads_all_row_groups {
         request = request.with_row_groups(chunk.row_group_indexes.clone());
     }
+    if let Some(operator_kind) = legacy_bounded_chunk_operator_kind(kind, memory_boundary) {
+        request =
+            request.with_compiled_task_id(legacy_bounded_chunk_task_id(operator_kind, memory_boundary, chunk, attempt));
+    }
     request
+}
+
+fn legacy_bounded_chunk_operator_kind(kind: ReservationKind, memory_boundary: &str) -> Option<&'static str> {
+    match kind {
+        ReservationKind::SourceRead | ReservationKind::SourceCacheRetained => Some("source_read"),
+        ReservationKind::ChunkOperator | ReservationKind::PartialState
+            if memory_boundary.contains("filter") || memory_boundary.contains("projection") =>
+        {
+            Some("unary")
+        },
+        ReservationKind::ChunkOperator | ReservationKind::PartialState => Some("aggregate"),
+        _ => None,
+    }
+}
+
+fn legacy_bounded_chunk_task_id(
+    operator_kind: &str,
+    memory_boundary: &str,
+    chunk: &SourceChunk,
+    attempt: usize,
+) -> String {
+    format!(
+        "legacy_bounded.{operator_kind}.{}.node{}.file{}.chunk{}.attempt{}",
+        legacy_bounded_task_id_component(memory_boundary),
+        chunk.source_node_id,
+        chunk.file_index,
+        chunk.chunk_index,
+        attempt
+    )
+}
+
+fn legacy_bounded_task_id_component(value: &str) -> String {
+    value.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' }).collect()
 }
 
 pub(super) fn source_read_reservation_request(

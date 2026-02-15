@@ -74,6 +74,12 @@ pub struct MemoryReservationEvent {
     pub outcome: MemoryReservationEventOutcome,
     pub node_id: Option<String>,
     pub stage: Option<String>,
+    pub chunk_index: Option<usize>,
+    pub file_index: Option<usize>,
+    pub path: Option<String>,
+    pub row_groups: Option<Vec<usize>>,
+    pub attempt: Option<usize>,
+    pub max_attempts: Option<usize>,
     pub compiled_task_id: Option<String>,
     pub resident_resource_id: Option<String>,
     pub source_read_contract_quality: Option<String>,
@@ -125,12 +131,47 @@ impl MemoryReservationEvent {
             outcome,
             node_id: request.node_id.clone(),
             stage: request.stage.clone(),
+            chunk_index: request.chunk_index,
+            file_index: request.file_index,
+            path: request.path.clone(),
+            row_groups: request.row_groups.clone(),
+            attempt: request.attempt,
+            max_attempts: request.max_attempts,
             compiled_task_id: request.compiled_task_id.clone(),
             resident_resource_id: request.resident_resource_id.clone(),
             source_read_contract_quality: request.source_read_contract_quality.clone(),
             source_read_planning_bytes: request.source_read_planning_bytes,
             source_read_estimated_bytes: request.source_read_estimated_bytes,
         }
+    }
+
+    pub fn to_stable_debug_row(&self) -> String {
+        format!(
+            "reservation_kind={},memory_space={},memory_boundary={},stage={},action={},outcome={},requested_bytes={},granted_bytes={},remaining_bytes={},current_reserved_bytes={},budget_bytes={},node_id={},compiled_task_id={},resident_resource_id={},chunk_index={},file_index={},path={},row_groups={},attempt={},max_attempts={},source_read_contract_quality={},source_read_planning_bytes={},source_read_estimated_bytes={}",
+            self.reservation_kind,
+            self.memory_space,
+            self.memory_boundary,
+            optional_str(self.stage.as_deref()),
+            self.action,
+            self.outcome,
+            self.requested_bytes,
+            self.granted_bytes,
+            self.budget_bytes.saturating_sub(self.current_reserved_bytes),
+            self.current_reserved_bytes,
+            self.budget_bytes,
+            optional_str(self.node_id.as_deref()),
+            optional_str(self.compiled_task_id.as_deref()),
+            optional_str(self.resident_resource_id.as_deref()),
+            optional_usize(self.chunk_index),
+            optional_usize(self.file_index),
+            optional_str(self.path.as_deref()),
+            optional_row_groups(self.row_groups.as_deref()),
+            optional_usize(self.attempt),
+            optional_usize(self.max_attempts),
+            optional_str(self.source_read_contract_quality.as_deref()),
+            optional_u64(self.source_read_planning_bytes),
+            optional_u64(self.source_read_estimated_bytes),
+        )
     }
 }
 
@@ -388,7 +429,11 @@ impl QueryMetrics {
         compiled_task_id: impl ToString,
         operator_kind: impl Into<String>,
     ) {
-        let compiled_task_id = compiled_task_id.to_string();
+        self.record_task_execution(compiled_task_id, operator_kind);
+    }
+
+    pub fn record_task_execution(&mut self, task_id: impl ToString, operator_kind: impl Into<String>) {
+        let compiled_task_id = task_id.to_string();
         let operator_kind = operator_kind.into();
         self.task_kind_by_compiled_task_id.insert(compiled_task_id.clone(), operator_kind.clone());
         self.task_runtime_metrics.entry(compiled_task_id.clone()).or_insert_with(|| TaskRuntimeMetrics {
@@ -404,10 +449,18 @@ impl QueryMetrics {
     }
 
     pub fn set_current_compiled_task(&mut self, compiled_task_id: impl ToString) {
-        self.current_compiled_task_id = Some(compiled_task_id.to_string());
+        self.set_current_task(compiled_task_id);
+    }
+
+    pub fn set_current_task(&mut self, task_id: impl ToString) {
+        self.current_compiled_task_id = Some(task_id.to_string());
     }
 
     pub fn clear_current_compiled_task(&mut self) {
+        self.clear_current_task();
+    }
+
+    pub fn clear_current_task(&mut self) {
         self.current_compiled_task_id = None;
     }
 
@@ -415,6 +468,11 @@ impl QueryMetrics {
         let Some(compiled_task_id) = event.compiled_task_id.as_deref() else {
             return;
         };
+        if !self.task_kind_by_compiled_task_id.contains_key(compiled_task_id)
+            && let Some(operator_kind) = legacy_bounded_operator_kind_from_task_id(compiled_task_id)
+        {
+            self.task_kind_by_compiled_task_id.insert(compiled_task_id.to_string(), operator_kind.to_string());
+        }
         self.record_task_runtime_reservation_event(compiled_task_id, event);
         if matches!(
             event.action,
@@ -451,6 +509,8 @@ impl QueryMetrics {
     fn record_task_runtime_reservation_event(&mut self, compiled_task_id: &str, event: &MemoryReservationEvent) {
         let operator_kind =
             self.task_kind_by_compiled_task_id.get(compiled_task_id).cloned().unwrap_or_else(|| "unknown".to_string());
+        let is_new_legacy_task =
+            is_legacy_bounded_task_id(compiled_task_id) && !self.task_runtime_metrics.contains_key(compiled_task_id);
         let row = self.task_runtime_metrics.entry(compiled_task_id.to_string()).or_insert_with(|| TaskRuntimeMetrics {
             compiled_task_id: compiled_task_id.to_string(),
             operator_kind: operator_kind.clone(),
@@ -463,6 +523,9 @@ impl QueryMetrics {
             .task_operator_metrics
             .entry(operator_kind.clone())
             .or_insert_with(|| TaskOperatorMetrics { operator_kind, ..Default::default() });
+        if is_new_legacy_task {
+            operator.task_count = operator.task_count.saturating_add(1);
+        }
         operator.record_reservation_event(event);
     }
 
@@ -801,6 +864,33 @@ fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
+}
+
+fn optional_str(value: Option<&str>) -> &str {
+    value.unwrap_or("none")
+}
+
+fn optional_usize(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
+}
+
+fn optional_row_groups(value: Option<&[usize]>) -> String {
+    value
+        .map(|row_groups| row_groups.iter().map(usize::to_string).collect::<Vec<_>>().join(","))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "none".to_string())
+}
+
+fn is_legacy_bounded_task_id(task_id: &str) -> bool {
+    task_id.starts_with("legacy_bounded.")
+}
+
+fn legacy_bounded_operator_kind_from_task_id(task_id: &str) -> Option<&str> {
+    task_id.strip_prefix("legacy_bounded.")?.split('.').next()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

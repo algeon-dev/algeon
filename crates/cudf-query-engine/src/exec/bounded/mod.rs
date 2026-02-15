@@ -46,6 +46,8 @@ use strict::try_execute_strict_bounded_pipeline;
 
 use crate::mode::NativePipelineExecutionMode;
 
+const SOURCE_ADJACENT_AGGREGATE_MAX_ROW_GROUPS_PER_CHUNK: usize = 128;
+
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -149,10 +151,15 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
-    SourceChunkPlanningPolicy::for_source_task(
+    let mut policy = SourceChunkPlanningPolicy::for_source_task(
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
-    )
+    );
+    if bounded.has_source_adjacent_stages() {
+        policy.max_row_groups_per_chunk =
+            policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_AGGREGATE_MAX_ROW_GROUPS_PER_CHUNK);
+    }
+    policy
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {

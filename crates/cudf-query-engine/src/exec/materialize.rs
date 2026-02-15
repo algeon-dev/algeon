@@ -51,7 +51,8 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
             .with_memory_boundary("host_materialization")
             .with_node_id(final_node_id)
             .with_stage("materialization")
-            .with_attempt(1, 1);
+            .with_attempt(1, 1)
+            .with_compiled_task_id(format!("legacy_bounded.materialization.node{final_node_id}.attempt1"));
     let materialization_reservation = match reservations.try_reserve(request, metrics) {
         Ok(reservation) => reservation,
         Err(error) => return Err(host_materialization_failure_facts(metrics).attach_to_error(error)),

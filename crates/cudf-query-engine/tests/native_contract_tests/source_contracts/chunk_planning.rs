@@ -12,13 +12,13 @@ fn source_task_memory_model_derives_chunk_target_from_live_budget_slots() {
 
     let aggregate_model = SourceTaskMemoryModel::aggregate_pipeline(true);
     assert_eq!(aggregate_model.source_read_slots(), 1);
-    assert_eq!(aggregate_model.source_adjacent_operator_slots(), 1);
+    assert_eq!(aggregate_model.source_adjacent_operator_slots(), 3);
     assert_eq!(aggregate_model.downstream_operator_slots(), 1);
     assert_eq!(aggregate_model.retained_output_slots(), 1);
     assert_eq!(aggregate_model.source_read_preflight_slack_slots(), 1);
-    assert_eq!(aggregate_model.live_slot_count(), 5);
+    assert_eq!(aggregate_model.live_slot_count(), 7);
     let aggregate = SourceChunkPlanningPolicy::for_source_task(memory_policy, aggregate_model);
-    assert_eq!(aggregate.max_source_chunk_bytes, Some(400));
+    assert_eq!(aggregate.max_source_chunk_bytes, Some(285));
     assert_eq!(aggregate.max_row_groups_per_chunk, 512);
 
     let join_model = SourceTaskMemoryModel::join_leaf_stream(true);
@@ -175,7 +175,7 @@ fn source_chunk_planning_uses_proportional_file_bytes_when_row_group_bytes_are_u
 }
 
 #[test]
-fn source_chunk_planning_uses_projected_uncompressed_bytes_before_read_bytes() {
+fn source_chunk_planning_uses_source_read_uncompressed_bytes_for_chunk_ceiling() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("payload", DataType::Int64, false),
@@ -200,17 +200,17 @@ fn source_chunk_planning_uses_projected_uncompressed_bytes_before_read_bytes() {
     let plan =
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(250), 8)).unwrap();
 
-    assert_eq!(plan.chunk_count(), 2);
-    assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
-    assert_eq!(plan.chunks[0].known_row_group_bytes, Some(2_000));
-    assert_eq!(plan.chunks[0].known_projected_compressed_bytes, Some(100));
-    assert_eq!(plan.chunks[0].known_projected_uncompressed_bytes, Some(200));
-    assert_eq!(plan.chunks[0].known_pure_filter_compressed_bytes, Some(200));
-    assert_eq!(plan.chunks[0].known_pure_filter_uncompressed_bytes, Some(800));
-    assert_eq!(plan.chunks[0].estimated_chunk_bytes, Some(200));
-    assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(1_000));
-    assert_eq!(plan.chunks[1].row_group_indexes, vec![2, 3]);
-    assert_eq!(plan.chunks[1].estimated_chunk_bytes, Some(200));
+    assert_eq!(plan.chunk_count(), 4);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
+    assert_eq!(plan.chunks[0].known_row_group_bytes, Some(1_000));
+    assert_eq!(plan.chunks[0].known_projected_compressed_bytes, Some(50));
+    assert_eq!(plan.chunks[0].known_projected_uncompressed_bytes, Some(100));
+    assert_eq!(plan.chunks[0].known_pure_filter_compressed_bytes, Some(100));
+    assert_eq!(plan.chunks[0].known_pure_filter_uncompressed_bytes, Some(400));
+    assert_eq!(plan.chunks[0].estimated_chunk_bytes, Some(100));
+    assert_eq!(plan.chunks[0].estimated_source_read_bytes, Some(500));
+    assert_eq!(plan.chunks[1].row_group_indexes, vec![1]);
+    assert_eq!(plan.chunks[1].estimated_chunk_bytes, Some(100));
 }
 
 #[test]
