@@ -1137,7 +1137,7 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
             device_budget_bytes: 8 * 1024 * 1024 * 1024,
-            max_source_chunk_bytes: 1024 * 1024,
+            max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
@@ -1158,10 +1158,32 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
     );
     assert_eq!(metrics.filtered_join_build_count, 1);
     assert!(metrics.partial_aggregate_count > 1);
-    assert!(metrics.final_merge_attempts > 0);
+    assert!(
+        metrics.final_merge_attempts > 1,
+        "final_merge_attempts={}, partial_aggregate_count={}",
+        metrics.final_merge_attempts,
+        metrics.partial_aggregate_count
+    );
+    assert!(
+        metrics.final_merge_levels > 1,
+        "final_merge_levels={}, partial_aggregate_count={}",
+        metrics.final_merge_levels,
+        metrics.partial_aggregate_count
+    );
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
         "join streams feeding filtered join and aggregate should not concatenate at the join output boundary"
+    );
+    assert!(
+        metrics
+            .reservation_events
+            .iter()
+            .filter(|event| {
+                event.outcome.as_str() == "granted" && event.memory_boundary == "compiled_aggregate_final_merge"
+            })
+            .count()
+            > 1,
+        "compiled aggregate stream final merge should use thresholded fan-in rather than one all-partials concat"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {

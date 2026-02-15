@@ -367,10 +367,15 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
         aggregate.row_groups_committed = aggregate.row_groups_committed.saturating_add(current.row_groups_committed);
         aggregate.partial_aggregate_count =
             aggregate.partial_aggregate_count.saturating_add(current.partial_aggregate_count);
+        aggregate.partial_aggregate_input_rows =
+            aggregate.partial_aggregate_input_rows.saturating_add(current.partial_aggregate_input_rows);
         aggregate.partial_aggregate_rows =
             aggregate.partial_aggregate_rows.saturating_add(current.partial_aggregate_rows);
+        aggregate.partial_aggregate_retained_bytes =
+            aggregate.partial_aggregate_retained_bytes.max(current.partial_aggregate_retained_bytes);
         aggregate.final_merge_attempts = aggregate.final_merge_attempts.saturating_add(current.final_merge_attempts);
         aggregate.final_merge_levels = aggregate.final_merge_levels.saturating_add(current.final_merge_levels);
+        aggregate.final_merge_max_fan_in = aggregate.final_merge_max_fan_in.max(current.final_merge_max_fan_in);
         aggregate.retry_count = aggregate.retry_count.saturating_add(current.retry_count);
         aggregate.retry_resource_exhausted_count =
             aggregate.retry_resource_exhausted_count.saturating_add(current.retry_resource_exhausted_count);

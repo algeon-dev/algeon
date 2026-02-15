@@ -24,7 +24,8 @@ use crate::{
             execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
             execute_bounded_generic_unary_from_frame_with_reservation_kind, execute_bounded_join_leaf_source,
             execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_aggregate_from_stream,
-            execute_final_sort_node_from_frame_with_retry, materialize_bounded_join_leaf_local_parquet_source_stream,
+            execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
+            materialize_bounded_join_leaf_local_parquet_source_stream,
             plan_bounded_join_leaf_local_parquet_source_stream,
         },
         materialize_bounded_frame_to_host,
@@ -49,14 +50,18 @@ pub struct CompiledGpuResource {
 }
 
 enum CompiledGpuResourcePayload {
-    ResidentFrame(ResidentGpuFrame),
+    ResidentFrame { frame: ResidentGpuFrame, applied_limit: Option<NodeId> },
     ResidentFrameStream(Vec<ResidentGpuFrame>),
     JoinLeafLocalParquetSource(BoundedJoinLeafLocalParquetSourceStream),
 }
 
 impl CompiledGpuResource {
     pub(in crate::exec::bounded) fn new(frame: ResidentGpuFrame) -> Self {
-        Self { payload: CompiledGpuResourcePayload::ResidentFrame(frame) }
+        Self { payload: CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: None } }
+    }
+
+    pub(in crate::exec::bounded) fn frame_with_applied_limit(frame: ResidentGpuFrame, limit: NodeId) -> Self {
+        Self { payload: CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: Some(limit) } }
     }
 
     pub(in crate::exec::bounded) fn join_leaf_local_parquet_source(
@@ -71,7 +76,7 @@ impl CompiledGpuResource {
 
     pub fn num_rows(&self) -> usize {
         match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => frame.frame.num_rows(),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_rows(),
             CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
                 frames.iter().map(|frame| frame.frame.num_rows()).sum()
             },
@@ -81,7 +86,7 @@ impl CompiledGpuResource {
 
     pub fn num_columns(&self) -> usize {
         match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => frame.frame.num_columns(),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_columns(),
             CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
                 frames.first().map_or(0, |frame| frame.frame.num_columns())
             },
@@ -91,7 +96,7 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn clone_frame(&self) -> GpuDataFrame {
         match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => frame.frame.clone(),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.clone(),
             CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                 unreachable!("resident frame streams must be consumed by stream-aware compiled tasks")
             },
@@ -103,7 +108,7 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn reservation_bytes(&self) -> u64 {
         match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => frame.reservation.bytes(),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
             CompiledGpuResourcePayload::ResidentFrameStream(frames) => {
                 frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.reservation.bytes()))
             },
@@ -113,7 +118,7 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn reservation(&self) -> &ActiveReservation {
         match &self.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => &frame.reservation,
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => &frame.reservation,
             CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                 unreachable!("resident frame streams do not expose a single reservation")
             },
@@ -126,7 +131,17 @@ impl CompiledGpuResource {
     fn as_join_leaf_local_parquet_source(&self) -> Option<&BoundedJoinLeafLocalParquetSourceStream> {
         match &self.payload {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => Some(stream),
-            CompiledGpuResourcePayload::ResidentFrame(_) | CompiledGpuResourcePayload::ResidentFrameStream(_) => None,
+            CompiledGpuResourcePayload::ResidentFrame { .. } | CompiledGpuResourcePayload::ResidentFrameStream(_) => {
+                None
+            },
+        }
+    }
+
+    fn applied_limit(&self) -> Option<NodeId> {
+        match &self.payload {
+            CompiledGpuResourcePayload::ResidentFrame { applied_limit, .. } => *applied_limit,
+            CompiledGpuResourcePayload::ResidentFrameStream(_)
+            | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => None,
         }
     }
 }
@@ -281,7 +296,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                                 stream.with_filter_stage(node_id, filter.clone()),
                             ))
                         },
-                        CompiledGpuResourcePayload::ResidentFrame(frame) => execute_bounded_generic_unary(
+                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_unary(
                             self.context,
                             node_id,
                             "compiled_filter",
@@ -377,7 +392,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                                 stream.with_projection_stage(node_id, projection.clone()),
                             ))
                         },
-                        CompiledGpuResourcePayload::ResidentFrame(frame) => execute_bounded_generic_unary(
+                        CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_unary(
                             self.context,
                             node_id,
                             "compiled_projection",
@@ -501,7 +516,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         self.metrics,
                     )
                 },
-                CompiledGpuResourcePayload::ResidentFrame(frame) => Ok(frame),
+                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => Ok(frame),
                 CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                     Err(invalid("compiled join build task cannot consume a resident frame stream")
                         .with_fact("compiled_task_id", task.id())
@@ -621,7 +636,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         self.metrics,
                     )
                 },
-                CompiledGpuResourcePayload::ResidentFrame(frame) => {
+                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
                     execute_bounded_compiled_join_probe_from_resident_frame(
                         self.context,
                         node_id,
@@ -764,7 +779,9 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         .with_fact("compiled_task_id", task.id())
                         .with_fact("plan_node_id", node_id))
                 },
-                CompiledGpuResourcePayload::ResidentFrame(_) => unreachable!("only frame streams are consumed here"),
+                CompiledGpuResourcePayload::ResidentFrame { .. } => {
+                    unreachable!("only frame streams are consumed here")
+                },
             }
         } else {
             let input_payload = state.resource_payload(input)?;
@@ -786,17 +803,42 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     fn execute_final_sort_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
+        let sort = sort_node(self.plan, task, node_id)?.clone();
+        if let Some((limit_node_id, limit)) = self.downstream_fused_limit(task, output)?
+            && state.can_consume_task_input_resource(task, input)
+        {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let CompiledGpuResourcePayload::ResidentFrame { frame: input_frame, .. } = input_payload.payload else {
+                return Err(invalid("compiled final sort can only fuse limit over resident frame input")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id));
+            };
+            let frame = execute_final_sort_node_from_committed_with_retry(
+                self.context,
+                node_id,
+                &sort,
+                Some(&limit),
+                input_frame,
+                &mut self.reservations,
+                self.metrics,
+            )
+            .map_err(|error| attach_task_facts(error, task, node_id))?;
+            return Ok(CompiledTaskOutput::new(vec![(
+                output,
+                CompiledGpuResource::frame_with_applied_limit(frame, limit_node_id),
+            )]));
+        }
+
         let input_payload = state.resource_payload(input)?;
-        let sort = sort_node(self.plan, task, node_id)?;
         let frame = execute_final_sort_node_from_frame_with_retry(
             self.context,
             node_id,
-            sort,
+            &sort,
             input_payload.clone_frame(),
             &mut self.reservations,
             self.metrics,
@@ -805,16 +847,64 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
 
+    fn downstream_fused_limit(
+        &self,
+        task: &PipelineTask,
+        output: ResidentResourceId,
+    ) -> Result<Option<(NodeId, LimitNode)>> {
+        let Some(resource) = self.pipeline.resources().iter().find(|resource| resource.id() == output) else {
+            return Ok(None);
+        };
+        let [consumer] = resource.consumers() else {
+            return Ok(None);
+        };
+        let Some(consumer_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer) else {
+            return Err(invalid("compiled final sort output references a missing consumer task")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("resident_resource_id", output));
+        };
+        if consumer_task.kind() != PipelineTaskKind::Limit {
+            return Ok(None);
+        }
+        let limit_node_id = plan_node(consumer_task)?;
+        let Some(node) = self.plan.node(limit_node_id) else {
+            return Err(invalid("compiled final sort downstream limit references a missing plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("limit_task_id", consumer_task.id())
+                .with_fact("plan_node_id", limit_node_id));
+        };
+        let PlanNode::Limit(limit) = &node.kind else {
+            return Err(invalid("compiled final sort downstream limit task does not reference a limit plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("limit_task_id", consumer_task.id())
+                .with_fact("plan_node_id", limit_node_id));
+        };
+        if Some(limit.input) != task.plan_node() {
+            return Ok(None);
+        }
+        Ok(Some((limit_node_id, limit.clone())))
+    }
+
     fn execute_limit_task(
         &mut self,
         task: &PipelineTask,
-        state: &CompiledPipelineState<CompiledGpuResource>,
+        state: &mut CompiledPipelineState<CompiledGpuResource>,
     ) -> Result<CompiledTaskOutput<CompiledGpuResource>> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
-        let input_payload = state.resource_payload(input)?;
         let limit = limit_node(self.plan, task, node_id)?;
+        if state.resource_payload(input)?.applied_limit() == Some(node_id) {
+            let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
+            let CompiledGpuResourcePayload::ResidentFrame { frame, .. } = input_payload.payload else {
+                return Err(invalid("compiled fused limit can only pass through resident frame input")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id));
+            };
+            return Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]));
+        }
+
+        let input_payload = state.resource_payload(input)?;
         let frame = execute_bounded_generic_unary_from_frame_with_reservation_kind(
             self.context,
             node_id,
@@ -1050,7 +1140,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
 
     fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         match payload.payload {
-            CompiledGpuResourcePayload::ResidentFrame(frame) => {
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
                 self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
                 self.reservations.release(frame.reservation, self.metrics);
                 self.reservations.clear_diagnostic_context();

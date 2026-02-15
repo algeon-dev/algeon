@@ -72,9 +72,12 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.row_groups_planned, 8);
     assert_eq!(row.metrics.row_groups_committed, 4);
     assert_eq!(row.metrics.partial_aggregate_count, 5);
+    assert_eq!(row.metrics.partial_aggregate_input_rows, 11);
     assert_eq!(row.metrics.partial_aggregate_rows, 9);
+    assert_eq!(row.metrics.partial_aggregate_retained_bytes, 4096);
     assert_eq!(row.metrics.final_merge_attempts, 2);
     assert_eq!(row.metrics.final_merge_levels, 1);
+    assert_eq!(row.metrics.final_merge_max_fan_in, 3);
     assert_eq!(row.metrics.retry_count, 3);
     assert_eq!(row.metrics.retry_resource_exhausted_count, 1);
     assert_eq!(row.metrics.retry_reservation_failure_count, 2);
@@ -109,13 +112,13 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 18);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 89);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 19);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 92);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=18\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=19\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(text.contains("\t64\t72\t48\toperator_kind=source_read,task_count=3,reservation_live_peak_bytes=64\t"));
     assert!(text.contains("execution_mode=strict_bounded"));

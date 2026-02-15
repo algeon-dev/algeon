@@ -101,8 +101,11 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);
+    assert!(metrics.partial_aggregate_input_rows >= metrics.partial_aggregate_rows);
+    assert!(metrics.partial_aggregate_retained_bytes > 0);
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.final_merge_levels, 1);
+    assert_eq!(metrics.final_merge_max_fan_in, 3);
     assert_eq!(metrics.parquet_files, 1);
     assert_eq!(metrics.row_groups_selected, 3);
     assert_eq!(metrics.read_columns, 4);
@@ -250,7 +253,10 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);
+    assert!(metrics.partial_aggregate_input_rows >= metrics.partial_aggregate_rows);
+    assert!(metrics.partial_aggregate_retained_bytes > 0);
     assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.final_merge_max_fan_in, 3);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
 

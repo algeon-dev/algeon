@@ -24,17 +24,26 @@ struct TopKMergeAttempt {
 }
 
 impl<'a> FinalSortExecutor<'a> {
-    pub(super) fn hierarchical_topk(&mut self, limit: &LimitNode, input: CommittedPartial) -> Result<CommittedPartial> {
+    pub(super) fn hierarchical_topk(
+        &mut self,
+        limit: &LimitNode,
+        input: CommittedPartial,
+        initial_attempt: usize,
+    ) -> Result<CommittedPartial> {
         let keep_rows = topk_candidate_rows(limit.spec)?;
         if keep_rows == 0 {
-            let output_reservation = match self.reserve_estimated_final_sort_output(0, 2) {
+            let output_reservation = match self.reserve_estimated_final_sort_output(0, initial_attempt) {
                 Ok(reservation) => reservation,
                 Err(error) => {
                     self.reservations.release(input.reservation, self.metrics);
                     return Err(error);
                 },
             };
-            let token = match self.final_sort_budget_token_including("final_sort_limit", 2, &output_reservation) {
+            let token = match self.final_sort_budget_token_including(
+                "final_sort_limit",
+                initial_attempt,
+                &output_reservation,
+            ) {
                 Ok(token) => token,
                 Err(error) => {
                     self.reservations.release(output_reservation, self.metrics);
@@ -57,7 +66,7 @@ impl<'a> FinalSortExecutor<'a> {
                 },
             };
             self.reservations.release(input.reservation, self.metrics);
-            return self.finalize_final_sort_output_reservation(output, output_reservation, 2);
+            return self.finalize_final_sort_output_reservation(output, output_reservation, initial_attempt);
         }
 
         let input_rows = input.frame.num_rows();
@@ -70,9 +79,11 @@ impl<'a> FinalSortExecutor<'a> {
             bytes_per_row,
             self.reservations.budget().saturating_sub(input.reservation.bytes()),
         );
-        let mut candidates = match self
-            .initial_topk_candidates(&input, TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk })
-        {
+        let mut candidates = match self.initial_topk_candidates(
+            &input,
+            TopKCandidatePlan { keep_rows, bytes_per_row, rows_per_chunk },
+            initial_attempt,
+        ) {
             Ok(candidates) => candidates,
             Err(error) => {
                 record_final_sort_retry_error(&error, self.metrics);
@@ -88,7 +99,7 @@ impl<'a> FinalSortExecutor<'a> {
         let mut merge_level = 1;
         while candidates.len() > 1 {
             let mut merge_fan_in = candidates.len();
-            let mut attempt = 2;
+            let mut attempt = initial_attempt;
 
             loop {
                 match self.topk_merge_level_attempt(&candidates, TopKMergeAttempt { keep_rows, merge_fan_in, attempt })
@@ -175,6 +186,7 @@ impl<'a> FinalSortExecutor<'a> {
         &mut self,
         input: &CommittedPartial,
         plan: TopKCandidatePlan,
+        attempt: usize,
     ) -> Result<Vec<CommittedPartial>> {
         let input_rows = input.frame.num_rows();
         let mut candidates = Vec::with_capacity(input_rows.div_ceil(plan.rows_per_chunk));
@@ -188,7 +200,7 @@ impl<'a> FinalSortExecutor<'a> {
                     length,
                     keep_rows: plan.keep_rows,
                     bytes_per_row: plan.bytes_per_row,
-                    attempt: 2,
+                    attempt,
                 },
             ) {
                 Ok(candidate) => candidates.push(candidate),
