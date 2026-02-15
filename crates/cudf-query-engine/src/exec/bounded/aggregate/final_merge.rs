@@ -55,8 +55,6 @@ pub(in crate::exec::bounded) fn execute_final_aggregate_merge(
     let partial = partials.pop().expect("final merge loop leaves exactly one partial");
     execute_final_aggregate_projection(context, bounded, partial, reservations, metrics)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_final_merge_level_attempt(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -196,8 +194,6 @@ fn execute_final_merge_group_attempt(
     let output_reservation = reservations.try_reserve(output_request, metrics)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
-
-#[allow(clippy::too_many_arguments)]
 fn merge_final_aggregate_partials(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,

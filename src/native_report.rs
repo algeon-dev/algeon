@@ -38,6 +38,7 @@ mod reports;
 mod rows;
 mod runtime_summary;
 mod schema;
+mod tpcds_parity;
 mod tsv;
 mod workload;
 
@@ -73,6 +74,13 @@ pub use schema::{
     NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
     NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
     NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
+};
+pub use tpcds_parity::{
+    NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeTpcdsParityCpuOutcome,
+    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
+    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
+    ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, compare_record_batches,
+    sql_has_top_level_order_by,
 };
 use tsv::{
     format_adaptive_pipeline_rows, format_join_diagnostics, format_join_strategy_rows, format_source_diagnostics,

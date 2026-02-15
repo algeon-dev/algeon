@@ -5,8 +5,6 @@ mod plan;
 
 pub(super) use final_merge::{execute_final_aggregate_merge, reduce_merge_fan_in};
 pub(super) use plan::BoundedPlan;
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -54,8 +52,6 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
         },
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -496,8 +492,6 @@ fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[C
 fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
     partial.reservation.bytes().max(partial.frame.num_rows() as u64)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_compiled_final_merge_level_attempt(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -542,8 +536,6 @@ fn execute_compiled_final_merge_level_attempt(
 
     Ok(output)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_compiled_final_merge_group_attempt(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -617,8 +609,6 @@ fn execute_compiled_final_merge_group_attempt(
     )?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
-
-#[allow(clippy::too_many_arguments)]
 fn merge_compiled_final_aggregate_partials(
     context: &ExecutionContext,
     node_id: NodeId,

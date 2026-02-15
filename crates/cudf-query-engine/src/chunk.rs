@@ -667,8 +667,6 @@ fn validate_selected_row_groups(
 
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 fn append_row_group_chunks(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -725,8 +723,6 @@ fn append_row_group_chunks(
 
     push_pending_chunk(source_node_id, source, file, file_index, row_groups.len(), metadata, &mut current, chunks);
 }
-
-#[allow(clippy::too_many_arguments)]
 fn push_pending_chunk(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -962,7 +958,6 @@ struct PendingChunk {
 }
 
 impl PendingChunk {
-    #[allow(clippy::too_many_arguments)]
     fn push(
         &mut self,
         row_group: usize,

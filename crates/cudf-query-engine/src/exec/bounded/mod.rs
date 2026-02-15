@@ -618,8 +618,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
     )?;
     Ok(ResidentGpuFrame { frame, reservation })
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -652,8 +650,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
     reservations.release(input.reservation, metrics);
     result
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -685,8 +681,6 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
         execute,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_reservation_kind(
     context: &ExecutionContext,
     node_id: NodeId,

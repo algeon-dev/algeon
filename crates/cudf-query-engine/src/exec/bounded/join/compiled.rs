@@ -1136,8 +1136,6 @@ impl CompiledJoinIndices {
         }
     }
 }
-
-#[allow(clippy::too_many_arguments)]
 fn materialize_compiled_indices_output(
     context: &ExecutionContext,
     node_id: NodeId,

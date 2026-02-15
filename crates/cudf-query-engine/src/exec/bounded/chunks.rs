@@ -193,8 +193,6 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only_with_obs
         grow_source_to_observed,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -514,8 +512,6 @@ fn optional_prefetch_target(max_in_flight: usize) -> usize {
     // starved by deeper speculative reservations.
     usize::from(max_in_flight > 1)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn start_required_scheduled_source_read(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -540,8 +536,6 @@ fn start_required_scheduled_source_read(
         false,
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 fn try_start_optional_scheduled_source_read(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -575,8 +569,6 @@ fn try_start_optional_scheduled_source_read(
     )
     .map(Some)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn start_scheduled_source_read(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -708,8 +700,6 @@ pub(in crate::exec::bounded) fn try_read_cached_local_parquet_chunk(
     metrics.record_source_cache_miss(cache.retained_device_bytes()?);
     Ok(None)
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -759,8 +749,6 @@ pub(in crate::exec::bounded) fn insert_bounded_local_parquet_source_cache(
     }
     Ok(())
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_bounded_chunk_retry_attempt(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -787,8 +775,6 @@ pub(super) fn execute_bounded_chunk_retry_attempt(
         Err(error) => Err(error),
     }
 }
-
-#[allow(clippy::too_many_arguments)]
 fn retry_after_chunk_error(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -862,8 +848,6 @@ pub(super) fn execute_bounded_chunk_attempt(
         |_reservations, _metrics| Ok(()),
     )
 }
-
-#[allow(clippy::too_many_arguments)]
 fn read_bounded_chunk_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -949,8 +933,6 @@ fn read_bounded_chunk_source(
     }
     Ok(output)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_bounded_chunk_operator_from_source(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -1054,8 +1036,6 @@ fn execute_bounded_chunk_operator_from_source(
 
     Ok(CommittedPartial { frame, reservation: partial_reservation })
 }
-
-#[allow(clippy::too_many_arguments)]
 fn execute_source_adjacent_chunk_stages(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -1115,8 +1095,6 @@ fn execute_source_adjacent_chunk_stages(
     }
     Ok(input)
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1218,8 +1196,6 @@ fn source_adjacent_chunk_unary_work_request_bytes(input_reserved_bytes: u64, rem
     let admissible_work_bytes = remaining_bytes.saturating_sub(SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES);
     input_reserved_bytes.min(admissible_work_bytes)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn grow_source_reservation_to_observed(
     frame: &GpuDataFrame,
     source_reservation: &mut ActiveReservation,
@@ -1259,8 +1235,6 @@ fn grow_source_reservation_to_observed(
     reservations.try_grow(source_reservation, grow_request, metrics)?;
     Ok(source_observed_bytes)
 }
-
-#[allow(clippy::too_many_arguments)]
 fn shrink_source_reservation_to_observed_without_grow(
     frame: &GpuDataFrame,
     source_reservation: &mut ActiveReservation,

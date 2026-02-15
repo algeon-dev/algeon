@@ -169,8 +169,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
         },
     }
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     context: &ExecutionContext,
     node_id: NodeId,

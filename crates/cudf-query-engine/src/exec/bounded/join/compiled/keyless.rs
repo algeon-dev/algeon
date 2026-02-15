@@ -176,8 +176,6 @@ pub(super) fn keyless_conditional_join_gather_map_reservation_size_bytes(
         .with_fact("join_type", node.spec.join_type)
     })
 }
-
-#[allow(clippy::too_many_arguments)]
 pub(super) fn keyless_conditional_join_indices_with_output_size(
     join_type: KeylessConditionalJoinKind,
     left: &DataFrame,
