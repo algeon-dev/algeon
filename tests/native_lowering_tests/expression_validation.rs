@@ -44,6 +44,47 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
 }
 
 #[test]
+fn decimal_division_lowers_with_declared_binary_output_type() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-decimal-divide");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let ratio = binary(
+        col("amount", &scan_schema).unwrap(),
+        Operator::Divide,
+        col("amount", &scan_schema).unwrap(),
+        &scan_schema,
+    )
+    .unwrap();
+    let plan: Arc<dyn ExecutionPlan> =
+        Arc::new(ProjectionExec::try_new([ProjectionExpr { expr: ratio, alias: "ratio".to_string() }], scan).unwrap());
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let projection = native_projection_exprs(&result.plans[0])
+        .into_iter()
+        .find(|expr| matches!(expr, Expr::Alias { alias, .. } if alias == "ratio"))
+        .expect("native plan should include ratio projection");
+    assert!(matches!(
+        projection,
+        Expr::Alias { expr, .. }
+            if matches!(
+                expr.as_ref(),
+                Expr::Binary {
+                    op: cudf_query_engine::BinaryOp::Divide,
+                    output_type: Some(DataType::Decimal128(_, _)),
+                    ..
+                }
+            )
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn try_cast_is_rejected_during_native_planning() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-try-cast");
     let path = dir.join("input.parquet");

@@ -102,22 +102,26 @@ pub(in crate::exec) fn execute_aggregate(
         return execute_global_aggregate(context, &node.spec, input, output_schema, metrics);
     }
 
-    let aggregate = lower_aggregate_spec(&node.spec)?;
-    validate_aggregate_output_names(
-        &aggregate,
-        output_schema,
-        "cudf_query_engine.aggregate.validate",
-        "aggregate output names must match output schema fields",
-    )?;
+    // Lowering AVG through libcudf's groupby `MEAN` (`GroupByAgg::Mean`) keeps
+    // the result scale equal to the source scale on `fixed_point` columns and
+    // truncates the division remainder, so a `Decimal128(7, 2)` input averaged
+    // to a `Decimal128(11, 6)` output rounds e.g. `34.65 / 2` to `17.32`
+    // instead of `17.325`. Route AVG through the same explicit `sum + count +
+    // finalize` state used by the partial/final and global aggregate paths so
+    // the division happens at the output scale.
+    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    if aggregate_spec_has_avg(&node.spec) {
+        validate_avg_output_fields(&node.spec, output_schema)?;
+    }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute")?;
+    output = finalize_avg_output_columns(context, output, &node.spec, output_schema)?;
     output = cast_reduction_output_columns(output, &node.spec, output_schema)?;
     output = cast_count_output_columns(output, &node.spec, output_schema)?;
-    output = cast_avg_output_columns(output, &node.spec, output_schema)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select",
@@ -141,13 +145,12 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
         return execute_global_aggregate_with_budget(context, &node.spec, input, output_schema, token, metrics);
     }
 
-    let aggregate = lower_aggregate_spec(&node.spec)?;
-    validate_aggregate_output_names(
-        &aggregate,
-        output_schema,
-        "cudf_query_engine.aggregate.validate",
-        "aggregate output names must match output schema fields",
-    )?;
+    // See `execute_aggregate` for why AVG must not lower to libcudf groupby
+    // `MEAN`; the same finalize-at-output-scale contract applies here.
+    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    if aggregate_spec_has_avg(&node.spec) {
+        validate_avg_output_fields(&node.spec, output_schema)?;
+    }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
     let frame = input.into_frame();
@@ -162,9 +165,9 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
         "cudf_query_engine.aggregate.execute",
         "failed to execute bounded native cudf aggregate",
     )?;
+    output = finalize_avg_output_columns_with_budget(context, output, &node.spec, output_schema, token, metrics)?;
     output = cast_reduction_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
     output = cast_count_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
-    output = cast_avg_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select",

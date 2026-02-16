@@ -17,7 +17,7 @@ fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
     let residual = join.spec.residual_predicate.as_ref().expect("join filter should lower as residual predicate");
     assert!(matches!(
         residual,
-        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::And }
+        Expr::Binary { left, right, op: cudf_query_engine::BinaryOp::And, .. }
             if matches!(
                 left.as_ref(),
                 Expr::InList { expr, list, negated: false }

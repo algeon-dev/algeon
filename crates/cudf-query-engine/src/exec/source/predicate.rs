@@ -101,7 +101,7 @@ fn lower_source_reader_ast_expr(
                 .with_fact("target_type", format!("{target_type:?}"))
             })
         },
-        Expr::Binary { left, op, right } => {
+        Expr::Binary { left, op, right, .. } => {
             let left = lower_source_reader_ast_expr(context, source, left)?;
             let right = lower_source_reader_ast_expr(context, source, right)?;
             let op = lower_source_reader_ast_operator(*op);

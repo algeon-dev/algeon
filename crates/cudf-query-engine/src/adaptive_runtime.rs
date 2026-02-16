@@ -437,11 +437,12 @@ fn expr_signature(expr: &Expr) -> String {
         Expr::Cast { expr, target_type } => {
             format!("cast({}:target={})", expr_signature(expr), data_type_signature(target_type))
         },
-        Expr::Binary { left, op, right } => format!(
-            "binary:op={}:left={}:right={}",
+        Expr::Binary { left, op, right, output_type } => format!(
+            "binary:op={}:left={}:right={}:output={}",
             binary_op_signature(*op),
             expr_signature(left),
-            expr_signature(right)
+            expr_signature(right),
+            output_type.as_ref().map(data_type_signature).unwrap_or_else(|| "none".to_string())
         ),
         Expr::Like { expr, escape, negated, .. } => {
             format!("like:expr={}:escape={}:negated={}", expr_signature(expr), escape.is_some(), negated)

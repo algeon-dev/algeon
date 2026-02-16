@@ -44,6 +44,8 @@ mod parquet_fixtures;
 mod projection_test_support;
 #[path = "native_execution_tests/projection_validation.rs"]
 mod projection_validation;
+#[path = "native_execution_tests/semijoin_reduction.rs"]
+mod semijoin_reduction;
 #[path = "native_execution_tests/test_support.rs"]
 mod test_support;
 

@@ -133,6 +133,47 @@ async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_sem
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q18-semijoin-reduction");
+    write_tiny_tpch_parquet_dataset(&dir).unwrap();
+    let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
+    let q18 = items.into_iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
+    let NativeFallbackPressureWorkloadInput::PhysicalPlan(plan) = q18.input else {
+        panic!("q18 should produce a physical plan");
+    };
+
+    let result = lower_physical_plan_to_native(plan);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    let optimized = cudf_query_engine::optimize_query_plan(result.plans[0].clone(), &Default::default());
+
+    assert_eq!(optimized.change, cudf_query_engine::NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
+    assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);
+    assert_eq!(optimized.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
+
+    let left_semi_joins = native_join_ids(&optimized.plan, NativeJoinType::LeftSemi);
+    assert_eq!(left_semi_joins.len(), 1, "Q18 after semijoin reduction should retain one pushed left-semi join");
+    let (_semi_id, semi_join) = left_semi_joins[0];
+    assert_eq!(
+        source_tables_below(&optimized.plan, semi_join.inputs[0]),
+        BTreeSet::from(["orders".to_string()]),
+        "Q18 semijoin reduction should push the filter to the orders subtree that owns o_orderkey"
+    );
+    assert_eq!(
+        source_tables_below(&optimized.plan, semi_join.inputs[1]),
+        BTreeSet::from(["lineitem".to_string()]),
+        "Q18 semijoin reduction should keep the grouped lineitem keyset branch on the semijoin right side"
+    );
+    assert_eq!(
+        join_type_count_below(&optimized.plan, semi_join.inputs[0], NativeJoinType::Inner),
+        0,
+        "Q18 should no longer apply the semi-filter after materializing the customer/orders/lineitem join tree"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn native_semijoin_reduction_guardrail_has_no_q18_specific_native_path() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

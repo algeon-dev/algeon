@@ -68,6 +68,8 @@ mod fixtures;
 mod join_plan_builders;
 #[path = "native_lowering_tests/join_shapes.rs"]
 mod join_shapes;
+#[path = "native_lowering_tests/semijoin_reduction.rs"]
+mod semijoin_reduction;
 #[path = "native_lowering_tests/source_contracts.rs"]
 mod source_contracts;
 #[path = "native_lowering_tests/source_fixtures.rs"]
