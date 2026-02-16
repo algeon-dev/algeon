@@ -6,12 +6,16 @@ use cudf_query_engine::{
 };
 use datafusion::{
     common::ScalarValue,
+    datasource::{
+        physical_plan::{FileSource, ParquetSource},
+        source::DataSourceExec,
+    },
     logical_expr::Operator,
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
-            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal, NotExpr,
-            TryCastExpr,
+            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal,
+            NegativeExpr, NotExpr, TryCastExpr,
         },
     },
     physical_plan::{

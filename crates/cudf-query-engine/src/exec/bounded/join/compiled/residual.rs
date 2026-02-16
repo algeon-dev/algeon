@@ -289,6 +289,8 @@ pub(super) fn rewrite_join_residual_for_candidate(
         Expr::Substring { expr, start, length } => {
             Ok(Expr::substring(rewrite_join_residual_for_candidate(expr, residual_output_names)?, *start, *length))
         },
+        Expr::Lower(expr) => Ok(Expr::lower(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
+        Expr::Upper(expr) => Ok(Expr::upper(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
         Expr::InList { expr, list, negated } => Ok(Expr::InList {
             expr: Box::new(rewrite_join_residual_for_candidate(expr, residual_output_names)?),
             list: list

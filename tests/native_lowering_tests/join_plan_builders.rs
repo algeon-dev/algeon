@@ -93,6 +93,186 @@ pub(super) fn hash_join_filter_decimal_cast_materialization_aggregate_sort_limit
     aggregate_sort_limit_join_plan(join)
 }
 
+pub(super) fn hash_join_filter_case_decimal_divide_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_payload").unwrap().clone(),
+        right_schema.field_with_name("r_payload").unwrap().clone(),
+    ]));
+    let left_payload = col("l_payload", &filter_schema).unwrap();
+    let right_payload = col("r_payload", &filter_schema).unwrap();
+    let zero = lit(ScalarValue::Decimal128(Some(0), 15, 2));
+    let left_case: Arc<dyn PhysicalExpr> = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(
+                binary(Arc::clone(&left_payload), Operator::Gt, Arc::clone(&zero), &filter_schema).unwrap(),
+                binary(Arc::clone(&left_payload), Operator::Divide, Arc::clone(&left_payload), &filter_schema).unwrap(),
+            )],
+            None,
+        )
+        .unwrap(),
+    );
+    let right_case: Arc<dyn PhysicalExpr> = Arc::new(
+        CaseExpr::try_new(
+            None,
+            vec![(
+                binary(Arc::clone(&right_payload), Operator::Gt, Arc::clone(&zero), &filter_schema).unwrap(),
+                binary(Arc::clone(&right_payload), Operator::Divide, Arc::clone(&right_payload), &filter_schema)
+                    .unwrap(),
+            )],
+            None,
+        )
+        .unwrap(),
+    );
+    let filter_expr = binary(left_case, Operator::Gt, right_case, &filter_schema).unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_payload").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_payload").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
+pub(super) fn hash_join_filter_substring_materialization_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_zip").unwrap().clone(),
+        right_schema.field_with_name("r_zip").unwrap().clone(),
+    ]));
+    let left_substr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        "substr",
+        unicode::substr(),
+        vec![col("l_zip", &filter_schema).unwrap(), lit(ScalarValue::Int64(Some(1))), lit(ScalarValue::Int64(Some(5)))],
+        Arc::new(Field::new("substr", DataType::Utf8View, false)),
+        Arc::new(ConfigOptions::new()),
+    ));
+    let right_substr: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        "substr",
+        unicode::substr(),
+        vec![col("r_zip", &filter_schema).unwrap(), lit(ScalarValue::Int64(Some(1))), lit(ScalarValue::Int64(Some(5)))],
+        Arc::new(Field::new("substr", DataType::Utf8View, false)),
+        Arc::new(ConfigOptions::new()),
+    ));
+    let zip_prefix_in_list = in_list(
+        Arc::clone(&left_substr),
+        vec![lit(ScalarValue::Utf8View(Some("12345".to_string())))],
+        &false,
+        filter_schema.as_ref(),
+    )
+    .unwrap();
+    let zip_prefix_diff = binary(left_substr, Operator::NotEq, right_substr, &filter_schema).unwrap();
+    let filter_expr = binary(zip_prefix_in_list, Operator::Or, zip_prefix_diff, &filter_schema).unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_zip").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_zip").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
+pub(super) fn hash_join_filter_upper_cast_materialization_aggregate_sort_limit_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_country").unwrap().clone(),
+        right_schema.field_with_name("r_country").unwrap().clone(),
+    ]));
+    let upper_country: Arc<dyn PhysicalExpr> = Arc::new(ScalarFunctionExpr::new(
+        "upper",
+        string::upper(),
+        vec![col("r_country", &filter_schema).unwrap()],
+        Arc::new(Field::new("upper", DataType::Utf8, false)),
+        Arc::new(ConfigOptions::new()),
+    ));
+    let cast_upper_country: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(upper_country, DataType::Utf8View, None));
+    let filter_expr =
+        binary(col("l_country", &filter_schema).unwrap(), Operator::NotEq, cast_upper_country, &filter_schema).unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_country").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_country").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+
+    aggregate_sort_limit_join_plan(join)
+}
+
 pub(super) fn hash_join_filter_in_list_aggregate_sort_limit_plan(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,

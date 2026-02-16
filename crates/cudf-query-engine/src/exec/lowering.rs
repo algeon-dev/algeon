@@ -47,6 +47,8 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
             Ok(if *negated { expr.not() } else { expr })
         },
         Expr::Substring { expr, start, length } => lower_substring(expr, *start, *length),
+        Expr::Lower(expr) => Ok(lower_expr(expr)?.str().lower()),
+        Expr::Upper(expr) => Ok(lower_expr(expr)?.str().upper()),
         Expr::InList { expr, list, negated } => lower_in_list(expr, list, *negated),
         Expr::Case { branches, else_expr } => lower_case(branches, else_expr),
         Expr::Extract { field, expr } => lower_extract(*field, expr),
@@ -219,9 +221,31 @@ fn lower_binary_with_expected_type(
         BinaryOp::LtEq => Ok(left.le(right)),
         BinaryOp::Gt => Ok(left.gt(right)),
         BinaryOp::GtEq => Ok(left.ge(right)),
-        BinaryOp::And => Ok(left & right),
-        BinaryOp::Or => Ok(left | right),
+        BinaryOp::And => Ok(sql_boolean_and(left, right)),
+        BinaryOp::Or => Ok(sql_boolean_or(left, right)),
     }
+}
+
+fn sql_boolean_and(left: cudf::Expr, right: cudf::Expr) -> cudf::Expr {
+    let any_null = left.clone().is_null() | right.clone().is_null();
+    when(left.clone().eq(lit(false))).then(lit(false)).otherwise(
+        when(right.clone().eq(lit(false)))
+            .then(lit(false))
+            .otherwise(when(any_null).then(lower_boolean_null_literal()).otherwise(lit(true))),
+    )
+}
+
+fn sql_boolean_or(left: cudf::Expr, right: cudf::Expr) -> cudf::Expr {
+    let any_null = left.clone().is_null() | right.clone().is_null();
+    when(left.clone().eq(lit(true))).then(lit(true)).otherwise(
+        when(right.clone().eq(lit(true)))
+            .then(lit(true))
+            .otherwise(when(any_null).then(lower_boolean_null_literal()).otherwise(lit(false))),
+    )
+}
+
+fn lower_boolean_null_literal() -> cudf::Expr {
+    lit_null(cudf_dtype_from_arrow_type(&ArrowDataType::Boolean).expect("Boolean must be a supported cudf dtype"))
 }
 
 fn expected_decimal_dtype(expected_type: &ArrowDataType) -> Result<Option<cudf::DataType>> {

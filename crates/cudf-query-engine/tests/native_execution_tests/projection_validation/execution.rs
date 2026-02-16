@@ -1,6 +1,82 @@
 use super::*;
 
 #[test]
+fn native_boolean_and_or_use_sql_three_valued_logic() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema =
+        Arc::new(Schema::new(vec![Field::new("a", DataType::Boolean, true), Field::new("b", DataType::Boolean, true)]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("a_or_b", DataType::Boolean, true),
+        Field::new("a_and_b", DataType::Boolean, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(BooleanArray::from(vec![Some(false), Some(false), Some(true), Some(true), None, None, None])),
+            Arc::new(BooleanArray::from(vec![
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+                Some(true),
+                None,
+            ])),
+        ],
+    )
+    .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("bool_input", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(
+            vec![
+                Expr::binary(Expr::column("a"), BinaryOp::Or, Expr::column("b")).alias("a_or_b"),
+                Expr::binary(Expr::column("a"), BinaryOp::And, Expr::column("b")).alias("a_and_b"),
+            ],
+            Arc::clone(&output_schema),
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "bool_input".to_string(),
+        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&input_schema)).unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    assert_boolean_values(
+        boolean_array(batch, 0),
+        &[Some(false), Some(true), Some(true), Some(true), None, Some(true), None],
+    );
+    assert_boolean_values(
+        boolean_array(batch, 1),
+        &[Some(false), Some(false), Some(false), Some(true), Some(false), None, None],
+    );
+}
+
+fn assert_boolean_values(array: &BooleanArray, expected: &[Option<bool>]) {
+    assert_eq!(array.len(), expected.len());
+    for (index, expected) in expected.iter().enumerate() {
+        match expected {
+            Some(expected) => {
+                assert!(!array.is_null(index), "row {index} should be non-null");
+                assert_eq!(array.value(index), *expected, "row {index} value mismatch");
+            },
+            None => assert!(array.is_null(index), "row {index} should be null"),
+        }
+    }
+}
+
+#[test]
 fn native_query_executes_filter_projection_over_tpch_like_types() {
     let dir = unique_temp_dir("cudf-query-engine-native-execution-tpch-like-types");
     let path = dir.join("tpch-like.parquet");

@@ -450,6 +450,8 @@ fn expr_signature(expr: &Expr) -> String {
         Expr::Substring { expr, length, .. } => {
             format!("substring:expr={}:length_present={}", expr_signature(expr), length.is_some())
         },
+        Expr::Lower(expr) => format!("lower({})", expr_signature(expr)),
+        Expr::Upper(expr) => format!("upper({})", expr_signature(expr)),
         Expr::InList { expr, list, negated } => {
             let list = list.iter().map(expr_signature);
             format!("in_list:expr={}:list={}:negated={}", expr_signature(expr), join_signatures(list), negated)

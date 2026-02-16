@@ -86,6 +86,46 @@ pub(super) fn write_join_right_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+pub(super) fn write_join_left_string_payload_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_zip", DataType::Utf8, false),
+        Field::new("l_country", DataType::Utf8, false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(StringArray::from(vec!["12345-0000", "22222-0000", "33333-0000"])),
+            Arc::new(StringArray::from(vec!["US", "CA", "MX"])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_join_right_string_payload_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_zip", DataType::Utf8, false),
+        Field::new("r_country", DataType::Utf8, false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["12345-9999", "44444-0000", "33333-9999"])),
+            Arc::new(StringArray::from(vec!["us", "ca", "mx"])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
 pub(super) fn write_duplicate_nation_parquet_file(path: &std::path::Path, names: &[&str]) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),

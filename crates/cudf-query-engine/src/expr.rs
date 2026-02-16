@@ -76,6 +76,10 @@ pub enum Expr {
         /// `(start - 1) + length` must fit in `i32`.
         length: Option<i32>,
     },
+    /// SQL `LOWER(expr)` string expression.
+    Lower(Box<Expr>),
+    /// SQL `UPPER(expr)` string expression.
+    Upper(Box<Expr>),
     /// SQL `IN` or `NOT IN` membership predicate.
     ///
     /// The IR can represent general SQL `IN` lists. Runnable native plans
@@ -197,6 +201,16 @@ impl Expr {
         Self::Substring { expr: Box::new(expr), start, length }
     }
 
+    /// Build a SQL `LOWER(expr)` string expression.
+    pub fn lower(expr: Self) -> Self {
+        Self::Lower(Box::new(expr))
+    }
+
+    /// Build a SQL `UPPER(expr)` string expression.
+    pub fn upper(expr: Self) -> Self {
+        Self::Upper(Box::new(expr))
+    }
+
     /// Build a SQL `IN` predicate.
     ///
     /// The IR accepts expression candidates, but runnable native plans require
@@ -265,6 +279,8 @@ impl fmt::Display for Expr {
                 Some(length) => write!(f, "SUBSTRING({expr} FROM {start} FOR {length})"),
                 None => write!(f, "SUBSTRING({expr} FROM {start})"),
             },
+            Self::Lower(expr) => write!(f, "LOWER({expr})"),
+            Self::Upper(expr) => write!(f, "UPPER({expr})"),
             Self::InList { expr, list, negated } => {
                 let operator = if *negated { "NOT IN" } else { "IN" };
                 write!(f, "{expr} {operator} (")?;

@@ -73,6 +73,7 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
     let cases = [
         ("like", SQL_PHASE2_NULL_SEMANTICS_LIKE_QUERY),
         ("substring", SQL_PHASE2_NULL_SEMANTICS_SUBSTRING_QUERY),
+        ("string-case", SQL_PHASE2_NULL_SEMANTICS_STRING_CASE_QUERY),
         ("in-list", SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY),
         ("case", SQL_PHASE2_NULL_SEMANTICS_CASE_QUERY),
         ("case-no-else", SQL_PHASE2_NULL_SEMANTICS_CASE_NO_ELSE_QUERY),

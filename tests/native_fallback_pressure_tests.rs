@@ -250,6 +250,47 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 }
 
 #[tokio::test]
+async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper() {
+    let dir = unique_temp_dir("datafusion-cudf-native-planning-topk-category");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT a.key FROM bench AS a CROSS JOIN bench AS b ORDER BY a.key LIMIT 1",
+    )
+    .await;
+    assert_eq!(plan.name(), "SortExec(TopK)");
+
+    let mut planning_report = PlanningReport::new();
+    planning_report.push_rejected(
+        GpuCandidate::new("SortExec(fetch)(ProjectionExec(CrossJoinExec(LocalParquetScan,LocalParquetScan)))", 1),
+        FallbackReason::UnsupportedOperator,
+    );
+    let diagnostics = NativePlanningDiagnostics {
+        input_plan_root: plan.name().to_string(),
+        input_plan_shape: "SortExec(fetch)(ProjectionExec(CrossJoinExec(DataSourceExec,DataSourceExec)))".to_string(),
+        report: planning_report,
+        native_optimizer: Default::default(),
+        source_diagnostics: Vec::new(),
+        strict_bounded_contract: Default::default(),
+        adaptive_pipeline: Default::default(),
+    };
+
+    let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+        "topk_cross_join",
+        plan,
+        diagnostics,
+    )]);
+    let row = planning_row(&report, "topk_cross_join");
+
+    assert_eq!(row.reason_code.as_deref(), Some("unsupported_operator"));
+    assert_eq!(row.unsupported_category.as_deref(), Some("operator_crossjoin"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn adaptive_fallback_pressure_report_projects_adaptive_rows_only_when_selected() {
     let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure-adaptive");
     let left = dir.join("left.parquet");

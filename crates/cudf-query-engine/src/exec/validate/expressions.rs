@@ -64,6 +64,11 @@ pub(super) fn validate_expr(
             validate_substring_bounds(*start, *length)?;
             Ok(ArrowDataType::Utf8)
         },
+        Expr::Lower(expr) | Expr::Upper(expr) => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_string(&data_type, "string case input")?;
+            Ok(data_type)
+        },
         Expr::InList { expr, list, .. } => validate_in_list_expr(expr, list, input_schema, available_columns),
         Expr::Case { branches, else_expr } => validate_case_expr(branches, else_expr, input_schema, available_columns),
         Expr::Extract { expr, .. } => {

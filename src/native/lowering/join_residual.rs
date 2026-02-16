@@ -1,12 +1,14 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, SchemaRef};
-use cudf_query_engine::Expr as NativeExpr;
+use cudf_query_engine::{CaseWhen as NativeCaseWhen, Expr as NativeExpr, LiteralValue as NativeLiteralValue};
 use datafusion::{
-    common::JoinSide as DataFusionJoinSide,
+    common::{JoinSide as DataFusionJoinSide, ScalarValue},
     physical_expr::{
-        PhysicalExpr,
-        expressions::{BinaryExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal, NotExpr},
+        PhysicalExpr, ScalarFunctionExpr,
+        expressions::{
+            BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal, NotExpr,
+        },
     },
     physical_plan::joins::utils::JoinFilter,
 };
@@ -87,10 +89,9 @@ pub(super) fn lower_join_filter(
     canonical: CanonicalJoin,
     bindings: Option<JoinResidualInputBindings<'_>>,
 ) -> Result<LoweredJoinResidual, FallbackReason> {
-    // Supported residual vocabulary is deliberately small: columns, literals,
-    // binary operators, NOT, null checks, casts, and literal IN lists. A join
-    // residual must reference both sides; single-side predicates belong in
-    // input filters or materializations, not as join conditions.
+    // Supported residual vocabulary is deliberately small. Expressions the
+    // cuDF join AST cannot represent directly may be materialized on one input
+    // side, but a residual predicate must still reference both sides.
     let mut left_required = BTreeSet::new();
     let mut right_required = BTreeSet::new();
     let mut materializations = JoinResidualMaterializations::default();
@@ -122,9 +123,22 @@ fn lower_join_filter_expr(
         return lower_literal(literal.value());
     }
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+        if matches!(binary.op(), datafusion::logical_expr::Operator::Or)
+            && binary
+                .nullable(context.filter.schema().as_ref())
+                .map_err(|_error| FallbackReason::UnsupportedExpression)?
+            && expr_contains_scalar_function(expr)
+        {
+            return Err(FallbackReason::UnsupportedExpression);
+        }
         let left = lower_join_filter_expr(binary.left(), context, left_required, right_required, materializations)?;
         let right = lower_join_filter_expr(binary.right(), context, left_required, right_required, materializations)?;
         let op = lower_binary_operator(binary.op())?;
+        if matches!(binary.op(), datafusion::logical_expr::Operator::Divide)
+            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())?
+        {
+            return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
+        }
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
@@ -194,7 +208,54 @@ fn lower_join_filter_expr(
             NativeExpr::in_list(expr, list)
         });
     }
+    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+        return lower_join_filter_case_expr(case, context, left_required, right_required, materializations);
+    }
+    if expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some() {
+        return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
+    }
     Err(FallbackReason::UnsupportedExpression)
+}
+
+fn lower_join_filter_case_expr(
+    case: &CaseExpr,
+    context: JoinFilterLoweringContext<'_>,
+    left_required: &mut BTreeSet<usize>,
+    right_required: &mut BTreeSet<usize>,
+    materializations: &mut JoinResidualMaterializations,
+) -> Result<NativeExpr, FallbackReason> {
+    let base_expr = case
+        .expr()
+        .map(|expr| lower_join_filter_expr(expr, context, left_required, right_required, materializations))
+        .transpose()?;
+    let branches = case
+        .when_then_expr()
+        .iter()
+        .map(|(when, then)| {
+            let when = match &base_expr {
+                Some(base_expr) => NativeExpr::binary(
+                    base_expr.clone(),
+                    cudf_query_engine::BinaryOp::Eq,
+                    lower_join_filter_expr(when, context, left_required, right_required, materializations)?,
+                ),
+                None => lower_join_filter_expr(when, context, left_required, right_required, materializations)?,
+            };
+            Ok(NativeCaseWhen::new(
+                when,
+                lower_join_filter_expr(then, context, left_required, right_required, materializations)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let else_expr = match case.else_expr() {
+        Some(else_expr) => lower_join_filter_expr(else_expr, context, left_required, right_required, materializations)?,
+        None => {
+            let data_type = case
+                .data_type(context.filter.schema().as_ref())
+                .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            NativeExpr::literal(NativeLiteralValue::Null(data_type))
+        },
+    };
+    Ok(NativeExpr::case(branches, else_expr))
 }
 
 fn is_supported_join_residual_ast_cast_target(target_type: &DataType) -> bool {
@@ -202,7 +263,7 @@ fn is_supported_join_residual_ast_cast_target(target_type: &DataType) -> bool {
 }
 
 fn is_supported_join_residual_materialized_cast_target(target_type: &DataType) -> bool {
-    matches!(target_type, DataType::Decimal128(_, _))
+    matches!(target_type, DataType::Decimal128(_, _) | DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
 }
 
 fn materialize_join_residual_expr(
@@ -240,6 +301,11 @@ fn join_filter_expr_single_side(
     let mut side = None;
     collect_join_filter_expr_sides(expr, filter, &mut side)?;
     side.ok_or(FallbackReason::UnsupportedExpression)
+}
+
+fn expr_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some()
+        || expr.children().into_iter().any(expr_contains_scalar_function)
 }
 
 fn collect_join_filter_expr_sides(
@@ -286,6 +352,25 @@ fn collect_join_filter_expr_sides(
         }
         return Ok(());
     }
+    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+        if let Some(expr) = case.expr() {
+            collect_join_filter_expr_sides(expr, filter, side)?;
+        }
+        for (when, then) in case.when_then_expr() {
+            collect_join_filter_expr_sides(when, filter, side)?;
+            collect_join_filter_expr_sides(then, filter, side)?;
+        }
+        if let Some(else_expr) = case.else_expr() {
+            collect_join_filter_expr_sides(else_expr, filter, side)?;
+        }
+        return Ok(());
+    }
+    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+        for arg in function.args() {
+            collect_join_filter_expr_sides(arg, filter, side)?;
+        }
+        return Ok(());
+    }
     Err(FallbackReason::UnsupportedExpression)
 }
 
@@ -316,6 +401,11 @@ fn lower_join_filter_side_expr(
         let left = lower_join_filter_side_expr(binary.left(), context, side_schema, side, required)?;
         let right = lower_join_filter_side_expr(binary.right(), context, side_schema, side, required)?;
         let op = lower_binary_operator(binary.op())?;
+        if matches!(binary.op(), datafusion::logical_expr::Operator::Divide)
+            && let Some(output_type) = declared_decimal_divide_output_type(binary, context.filter.schema())?
+        {
+            return Ok(NativeExpr::binary_with_output_type(left, op, right, output_type));
+        }
         return Ok(NativeExpr::binary(left, op, right));
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
@@ -347,6 +437,9 @@ fn lower_join_filter_side_expr(
         if !is_supported_native_cast(&source_type, cast.cast_type()) {
             return Err(FallbackReason::UnsupportedType);
         }
+        if is_string_type(&source_type) && is_string_type(cast.cast_type()) {
+            return lower_join_filter_side_expr(cast.expr(), context, side_schema, side, required);
+        }
         return Ok(NativeExpr::cast(
             lower_join_filter_side_expr(cast.expr(), context, side_schema, side, required)?,
             cast.cast_type().clone(),
@@ -376,7 +469,190 @@ fn lower_join_filter_side_expr(
             NativeExpr::in_list(expr, list)
         });
     }
+    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+        return lower_join_filter_side_case_expr(case, context, side_schema, side, required);
+    }
+    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+        return lower_join_filter_side_scalar_function_expr(function, context, side_schema, side, required);
+    }
     Err(FallbackReason::UnsupportedExpression)
+}
+
+fn lower_join_filter_side_case_expr(
+    case: &CaseExpr,
+    context: JoinFilterLoweringContext<'_>,
+    side_schema: &SchemaRef,
+    side: DataFusionJoinSide,
+    required: &mut BTreeSet<usize>,
+) -> Result<NativeExpr, FallbackReason> {
+    let base_expr =
+        case.expr().map(|expr| lower_join_filter_side_expr(expr, context, side_schema, side, required)).transpose()?;
+    let branches = case
+        .when_then_expr()
+        .iter()
+        .map(|(when, then)| {
+            let when = match &base_expr {
+                Some(base_expr) => NativeExpr::binary(
+                    base_expr.clone(),
+                    cudf_query_engine::BinaryOp::Eq,
+                    lower_join_filter_side_expr(when, context, side_schema, side, required)?,
+                ),
+                None => lower_join_filter_side_expr(when, context, side_schema, side, required)?,
+            };
+            Ok(NativeCaseWhen::new(when, lower_join_filter_side_expr(then, context, side_schema, side, required)?))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let else_expr = match case.else_expr() {
+        Some(else_expr) => lower_join_filter_side_expr(else_expr, context, side_schema, side, required)?,
+        None => {
+            let data_type = case
+                .data_type(context.filter.schema().as_ref())
+                .map_err(|_error| FallbackReason::UnsupportedExpression)?;
+            NativeExpr::literal(NativeLiteralValue::Null(data_type))
+        },
+    };
+    Ok(NativeExpr::case(branches, else_expr))
+}
+
+fn lower_join_filter_side_scalar_function_expr(
+    function: &ScalarFunctionExpr,
+    context: JoinFilterLoweringContext<'_>,
+    side_schema: &SchemaRef,
+    side: DataFusionJoinSide,
+    required: &mut BTreeSet<usize>,
+) -> Result<NativeExpr, FallbackReason> {
+    match function.name().to_ascii_lowercase().as_str() {
+        "substring" | "substr" => {
+            lower_join_filter_side_substring_function(function, context, side_schema, side, required)
+        },
+        "lower" => lower_join_filter_side_string_case_function(
+            function,
+            context,
+            side_schema,
+            side,
+            required,
+            NativeExpr::lower,
+        ),
+        "upper" => lower_join_filter_side_string_case_function(
+            function,
+            context,
+            side_schema,
+            side,
+            required,
+            NativeExpr::upper,
+        ),
+        _ => Err(FallbackReason::UnsupportedExpression),
+    }
+}
+
+fn lower_join_filter_side_substring_function(
+    function: &ScalarFunctionExpr,
+    context: JoinFilterLoweringContext<'_>,
+    side_schema: &SchemaRef,
+    side: DataFusionJoinSide,
+    required: &mut BTreeSet<usize>,
+) -> Result<NativeExpr, FallbackReason> {
+    let args = function.args();
+    if !(2..=3).contains(&args.len()) {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    validate_join_filter_string_expr(&args[0], context.filter.schema())?;
+    let start = join_filter_literal_i32(&args[1])?;
+    if start < 1 {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    let length = if args.len() == 3 { Some(join_filter_literal_i32(&args[2])?) } else { None };
+    if let Some(length) = length
+        && (length < 0 || substring_stop_position(start, length).is_none())
+    {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(NativeExpr::substring(
+        lower_join_filter_side_expr(&args[0], context, side_schema, side, required)?,
+        start,
+        length,
+    ))
+}
+
+fn lower_join_filter_side_string_case_function(
+    function: &ScalarFunctionExpr,
+    context: JoinFilterLoweringContext<'_>,
+    side_schema: &SchemaRef,
+    side: DataFusionJoinSide,
+    required: &mut BTreeSet<usize>,
+    constructor: fn(NativeExpr) -> NativeExpr,
+) -> Result<NativeExpr, FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_join_filter_string_expr(expr, context.filter.schema())?;
+    Ok(constructor(lower_join_filter_side_expr(expr, context, side_schema, side, required)?))
+}
+
+fn validate_join_filter_string_expr(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn is_string_type(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+}
+
+fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
+}
+
+fn join_filter_literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
+    let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    match literal.value() {
+        ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::Int32(Some(value)) => Ok(*value),
+        ScalarValue::Int64(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+        },
+        ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::UInt32(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+        },
+        ScalarValue::UInt64(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+        },
+        _ => Err(FallbackReason::UnsupportedExpression),
+    }
+}
+
+fn declared_decimal_divide_output_type(
+    binary: &BinaryExpr,
+    input_schema: &SchemaRef,
+) -> Result<Option<DataType>, FallbackReason> {
+    let left_type =
+        binary.left().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    let right_type =
+        binary.right().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !matches!(left_type, DataType::Decimal128(_, _)) && !matches!(right_type, DataType::Decimal128(_, _)) {
+        return Ok(None);
+    }
+    let declared_type =
+        binary.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !matches!(declared_type, DataType::Decimal128(_, _)) {
+        return Ok(None);
+    }
+    if !is_supported_native_type(&declared_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    Ok(Some(declared_type))
 }
 
 fn unique_synthetic_join_residual_alias(

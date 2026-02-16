@@ -1,16 +1,25 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use arrow::{
     array::{Decimal128Array, Float64Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use datafusion_cudf::{
-    NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeTpcdsParityCpuOutcome,
-    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativeRuntimeOutcome,
-    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
-    ParityFloatTolerance, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
+use datafusion::{
+    physical_plan::ExecutionPlan,
+    prelude::{ParquetReadOptions, SessionContext},
 };
+use datafusion_cudf::{
+    CudfOptimizerConfig, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION,
+    NativeCudfExecutionConfig, NativeDataFusionRuntimeOutcome, NativeTpcdsParityCpuOutcome,
+    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativeRuntimeOutcome,
+    NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem,
+    ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus, TPCDS_QUERIES, TPCDS_TABLES,
+    compare_record_batches, discover_tpcds_table_layout, lower_physical_plan_to_native, sql_has_top_level_order_by,
+    tpcds_parity_workload_items, tpcds_report_session_config,
+};
+
+const TPCDS_SF1_FIXTURE: &str = "/home/ubuntu/code/datafusion-cudf/tests/data/tpcds/sf1/parquet";
 
 #[test]
 fn parity_tsv_header_pins_schema_version_and_columns() {
@@ -94,6 +103,81 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
     // 33 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");
     assert_eq!(data_line.split('\t').count(), 33);
+}
+
+#[tokio::test]
+async fn tpcds_sf1_q06_matches_after_hash_join_reservation_contract_fix() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec!["q06".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 1);
+
+    let row = &report.rows[0];
+    assert_eq!(row.query_id, "q06");
+    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
+    assert_eq!(row.native_reason_code, None);
+    assert_eq!(row.native_unsupported_category, None);
+    assert!(row.native_runtime_started, "q06 must execute through the native path");
+    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.parity_status, ParityStatus::Matched);
+    assert_ne!(row.parity_status, ParityStatus::NativeRejected);
+    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
+    assert_eq!(row.cpu_output_rows, Some(46));
+    assert_eq!(row.native_output_rows, Some(46));
+    assert_eq!(row.native_reservation_denied_count, Some(0));
+    assert_eq!(row.native_retry_count, Some(0));
+    assert_eq!(row.native_runtime_failure, None);
+}
+
+#[tokio::test]
+async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("web_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let plain_plan = plain_tpcds_physical_plan(root, "q85").await;
+    let lowering = lower_physical_plan_to_native(plain_plan);
+    assert!(lowering.rewritten_count() > 0, "q85 should still lower against a plain DataFusion physical plan");
+
+    let query_filter = vec!["q85".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 1);
+
+    let row = &report.rows[0];
+    assert_eq!(row.query_id, "q85");
+    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
+    assert_eq!(row.native_reason_code, None);
+    assert_eq!(row.native_unsupported_category, None);
+    assert!(row.native_runtime_started, "q85 must execute through the native path");
+    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.parity_status, ParityStatus::Matched);
+    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
+    assert_eq!(row.cpu_output_rows, Some(1));
+    assert_eq!(row.native_output_rows, Some(1));
+    assert_eq!(row.native_reservation_denied_count, Some(0));
+    assert_eq!(row.native_retry_count, Some(0));
+    assert_eq!(row.native_runtime_failure, None);
 }
 
 #[test]
@@ -321,4 +405,20 @@ fn int_string_batch(schema: &Arc<Schema>, ids: &[i64], labels: &[Option<&str>]) 
         vec![Arc::new(Int64Array::from(ids.to_vec())), Arc::new(StringArray::from(labels.to_vec()))],
     )
     .unwrap()
+}
+
+async fn plain_tpcds_physical_plan(root: &Path, query_id: &str) -> Arc<dyn ExecutionPlan> {
+    let ctx = SessionContext::new_with_config(tpcds_report_session_config());
+    for &table in TPCDS_TABLES {
+        let layout = discover_tpcds_table_layout(root, table).unwrap();
+        ctx.register_parquet(table, layout.anchor.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    }
+    let query = TPCDS_QUERIES.iter().find(|query| query.id == query_id).unwrap();
+    let df = ctx.sql(query.sql).await.unwrap();
+    df.create_physical_plan().await.unwrap()
+}
+
+fn sf1_native_optimizer_config() -> CudfOptimizerConfig {
+    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(NativeCudfExecutionConfig::bounded(94_489_280_512, 64 * 1024 * 1024, 1, 3, 1))
 }

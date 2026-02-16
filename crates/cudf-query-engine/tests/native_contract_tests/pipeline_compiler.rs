@@ -685,6 +685,53 @@ fn compile_pipeline_keyed_hash_resident_subplan_uses_shared_resource_identity_fo
 }
 
 #[test]
+fn compiled_pipeline_validate_allows_shared_resident_resource_to_feed_sink_boundary() {
+    let producer = PipelineTaskId::new(0);
+    let first_consumer = PipelineTaskId::new(1);
+    let second_consumer = PipelineTaskId::new(2);
+    let sink = PipelineTaskId::new(3);
+    let frame = ResidentResourceId::new(0);
+    let pipeline = CompiledPipeline::new(
+        vec![
+            PipelineTask::new(producer, PipelineTaskKind::SourceRead).with_output_resources(vec![frame]),
+            PipelineTask::new(first_consumer, PipelineTaskKind::JoinBuild).with_input_resources(vec![frame]),
+            PipelineTask::new(second_consumer, PipelineTaskKind::Unary).with_input_resources(vec![frame]),
+            PipelineTask::new(sink, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![frame]),
+        ],
+        vec![
+            PipelineEdge::new(PipelineEdgeId::new(0), producer, first_consumer, PipelineEdgeKind::JoinBuildInput)
+                .with_resources(vec![frame]),
+            PipelineEdge::new(
+                PipelineEdgeId::new(1),
+                producer,
+                second_consumer,
+                PipelineEdgeKind::SharedResidentProducer,
+            )
+            .with_resources(vec![frame]),
+            PipelineEdge::new(PipelineEdgeId::new(2), producer, sink, PipelineEdgeKind::SinkInput)
+                .with_resources(vec![frame]),
+        ],
+        vec![
+            PipelineBarrier::new(PipelineBarrierId::new(0), PipelineBarrierKind::SourceChunkBoundary)
+                .with_upstream_tasks(vec![producer])
+                .with_downstream_tasks(vec![first_consumer, second_consumer]),
+            PipelineBarrier::new(PipelineBarrierId::new(1), PipelineBarrierKind::SinkBoundary)
+                .with_upstream_tasks(vec![sink]),
+        ],
+        vec![ResidentResource::new(
+            frame,
+            producer,
+            vec![first_consumer, second_consumer, sink],
+            ResidentLifetime::BetweenTasks { producer },
+        )],
+        vec![],
+        SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink),
+    );
+
+    pipeline.validate().expect("sink input edge should cover a shared resource sink consumer");
+}
+
+#[test]
 fn compile_pipeline_rejects_local_capability_rejection_before_building_graph() {
     let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
