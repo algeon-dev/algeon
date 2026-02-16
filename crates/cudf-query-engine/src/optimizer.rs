@@ -7,7 +7,8 @@
 mod semijoin_reduction;
 
 pub use semijoin_reduction::{
-    SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision, SemijoinReductionCandidateDiagnostics,
+    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, SEMIJOIN_REDUCTION_RULE_NAME,
+    SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
     SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
     SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
     SemijoinReductionResult, optimize_semijoin_reduction,

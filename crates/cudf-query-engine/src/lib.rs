@@ -64,11 +64,12 @@ pub use metrics::{
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use optimizer::{
-    NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NativeOptimizerResult,
-    SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision, SemijoinReductionCandidateDiagnostics,
-    SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
-    SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
-    SemijoinReductionResult, optimize_query_plan, optimize_semijoin_reduction,
+    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, NativeOptimizerChange, NativeOptimizerDiagnostics,
+    NativeOptimizerOptions, NativeOptimizerResult, SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionDecision,
+    SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics,
+    SemijoinReductionCostSignal, SemijoinReductionDiagnostics, SemijoinReductionKeyMappingDiagnostics,
+    SemijoinReductionOptions, SemijoinReductionRejectedReason, SemijoinReductionResult, optimize_query_plan,
+    optimize_semijoin_reduction,
 };
 pub use pipeline::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,

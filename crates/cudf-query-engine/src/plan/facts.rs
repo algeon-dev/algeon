@@ -25,7 +25,7 @@ pub struct PlanFacts {
 }
 
 impl PlanFacts {
-    pub(super) fn device(output_schema: SchemaRef, schema_behavior: SchemaBehavior) -> Self {
+    pub(crate) fn device(output_schema: SchemaRef, schema_behavior: SchemaBehavior) -> Self {
         Self { output_schema, output_ordering: Vec::new(), placement: DataPlacement::Device, schema_behavior }
     }
 

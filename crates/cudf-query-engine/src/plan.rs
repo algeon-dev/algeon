@@ -12,6 +12,7 @@ use crate::{
 mod builder;
 mod core;
 mod display;
+mod estimates;
 mod facts;
 mod join;
 mod nodes;
@@ -20,6 +21,7 @@ mod sink;
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
 
 pub use builder::QueryPlanBuilder;
+pub(crate) use estimates::{estimated_output_bytes, estimated_output_rows};
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
