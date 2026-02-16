@@ -19,6 +19,7 @@ pub struct NativePlanningDiagnostics {
     pub input_plan_root: String,
     pub input_plan_shape: String,
     pub report: PlanningReport,
+    pub native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics,
     pub source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
     pub strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
     pub adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
@@ -36,6 +37,7 @@ struct CudfNativePhysicalOptimizerRuleState {
     last_input_plan_root: Mutex<Option<String>>,
     last_input_plan_shape: Mutex<Option<String>>,
     last_report: Mutex<Option<PlanningReport>>,
+    last_native_optimizer: Mutex<cudf_query_engine::NativeOptimizerDiagnostics>,
     last_source_diagnostics: Mutex<Vec<cudf_query_engine::SourceDiagnostics>>,
     last_strict_bounded_contract: Mutex<NativeStrictBoundedContractDiagnostics>,
     last_adaptive_pipeline: Mutex<NativeAdaptivePipelineDiagnostics>,
@@ -56,6 +58,7 @@ impl CudfNativePhysicalOptimizerRule {
                 last_input_plan_root: Mutex::new(None),
                 last_input_plan_shape: Mutex::new(None),
                 last_report: Mutex::new(None),
+                last_native_optimizer: Mutex::new(cudf_query_engine::NativeOptimizerDiagnostics::default()),
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_strict_bounded_contract: Mutex::new(NativeStrictBoundedContractDiagnostics::default()),
                 last_adaptive_pipeline: Mutex::new(NativeAdaptivePipelineDiagnostics::default()),
@@ -100,6 +103,12 @@ impl CudfNativePhysicalOptimizerRule {
                 .clone()
                 .unwrap_or_default(),
             report,
+            native_optimizer: self
+                .state
+                .last_native_optimizer
+                .lock()
+                .expect("native optimizer diagnostics mutex poisoned")
+                .clone(),
             source_diagnostics: self.last_source_diagnostics(),
             strict_bounded_contract: self
                 .state
@@ -136,15 +145,20 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             Some(physical_plan_shape(plan.as_ref()));
 
         let native_execution_config = self.config.native_execution_config();
+        let native_optimizer_options = self.config.native_optimizer_options();
 
         let optimized = match self.phase {
             NativeOptimizerPhase::CountOnlyProbe => {
-                optimize_count_only_native_plan(Arc::clone(&plan), native_execution_config)?
+                optimize_count_only_native_plan(Arc::clone(&plan), native_execution_config, native_optimizer_options)?
             },
-            NativeOptimizerPhase::Final => optimize_final_native_plan(Arc::clone(&plan), native_execution_config)?,
+            NativeOptimizerPhase::Final => {
+                optimize_final_native_plan(Arc::clone(&plan), native_execution_config, native_optimizer_options)?
+            },
         };
         let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &self.config)?;
         *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
+        *self.state.last_native_optimizer.lock().expect("native optimizer diagnostics mutex poisoned") =
+            optimized.native_optimizer.clone();
         *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =
             optimized.source_diagnostics.clone();
         *self
@@ -180,6 +194,7 @@ fn apply_native_fallback_policy(
         GpuFallbackPolicy::CpuOnly => Ok(NativeOptimizationAttempt {
             plan: original_plan,
             report: native_cpu_only_report(&attempt.report),
+            native_optimizer: attempt.native_optimizer,
             source_diagnostics: attempt.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
@@ -213,6 +228,7 @@ fn first_native_rejection(report: &PlanningReport) -> Option<(&GpuCandidate, Fal
 struct NativeOptimizationAttempt {
     plan: Arc<dyn ExecutionPlan>,
     report: PlanningReport,
+    native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics,
     source_diagnostics: Vec<cudf_query_engine::SourceDiagnostics>,
     strict_bounded_contract: NativeStrictBoundedContractDiagnostics,
     adaptive_pipeline: NativeAdaptivePipelineDiagnostics,
@@ -222,29 +238,34 @@ struct NativeOptimizationAttempt {
 fn optimize_count_only_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering_input = peel_output_requirement_exec(Arc::clone(&plan));
     let lowering = crate::native::lower_count_only_physical_plan_to_native(lowering_input);
-    replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config)
+    replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config, native_optimizer_options)
 }
 
 fn optimize_final_native_plan(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
     if lowering.plans.len() == 1 && lowering.rewritten_count() == 1 {
-        return replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config);
+        return replace_lowered_root_or_keep_plan(plan, lowering, native_execution_config, native_optimizer_options);
     }
 
     let mut report = lowering.report.clone();
+    let mut native_optimizer = cudf_query_engine::NativeOptimizerDiagnostics::default();
     let mut source_diagnostics = lowering.source_diagnostics.clone();
     let mut strict_bounded_contract = NativeStrictBoundedContractDiagnostics::default();
     let mut adaptive_pipeline = NativeAdaptivePipelineDiagnostics::default();
     let Some(rewritten_plan) = optimize_native_children_for_host_arrow_boundary(
         Arc::clone(&plan),
         native_execution_config,
+        native_optimizer_options,
         &mut report,
+        &mut native_optimizer,
         &mut source_diagnostics,
         &mut strict_bounded_contract,
         &mut adaptive_pipeline,
@@ -253,6 +274,7 @@ fn optimize_final_native_plan(
         return Ok(NativeOptimizationAttempt {
             plan,
             report,
+            native_optimizer,
             source_diagnostics,
             strict_bounded_contract,
             adaptive_pipeline,
@@ -263,6 +285,7 @@ fn optimize_final_native_plan(
     Ok(NativeOptimizationAttempt {
         plan: rewritten_plan,
         report,
+        native_optimizer,
         source_diagnostics,
         strict_bounded_contract,
         adaptive_pipeline,
@@ -274,11 +297,13 @@ fn replace_lowered_root_or_keep_plan(
     plan: Arc<dyn ExecutionPlan>,
     lowering: crate::native::NativeLoweringResult,
     native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
 ) -> DataFusionResult<NativeOptimizationAttempt> {
     if lowering.plans.len() != 1 || lowering.rewritten_count() != 1 {
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
+            native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics::default(),
             source_diagnostics: lowering.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
@@ -288,12 +313,19 @@ fn replace_lowered_root_or_keep_plan(
     let candidate = single_rewritten_candidate(&lowering.report)
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
+    let optimizer_options = native_optimizer_options_for_execution(
+        native_optimizer_options,
+        native_execution_config.native_pipeline_execution_mode(),
+    );
+    let optimizer_result = cudf_query_engine::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
+    let native_optimizer = optimizer_result.diagnostics;
+    let native_plan = optimizer_result.plan;
 
     if native_execution_config.native_pipeline_execution_mode()
         == cudf_query_engine::NativePipelineExecutionMode::Adaptive
     {
         let adaptive_pipeline =
-            plan_adaptive_pipeline_diagnostics(&lowering.plans[0], candidate.clone(), native_execution_config)?
+            plan_adaptive_pipeline_diagnostics(&native_plan, candidate.clone(), native_execution_config)?
                 .unwrap_or_default();
         if adaptive_pipeline_was_rejected(&adaptive_pipeline) {
             return Ok(NativeOptimizationAttempt {
@@ -302,6 +334,7 @@ fn replace_lowered_root_or_keep_plan(
                     &lowering.report,
                     FallbackReason::NativeAdaptivePipelineUnsupported,
                 ),
+                native_optimizer,
                 source_diagnostics: lowering.source_diagnostics,
                 strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
                 adaptive_pipeline,
@@ -309,12 +342,13 @@ fn replace_lowered_root_or_keep_plan(
             });
         }
 
-        let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
+        let plan = NativeCudfExec::try_new(native_plan, native_execution_config.clone())
             .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
             .map_err(DataFusionError::from)?;
         return Ok(NativeOptimizationAttempt {
             plan,
             report: lowering.report,
+            native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline,
@@ -322,7 +356,7 @@ fn replace_lowered_root_or_keep_plan(
         });
     }
 
-    if native_execution_boundary_is_rejected(&lowering.plans[0], native_execution_config)? {
+    if native_execution_boundary_is_rejected(&native_plan, native_execution_config)? {
         let report = native_execution_rejection_report(&lowering.report, FallbackReason::NativeBoundedJoinUnsupported);
         let candidate = first_bounded_join_unsupported_candidate(&report)
             .cloned()
@@ -330,9 +364,10 @@ fn replace_lowered_root_or_keep_plan(
         return Ok(NativeOptimizationAttempt {
             plan,
             report,
+            native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
             strict_bounded_contract: rejected_plan_contract_diagnostics(
-                &lowering.plans[0],
+                &native_plan,
                 candidate,
                 native_execution_config,
             )?,
@@ -341,14 +376,14 @@ fn replace_lowered_root_or_keep_plan(
         });
     }
 
-    let plan = NativeCudfExec::try_new(lowering.plans[0].clone(), native_execution_config.clone())
+    let strict_bounded_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
+    let plan = NativeCudfExec::try_new(native_plan, native_execution_config.clone())
         .map(|plan| Arc::new(plan) as Arc<dyn ExecutionPlan>)
         .map_err(DataFusionError::from)?;
-    let strict_bounded_contract =
-        accepted_plan_contract_diagnostics(&lowering.plans[0], candidate, native_execution_config)?;
     Ok(NativeOptimizationAttempt {
         plan,
         report: lowering.report,
+        native_optimizer,
         source_diagnostics: lowering.source_diagnostics,
         strict_bounded_contract,
         adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
@@ -356,10 +391,28 @@ fn replace_lowered_root_or_keep_plan(
     })
 }
 
+fn native_optimizer_options_for_execution(
+    options: &cudf_query_engine::NativeOptimizerOptions,
+    execution_mode: cudf_query_engine::NativePipelineExecutionMode,
+) -> cudf_query_engine::NativeOptimizerOptions {
+    let mut options = options.clone();
+    options.semijoin_reduction.admission_mode = match execution_mode {
+        cudf_query_engine::NativePipelineExecutionMode::StrictBounded => {
+            cudf_query_engine::SemijoinReductionAdmissionMode::StrictBounded
+        },
+        cudf_query_engine::NativePipelineExecutionMode::Adaptive => {
+            cudf_query_engine::SemijoinReductionAdmissionMode::Adaptive
+        },
+    };
+    options
+}
+
 fn optimize_native_children_for_host_arrow_boundary(
     plan: Arc<dyn ExecutionPlan>,
     native_execution_config: &NativeCudfExecutionConfig,
+    native_optimizer_options: &cudf_query_engine::NativeOptimizerOptions,
     report: &mut PlanningReport,
+    native_optimizer: &mut cudf_query_engine::NativeOptimizerDiagnostics,
     source_diagnostics: &mut Vec<cudf_query_engine::SourceDiagnostics>,
     strict_bounded_contract: &mut NativeStrictBoundedContractDiagnostics,
     adaptive_pipeline: &mut NativeAdaptivePipelineDiagnostics,
@@ -375,12 +428,14 @@ fn optimize_native_children_for_host_arrow_boundary(
 
     let mut rewritten = false;
     let mut child_reports = Vec::new();
+    let mut child_native_optimizer = cudf_query_engine::NativeOptimizerDiagnostics::default();
     let mut child_source_diagnostics = Vec::new();
     let mut new_children = Vec::with_capacity(children.len());
     for child in children {
-        let attempt = optimize_final_native_plan(Arc::clone(child), native_execution_config)?;
+        let attempt = optimize_final_native_plan(Arc::clone(child), native_execution_config, native_optimizer_options)?;
         rewritten |= attempt.rewritten;
         child_reports.push(attempt.report);
+        child_native_optimizer.merge(attempt.native_optimizer);
         child_source_diagnostics.extend(attempt.source_diagnostics);
         strict_bounded_contract.merge(attempt.strict_bounded_contract);
         adaptive_pipeline.merge(attempt.adaptive_pipeline);
@@ -394,6 +449,7 @@ fn optimize_native_children_for_host_arrow_boundary(
     for child_report in child_reports {
         append_planning_report(report, &child_report);
     }
+    native_optimizer.merge(child_native_optimizer);
     source_diagnostics.extend(child_source_diagnostics);
     plan.with_new_children(new_children).map(Some)
 }

@@ -2,10 +2,10 @@ use std::{collections::HashMap, fmt::Write, sync::Arc};
 
 use arrow::{
     array::{
-        Array, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array, Float32Array,
-        Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
-        TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
-        UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        Array, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,
+        Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray, LargeStringArray,
+        StringArray, StringViewArray, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+        TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
     },
     datatypes::{DataType, Schema, SchemaRef, TimeUnit, i256},
     record_batch::RecordBatch,
@@ -20,8 +20,8 @@ use super::{
 };
 use crate::planner::NativePlanningDiagnostics;
 
-pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 1;
-pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
+pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 2;
+pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\texternal-engine_output_status\texternal-engine_cpu_parity_status\texternal-engine_cpu_parity_detail\texternal-engine_output_rows\texternal-engine_output_batches\texternal-engine_output_fingerprint\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityStatus {
@@ -121,6 +121,8 @@ pub struct NativeTpcdsParityRow {
     pub cpu_output_fingerprint: Option<String>,
     pub native_output_fingerprint: Option<String>,
     pub comparison_mode: ParityComparisonMode,
+    pub duckdb_output: NativeTpcdsParityExternalOutputSummary,
+    pub external-engine_output: NativeTpcdsParityExternalOutputSummary,
     pub native_reservation_live_peak_bytes: Option<usize>,
     pub native_reservation_denied_count: Option<usize>,
     pub native_retry_count: Option<usize>,
@@ -157,6 +159,46 @@ impl NativeTpcdsParityPlanningOutcome {
             Self::AcceptedReplaced => "accepted_replaced",
             Self::RejectedBeforeExecution => "rejected_before_execution",
             Self::PlanningFailed => "planning_failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeTpcdsParityExternalOutputStatus {
+    NotConfigured,
+    Succeeded,
+    Failed,
+}
+
+impl NativeTpcdsParityExternalOutputStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotConfigured => "not_configured",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NativeTpcdsParityExternalOutputSummary {
+    pub status: NativeTpcdsParityExternalOutputStatus,
+    pub cpu_parity_status: ParityStatus,
+    pub cpu_parity_detail: Option<String>,
+    pub output_rows: Option<usize>,
+    pub output_batches: Option<usize>,
+    pub output_fingerprint: Option<String>,
+}
+
+impl NativeTpcdsParityExternalOutputSummary {
+    pub fn not_configured() -> Self {
+        Self {
+            status: NativeTpcdsParityExternalOutputStatus::NotConfigured,
+            cpu_parity_status: ParityStatus::NotCompared,
+            cpu_parity_detail: None,
+            output_rows: None,
+            output_batches: None,
+            output_fingerprint: None,
         }
     }
 }
@@ -214,7 +256,7 @@ impl NativeTpcdsParityReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.cpu_planning_status.as_str(),
                 row.cpu_runtime_status.as_str(),
@@ -232,6 +274,26 @@ impl NativeTpcdsParityReport {
                 row.cpu_output_fingerprint.as_deref().unwrap_or("none"),
                 row.native_output_fingerprint.as_deref().unwrap_or("none"),
                 row.comparison_mode.as_str(),
+                row.duckdb_output.status.as_str(),
+                row.duckdb_output.cpu_parity_status.as_str(),
+                row.duckdb_output
+                    .cpu_parity_detail
+                    .as_deref()
+                    .map(stable_tsv_field)
+                    .unwrap_or_else(|| "none".to_string()),
+                format_optional_usize(row.duckdb_output.output_rows),
+                format_optional_usize(row.duckdb_output.output_batches),
+                row.duckdb_output.output_fingerprint.as_deref().unwrap_or("none"),
+                row.external-engine_output.status.as_str(),
+                row.external-engine_output.cpu_parity_status.as_str(),
+                row.external-engine_output
+                    .cpu_parity_detail
+                    .as_deref()
+                    .map(stable_tsv_field)
+                    .unwrap_or_else(|| "none".to_string()),
+                format_optional_usize(row.external-engine_output.output_rows),
+                format_optional_usize(row.external-engine_output.output_batches),
+                row.external-engine_output.output_fingerprint.as_deref().unwrap_or("none"),
                 format_optional_usize(row.native_reservation_live_peak_bytes),
                 format_optional_usize(row.native_reservation_denied_count),
                 format_optional_usize(row.native_retry_count),
@@ -255,6 +317,8 @@ pub struct NativeTpcdsParityWorkloadItem {
     pub cpu_outcome: NativeTpcdsParityCpuOutcome,
     pub native_planning: NativeTpcdsParityNativePlanningOutcome,
     pub native_runtime: NativeTpcdsParityNativeRuntimeOutcome,
+    pub duckdb_output: NativeTpcdsParityExternalOutput,
+    pub external-engine_output: NativeTpcdsParityExternalOutput,
 }
 
 #[derive(Debug, Clone)]
@@ -274,6 +338,13 @@ pub enum NativeTpcdsParityNativePlanningOutcome {
 pub enum NativeTpcdsParityNativeRuntimeOutcome {
     NotStarted,
     Succeeded { schema: SchemaRef, batches: Vec<RecordBatch>, metrics: MetricsSet },
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone)]
+pub enum NativeTpcdsParityExternalOutput {
+    NotConfigured,
+    Succeeded { schema: SchemaRef, batches: Vec<RecordBatch> },
     Failed { message: String },
 }
 
@@ -350,6 +421,20 @@ fn parity_row_for_item(
             ordered,
             float_tolerance,
         });
+    let duckdb_output = summarize_external_output(
+        item.duckdb_output,
+        cpu_schema.as_ref(),
+        cpu_batches.as_deref(),
+        ordered,
+        float_tolerance,
+    );
+    let external-engine_output = summarize_external_output(
+        item.external-engine_output,
+        cpu_schema.as_ref(),
+        cpu_batches.as_deref(),
+        ordered,
+        float_tolerance,
+    );
 
     NativeTpcdsParityRow {
         query_id: item.query_id,
@@ -369,10 +454,74 @@ fn parity_row_for_item(
         cpu_output_fingerprint: cpu_fingerprint,
         native_output_fingerprint: native_fingerprint,
         comparison_mode,
+        duckdb_output,
+        external-engine_output,
         native_reservation_live_peak_bytes: native_metrics_summary.as_ref().map(|m| m.reservation_live_peak_bytes),
         native_reservation_denied_count: native_metrics_summary.as_ref().map(|m| m.reservation_denied_count),
         native_retry_count: native_metrics_summary.as_ref().map(|m| m.retry_count),
         native_runtime_failure: cpu_runtime_failure.or(native_failure),
+    }
+}
+
+fn summarize_external_output(
+    output: NativeTpcdsParityExternalOutput,
+    cpu_schema: Option<&SchemaRef>,
+    cpu_batches: Option<&[RecordBatch]>,
+    ordered: bool,
+    float_tolerance: ParityFloatTolerance,
+) -> NativeTpcdsParityExternalOutputSummary {
+    match output {
+        NativeTpcdsParityExternalOutput::NotConfigured => NativeTpcdsParityExternalOutputSummary::not_configured(),
+        NativeTpcdsParityExternalOutput::Failed { message } => NativeTpcdsParityExternalOutputSummary {
+            status: NativeTpcdsParityExternalOutputStatus::Failed,
+            cpu_parity_status: ParityStatus::NotCompared,
+            cpu_parity_detail: Some(message),
+            output_rows: None,
+            output_batches: None,
+            output_fingerprint: None,
+        },
+        NativeTpcdsParityExternalOutput::Succeeded { schema, batches } => {
+            let output_rows = Some(total_rows(&batches));
+            let output_batches = Some(batches.len());
+            let output_fingerprint = Some(fingerprint_batches(schema.as_ref(), &batches));
+            let Some(cpu_schema) = cpu_schema else {
+                return NativeTpcdsParityExternalOutputSummary {
+                    status: NativeTpcdsParityExternalOutputStatus::Succeeded,
+                    cpu_parity_status: ParityStatus::NotCompared,
+                    cpu_parity_detail: Some("missing CPU schema".to_string()),
+                    output_rows,
+                    output_batches,
+                    output_fingerprint,
+                };
+            };
+            let Some(cpu_batches) = cpu_batches else {
+                return NativeTpcdsParityExternalOutputSummary {
+                    status: NativeTpcdsParityExternalOutputStatus::Succeeded,
+                    cpu_parity_status: ParityStatus::NotCompared,
+                    cpu_parity_detail: Some("missing CPU batches".to_string()),
+                    output_rows,
+                    output_batches,
+                    output_fingerprint,
+                };
+            };
+            let comparison = compare_record_batches_with_options(
+                cpu_schema.as_ref(),
+                cpu_batches,
+                schema.as_ref(),
+                &batches,
+                ordered,
+                float_tolerance,
+                ParityCompareOptions::cross_engine_oracle(),
+            );
+            NativeTpcdsParityExternalOutputSummary {
+                status: NativeTpcdsParityExternalOutputStatus::Succeeded,
+                cpu_parity_status: comparison.status,
+                cpu_parity_detail: comparison.detail,
+                output_rows,
+                output_batches,
+                output_fingerprint: Some(comparison.native_fingerprint),
+            }
+        },
     }
 }
 
@@ -466,7 +615,42 @@ pub fn compare_record_batches(
     ordered: bool,
     tolerance: ParityFloatTolerance,
 ) -> ParityComparisonResult {
-    let schema_diff = compare_schemas(cpu_schema, native_schema);
+    compare_record_batches_with_options(
+        cpu_schema,
+        cpu_batches,
+        native_schema,
+        native_batches,
+        ordered,
+        tolerance,
+        ParityCompareOptions::strict_native(),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ParityCompareOptions {
+    allow_decimal_precision_mismatch: bool,
+}
+
+impl ParityCompareOptions {
+    const fn strict_native() -> Self {
+        Self { allow_decimal_precision_mismatch: false }
+    }
+
+    const fn cross_engine_oracle() -> Self {
+        Self { allow_decimal_precision_mismatch: true }
+    }
+}
+
+fn compare_record_batches_with_options(
+    cpu_schema: &Schema,
+    cpu_batches: &[RecordBatch],
+    native_schema: &Schema,
+    native_batches: &[RecordBatch],
+    ordered: bool,
+    tolerance: ParityFloatTolerance,
+    options: ParityCompareOptions,
+) -> ParityComparisonResult {
+    let schema_diff = compare_schemas(cpu_schema, native_schema, options);
     let float_tolerant = tolerance.is_enabled() && schema_has_float_column(cpu_schema);
     let mode = ParityComparisonMode::select(ordered, float_tolerant);
 
@@ -529,7 +713,9 @@ pub fn compare_record_batches(
     };
 
     for (index, (cpu_row, native_row)) in cpu_aligned.iter().zip(native_aligned.iter()).enumerate() {
-        if let Some(detail) = compare_canonical_rows(cpu_schema, cpu_row, native_row, tolerance, float_tolerant) {
+        if let Some(detail) =
+            compare_canonical_rows(cpu_schema, cpu_row, native_row, tolerance, float_tolerant, options)
+        {
             return ParityComparisonResult {
                 status: ParityStatus::Mismatched,
                 mode,
@@ -543,7 +729,7 @@ pub fn compare_record_batches(
     ParityComparisonResult { status: ParityStatus::Matched, mode, detail: None, cpu_fingerprint, native_fingerprint }
 }
 
-fn compare_schemas(cpu: &Schema, native: &Schema) -> Option<String> {
+fn compare_schemas(cpu: &Schema, native: &Schema, options: ParityCompareOptions) -> Option<String> {
     if cpu.fields().len() != native.fields().len() {
         return Some(format!(
             "schema field count differs: cpu={} native={}",
@@ -552,7 +738,7 @@ fn compare_schemas(cpu: &Schema, native: &Schema) -> Option<String> {
         ));
     }
     for (index, (cpu_field, native_field)) in cpu.fields().iter().zip(native.fields().iter()).enumerate() {
-        if cpu_field.data_type() != native_field.data_type() {
+        if !logical_data_types_compatible(cpu_field.data_type(), native_field.data_type(), options) {
             return Some(format!(
                 "column {} ({}/{}) type differs: cpu={:?} native={:?}",
                 index,
@@ -564,6 +750,38 @@ fn compare_schemas(cpu: &Schema, native: &Schema) -> Option<String> {
         }
     }
     None
+}
+
+fn logical_data_types_compatible(cpu: &DataType, native: &DataType, options: ParityCompareOptions) -> bool {
+    if cpu == native {
+        return true;
+    }
+    if options.allow_decimal_precision_mismatch {
+        match (cpu, native) {
+            (DataType::Decimal128(_, cpu_scale), DataType::Decimal128(_, native_scale))
+            | (DataType::Decimal256(_, cpu_scale), DataType::Decimal256(_, native_scale))
+                if cpu_scale == native_scale =>
+            {
+                return true;
+            },
+            _ => {},
+        }
+    }
+    matches!(
+        (cpu, native),
+        (DataType::Utf8, DataType::Utf8View)
+            | (DataType::Utf8View, DataType::Utf8)
+            | (DataType::LargeUtf8, DataType::Utf8)
+            | (DataType::Utf8, DataType::LargeUtf8)
+            | (DataType::LargeUtf8, DataType::Utf8View)
+            | (DataType::Utf8View, DataType::LargeUtf8)
+            | (DataType::Binary, DataType::BinaryView)
+            | (DataType::BinaryView, DataType::Binary)
+            | (DataType::LargeBinary, DataType::Binary)
+            | (DataType::Binary, DataType::LargeBinary)
+            | (DataType::LargeBinary, DataType::BinaryView)
+            | (DataType::BinaryView, DataType::LargeBinary)
+    )
 }
 
 fn schema_has_float_column(schema: &Schema) -> bool {
@@ -613,9 +831,7 @@ enum CanonicalField {
     Date64(i64),
     Timestamp { unit: TimeUnitTag, tz: Option<String>, value: i64 },
     Utf8(String),
-    LargeUtf8(String),
     Binary(Vec<u8>),
-    LargeBinary(Vec<u8>),
     Unsupported(String),
 }
 
@@ -729,7 +945,11 @@ fn canonicalize_value(array: &dyn Array, data_type: &DataType, row: usize) -> Re
         },
         DataType::LargeUtf8 => {
             let array = downcast::<LargeStringArray>(array, "LargeStringArray")?;
-            Ok(CanonicalField::LargeUtf8(array.value(row).to_string()))
+            Ok(CanonicalField::Utf8(array.value(row).to_string()))
+        },
+        DataType::Utf8View => {
+            let array = downcast::<StringViewArray>(array, "StringViewArray")?;
+            Ok(CanonicalField::Utf8(array.value(row).to_string()))
         },
         DataType::Binary => {
             let array = downcast::<BinaryArray>(array, "BinaryArray")?;
@@ -737,7 +957,11 @@ fn canonicalize_value(array: &dyn Array, data_type: &DataType, row: usize) -> Re
         },
         DataType::LargeBinary => {
             let array = downcast::<LargeBinaryArray>(array, "LargeBinaryArray")?;
-            Ok(CanonicalField::LargeBinary(array.value(row).to_vec()))
+            Ok(CanonicalField::Binary(array.value(row).to_vec()))
+        },
+        DataType::BinaryView => {
+            let array = downcast::<BinaryViewArray>(array, "BinaryViewArray")?;
+            Ok(CanonicalField::Binary(array.value(row).to_vec()))
         },
         other => Ok(CanonicalField::Unsupported(format!("{other:?}"))),
     }
@@ -753,13 +977,14 @@ fn compare_canonical_rows(
     native: &CanonicalRow,
     tolerance: ParityFloatTolerance,
     float_tolerant: bool,
+    options: ParityCompareOptions,
 ) -> Option<String> {
     if cpu.fields.len() != native.fields.len() {
         return Some(format!("column count differs: cpu={} native={}", cpu.fields.len(), native.fields.len()));
     }
     for (index, (cpu_field, native_field)) in cpu.fields.iter().zip(native.fields.iter()).enumerate() {
         let name = schema.field(index).name();
-        if !canonical_field_equal(cpu_field, native_field, tolerance, float_tolerant) {
+        if !canonical_field_equal(cpu_field, native_field, tolerance, float_tolerant, options) {
             return Some(format!(
                 "column {index} ({name}): cpu={} native={}",
                 format_field_debug(cpu_field),
@@ -775,9 +1000,10 @@ fn canonical_field_equal(
     native: &CanonicalField,
     tolerance: ParityFloatTolerance,
     float_tolerant: bool,
+    options: ParityCompareOptions,
 ) -> bool {
     if !float_tolerant {
-        return cpu == native;
+        return canonical_field_exact_or_allowed(cpu, native, options);
     }
     match (cpu, native) {
         (CanonicalField::Float { width: w1, bits: b1 }, CanonicalField::Float { width: w2, bits: b2 }) => {
@@ -788,8 +1014,32 @@ fn canonical_field_equal(
             let native_value = f64::from_bits(*b2);
             floats_close_enough(cpu_value, native_value, tolerance)
         },
-        _ => cpu == native,
+        _ => canonical_field_exact_or_allowed(cpu, native, options),
     }
+}
+
+fn canonical_field_exact_or_allowed(
+    cpu: &CanonicalField,
+    native: &CanonicalField,
+    options: ParityCompareOptions,
+) -> bool {
+    if cpu == native {
+        return true;
+    }
+    if options.allow_decimal_precision_mismatch {
+        match (cpu, native) {
+            (
+                CanonicalField::Decimal128 { scale: cpu_scale, value: cpu_value, .. },
+                CanonicalField::Decimal128 { scale: native_scale, value: native_value, .. },
+            ) => return cpu_scale == native_scale && cpu_value == native_value,
+            (
+                CanonicalField::Decimal256 { scale: cpu_scale, value: cpu_value, .. },
+                CanonicalField::Decimal256 { scale: native_scale, value: native_value, .. },
+            ) => return cpu_scale == native_scale && cpu_value == native_value,
+            _ => {},
+        }
+    }
+    false
 }
 
 fn floats_close_enough(cpu: f64, native: f64, tolerance: ParityFloatTolerance) -> bool {
@@ -834,8 +1084,7 @@ fn format_field_debug(field: &CanonicalField) -> String {
         CanonicalField::Date64(value) => format!("date64:{value}"),
         CanonicalField::Timestamp { unit, tz, value } => format!("timestamp({unit:?},{tz:?}):{value}"),
         CanonicalField::Utf8(value) => format!("\"{}\"", escape_string(value)),
-        CanonicalField::LargeUtf8(value) => format!("large\"{}\"", escape_string(value)),
-        CanonicalField::Binary(bytes) | CanonicalField::LargeBinary(bytes) => format!("bytes(len={})", bytes.len()),
+        CanonicalField::Binary(bytes) => format!("bytes(len={})", bytes.len()),
         CanonicalField::Unsupported(text) => format!("unsupported({text})"),
     }
 }
@@ -850,6 +1099,13 @@ fn fingerprint_schema_only(schema: &Schema) -> String {
     hash_schema(&mut hasher, schema);
     hasher.update_field("rows=0");
     format!("output-fnv1a64:{:016x}", hasher.finish())
+}
+
+fn fingerprint_batches(schema: &Schema, batches: &[RecordBatch]) -> String {
+    match collect_canonical_rows(schema, batches) {
+        Ok(rows) => fingerprint_rows(schema, &rows),
+        Err(_) => fingerprint_schema_only(schema),
+    }
 }
 
 fn fingerprint_rows(schema: &Schema, rows: &[CanonicalRow]) -> String {
@@ -940,16 +1196,8 @@ fn hash_field(hasher: &mut StableFnv1a64, field: &CanonicalField) {
             hasher.update_field("utf8");
             hasher.update_field(value);
         },
-        CanonicalField::LargeUtf8(value) => {
-            hasher.update_field("large_utf8");
-            hasher.update_field(value);
-        },
         CanonicalField::Binary(bytes) => {
             hasher.update_field("binary");
-            hasher.update_bytes(bytes);
-        },
-        CanonicalField::LargeBinary(bytes) => {
-            hasher.update_field("large_binary");
             hasher.update_bytes(bytes);
         },
         CanonicalField::Unsupported(text) => {

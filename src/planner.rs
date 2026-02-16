@@ -33,6 +33,7 @@ pub use native::{
 pub struct CudfOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
     native_execution_config: NativeCudfExecutionConfig,
+    native_optimizer_options: cudf_query_engine::NativeOptimizerOptions,
 }
 
 impl Default for CudfOptimizerConfig {
@@ -40,6 +41,7 @@ impl Default for CudfOptimizerConfig {
         Self {
             fallback_policy: GpuFallbackPolicy::default(),
             native_execution_config: NativeCudfExecutionConfig::unbounded(),
+            native_optimizer_options: cudf_query_engine::NativeOptimizerOptions::default(),
         }
     }
 }
@@ -57,12 +59,21 @@ impl CudfOptimizerConfig {
         &self.native_execution_config
     }
 
+    pub fn native_optimizer_options(&self) -> &cudf_query_engine::NativeOptimizerOptions {
+        &self.native_optimizer_options
+    }
+
     pub fn native_pipeline_execution_mode(&self) -> cudf_query_engine::NativePipelineExecutionMode {
         self.native_execution_config.native_pipeline_execution_mode()
     }
 
     pub fn with_native_execution_config(mut self, execution_config: NativeCudfExecutionConfig) -> Self {
         self.native_execution_config = execution_config;
+        self
+    }
+
+    pub fn with_native_optimizer_options(mut self, options: cudf_query_engine::NativeOptimizerOptions) -> Self {
+        self.native_optimizer_options = options;
         self
     }
 

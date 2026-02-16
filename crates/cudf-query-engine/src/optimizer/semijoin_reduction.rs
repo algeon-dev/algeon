@@ -78,6 +78,12 @@ impl SemijoinReductionDiagnostics {
     pub fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
+
+    pub fn merge(&mut self, other: Self) {
+        self.considered_count += other.considered_count;
+        self.applied_count += other.applied_count;
+        self.candidates.extend(other.candidates);
+    }
 }
 
 /// Per-candidate semijoin-reduction evidence.

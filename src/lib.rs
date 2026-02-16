@@ -11,7 +11,8 @@ pub mod session;
 mod workload;
 
 pub use cudf_query_engine::{
-    AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativePipelineExecutionMode,
+    AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
+    NativePipelineExecutionMode, SemijoinReductionOptions,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
@@ -31,11 +32,12 @@ pub use native_report::{
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
     NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome, NativeTpcdsParityNativePlanningOutcome,
-    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport,
-    NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
-    ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata, compare_record_batches,
-    sql_has_top_level_order_by,
+    NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
+    NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
+    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
+    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
+    ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata,
+    compare_record_batches, sql_has_top_level_order_by,
 };
 pub use planner::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, NativeAdaptivePipelineCandidateDiagnostics,
@@ -54,14 +56,14 @@ pub use tpcds::{
     CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
     CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES,
-    TpcdsDatasetMetadata, TpcdsQuery, TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError,
-    TpcdsWorkloadResult, describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint,
-    discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset,
-    tiny_tpcds_dataset_metadata, tpcds_datafusion_execution_workload_items,
+    TpcdsDatasetMetadata, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsQuery, TpcdsTableFileMetadata,
+    TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError, TpcdsWorkloadResult, describe_tpcds_dataset,
+    describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout, external_tpcds_dataset_metadata,
+    prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata, tpcds_datafusion_execution_workload_items,
     tpcds_datafusion_execution_workload_items_with_optimizer_config, tpcds_datafusion_planning_workload_items,
     tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_fallback_pressure_workload_items,
-    tpcds_native_optimizer_config, tpcds_parity_workload_items, tpcds_query_ids, tpcds_report_session_config,
-    write_tiny_tpcds_parquet_dataset,
+    tpcds_native_optimizer_config, tpcds_parity_workload_items, tpcds_parity_workload_items_with_external_oracles,
+    tpcds_query_ids, tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
 };
 pub use tpch::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,

@@ -72,6 +72,10 @@ impl NativeOptimizerDiagnostics {
     pub fn is_empty(&self) -> bool {
         self.semijoin_reduction.is_empty()
     }
+
+    pub fn merge(&mut self, other: Self) {
+        self.semijoin_reduction.merge(other.semijoin_reduction);
+    }
 }
 
 /// Runs the native optimizer pass list over a DataFusion-free query plan.

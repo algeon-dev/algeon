@@ -1,17 +1,37 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    sync::Arc,
+};
 
 use datafusion::{
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
     prelude::{SessionConfig, SessionContext},
 };
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 
-use super::{TPCDS_QUERIES, TpcdsWorkloadResult, register_tpcds_tables};
+use super::{TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, discover_tpcds_table_layout, register_tpcds_tables};
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, NativePlanningFailure,
-    NativeTpcdsParityCpuOutcome, NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome,
-    NativeTpcdsParityWorkloadItem,
+    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
+    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityWorkloadItem,
 };
+
+#[derive(Debug, Clone)]
+pub struct TpcdsExternalOracleConfig {
+    pub scratch_dir: PathBuf,
+    pub duckdb: Option<TpcdsExternalEngineConfig>,
+    pub external-engine: Option<TpcdsExternalEngineConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TpcdsExternalEngineConfig {
+    pub binary: PathBuf,
+    pub external-engine_config_file: Option<PathBuf>,
+    pub disable_external-engine: bool,
+}
 
 /// Build parity workload items for the TPC-DS workload. For each selected query
 /// the runner executes both CPU DataFusion and native-rule DataFusion and
@@ -21,6 +41,16 @@ pub async fn tpcds_parity_workload_items(
     session_config: SessionConfig,
     optimizer_config: CudfOptimizerConfig,
     query_filter: Option<&[String]>,
+) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+    tpcds_parity_workload_items_with_external_oracles(root, session_config, optimizer_config, query_filter, None).await
+}
+
+pub async fn tpcds_parity_workload_items_with_external_oracles(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_filter: Option<&[String]>,
+    external_oracles: Option<TpcdsExternalOracleConfig>,
 ) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
     let cpu_ctx = SessionContext::new_with_config(session_config.clone());
     register_tpcds_tables(&cpu_ctx, root).await?;
@@ -41,12 +71,26 @@ pub async fn tpcds_parity_workload_items(
 
         let cpu_outcome = run_cpu_query(&cpu_ctx, query.sql).await;
         let (native_planning, native_runtime) = run_native_query(&native_ctx, &native_rule, query.sql).await;
+        let duckdb_output = external_oracles
+            .as_ref()
+            .and_then(|config| config.duckdb.as_ref().map(|engine| (config, engine)))
+            .map_or(NativeTpcdsParityExternalOutput::NotConfigured, |(config, engine)| {
+                run_external_oracle(root, query.id, query.sql, "duckdb", engine, &config.scratch_dir)
+            });
+        let external-engine_output = external_oracles
+            .as_ref()
+            .and_then(|config| config.external-engine.as_ref().map(|engine| (config, engine)))
+            .map_or(NativeTpcdsParityExternalOutput::NotConfigured, |(config, engine)| {
+                run_external_oracle(root, query.id, query.sql, "external-engine", engine, &config.scratch_dir)
+            });
         items.push(NativeTpcdsParityWorkloadItem {
             query_id: query.id.to_string(),
             sql: query.sql.to_string(),
             cpu_outcome,
             native_planning,
             native_runtime,
+            duckdb_output,
+            external-engine_output,
         });
     }
     Ok(items)
@@ -145,4 +189,110 @@ async fn execute_native(plan: Arc<dyn ExecutionPlan>) -> NativeTpcdsParityNative
         },
         Err(error) => NativeTpcdsParityNativeRuntimeOutcome::Failed { message: error.to_string() },
     }
+}
+
+fn run_external_oracle(
+    root: &Path,
+    query_id: &str,
+    sql: &str,
+    engine_name: &str,
+    engine: &TpcdsExternalEngineConfig,
+    scratch_dir: &Path,
+) -> NativeTpcdsParityExternalOutput {
+    if !engine.binary.is_file() {
+        return NativeTpcdsParityExternalOutput::Failed {
+            message: format!("{engine_name} binary not found: {}", engine.binary.display()),
+        };
+    }
+    let engine_dir = scratch_dir.join(engine_name);
+    if let Err(error) = fs::create_dir_all(&engine_dir) {
+        return NativeTpcdsParityExternalOutput::Failed {
+            message: format!("failed to create {engine_name} scratch dir {}: {error}", engine_dir.display()),
+        };
+    }
+    let output_path = engine_dir.join(format!("{query_id}.parquet"));
+    let sql_path = engine_dir.join(format!("{query_id}.sql"));
+    let command_sql = match external_oracle_sql(root, sql, &output_path) {
+        Ok(sql) => sql,
+        Err(error) => return NativeTpcdsParityExternalOutput::Failed { message: error.to_string() },
+    };
+    if let Err(error) = fs::write(&sql_path, command_sql) {
+        return NativeTpcdsParityExternalOutput::Failed {
+            message: format!("failed to write {engine_name} SQL file {}: {error}", sql_path.display()),
+        };
+    }
+    let stdin_file = match fs::File::open(&sql_path) {
+        Ok(file) => file,
+        Err(error) => {
+            return NativeTpcdsParityExternalOutput::Failed {
+                message: format!("failed to open {engine_name} SQL file {}: {error}", sql_path.display()),
+            };
+        },
+    };
+    let mut command = Command::new(&engine.binary);
+    command.arg(":memory:").stdin(Stdio::from(stdin_file));
+    if engine.disable_external-engine {
+        command.env("external-engine_DISABLE", "1");
+    }
+    if let Some(config_file) = &engine.external-engine_config_file {
+        command.env("external-engine_CONFIG_FILE", config_file);
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(error) => {
+            return NativeTpcdsParityExternalOutput::Failed {
+                message: format!("failed to run {engine_name} binary {}: {error}", engine.binary.display()),
+            };
+        },
+    };
+    if !output.status.success() {
+        return NativeTpcdsParityExternalOutput::Failed {
+            message: format!(
+                "{engine_name} exited with status {}; stderr={}",
+                output.status,
+                stable_command_output(&output.stderr)
+            ),
+        };
+    }
+    read_external_oracle_parquet(&output_path).unwrap_or_else(|message| NativeTpcdsParityExternalOutput::Failed {
+        message: format!("{engine_name} output read failed: {message}"),
+    })
+}
+
+fn external_oracle_sql(root: &Path, query_sql: &str, output_path: &Path) -> TpcdsWorkloadResult<String> {
+    let mut sql = String::new();
+    for &table in TPCDS_TABLES {
+        let layout = discover_tpcds_table_layout(root, table)?;
+        let files = layout
+            .files
+            .iter()
+            .map(|path| format!("'{}'", escape_sql_string(path.to_string_lossy().as_ref())))
+            .collect::<Vec<_>>()
+            .join(",");
+        sql.push_str(&format!("CREATE VIEW {table} AS SELECT * FROM read_parquet([{files}]);\n"));
+    }
+    sql.push_str(&format!(
+        "COPY ({}) TO '{}' (FORMAT PARQUET);\n",
+        query_sql.trim().trim_end_matches(';'),
+        escape_sql_string(output_path.to_string_lossy().as_ref())
+    ));
+    Ok(sql)
+}
+
+fn read_external_oracle_parquet(path: &Path) -> Result<NativeTpcdsParityExternalOutput, String> {
+    let file = fs::File::open(path).map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file).map_err(|error| error.to_string())?;
+    let schema = builder.schema().clone();
+    let reader = builder.build().map_err(|error| error.to_string())?;
+    let batches = reader.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
+    Ok(NativeTpcdsParityExternalOutput::Succeeded { schema, batches })
+}
+
+fn escape_sql_string(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+fn stable_command_output(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    text.lines().take(20).collect::<Vec<_>>().join("\\n")
 }
