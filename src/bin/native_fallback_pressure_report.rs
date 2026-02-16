@@ -17,7 +17,8 @@ use datafusion::{
 };
 use datafusion_cudf::{
     NativeCudfExecutionConfig, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
-    NativePipelineExecutionMode, TpchDatasetMetadata, prepare_tpch_report_dataset,
+    NativePipelineExecutionMode, TpcdsDatasetMetadata, TpchDatasetMetadata, prepare_tpcds_report_dataset,
+    prepare_tpch_report_dataset, tpcds_fallback_pressure_workload_items, tpcds_report_session_config,
     tpch_fallback_pressure_workload_items, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
 };
 
@@ -38,9 +39,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
             let TpchWorkload { items, metadata } = tpch_scalar_workload_items(&dir).await?;
             (items, Some(metadata.to_workload_dataset_metadata()))
         },
+        "tpcds" => {
+            let TpcdsWorkload { items, metadata } = tpcds_workload_items(&dir).await?;
+            (items, Some(metadata.to_workload_dataset_metadata()))
+        },
         value => {
             return Err(format!(
-                "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic, tpch, or tpch_scalar"
+                "unsupported CUDF_NATIVE_FALLBACK_PRESSURE_WORKLOAD={value}; expected synthetic, tpch, tpch_scalar, or tpcds"
             )
             .into());
         },
@@ -114,6 +119,17 @@ async fn tpch_scalar_workload_items(dir: &std::path::Path) -> datafusion_cudf::T
 struct TpchWorkload {
     items: Vec<NativeFallbackPressureWorkloadItem>,
     metadata: TpchDatasetMetadata,
+}
+
+async fn tpcds_workload_items(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadResult<TpcdsWorkload> {
+    let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
+    let items = tpcds_fallback_pressure_workload_items(&root, tpcds_report_session_config()).await?;
+    Ok(TpcdsWorkload { items, metadata })
+}
+
+struct TpcdsWorkload {
+    items: Vec<NativeFallbackPressureWorkloadItem>,
+    metadata: TpcdsDatasetMetadata,
 }
 
 async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {
