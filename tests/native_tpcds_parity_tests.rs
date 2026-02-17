@@ -180,6 +180,202 @@ async fn tpcds_sf1_q85_matches_after_shared_resident_pipeline_contract_fix() {
     assert_eq!(row.native_runtime_failure, None);
 }
 
+#[tokio::test]
+async fn tpcds_sf1_case_residual_post_filter_queries_match_after_one_shot_admission() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("customer.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec!["q04".to_string(), "q11".to_string(), "q31".to_string(), "q74".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 4);
+
+    for (query_id, output_rows) in [("q04", 6), ("q11", 90), ("q31", 44), ("q74", 92)] {
+        let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
+        assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
+        assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
+        assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
+        assert_eq!(row.native_reason_code, None, "{query_id}");
+        assert_eq!(row.native_unsupported_category, None, "{query_id}");
+        assert!(row.native_runtime_started, "{query_id} must execute through the native path");
+        assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
+        assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
+        assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact, "{query_id}");
+        assert_eq!(row.cpu_output_rows, Some(output_rows), "{query_id}");
+        assert_eq!(row.native_output_rows, Some(output_rows), "{query_id}");
+        assert_eq!(row.native_reservation_denied_count, Some(0), "{query_id}");
+        assert_eq!(row.native_retry_count, Some(0), "{query_id}");
+        assert_eq!(row.native_runtime_failure, None, "{query_id}");
+    }
+}
+
+#[tokio::test]
+async fn tpcds_sf1_global_limit_join_aggregate_queries_match_after_limit_admission() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("catalog_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec![
+        "q16".to_string(),
+        "q32".to_string(),
+        "q92".to_string(),
+        "q94".to_string(),
+        "q95".to_string(),
+        "q96".to_string(),
+        "q97".to_string(),
+    ];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 7);
+
+    for (query_id, comparison_mode) in [
+        ("q16", ParityComparisonMode::OrderedExact),
+        ("q32", ParityComparisonMode::UnorderedExact),
+        ("q92", ParityComparisonMode::OrderedExact),
+        ("q94", ParityComparisonMode::OrderedExact),
+        ("q95", ParityComparisonMode::OrderedExact),
+        ("q96", ParityComparisonMode::OrderedExact),
+        ("q97", ParityComparisonMode::UnorderedExact),
+    ] {
+        let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
+        assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
+        assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
+        assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
+        assert_eq!(row.native_reason_code, None, "{query_id}");
+        assert_eq!(row.native_unsupported_category, None, "{query_id}");
+        assert!(row.native_runtime_started, "{query_id} must execute through the native path");
+        assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
+        assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
+        assert_eq!(row.comparison_mode, comparison_mode, "{query_id}");
+        assert_eq!(row.cpu_output_rows, Some(1), "{query_id}");
+        assert_eq!(row.native_output_rows, Some(1), "{query_id}");
+        assert_eq!(row.native_reservation_denied_count, Some(0), "{query_id}");
+        assert_eq!(row.native_retry_count, Some(0), "{query_id}");
+        assert_eq!(row.native_runtime_failure, None, "{query_id}");
+    }
+}
+
+#[tokio::test]
+async fn tpcds_sf1_q61_matches_after_physical_cross_join_admission() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec!["q61".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 1);
+
+    let row = &report.rows[0];
+    assert_eq!(row.query_id, "q61");
+    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
+    assert_eq!(row.native_reason_code, None);
+    assert_eq!(row.native_unsupported_category, None);
+    assert!(row.native_runtime_started, "q61 must execute through the native path");
+    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.parity_status, ParityStatus::Matched);
+    assert_eq!(row.comparison_mode, ParityComparisonMode::OrderedExact);
+    assert_eq!(row.cpu_output_rows, Some(1));
+    assert_eq!(row.native_output_rows, Some(1));
+    assert_eq!(row.native_reservation_denied_count, Some(0));
+    assert_eq!(row.native_retry_count, Some(0));
+    assert_eq!(row.native_runtime_failure, None);
+}
+
+#[tokio::test]
+async fn tpcds_sf1_q09_matches_after_scalar_nested_loop_left_join_cross_admission() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec!["q09".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 1);
+
+    let row = &report.rows[0];
+    assert_eq!(row.query_id, "q09");
+    assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded);
+    assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
+    assert_eq!(row.native_reason_code, None);
+    assert_eq!(row.native_unsupported_category, None);
+    assert!(row.native_runtime_started, "q09 must execute through the native path");
+    assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(row.parity_status, ParityStatus::Matched);
+    assert_eq!(row.comparison_mode, ParityComparisonMode::UnorderedExact);
+    assert_eq!(row.cpu_output_rows, Some(1));
+    assert_eq!(row.native_output_rows, Some(1));
+    assert_eq!(row.native_reservation_denied_count, Some(0));
+    assert_eq!(row.native_retry_count, Some(0));
+    assert_eq!(row.native_runtime_failure, None);
+}
+
+#[tokio::test]
+async fn tpcds_sf1_cross_join_count_subplans_match_after_hidden_join_output_projection() {
+    let root = Path::new(TPCDS_SF1_FIXTURE);
+    assert!(root.join("web_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
+
+    let query_filter = vec!["q88".to_string(), "q90".to_string()];
+    let items = tpcds_parity_workload_items(
+        root,
+        tpcds_report_session_config(),
+        sf1_native_optimizer_config(),
+        Some(&query_filter),
+    )
+    .await
+    .unwrap();
+    let report = NativeTpcdsParityReport::collect(items, ParityFloatTolerance::exact());
+    assert_eq!(report.rows.len(), 2);
+
+    for (query_id, comparison_mode) in
+        [("q88", ParityComparisonMode::UnorderedExact), ("q90", ParityComparisonMode::OrderedExact)]
+    {
+        let row = report.rows.iter().find(|row| row.query_id == query_id).expect("query row should exist");
+        assert_eq!(row.cpu_planning_status, ParityStageStatus::Succeeded, "{query_id}");
+        assert_eq!(row.cpu_runtime_status, ParityStageStatus::Succeeded, "{query_id}");
+        assert_eq!(row.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced, "{query_id}");
+        assert_eq!(row.native_reason_code, None, "{query_id}");
+        assert_eq!(row.native_unsupported_category, None, "{query_id}");
+        assert!(row.native_runtime_started, "{query_id} must execute through the native path");
+        assert_eq!(row.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded, "{query_id}");
+        assert_eq!(row.parity_status, ParityStatus::Matched, "{query_id}");
+        assert_eq!(row.comparison_mode, comparison_mode, "{query_id}");
+        assert_eq!(row.cpu_output_rows, Some(1), "{query_id}");
+        assert_eq!(row.native_output_rows, Some(1), "{query_id}");
+        assert_eq!(row.native_reservation_denied_count, Some(0), "{query_id}");
+        assert_eq!(row.native_retry_count, Some(0), "{query_id}");
+        assert_eq!(row.native_runtime_failure, None, "{query_id}");
+    }
+}
+
 #[test]
 fn compare_record_batches_matched_ordered_exact_for_int_and_string() {
     let schema = int_string_schema();

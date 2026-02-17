@@ -209,6 +209,9 @@ fn lower_join_filter_expr(
         });
     }
     if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+        if join_filter_expr_single_side(expr, context.filter).is_ok() {
+            return materialize_join_residual_expr(expr, context, left_required, right_required, materializations);
+        }
         return lower_join_filter_case_expr(case, context, left_required, right_required, materializations);
     }
     if expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some() {

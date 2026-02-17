@@ -550,7 +550,7 @@ fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_p
             PipelineTaskKind::FinalSort if !seen_sort && !seen_limit => {
                 seen_sort = true;
             },
-            PipelineTaskKind::Limit if seen_sort && !seen_limit => {
+            PipelineTaskKind::Limit if !seen_limit => {
                 seen_limit = true;
             },
             PipelineTaskKind::SourceRead

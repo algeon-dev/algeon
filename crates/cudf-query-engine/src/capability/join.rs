@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows};
+use crate::{
+    expr::Expr,
+    plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows},
+};
 
 pub(crate) const LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
 pub(crate) const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
@@ -185,6 +188,20 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     join: &JoinNode,
     input: KeyedHashJoinStrategyInputFacts,
 ) -> KeyedHashJoinStrategyDecision {
+    if join_residual_requires_post_join_filter(join) && one_shot_equi_join_supported(join) {
+        return KeyedHashJoinStrategyDecision::Selected {
+            strategy: KeyedHashJoinStrategy::OneShotEqui,
+            facts: strategy_facts(
+                join,
+                input,
+                KeyedHashJoinStrategy::OneShotEqui,
+                Some("residual_requires_post_join_filter"),
+                Some("residual_requires_post_join_filter"),
+                None,
+            ),
+        };
+    }
+
     let large_build = input.observed_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.estimated_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.build_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD);
@@ -279,6 +296,29 @@ pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
         && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
         && (join.spec.residual_predicate.is_none() || join.spec.join_type == JoinType::Inner)
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
+}
+
+pub(crate) fn join_residual_requires_post_join_filter(join: &JoinNode) -> bool {
+    join.spec.residual_predicate.as_ref().is_some_and(expr_contains_case)
+}
+
+fn expr_contains_case(expr: &Expr) -> bool {
+    match expr {
+        Expr::Case { .. } => true,
+        Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Extract { expr, .. }
+        | Expr::Alias { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Like { expr, .. } => expr_contains_case(expr),
+        Expr::Binary { left, right, .. } => expr_contains_case(left) || expr_contains_case(right),
+        Expr::InList { expr, list, .. } => expr_contains_case(expr) || list.iter().any(expr_contains_case),
+        Expr::Column(_) | Expr::Literal(_) => false,
+    }
 }
 
 fn strategy_facts(

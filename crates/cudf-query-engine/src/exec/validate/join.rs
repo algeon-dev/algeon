@@ -6,13 +6,13 @@ use super::{
     expressions::{validate_column, validate_literal},
     types::{
         is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
-        require_compatible_types, require_integral_type,
+        require_compatible_types, require_date_or_timestamp, require_integral_type, require_string,
     },
     *,
 };
 use crate::{
     datatypes::is_supported_arrow_cast,
-    expr::{ColumnQualifier, ColumnRef},
+    expr::{BinaryOp, ColumnQualifier, ColumnRef, LiteralValue},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
 };
 
@@ -105,7 +105,17 @@ pub(super) fn validate_join_capability(
     }
     if let Some(predicate) = &join.spec.residual_predicate {
         let predicate_type =
-            validate_join_residual_expr(predicate, left_schema, left_available, right_schema, right_available)?;
+            match validate_join_residual_expr(predicate, left_schema, left_available, right_schema, right_available) {
+                Ok(data_type) => data_type,
+                Err(_error) if join_residual_case_post_filter_supported(join) => validate_post_join_residual_expr(
+                    predicate,
+                    left_schema,
+                    left_available,
+                    right_schema,
+                    right_available,
+                )?,
+                Err(error) => return Err(error),
+            };
         require_boolean(&predicate_type, "join residual predicate")?;
         validate_join_residual_column_sides(predicate)?;
     }
@@ -272,17 +282,21 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
             }
             Ok(())
         },
-        Expr::Like { .. }
-        | Expr::Substring { .. }
-        | Expr::Lower(_)
-        | Expr::Upper(_)
-        | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
-            QueryErrorCode::UnsupportedExpression,
-            "cudf_query_engine.join.validate_residual",
-            "native join residual predicates do not yet support this expression family",
-        )
-        .with_fact("expression", expr)),
+        Expr::Case { branches, else_expr } => {
+            for branch in branches {
+                collect_join_residual_sides(&branch.when, left, right)?;
+                collect_join_residual_sides(&branch.then, left, right)?;
+            }
+            collect_join_residual_sides(else_expr, left, right)
+        },
+        Expr::Like { .. } | Expr::Substring { .. } | Expr::Lower(_) | Expr::Upper(_) | Expr::Extract { .. } => {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "native join residual predicates do not yet support this expression family",
+            )
+            .with_fact("expression", expr))
+        },
     }
 }
 
@@ -403,6 +417,185 @@ fn validate_join_residual_expr(
             "native join residual predicates do not yet support this expression family",
         )
         .with_fact("expression", expr)),
+    }
+}
+
+fn validate_post_join_residual_expr(
+    expr: &Expr,
+    left_schema: &SchemaRef,
+    left_available: &BTreeSet<String>,
+    right_schema: &SchemaRef,
+    right_available: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    match expr {
+        Expr::Column(column) => match column.qualifier() {
+            Some(ColumnQualifier::Input { index: 0 }) => validate_column(column.name(), left_schema, left_available),
+            Some(ColumnQualifier::Input { index: 1 }) => validate_column(column.name(), right_schema, right_available),
+            qualifier => Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.validate_residual",
+                "post-join residual column must be input-qualified",
+            )
+            .with_fact("column", column.name())
+            .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
+        },
+        Expr::Literal(value) => validate_literal(value),
+        Expr::Not(expr) => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_boolean(&data_type, "post-join residual NOT argument")?;
+            Ok(ArrowDataType::Boolean)
+        },
+        Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
+            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            Ok(ArrowDataType::Boolean)
+        },
+        Expr::Cast { expr, target_type } => {
+            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            Ok(target_type.clone())
+        },
+        Expr::Lower(expr) | Expr::Upper(expr) => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_string(&data_type, "post-join residual string case input")?;
+            Ok(data_type)
+        },
+        Expr::Extract { expr, .. } => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
+            Ok(ArrowDataType::Int32)
+        },
+        Expr::Binary { left, op, right, output_type } => {
+            let left_type =
+                validate_post_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
+            let right_type =
+                validate_post_join_residual_expr(right, left_schema, left_available, right_schema, right_available)?;
+            match op {
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
+                    require_arithmetic_type(&left_type, "post-join residual arithmetic left operand")?;
+                    require_arithmetic_type(&right_type, "post-join residual arithmetic right operand")?;
+                    require_compatible_types(&left_type, &right_type, "post-join residual arithmetic operands")?;
+                    Ok(output_type.clone().unwrap_or(left_type))
+                },
+                BinaryOp::Modulo => {
+                    require_integral_type(&left_type, "post-join residual modulo left operand")?;
+                    require_integral_type(&right_type, "post-join residual modulo right operand")?;
+                    require_compatible_types(&left_type, &right_type, "post-join residual modulo operands")?;
+                    Ok(left_type)
+                },
+                BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
+                    require_comparable_types(&left_type, &right_type)?;
+                    Ok(ArrowDataType::Boolean)
+                },
+                BinaryOp::And | BinaryOp::Or => {
+                    require_boolean(&left_type, "post-join residual logical left operand")?;
+                    require_boolean(&right_type, "post-join residual logical right operand")?;
+                    Ok(ArrowDataType::Boolean)
+                },
+            }
+        },
+        Expr::InList { expr, list, .. } => {
+            let expr_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            if list.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.validate_residual",
+                    "post-join residual IN list must not be empty",
+                ));
+            }
+            for item in list {
+                let Expr::Literal(value) = item else {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.join.validate_residual",
+                        "post-join residual IN list values must be literals",
+                    ));
+                };
+                if matches!(value, LiteralValue::Null(_)) {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedExpression,
+                        "cudf_query_engine.join.validate_residual",
+                        "post-join residual IN list does not yet model SQL null-containing list semantics",
+                    ));
+                }
+                let item_type = validate_literal(value)?;
+                require_compatible_types(&expr_type, &item_type, "post-join residual IN list value")?;
+            }
+            Ok(ArrowDataType::Boolean)
+        },
+        Expr::Case { branches, else_expr } => {
+            if branches.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.validate_residual",
+                    "post-join residual CASE requires at least one WHEN branch",
+                ));
+            }
+            let else_type = validate_post_join_residual_expr(
+                else_expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+            )?;
+            for branch in branches {
+                let when_type = validate_post_join_residual_expr(
+                    &branch.when,
+                    left_schema,
+                    left_available,
+                    right_schema,
+                    right_available,
+                )?;
+                require_boolean(&when_type, "post-join residual CASE WHEN predicate")?;
+                let then_type = validate_post_join_residual_expr(
+                    &branch.then,
+                    left_schema,
+                    left_available,
+                    right_schema,
+                    right_available,
+                )?;
+                require_compatible_types(&else_type, &then_type, "post-join residual CASE branch result")?;
+            }
+            Ok(else_type)
+        },
+        Expr::Alias { expr, .. } => {
+            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
+        },
+        Expr::Like { .. } | Expr::Substring { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "post-join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
+    }
+}
+
+fn join_residual_case_post_filter_supported(join: &JoinNode) -> bool {
+    join.spec.join_type == JoinType::Inner
+        && !join.spec.keys.is_empty()
+        && !join.spec.output_projection.is_empty()
+        && join.spec.residual_predicate.as_ref().is_some_and(residual_expr_contains_case)
+}
+
+fn residual_expr_contains_case(expr: &Expr) -> bool {
+    match expr {
+        Expr::Case { .. } => true,
+        Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Extract { expr, .. }
+        | Expr::Alias { expr, .. } => residual_expr_contains_case(expr),
+        Expr::Like { expr, .. } | Expr::Substring { expr, .. } => residual_expr_contains_case(expr),
+        Expr::Binary { left, right, .. } => residual_expr_contains_case(left) || residual_expr_contains_case(right),
+        Expr::InList { expr, list, .. } => {
+            residual_expr_contains_case(expr) || list.iter().any(residual_expr_contains_case)
+        },
+        Expr::Column(_) | Expr::Literal(_) => false,
     }
 }
 

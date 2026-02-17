@@ -59,6 +59,17 @@ fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<Nati
             build_side: "left".to_string(),
             probe_side: "right".to_string(),
         });
+    } else if plan.as_any().downcast_ref::<CrossJoinExec>().is_some() {
+        diagnostics.push(NativeJoinDiagnosticSummary {
+            operator: "CrossJoinExec".to_string(),
+            join_type: "cross".to_string(),
+            key_count: 0,
+            key_shape: "none".to_string(),
+            residual_predicate: false,
+            null_equality: "not_applicable".to_string(),
+            build_side: "left".to_string(),
+            probe_side: "right".to_string(),
+        });
     }
 
     for child in plan.children() {

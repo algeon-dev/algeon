@@ -201,6 +201,7 @@ fn lower_native_input(
             aggregate::lower_aggregate_input(aggregate, builder, required_output_fields)
         },
         NormalizedNativeInput::HashJoin(join) => join::lower_hash_join_input(join, builder, required_output_fields),
+        NormalizedNativeInput::CrossJoin(join) => join::lower_cross_join_input(join, builder, required_output_fields),
         NormalizedNativeInput::NestedLoopJoin(join) => {
             join::lower_nested_loop_join_input(join, builder, required_output_fields)
         },

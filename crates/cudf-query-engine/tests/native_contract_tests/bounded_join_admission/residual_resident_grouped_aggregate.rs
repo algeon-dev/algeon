@@ -187,7 +187,7 @@ fn bounded_mixed_residual_resident_grouped_aggregate_phase6_preserves_node_failu
         panic!("unsupported residual expression should reject mixed residual admission");
     };
     assert_eq!(*reason, "unsupported_join_residual_expression_capability");
-    assert_eq!(facts.get("expression_family").map(String::as_str), Some("case"));
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("like"));
     assert!(
         analysis.invariants.iter().any(|invariant| {
             matches!(invariant.kind, SubgraphInvariantKind::ResidualUsesBothInputs { .. })
@@ -409,16 +409,18 @@ pub(crate) fn residual_resident_grouped_aggregate_input_plan(
         };
     if !matches!(variant, ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual) {
         root_spec = if matches!(variant, ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression) {
-            root_spec.with_residual_predicate(Expr::case(
-                vec![CaseWhen::new(
+            root_spec.with_residual_predicate(Expr::binary(
+                Expr::like(Expr::input_column(0, "l_quantity", "l_quantity"), "1%"),
+                BinaryOp::And,
+                Expr::binary(
                     Expr::binary(
                         Expr::input_column(0, "l_quantity", "l_quantity"),
                         BinaryOp::Lt,
                         Expr::input_column(1, "avg_quantity", "avg_quantity"),
                     ),
+                    BinaryOp::Eq,
                     Expr::literal(LiteralValue::Boolean(true)),
-                )],
-                Expr::literal(LiteralValue::Boolean(false)),
+                ),
             ))
         } else {
             let residual_right =

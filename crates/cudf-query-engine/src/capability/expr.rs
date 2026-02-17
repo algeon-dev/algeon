@@ -190,6 +190,52 @@ pub(super) fn validate_join_residual_expr_capability(expr: &Expr) -> Result<(), 
     }
 }
 
+pub(super) fn validate_post_join_residual_expr_capability(expr: &Expr) -> Result<(), ExpressionCapabilityRejection> {
+    match expr {
+        Expr::Column(column)
+            if matches!(column.qualifier(), Some(crate::expr::ColumnQualifier::Input { index: 0 | 1 })) =>
+        {
+            Ok(())
+        },
+        Expr::Column(_) => Err(ExpressionCapabilityRejection {
+            reason: "join_residual_column_must_be_input_qualified",
+            expression_family: "column",
+        }),
+        Expr::Literal(value) => validate_literal_capability(value, "literal"),
+        Expr::Not(expr) | Expr::IsNull(expr) | Expr::IsNotNull(expr) | Expr::Alias { expr, .. } => {
+            validate_post_join_residual_expr_capability(expr)
+        },
+        Expr::Cast { expr, .. } | Expr::Lower(expr) | Expr::Upper(expr) | Expr::Extract { expr, .. } => {
+            validate_post_join_residual_expr_capability(expr)
+        },
+        Expr::Binary { left, right, .. } => {
+            validate_post_join_residual_expr_capability(left)?;
+            validate_post_join_residual_expr_capability(right)
+        },
+        Expr::InList { expr, list, .. } => {
+            validate_post_join_residual_expr_capability(expr)?;
+            validate_in_list_capability(list, "in_list")
+        },
+        Expr::Case { branches, else_expr } => {
+            if branches.is_empty() {
+                return Err(ExpressionCapabilityRejection {
+                    reason: "case_requires_when_branch",
+                    expression_family: "case",
+                });
+            }
+            for branch in branches {
+                validate_post_join_residual_expr_capability(&branch.when)?;
+                validate_post_join_residual_expr_capability(&branch.then)?;
+            }
+            validate_post_join_residual_expr_capability(else_expr)
+        },
+        Expr::Like { .. } | Expr::Substring { .. } => Err(ExpressionCapabilityRejection {
+            reason: "post_join_residual_expression_family_not_supported",
+            expression_family: expr_family(expr),
+        }),
+    }
+}
+
 fn validate_in_list_capability(
     list: &[Expr],
     expression_family: &'static str,

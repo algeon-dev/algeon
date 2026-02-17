@@ -61,6 +61,10 @@ fn collect_source_diagnostics_for_input(
             collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
             collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
         },
+        NormalizedNativeInput::CrossJoin(join) => {
+            collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
+            collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
+        },
         NormalizedNativeInput::NestedLoopJoin(join) => {
             collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
             collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
