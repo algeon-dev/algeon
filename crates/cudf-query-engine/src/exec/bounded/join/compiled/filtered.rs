@@ -384,8 +384,13 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         ),
         metrics,
     )?;
-    let output =
-        materialize_left_only_join_output_projection(&probe.frame, &indices, &overrides, &node.spec.output_projection)?;
+    let output = materialize_left_only_join_output_projection(
+        &probe.frame,
+        &indices,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    )?;
     let output_rows = output.num_rows() as u64;
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
@@ -470,8 +475,13 @@ pub(super) fn execute_compiled_filtered_join_materialize(
         ),
         metrics,
     )?;
-    let output =
-        materialize_left_only_join_output_projection(&probe.frame, &indices, &overrides, &node.spec.output_projection)?;
+    let output = materialize_left_only_join_output_projection(
+        &probe.frame,
+        &indices,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    )?;
     metrics.operator_time += build.timer.elapsed();
     let output_rows = output.num_rows() as u64;
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;

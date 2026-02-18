@@ -163,7 +163,14 @@ pub(super) fn execute_join(
         overrides: &overrides,
     };
     let indices = execute_join_indices(input, node, scratch, metrics)?.with_observed_gather_maps()?;
-    let output = materialize_join_output(&left, &right, &indices.indices, &overrides, &node.spec.output_projection)?;
+    let output = materialize_join_output(
+        &left,
+        &right,
+        &indices.indices,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    )?;
     metrics.operator_time += timer.elapsed();
 
     let output_rows = output.num_rows() as u64;

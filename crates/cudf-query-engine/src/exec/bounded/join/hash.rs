@@ -562,6 +562,7 @@ fn materialize_bounded_root_hash_join_probe_chunk(
         &right_indices,
         &overrides,
         &node.spec.output_projection,
+        node.spec.join_type,
     )?;
     metrics.operator_time += timer.elapsed();
 

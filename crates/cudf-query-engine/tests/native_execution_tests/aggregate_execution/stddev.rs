@@ -164,6 +164,202 @@ fn global_stddev_samp_preserves_multifile_input_order_bits() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn global_stddev_samp_preserves_row_group_filter_projection_order_bits() {
+    let dir = unique_temp_dir("cudf-query-engine-row-group-ordered-stddev-samp");
+    let first_path = dir.join("first.parquet");
+    let second_path = dir.join("second.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("v", DataType::Float64, true),
+        Field::new("keep", DataType::Int32, false),
+    ]));
+    write_f64_keep_row_grouped_parquet(
+        Arc::clone(&schema),
+        &first_path,
+        vec![(Some(1.0e16), 1), (Some(999.0), 0), (Some(1.0e-16), 1)],
+        1,
+    );
+    write_f64_keep_row_grouped_parquet(
+        Arc::clone(&schema),
+        &second_path,
+        vec![(Some(1.0), 1), (Some(888.0), 0), (Some(2.0), 1), (Some(3.0), 1)],
+        2,
+    );
+
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&first_path).with_file_size_bytes(fs::metadata(&first_path).unwrap().len()),
+            LocalParquetFile::new(&second_path).with_file_size_bytes(fs::metadata(&second_path).unwrap().len()),
+        ],
+        Arc::clone(&schema),
+        vec!["v".to_string(), "keep".to_string()],
+    );
+    let projected_schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Float64, true)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("stdev", DataType::Float64, true)]));
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev")],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filtered = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+        Arc::clone(&schema),
+    );
+    let projected =
+        builder.add_projection(filtered, projection_outputs(vec![Expr::column("v")], Arc::clone(&projected_schema)));
+    let aggregate = builder.add_aggregate(projected, aggregate, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder().build().unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    let expected = welford_stddev_samp([1.0e16, 1.0e-16, 1.0, 2.0, 3.0]).unwrap();
+    let reversed = welford_stddev_samp([3.0, 2.0, 1.0, 1.0e-16, 1.0e16]).unwrap();
+    assert_ne!(expected.to_bits(), reversed.to_bits(), "test values must expose Welford order sensitivity");
+    assert_eq!(float64_array(batch, 0).value(0).to_bits(), expected.to_bits());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
+    let dir = unique_temp_dir("cudf-query-engine-join-ordered-stddev-samp");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let left_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Float64, true)]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("grp", DataType::Int32, false),
+        Field::new("keep", DataType::Int32, false),
+    ]));
+    let left_values = vec![1.0e16, 1.0e-16, 1.0, 2.0, 3.0];
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&left_schema),
+        vec![Arc::new(Int32Array::from(vec![1; left_values.len()])), Arc::new(Float64Array::from(left_values.clone()))],
+    )
+    .unwrap();
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 1])),
+            Arc::new(Int32Array::from(vec![7, 7, 7])),
+            Arc::new(Int32Array::from(vec![1, 0, 1])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(&runtime, &left_batch).unwrap().write_parquet(&left_path).unwrap();
+    DataFrame::from_record_batch(&runtime, &right_batch).unwrap().write_parquet(&right_path).unwrap();
+
+    let left = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&left_path).with_file_size_bytes(fs::metadata(&left_path).unwrap().len())],
+        Arc::clone(&left_schema),
+        vec!["k".to_string(), "v".to_string()],
+    );
+    let right = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["k".to_string(), "grp".to_string(), "keep".to_string()],
+    );
+    let projected_right_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("grp", DataType::Int32, false)]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("v", DataType::Float64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("stdev", DataType::Float64, true),
+        Field::new("avg_v", DataType::Float64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("stdev", DataType::Float64, true),
+        Field::new("avg_v", DataType::Float64, true),
+        Field::new("cov", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left));
+    let right = builder.add_source(SourceNode::LocalParquet(right));
+    let right = builder.add_filter(
+        right,
+        Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+        Arc::clone(&right_schema),
+    );
+    let right = builder.add_projection(
+        right,
+        projection_outputs(vec![Expr::column("k"), Expr::column("grp")], Arc::clone(&projected_right_schema)),
+    );
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "k", "k"),
+                cudf_query_engine::ColumnRef::input(1, "k", "k"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("grp")],
+            vec![
+                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
+                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+            ],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let projection = builder.add_projection(
+        aggregate,
+        projection_outputs(
+            vec![
+                Expr::column("grp"),
+                Expr::column("stdev"),
+                Expr::column("avg_v"),
+                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_v")).alias("cov"),
+            ],
+            Arc::clone(&output_schema),
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::builder().with_shared_runtime(runtime).build().unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    let expected_values = left_values.iter().copied().chain(left_values.iter().copied()).collect::<Vec<_>>();
+    let reversed_values =
+        left_values.iter().rev().copied().chain(left_values.iter().rev().copied()).collect::<Vec<_>>();
+    let expected = welford_stddev_samp(expected_values.iter().copied()).unwrap();
+    let reversed = welford_stddev_samp(reversed_values).unwrap();
+    let expected_avg = ordered_avg(expected_values.iter().copied()).unwrap();
+    assert_ne!(expected.to_bits(), reversed.to_bits(), "test values must expose join-order sensitivity");
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[7]);
+    assert_eq!(float64_array(batch, 1).value(0).to_bits(), expected.to_bits());
+    assert_eq!(float64_array(batch, 3).value(0).to_bits(), (expected / expected_avg).to_bits());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn write_stddev_input_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -188,6 +384,26 @@ fn write_f64_parquet(runtime: &cudf::Runtime, schema: &Arc<Schema>, path: &Path,
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
 }
 
+fn write_f64_keep_row_grouped_parquet(
+    schema: Arc<Schema>,
+    path: &Path,
+    rows: Vec<(Option<f64>, i32)>,
+    rows_per_group: usize,
+) {
+    let values = rows.iter().map(|(value, _keep)| *value).collect::<Vec<_>>();
+    let keep = rows.iter().map(|(_value, keep)| *keep).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Float64Array::from(values)), Arc::new(Int32Array::from(keep))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(rows_per_group)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
 fn welford_stddev_samp(values: impl IntoIterator<Item = f64>) -> Option<f64> {
     let mut count = 0u64;
     let mut mean = 0.0;
@@ -202,4 +418,14 @@ fn welford_stddev_samp(values: impl IntoIterator<Item = f64>) -> Option<f64> {
         count = new_count;
     }
     (count > 1).then(|| (m2 / (count - 1) as f64).sqrt())
+}
+
+fn ordered_avg(values: impl IntoIterator<Item = f64>) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut count = 0u64;
+    for value in values {
+        sum += value;
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f64)
 }

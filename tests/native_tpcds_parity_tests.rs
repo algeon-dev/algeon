@@ -720,7 +720,7 @@ async fn tpcds_sf1_outer_hash_join_boundaries_keep_partial_native_children() {
 }
 
 #[tokio::test]
-async fn tpcds_sf1_precision_sensitive_stddev_subtree_remains_rejected() {
+async fn tpcds_sf1_precision_sensitive_stddev_matches_with_native_order_contract() {
     let root = Path::new(TPCDS_SF1_FIXTURE);
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
@@ -739,12 +739,17 @@ async fn tpcds_sf1_precision_sensitive_stddev_subtree_remains_rejected() {
     let q39 = report.rows.iter().find(|row| row.query_id == "q39").expect("q39 row should exist");
     assert_eq!(q39.cpu_planning_status, ParityStageStatus::Succeeded);
     assert_eq!(q39.cpu_runtime_status, ParityStageStatus::Succeeded);
-    assert_eq!(q39.native_planning_outcome, NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution);
-    assert_eq!(q39.native_reason_code.as_deref(), Some("unsupported_operator"));
-    assert_eq!(q39.native_unsupported_category.as_deref(), Some("aggregate_stddev"));
-    assert!(!q39.native_runtime_started);
-    assert_eq!(q39.native_runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);
-    assert_eq!(q39.parity_status, ParityStatus::NativeRejected);
+    assert_eq!(q39.native_planning_outcome, NativeTpcdsParityPlanningOutcome::AcceptedReplaced);
+    assert_eq!(q39.native_reason_code, None);
+    assert_eq!(q39.native_unsupported_category, None);
+    assert!(q39.native_runtime_started);
+    assert_eq!(q39.native_runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
+    assert_eq!(q39.parity_status, ParityStatus::Matched);
+    assert_eq!(q39.comparison_mode, ParityComparisonMode::OrderedExact);
+    assert_eq!(q39.cpu_output_rows, Some(243));
+    assert_eq!(q39.native_output_rows, Some(243));
+    assert_eq!(q39.native_reservation_denied_count, Some(0));
+    assert_eq!(q39.native_retry_count, Some(0));
     assert_eq!(q39.native_runtime_failure, None);
 }
 

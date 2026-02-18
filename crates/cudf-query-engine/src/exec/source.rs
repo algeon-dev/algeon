@@ -46,6 +46,10 @@ fn read_cacheable_local_parquet_source(
     cache: &std::sync::Arc<crate::exec::GpuLocalParquetSourceCache>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    if datafusion_order_tracking_enabled() {
+        return read_local_parquet_source_uncached(context, source, metrics);
+    }
+
     let key = GpuLocalParquetSourceCacheKey::from_source(source);
     let lookup_timer = Instant::now();
     let cached = cache.get(&key, context, &source.schema)?;
@@ -83,7 +87,7 @@ fn read_local_parquet_source_uncached(
     let reader_predicate = lower_source_reader_predicate(context, source)?;
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
-    for file in &source.files {
+    for (file_index, file) in source.files.iter().enumerate() {
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
@@ -94,6 +98,7 @@ fn read_local_parquet_source_uncached(
         let frame = materialize_missing_columns(context, source, frame, row_count_override, metrics)?;
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let (frame, remaining) = apply_source_scan_limit_to_frame(context, frame, remaining_rows, metrics)?;
+        let frame = append_source_order_columns(context, frame, file_index)?;
         frames.push(frame);
         remaining_rows = remaining;
         if remaining_rows == Some(0) {
@@ -249,6 +254,7 @@ pub(super) fn read_local_parquet_chunk(
     let frame = outcome.into_value();
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
+    let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(GpuDataFrame::new(frame))
 }

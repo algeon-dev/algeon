@@ -5,7 +5,8 @@ use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, Execution
 use super::EquiJoinIndices;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    plan::{JoinOutputColumn, JoinSide},
+    exec::{append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order},
+    plan::{JoinOutputColumn, JoinSide, JoinType},
 };
 
 pub(super) fn materialize_join_output(
@@ -14,13 +15,20 @@ pub(super) fn materialize_join_output(
     indices: &EquiJoinIndices,
     overrides: &ExecutionOverrides<'_>,
     projection: &[JoinOutputColumn],
+    join_type: JoinType,
 ) -> Result<DataFrame> {
     match indices {
-        EquiJoinIndices::Pair { left: left_indices, right: right_indices } => {
-            materialize_join_output_projection(left, right, left_indices, right_indices, overrides, projection)
-        },
+        EquiJoinIndices::Pair { left: left_indices, right: right_indices } => materialize_join_output_projection(
+            left,
+            right,
+            left_indices,
+            right_indices,
+            overrides,
+            projection,
+            join_type,
+        ),
         EquiJoinIndices::LeftOnly(indices) => {
-            materialize_left_only_join_output_projection(left, indices, overrides, projection)
+            materialize_left_only_join_output_projection(left, indices, overrides, projection, join_type)
         },
     }
 }
@@ -81,7 +89,8 @@ pub(in crate::exec) fn select_join_input(
     columns: &[String],
     side: &'static str,
 ) -> Result<DataFrame> {
-    frame.select(columns).map_err(|error| {
+    let columns = join_input_columns_with_order(&frame, columns);
+    frame.select(&columns).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.join.select_input",
             "failed to select native join input columns",
@@ -99,9 +108,12 @@ pub(in crate::exec) fn materialize_join_output_projection(
     right_indices: &DataFrameJoinIndices,
     overrides: &ExecutionOverrides<'_>,
     projection: &[JoinOutputColumn],
+    join_type: JoinType,
 ) -> Result<DataFrame> {
-    let left_projection = projected_output_columns(projection, JoinSide::Left);
-    let right_projection = projected_output_columns(projection, JoinSide::Right);
+    let mut left_projection = projected_output_columns(projection, JoinSide::Left);
+    let mut right_projection = projected_output_columns(projection, JoinSide::Right);
+    join_side_projection_with_order(left, &mut left_projection);
+    join_side_projection_with_order(right, &mut right_projection);
     let left = materialize_join_side_projection(left, left_indices, left_projection, JoinSide::Left, overrides)?;
     let right = materialize_join_side_projection(right, right_indices, right_projection, JoinSide::Right, overrides)?;
 
@@ -133,6 +145,7 @@ pub(in crate::exec) fn materialize_join_output_projection(
         })?;
         columns.push((output.output_name.clone(), series));
     }
+    append_datafusion_join_order_columns(&mut columns, left.as_ref(), right.as_ref(), join_type)?;
 
     DataFrame::from_series(columns).map_err(|error| {
         QueryError::from_cudf(
@@ -148,6 +161,7 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
     indices: &DataFrameJoinIndices,
     overrides: &ExecutionOverrides<'_>,
     projection: &[JoinOutputColumn],
+    join_type: JoinType,
 ) -> Result<DataFrame> {
     if let Some(output) = projection.iter().find(|output| output.side == JoinSide::Right) {
         return Err(QueryError::new(
@@ -160,7 +174,8 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
         .with_fact("output_name", output.output_name.as_str()));
     }
 
-    let left_projection = projected_output_columns(projection, JoinSide::Left);
+    let mut left_projection = projected_output_columns(projection, JoinSide::Left);
+    join_side_projection_with_order(left, &mut left_projection);
     let Some(left) = materialize_join_side_projection(left, indices, left_projection, JoinSide::Left, overrides)?
     else {
         return Err(QueryError::new(
@@ -184,6 +199,7 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
         })?;
         columns.push((output.output_name.clone(), series));
     }
+    append_datafusion_join_order_columns(&mut columns, Some(&left), None, join_type)?;
 
     DataFrame::from_series(columns).map_err(|error| {
         QueryError::from_cudf(

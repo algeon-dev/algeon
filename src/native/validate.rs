@@ -123,6 +123,8 @@ fn is_supported_native_aggregate_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("max")
         || name.eq_ignore_ascii_case("count")
         || name.eq_ignore_ascii_case("avg")
+        || name.eq_ignore_ascii_case("stddev")
+        || name.eq_ignore_ascii_case("stddev_samp")
 }
 
 pub(super) fn collect_required_columns(

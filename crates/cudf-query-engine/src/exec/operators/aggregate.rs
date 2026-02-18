@@ -544,7 +544,9 @@ fn execute_datafusion_exact_host_aggregate(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let timer = Instant::now();
-    let handle = GpuResultHandle::new(context, input, Arc::clone(input_schema))?;
+    let frame = sort_by_datafusion_order_if_present(context, input.into_frame(), metrics)?;
+    let schema = schema_with_datafusion_order_columns(&frame, input_schema);
+    let handle = GpuResultHandle::new(context, GpuDataFrame::new(frame), schema)?;
     let batch = handle.to_host_record_batch()?;
     let output = execute_datafusion_exact_host_aggregate_batch(context, node, &batch, output_schema)?;
     metrics.operator_time += timer.elapsed();

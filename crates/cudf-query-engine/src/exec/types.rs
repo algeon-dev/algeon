@@ -13,6 +13,7 @@ use cudf::{
 use crate::{
     chunk::SourceChunk,
     error::{QueryError, Result},
+    exec::is_datafusion_order_column_name,
     metrics::QueryMetrics,
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{DevicePlacement, ExecutionContext},
@@ -116,6 +117,7 @@ impl GpuResultHandle {
             .with_fact("frame_device", frame.placement().device.ordinal())
             .with_fact("runtime_device", context.runtime().device().ordinal()));
         }
+        let frame = strip_hidden_datafusion_order_columns(frame, &schema)?;
         let batch = GpuRecordBatch::new(frame.into_frame(), schema).map_err(|error| {
             QueryError::from_cudf(
                 "cudf_query_engine.gpu_result_handle",
@@ -167,6 +169,32 @@ impl GpuResultHandle {
             )
         })
     }
+}
+
+fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef) -> Result<GpuDataFrame> {
+    if frame.num_columns() == schema.fields().len() {
+        return Ok(frame);
+    }
+
+    let raw = frame.into_frame();
+    let frame_names = raw.column_names();
+    let expected_names = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    let visible_prefix_matches =
+        frame_names.iter().take(expected_names.len()).copied().eq(expected_names.iter().copied());
+    let trailing_are_order_columns =
+        frame_names.iter().skip(expected_names.len()).all(|name| is_datafusion_order_column_name(name));
+    if visible_prefix_matches && trailing_are_order_columns {
+        let selected = raw.select(expected_names).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.gpu_result_handle",
+                "failed to strip hidden native DataFusion order columns before binding result schema",
+                error,
+            )
+        })?;
+        return Ok(GpuDataFrame::new(selected));
+    }
+
+    Ok(GpuDataFrame::new(raw))
 }
 
 #[derive(Clone)]

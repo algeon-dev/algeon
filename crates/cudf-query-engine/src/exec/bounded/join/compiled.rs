@@ -1125,13 +1125,20 @@ impl CompiledJoinIndices {
         right: &DataFrame,
         overrides: &ExecutionOverrides<'_>,
         projection: &[JoinOutputColumn],
+        join_type: JoinType,
     ) -> Result<DataFrame> {
         match self {
-            Self::Pair { left: left_indices, right: right_indices } => {
-                materialize_join_output_projection(left, right, left_indices, right_indices, overrides, projection)
-            },
+            Self::Pair { left: left_indices, right: right_indices } => materialize_join_output_projection(
+                left,
+                right,
+                left_indices,
+                right_indices,
+                overrides,
+                projection,
+                join_type,
+            ),
             Self::LeftOnly(indices) => {
-                materialize_left_only_join_output_projection(left, indices, overrides, projection)
+                materialize_left_only_join_output_projection(left, indices, overrides, projection, join_type)
             },
         }
     }
@@ -1176,7 +1183,13 @@ fn materialize_compiled_indices_output(
         ),
         metrics,
     )?;
-    let output = indices.materialize_output(&left.frame, &right.frame, &overrides, &node.spec.output_projection)?;
+    let output = indices.materialize_output(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &node.spec.output_projection,
+        node.spec.join_type,
+    )?;
     metrics.operator_time += timer.elapsed();
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
