@@ -277,6 +277,7 @@ pub enum SourceFormatCapability {
 pub enum AggregateGrouping {
     Scalar,
     Grouped,
+    GroupingSets,
 }
 
 /// Whether a node establishes an ordering.

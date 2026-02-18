@@ -126,6 +126,10 @@ pub(in crate::exec) fn lower_aggregate_spec_keys(spec: &AggregateSpec) -> Result
         key_columns.push(input_column);
         output_key_names.push(output_name);
     }
+    if let Some(grouping_sets) = &spec.grouping_sets {
+        key_columns.push(grouping_sets.grouping_id_alias.clone());
+        output_key_names.push(grouping_sets.grouping_id_alias.clone());
+    }
 
     Ok(LoweredAggregate { key_columns, output_key_names, aggregations: Vec::new(), output_names: Vec::new() })
 }

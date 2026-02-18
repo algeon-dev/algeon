@@ -74,6 +74,30 @@ async fn default_sql_distributed_avg_aggregate_lowers_to_native_avg() {
 }
 
 #[tokio::test]
+async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-rollup");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, SessionConfig::new(), SQL_ROLLUP_AVG_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregates = native_aggregate_nodes(&result.plans[0]);
+    assert_eq!(aggregates.len(), 1);
+    let grouping_sets = aggregates[0].spec.grouping_sets.as_ref().expect("ROLLUP should lower as grouping sets");
+    assert_eq!(grouping_sets.grouping_id_alias, "__grouping_id");
+    assert_eq!(grouping_sets.groups, vec![vec![true, true], vec![false, true], vec![false, false]]);
+    assert_eq!(aggregates[0].spec.group_exprs.len(), 2);
+    assert_eq!(aggregates[0].spec.aggr_exprs.len(), 1);
+    assert_eq!(aggregates[0].spec.aggr_exprs[0].function, AggregateFunction::Avg);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn default_sql_distributed_aggregate_filter_is_rejected() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filtered-aggregate");
     let path = dir.join("input.parquet");

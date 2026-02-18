@@ -53,6 +53,14 @@ FROM bench
 WHERE payload >= 10
 ";
 
+pub(super) const SQL_ROLLUP_AVG_QUERY: &str = "
+SELECT key, payload, AVG(m00) AS avg_m00
+FROM bench
+GROUP BY ROLLUP(key, payload)
+ORDER BY avg_m00 DESC NULLS LAST, key ASC NULLS LAST, payload ASC NULLS LAST
+LIMIT 10
+";
+
 pub(super) const SQL_GLOBAL_AGGREGATE_PARITY_QUERY: &str = "
 SELECT
     SUM(m00) AS sum_m00,

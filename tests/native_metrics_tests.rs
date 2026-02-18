@@ -160,6 +160,26 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
 }
 
 #[test]
+fn query_metrics_records_task_elapsed_by_runtime_and_operator_kind() {
+    let mut metrics = QueryMetrics::default();
+
+    metrics.record_compiled_pipeline_task_execution("t1", "join_build");
+    metrics.record_task_elapsed("t1", "join_build", std::time::Duration::from_millis(12));
+    metrics.record_task_elapsed("t1", "join_build", std::time::Duration::from_millis(3));
+    metrics.record_compiled_pipeline_task_execution("t2", "join_build");
+    metrics.record_task_elapsed("t2", "join_build", std::time::Duration::from_millis(5));
+    metrics.record_compiled_pipeline_task_execution("t3", "source_read");
+    metrics.record_task_elapsed("t3", "source_read", std::time::Duration::from_millis(7));
+
+    assert_eq!(metrics.task_runtime_metrics["t1"].elapsed_time, std::time::Duration::from_millis(15));
+    assert_eq!(metrics.task_runtime_metrics["t2"].elapsed_time, std::time::Duration::from_millis(5));
+    assert_eq!(metrics.task_runtime_metrics["t3"].elapsed_time, std::time::Duration::from_millis(7));
+    assert_eq!(metrics.task_operator_metrics["join_build"].task_count, 2);
+    assert_eq!(metrics.task_operator_metrics["join_build"].elapsed_time, std::time::Duration::from_millis(20));
+    assert_eq!(metrics.task_operator_metrics["source_read"].elapsed_time, std::time::Duration::from_millis(7));
+}
+
+#[test]
 fn query_metrics_reservation_events_retain_legacy_bounded_task_context() {
     let mut metrics = QueryMetrics::default();
     let request = MemoryReservationRequest::new(ReservationKind::SourceRead, 80, 100)

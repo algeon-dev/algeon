@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
 
 use arrow::record_batch::RecordBatch;
 
@@ -1228,6 +1231,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
         self.metrics.set_current_compiled_task(task.id());
         self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));
+        let timer = Instant::now();
         let result = match task.kind() {
             PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => self.execute_source_task(task),
             PipelineTaskKind::Unary => self.execute_unary_task(task, state),
@@ -1239,6 +1243,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::Limit => self.execute_limit_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
+        self.metrics.record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
         self.reservations.clear_diagnostic_context();
         self.metrics.clear_current_compiled_task();
         result

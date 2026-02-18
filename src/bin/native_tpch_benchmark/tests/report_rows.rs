@@ -62,6 +62,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             task_operator_rows: vec![NativeTaskOperatorMetricRow {
                 operator_kind: "source_read".to_string(),
                 task_count: 3,
+                elapsed_ns: 7_000_000,
                 reservation_requested_bytes: 0,
                 reservation_granted_bytes: 0,
                 reservation_released_bytes: 0,
@@ -72,6 +73,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             task_runtime_rows: vec![NativeTaskRuntimeMetricRow {
                 compiled_task_id: "t0".to_string(),
                 operator_kind: "source_read".to_string(),
+                elapsed_ns: 7_000_000,
                 reservation_requested_bytes: 64,
                 reservation_granted_bytes: 64,
                 reservation_released_bytes: 64,
@@ -188,7 +190,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t"
     ));
-    assert!(text.contains("\t64\t65\t66\toperator_kind=source_read,task_count=3,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
+    assert!(text.contains("\t64\t65\t66\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let fields = lines.next().expect("benchmark report should contain a q01 row").split('\t').collect::<Vec<_>>();

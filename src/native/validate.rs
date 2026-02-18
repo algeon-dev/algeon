@@ -52,10 +52,9 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     if aggregate.filter_expr().iter().any(Option::is_some) {
         return Err(FallbackReason::UnsupportedExpression);
     }
-    if !group_by.expr().is_empty() && !group_by.is_single() {
-        return Err(FallbackReason::UnsupportedOperator);
-    }
-    if !group_by.expr().is_empty()
+    if group_by.has_grouping_set() {
+        validate_grouping_sets(group_by)?;
+    } else if !group_by.expr().is_empty()
         && (group_by.groups().len() != 1 || group_by.groups()[0].iter().any(|is_null| *is_null))
     {
         return Err(FallbackReason::UnsupportedOperator);
@@ -75,6 +74,22 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     }
     for (group_expr, _alias) in group_by.expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
+    }
+    Ok(())
+}
+
+fn validate_grouping_sets(
+    group_by: &datafusion::physical_plan::aggregates::PhysicalGroupBy,
+) -> Result<(), FallbackReason> {
+    let group_expr_count = group_by.expr().len();
+    if group_expr_count == 0 || group_expr_count > 64 {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
+    if group_by.null_expr().len() != group_expr_count {
+        return Err(FallbackReason::UnsupportedOperator);
+    }
+    if group_by.groups().is_empty() || group_by.groups().iter().any(|group| group.len() != group_expr_count) {
+        return Err(FallbackReason::UnsupportedOperator);
     }
     Ok(())
 }

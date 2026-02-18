@@ -16,7 +16,9 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
         PlanNode::Filter(_) => NodeOperator::Filter,
         PlanNode::Projection(_) => NodeOperator::Projection,
         PlanNode::Aggregate(aggregate) => NodeOperator::Aggregate {
-            grouping: if aggregate.spec.group_exprs.is_empty() {
+            grouping: if aggregate.spec.grouping_sets.is_some() {
+                AggregateGrouping::GroupingSets
+            } else if aggregate.spec.group_exprs.is_empty() {
                 AggregateGrouping::Scalar
             } else {
                 AggregateGrouping::Grouped
@@ -115,6 +117,19 @@ fn expression_node_decision<'a>(
 }
 
 fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::AggregateNode) -> CapabilityDecision {
+    if let Some(grouping_sets) = &aggregate.spec.grouping_sets
+        && let Err(reason) = validate_grouping_sets_capability(&aggregate.spec, grouping_sets)
+    {
+        return CapabilityDecision::rejected(
+            "unsupported_aggregate_grouping_sets_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", reason.to_string()),
+                ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
+                ("grouping_set_count", grouping_sets.groups.len().to_string()),
+            ],
+        );
+    }
     for expr in &aggregate.spec.group_exprs {
         if let Err(rejection) = validate_named_column_expr_capability(expr) {
             return expression_rejection_decision(
@@ -138,6 +153,31 @@ fn aggregate_node_executable_decision(node_id: NodeId, aggregate: &crate::plan::
         }
     }
     CapabilityDecision::Satisfied
+}
+
+fn validate_grouping_sets_capability(
+    spec: &AggregateSpec,
+    grouping_sets: &GroupingSetsSpec,
+) -> std::result::Result<(), &'static str> {
+    if spec.group_exprs.is_empty() {
+        return Err("empty_grouping_sets_keys");
+    }
+    if spec.group_exprs.len() > 64 {
+        return Err("too_many_grouping_sets_keys");
+    }
+    if grouping_sets.groups.is_empty() {
+        return Err("empty_grouping_sets");
+    }
+    if grouping_sets.grouping_id_alias.is_empty() {
+        return Err("empty_grouping_id_alias");
+    }
+    if grouping_sets.groups.iter().any(|group| group.len() != spec.group_exprs.len()) {
+        return Err("grouping_set_mask_length_mismatch");
+    }
+    if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp) {
+        return Err("grouping_sets_stddev_samp_not_supported");
+    }
+    Ok(())
 }
 
 fn sort_node_executable_decision(node_id: NodeId, sort: &crate::plan::SortNode) -> CapabilityDecision {
