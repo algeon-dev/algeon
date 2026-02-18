@@ -6,6 +6,12 @@
 
 mod semijoin_reduction;
 
+mod join_build_side;
+
+pub use join_build_side::{
+    JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics,
+    JoinBuildSideSelectionOptions, JoinBuildSideSelectionRejectedReason,
+};
 pub use semijoin_reduction::{
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, SEMIJOIN_REDUCTION_RULE_NAME,
     SemijoinReductionAdmissionDecision, SemijoinReductionAdmissionMode, SemijoinReductionCandidateDiagnostics,
@@ -20,12 +26,16 @@ use crate::plan::QueryPlan;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeOptimizerOptions {
     pub semijoin_reduction: SemijoinReductionOptions,
+    pub join_build_side_selection: JoinBuildSideSelectionOptions,
 }
 
 impl NativeOptimizerOptions {
     /// Returns options with all optimizer passes disabled.
     pub fn disabled() -> Self {
-        Self { semijoin_reduction: SemijoinReductionOptions::disabled() }
+        Self {
+            semijoin_reduction: SemijoinReductionOptions::disabled(),
+            join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
+        }
     }
 }
 
@@ -60,24 +70,36 @@ impl NativeOptimizerResult {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeOptimizerDiagnostics {
     pub semijoin_reduction: SemijoinReductionDiagnostics,
+    pub join_build_side_selection: JoinBuildSideSelectionDiagnostics,
 }
 
 impl NativeOptimizerDiagnostics {
     pub fn is_empty(&self) -> bool {
-        self.semijoin_reduction.is_empty()
+        self.semijoin_reduction.is_empty() && self.join_build_side_selection.is_empty()
     }
 
     pub fn merge(&mut self, other: Self) {
         self.semijoin_reduction.merge(other.semijoin_reduction);
+        self.join_build_side_selection.merge(other.join_build_side_selection);
     }
 }
 
 /// Runs the native optimizer pass list over a DataFusion-free query plan.
 pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) -> NativeOptimizerResult {
     let semijoin_result = optimize_semijoin_reduction(plan, &options.semijoin_reduction);
+    let join_build_side_result =
+        join_build_side::optimize_join_build_side_selection(semijoin_result.plan, &options.join_build_side_selection);
+    let change = if semijoin_result.change.changed() || join_build_side_result.change.changed() {
+        NativeOptimizerChange::Changed
+    } else {
+        NativeOptimizerChange::Unchanged
+    };
     NativeOptimizerResult {
-        change: semijoin_result.change,
-        plan: semijoin_result.plan,
-        diagnostics: NativeOptimizerDiagnostics { semijoin_reduction: semijoin_result.diagnostics },
+        change,
+        plan: join_build_side_result.plan,
+        diagnostics: NativeOptimizerDiagnostics {
+            semijoin_reduction: semijoin_result.diagnostics,
+            join_build_side_selection: join_build_side_result.diagnostics,
+        },
     }
 }

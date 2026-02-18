@@ -1,7 +1,8 @@
 use cudf_query_engine::{
-    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, NativeOptimizerChange, NativeOptimizerOptions,
-    SEMIJOIN_REDUCTION_RULE_NAME, SemijoinReductionAdmissionMode, SemijoinReductionCostSignal,
-    SemijoinReductionOptions, SemijoinReductionRejectedReason, optimize_query_plan,
+    DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+    JoinBuildSideSelectionOptions, NativeOptimizerChange, NativeOptimizerOptions, SEMIJOIN_REDUCTION_RULE_NAME,
+    SemijoinReductionAdmissionMode, SemijoinReductionCostSignal, SemijoinReductionOptions,
+    SemijoinReductionRejectedReason, optimize_query_plan,
 };
 
 use super::*;
@@ -44,6 +45,49 @@ fn semijoin_reduction_phase1_options_and_rule_name_are_stable() {
     );
     assert_eq!(SemijoinReductionOptions::default().admission_mode, SemijoinReductionAdmissionMode::NotEvaluated);
     assert!(!SemijoinReductionOptions::disabled().enabled);
+}
+
+#[test]
+fn join_build_side_selection_options_and_rule_name_are_stable() {
+    assert_eq!(JOIN_BUILD_SIDE_SELECTION_RULE_NAME, "join_build_side_selection");
+    assert!(JoinBuildSideSelectionOptions::default().enabled);
+    assert!(!JoinBuildSideSelectionOptions::disabled().enabled);
+    assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_bytes, 64 * 1024 * 1024);
+    assert_eq!(JoinBuildSideSelectionOptions::default().small_build_side_rows, 1_000_000);
+}
+
+#[test]
+fn join_build_side_selection_switches_inner_equi_join_to_small_left_input() {
+    let plan = estimated_inner_join_plan(JoinSide::Right, 1_024, 100, 9 * 1024 * 1024 * 1024, 100_000_000);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert!(result.diagnostics.semijoin_reduction.is_empty());
+    assert_eq!(result.diagnostics.join_build_side_selection.considered_count, 1);
+    assert_eq!(result.diagnostics.join_build_side_selection.applied_count, 1);
+    let candidate = &result.diagnostics.join_build_side_selection.candidates[0];
+    assert_eq!(candidate.before_build_side, JoinSide::Right);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert!(candidate.applied);
+    assert_eq!(candidate.left_estimated_bytes, Some(1_024));
+    assert_eq!(candidate.right_estimated_bytes, Some(9 * 1024 * 1024 * 1024));
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain an inner join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Left);
+}
+
+#[test]
+fn disabled_native_optimizer_keeps_join_build_side_selection_off() {
+    let plan = estimated_inner_join_plan(JoinSide::Right, 1_024, 100, 9 * 1024 * 1024 * 1024, 100_000_000);
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled());
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert!(result.diagnostics.is_empty());
 }
 
 #[test]
@@ -140,6 +184,7 @@ fn semijoin_reduction_strict_admission_gate_keeps_original_when_rewrite_is_not_a
     let options = NativeOptimizerOptions {
         semijoin_reduction: SemijoinReductionOptions::default()
             .with_admission_mode(SemijoinReductionAdmissionMode::StrictBounded),
+        ..NativeOptimizerOptions::default()
     };
 
     let result = optimize_query_plan(plan, &options);
@@ -211,6 +256,46 @@ fn single_source_plan() -> cudf_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", schema)));
     builder.finish_gpu_resident(source)
+}
+
+fn estimated_inner_join_plan(
+    build_side: JoinSide,
+    left_bytes: u64,
+    left_rows: u64,
+    right_bytes: u64,
+    right_rows: u64,
+) -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(estimated_local_source("left", "left_key", left_bytes, left_rows));
+    let right = builder.add_source(estimated_local_source("right", "right_key", right_bytes, right_rows));
+    let output_schema = schema(&["left_key", "right_key"]);
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "left_key", "left_key"),
+                ColumnRef::input(1, "right_key", "right_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "right_key", "right_key"), "right_key"),
+        ])
+        .with_build_side(build_side),
+        output_schema,
+    );
+    builder.finish_gpu_resident(join)
+}
+
+fn estimated_local_source(name: &str, key_name: &str, bytes: u64, rows: u64) -> SourceNode {
+    let source_schema = schema(&[key_name]);
+    let file = LocalParquetFile::new(format!("/tmp/{name}.parquet"))
+        .with_stable_id(name)
+        .with_projected_row_group_bytes(vec![bytes], vec![bytes])
+        .with_row_group_rows(vec![rows]);
+    SourceNode::LocalParquet(LocalParquetSource::from_files(vec![file], source_schema, vec![key_name.to_string()]))
 }
 
 #[derive(Debug, Clone, Copy)]

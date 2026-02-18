@@ -112,7 +112,7 @@ fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
 }
 
 #[test]
-fn pushed_down_scan_only_decimal_predicate_uses_native_post_scan_filter() {
+fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-decimal-post-scan");
     let path = dir.join("input.parquet");
     write_decimal_filter_parquet_file(&path);
@@ -125,12 +125,12 @@ fn pushed_down_scan_only_decimal_predicate_uses_native_post_scan_filter() {
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.source_diagnostics.len(), 1);
     assert!(result.source_diagnostics[0].direct_device_read);
-    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
     assert!(result.source_diagnostics[0].rejected_features.is_empty());
     let source = native_local_parquet_source(&result.plans[0]);
-    assert!(source.reader_predicate.is_none());
+    assert!(source.reader_predicate.is_some());
     assert_eq!(source.pure_filter_columns, vec!["payload"]);
-    assert_eq!(native_filter_exprs(&result.plans[0]).len(), 1);
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
 
     fs::remove_dir_all(dir).unwrap();
 }

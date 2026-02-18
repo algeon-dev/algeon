@@ -73,7 +73,7 @@ fn local_parquet_source_reader_predicate_sets_reader_pushdown_diagnostics() {
 }
 
 #[test]
-fn local_parquet_source_reader_predicate_rejects_decimal_contract_gap() {
+fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
         Field::new("amount", DataType::Decimal128(15, 2), false),
@@ -93,7 +93,7 @@ fn local_parquet_source_reader_predicate_rejects_decimal_contract_gap() {
         Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 15, scale: 2 }),
     );
 
-    assert!(!source.reader_predicate_is_supported(&predicate));
+    assert!(source.reader_predicate_is_supported(&predicate));
 }
 
 #[test]

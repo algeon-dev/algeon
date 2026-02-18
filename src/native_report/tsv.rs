@@ -151,19 +151,38 @@ pub(super) fn format_native_optimizer_diagnostics(
         return "none".to_string();
     }
 
-    let semijoin = &diagnostics.semijoin_reduction;
-    let candidates = if semijoin.candidates.is_empty() {
-        "none".to_string()
-    } else {
-        semijoin.candidates.iter().map(format_semijoin_reduction_candidate).collect::<Vec<_>>().join("|")
-    };
-    stable_tsv_field(&format!(
-        "rule={},considered_count={},applied_count={},candidates={}",
-        cudf_query_engine::SEMIJOIN_REDUCTION_RULE_NAME,
-        semijoin.considered_count,
-        semijoin.applied_count,
-        candidates
-    ))
+    let mut rows = Vec::new();
+    if !diagnostics.semijoin_reduction.is_empty() {
+        let semijoin = &diagnostics.semijoin_reduction;
+        let candidates = if semijoin.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            semijoin.candidates.iter().map(format_semijoin_reduction_candidate).collect::<Vec<_>>().join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::SEMIJOIN_REDUCTION_RULE_NAME,
+            semijoin.considered_count,
+            semijoin.applied_count,
+            candidates
+        ));
+    }
+    if !diagnostics.join_build_side_selection.is_empty() {
+        let selection = &diagnostics.join_build_side_selection;
+        let candidates = if selection.candidates.is_empty() {
+            "none".to_string()
+        } else {
+            selection.candidates.iter().map(format_join_build_side_selection_candidate).collect::<Vec<_>>().join("|")
+        };
+        rows.push(format!(
+            "rule={},considered_count={},applied_count={},candidates={}",
+            cudf_query_engine::JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+            selection.considered_count,
+            selection.applied_count,
+            candidates
+        ));
+    }
+    stable_tsv_field(&rows.join(";"))
 }
 
 fn format_semijoin_reduction_candidate(candidate: &cudf_query_engine::SemijoinReductionCandidateDiagnostics) -> String {
@@ -208,6 +227,31 @@ fn format_semijoin_reduction_candidate(candidate: &cudf_query_engine::SemijoinRe
         candidate.applied,
         rejected_reason,
     )
+}
+
+fn format_join_build_side_selection_candidate(
+    candidate: &cudf_query_engine::JoinBuildSideSelectionCandidateDiagnostics,
+) -> String {
+    let after_build_side = candidate.after_build_side.map_or_else(|| "none".to_string(), |side| side.to_string());
+    let rejected_reason =
+        candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
+    format!(
+        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},applied={},rejected_reason={}",
+        candidate.rule_name,
+        candidate.candidate_node_id,
+        candidate.before_build_side,
+        after_build_side,
+        option_u64_text(candidate.left_estimated_rows),
+        option_u64_text(candidate.right_estimated_rows),
+        option_u64_text(candidate.left_estimated_bytes),
+        option_u64_text(candidate.right_estimated_bytes),
+        candidate.applied,
+        rejected_reason,
+    )
+}
+
+fn option_u64_text(value: Option<u64>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
 fn format_semijoin_key_mapping(mapping: &cudf_query_engine::SemijoinReductionKeyMappingDiagnostics) -> String {
