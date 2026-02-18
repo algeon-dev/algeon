@@ -1143,6 +1143,7 @@ pub(super) fn adaptive_memory_history_key_probe_plan(
         AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::Avg => {
             value_type.clone()
         },
+        AggregateFunction::StddevSamp => DataType::Float64,
     };
     let aggregate_schema = Arc::new(Schema::new(vec![
         Field::new("adaptive_key", DataType::Int32, false),

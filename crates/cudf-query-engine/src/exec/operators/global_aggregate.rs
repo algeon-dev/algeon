@@ -108,6 +108,9 @@ fn execute_global_aggregate_impl(
                     )?,
                 ));
             },
+            AggregateFunction::StddevSamp => {
+                unreachable!("global stddev_samp uses the DataFusion-exact Welford aggregate path")
+            },
         }
     }
     let mut output = DataFrame::from_series(columns.iter().map(|(name, series)| (name.as_str(), series.clone())))
@@ -262,6 +265,9 @@ fn execute_scalar_reduction(
         AggregateFunction::Max => series.max_in(overrides),
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
         AggregateFunction::Count => unreachable!("global COUNT is not a scalar reduction"),
+        AggregateFunction::StddevSamp => {
+            unreachable!("global STDDEV_SAMP uses the DataFusion-exact Welford aggregate path")
+        },
     }
     .map_err(|error| {
         QueryError::from_cudf(
@@ -287,6 +293,9 @@ fn execute_scalar_reduction_with_budget(
         AggregateFunction::Max => ReduceAgg::Max,
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
         AggregateFunction::Count => unreachable!("global COUNT is not a scalar reduction"),
+        AggregateFunction::StddevSamp => {
+            unreachable!("global STDDEV_SAMP uses the DataFusion-exact Welford aggregate path")
+        },
     };
     let prepared = series.prepare_scalar_reduction(reduce_agg).map_err(|error| {
         QueryError::from_cudf(

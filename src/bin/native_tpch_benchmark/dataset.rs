@@ -97,30 +97,45 @@ fn prepare_external_dataset(
     expected_scale_factor: NativeTpchScaleFactor,
 ) -> DataFusionResult<(PathBuf, TpchDatasetMetadata)> {
     let dataset_mode = expected_scale_factor.dataset_mode_str();
-    let Some(root) = std::env::var_os(CUDF_TPCH_PARQUET_DIR_ENV) else {
-        return Err(plan_error(format!(
-            "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_PARQUET_DIR_ENV}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
-        )));
+    let (root, metadata) = if let Some(root) = std::env::var_os(CUDF_TPCH_PARQUET_DIR_ENV) {
+        let root = PathBuf::from(root);
+        let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
+        let generation_command = std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).map_err(|_| {
+            plan_error(format!(
+                "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_GENERATION_COMMAND_ENV} so {} provenance is reproducible",
+                expected_scale_factor.label()
+            ))
+        })?;
+        let metadata = describe_tpch_dataset_with_content_fingerprint(
+            &root,
+            scale_factor,
+            "external_parquet_root",
+            generation_command,
+            true,
+        )
+        .map_err(tpch_error)?;
+        (root, metadata)
+    } else {
+        let nvme_root = default_nvme_root_for(expected_scale_factor);
+        let Some((root, metadata)) =
+            default_nvme_tpch_dataset_with_fingerprint(nvme_root, expected_scale_factor.as_str())
+        else {
+            return Err(plan_error(format!(
+                "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_PARQUET_DIR_ENV} or a populated default NVMe fixture at {nvme_root}; set CUDF_TPCH_BENCH_DATASET_MODE=allow_tiny for local tiny/dev runs"
+            )));
+        };
+        (root, metadata)
     };
-
-    let root = PathBuf::from(root);
-    let scale_factor = std::env::var(CUDF_TPCH_SCALE_FACTOR_ENV).unwrap_or_else(|_| "unknown".to_string());
-    let generation_command = std::env::var(CUDF_TPCH_GENERATION_COMMAND_ENV).map_err(|_| {
-        plan_error(format!(
-            "native TPC-H benchmark dataset_mode={dataset_mode} requires {CUDF_TPCH_GENERATION_COMMAND_ENV} so {} provenance is reproducible",
-            expected_scale_factor.label()
-        ))
-    })?;
-    let metadata = describe_tpch_dataset_with_content_fingerprint(
-        &root,
-        scale_factor,
-        "external_parquet_root",
-        generation_command,
-        true,
-    )
-    .map_err(tpch_error)?;
     validate_external_metadata(&metadata, expected_scale_factor)?;
     Ok((root, metadata))
+}
+
+const fn default_nvme_root_for(scale_factor: NativeTpchScaleFactor) -> &'static str {
+    match scale_factor {
+        NativeTpchScaleFactor::Sf1 => DEFAULT_NVME_TPCH_SF1_PARQUET_DIR,
+        NativeTpchScaleFactor::Sf10 => DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
+        NativeTpchScaleFactor::Sf100 => DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR,
+    }
 }
 
 #[cfg(test)]

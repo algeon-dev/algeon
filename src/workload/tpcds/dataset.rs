@@ -43,6 +43,13 @@ pub const CUDF_TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_TPCDS_SCALE_FACTOR";
 pub const CUDF_TPCDS_GENERATION_COMMAND_ENV: &str = "CUDF_TPCDS_GENERATION_COMMAND";
 pub const CUDF_TPCDS_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCDS_CONTENT_FINGERPRINT";
 
+/// Default on-host NVMe Parquet root for the TPC-DS SF1 fixture, staged at
+/// boot by `rsync-tpcds.service`. Used as an implicit fallback by
+/// `prepare_tpcds_report_dataset` when `CUDF_TPCDS_PARQUET_DIR` is unset and
+/// the host actually has the fixture present; absence is silent (the
+/// preparation falls back to the tiny dataset).
+pub const DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR: &str = "/opt/dlami/nvme/tpcds/sf1/parquet";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpcdsDatasetMetadata {
     pub root: PathBuf,
@@ -152,9 +159,33 @@ pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(Pa
         return Ok((root, metadata));
     }
 
+    if let Some((root, metadata)) = try_default_nvme_tpcds_sf1_dataset() {
+        return Ok((root, metadata));
+    }
+
     write_tiny_tpcds_parquet_dataset(tiny_root)?;
     let metadata = tiny_tpcds_dataset_metadata(tiny_root)?;
     Ok((tiny_root.to_path_buf(), metadata))
+}
+
+/// Returns the default NVMe SF1 fixture if `DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR`
+/// exists and every required TPC-DS table is discoverable there. A `None`
+/// return covers both "the NVMe drive isn't staged here" and "the fixture is
+/// incomplete" — both are equivalent to "no implicit external fixture
+/// available, fall back to the tiny dataset".
+fn try_default_nvme_tpcds_sf1_dataset() -> Option<(PathBuf, TpcdsDatasetMetadata)> {
+    let root = PathBuf::from(DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR);
+    if !root.is_dir() {
+        return None;
+    }
+    for table in TPCDS_TABLES {
+        if discover_tpcds_table_layout(&root, table).is_err() {
+            return None;
+        }
+    }
+    let generation_command = format!("local {DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR} parquet fixture (default)");
+    let metadata = describe_tpcds_dataset(&root, "sf1", "external_parquet_root", generation_command).ok()?;
+    Some((root, metadata))
 }
 
 pub fn describe_tpcds_dataset(

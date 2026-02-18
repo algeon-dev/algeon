@@ -15,13 +15,16 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
-    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
-    GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
-    NativeDataFusionRuntimeOutcome, NativeJoinStrategyMetricRow, NativePipelineExecutionMode,
-    NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, TPCH_QUERIES, TPCH_TABLES,
-    TpchDatasetMetadata, TpchQuery, TpchTableLayout, TpchWorkloadError, describe_tpch_dataset_with_content_fingerprint,
-    prepare_tpch_report_dataset, register_tpch_table_layout, tpch_report_session_config,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
+    DEFAULT_NVME_TPCH_SF1_PARQUET_DIR, DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
+    DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR, Error as AdapterError, GpuFallbackPolicy, NativeCudfExecutionConfig,
+    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+    NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
+    NativeJoinStrategyMetricRow, NativePipelineExecutionMode, NativeSourceDiagnosticSummary,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, TPCH_QUERIES, TPCH_TABLES, TpchDatasetMetadata, TpchQuery,
+    TpchTableLayout, TpchWorkloadError, default_nvme_tpch_dataset_with_fingerprint,
+    describe_tpch_dataset_with_content_fingerprint, prepare_tpch_report_dataset, register_tpch_table_layout,
+    tpch_report_session_config,
 };
 
 #[path = "native_tpch_benchmark/case_runner.rs"]

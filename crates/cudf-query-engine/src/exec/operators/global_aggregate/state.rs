@@ -55,6 +55,9 @@ pub(in crate::exec) fn partial_global_aggregate_output_schema(
                     false,
                 ));
             },
+            AggregateFunction::StddevSamp => {
+                fields.push(global_aggregate_output_field(expr.alias.as_str(), aggregate_output_schema)?);
+            },
         }
     }
     Ok(Arc::new(Schema::new(fields)))

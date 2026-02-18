@@ -618,6 +618,9 @@ fn window_boundary_should_preserve_sort_child(parent: &dyn ExecutionPlan, child:
         && child.as_any().downcast_ref::<SortExec>().is_some()
 }
 
+// q39-style final full-sort/stddev subtrees are precision-sensitive: replacing
+// children below the CPU stddev aggregate changes the input order/batching that
+// DataFusion's Welford accumulator observes and can produce final-bit drift.
 fn precision_sensitive_aggregate_requires_whole_subtree_rejection(plan: &dyn ExecutionPlan) -> bool {
     let Some(sort) = plan.as_any().downcast_ref::<SortExec>() else {
         return false;

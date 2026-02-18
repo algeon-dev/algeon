@@ -373,7 +373,11 @@ fn execute_node(
         },
         PlanNode::Aggregate(aggregate) => {
             let input = execute_node(context, plan, aggregate.input, gpu_inputs, scratch, metrics)?;
-            execute_aggregate(context, aggregate, input, &node.facts.output_schema, metrics)
+            let input_schema = plan
+                .node(aggregate.input)
+                .ok_or_else(|| invalid_node_reference(aggregate.input, "aggregate references a missing input"))?
+                .output_schema();
+            execute_aggregate(context, aggregate, input_schema, input, &node.facts.output_schema, metrics)
         },
         PlanNode::Sort(sort) => {
             let input = execute_node(context, plan, sort.input, gpu_inputs, scratch, metrics)?;

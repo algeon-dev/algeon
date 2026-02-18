@@ -315,6 +315,8 @@ pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggreg
         Ok(NativeAggregateFunction::Count)
     } else if name.eq_ignore_ascii_case("avg") {
         Ok(NativeAggregateFunction::Avg)
+    } else if name.eq_ignore_ascii_case("stddev") || name.eq_ignore_ascii_case("stddev_samp") {
+        Ok(NativeAggregateFunction::StddevSamp)
     } else {
         Err(FallbackReason::UnsupportedOperator)
     }

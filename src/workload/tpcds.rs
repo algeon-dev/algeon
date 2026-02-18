@@ -27,10 +27,10 @@ mod tiny;
 
 pub use dataset::{
     CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV,
-    CUDF_TPCDS_SCALE_FACTOR_ENV, TPCDS_TABLES, TpcdsDatasetMetadata, TpcdsTableFileMetadata, TpcdsTableLayout,
-    TpcdsTableMetadata, describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint,
-    discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset,
-    tiny_tpcds_dataset_metadata,
+    CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_TABLES, TpcdsDatasetMetadata,
+    TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, describe_tpcds_dataset,
+    describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout, external_tpcds_dataset_metadata,
+    prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
 };
 pub use parity::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, tpcds_parity_workload_items,
