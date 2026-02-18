@@ -225,6 +225,27 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy_without_h
     );
 }
 
+#[test]
+fn keyed_inner_residual_or_selects_one_shot_post_filter_strategy() {
+    let plan = large_keyed_residual_or_join_strategy_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through post-join filtering");
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("keyed residual OR join should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+    assert_eq!(
+        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:residual_requires_post_join_filter")
+    );
+    assert_eq!(
+        facts.get("partitioned_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:residual_requires_post_join_filter")
+    );
+    assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
+}
+
 fn assert_one_shot_output_preflight_gap(pipeline: &cudf_query_engine::CompiledPipeline, label: &str) {
     let gate = pipeline
         .gates()
@@ -400,6 +421,70 @@ fn large_keyed_residual_join_strategy_plan() -> cudf_query_engine::QueryPlan {
             Expr::input_column(0, "qty", "qty"),
             BinaryOp::Gt,
             Expr::input_column(1, "order_id", "right_order_id"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn large_keyed_residual_or_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, true),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, true),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/large-residual-or-join-left.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/large-residual-or-join-right.parquet")
+                .with_row_group_rows(vec![100_000_000])
+                .with_row_group_bytes(vec![9 * 1024 * 1024 * 1024]),
+        ],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_id", "left_order_id"),
+                ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::binary(Expr::input_column(0, "qty", "qty"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(5))),
+            BinaryOp::Or,
+            Expr::binary(
+                Expr::input_column(1, "category", "category"),
+                BinaryOp::Eq,
+                Expr::literal(LiteralValue::Utf8("promo".to_string())),
+            ),
         ))
         .with_output_projection(vec![
             JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),

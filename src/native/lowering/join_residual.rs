@@ -123,14 +123,6 @@ fn lower_join_filter_expr(
         return lower_literal(literal.value());
     }
     if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
-        if matches!(binary.op(), datafusion::logical_expr::Operator::Or)
-            && binary
-                .nullable(context.filter.schema().as_ref())
-                .map_err(|_error| FallbackReason::UnsupportedExpression)?
-            && expr_contains_scalar_function(expr)
-        {
-            return Err(FallbackReason::UnsupportedExpression);
-        }
         let left = lower_join_filter_expr(binary.left(), context, left_required, right_required, materializations)?;
         let right = lower_join_filter_expr(binary.right(), context, left_required, right_required, materializations)?;
         let op = lower_binary_operator(binary.op())?;
@@ -304,11 +296,6 @@ fn join_filter_expr_single_side(
     let mut side = None;
     collect_join_filter_expr_sides(expr, filter, &mut side)?;
     side.ok_or(FallbackReason::UnsupportedExpression)
-}
-
-fn expr_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some()
-        || expr.children().into_iter().any(expr_contains_scalar_function)
 }
 
 fn collect_join_filter_expr_sides(

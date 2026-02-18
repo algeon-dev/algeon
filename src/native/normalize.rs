@@ -142,6 +142,12 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
         return normalize_global_aggregate_stack(plan.schema().fields().len(), None, aggregate);
     }
 
+    if plan.as_any().downcast_ref::<FilterExec>().is_some() || plan.as_any().downcast_ref::<DataSourceExec>().is_some()
+    {
+        let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
+        return normalize_input_root(plan.schema().fields().len(), None, None, None, None, plan, candidate);
+    }
+
     if plan.as_any().downcast_ref::<HashJoinExec>().is_some()
         || plan.as_any().downcast_ref::<CrossJoinExec>().is_some()
         || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
@@ -320,12 +326,6 @@ fn normalize_input_root<'a>(
     candidate: GpuCandidate,
 ) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     let input = normalize_native_input(input_plan, candidate.clone())?;
-    if matches!(input, NormalizedNativeInput::Source(_)) && projection.is_none() {
-        return Err(NativePlanRejection {
-            candidate: GpuCandidate::with_operator_count(UNSUPPORTED_NATIVE_PLAN_SHAPE, output_schema_fields, 1),
-            reason: FallbackReason::UnsupportedOperator,
-        });
-    }
     let candidate = input_root_candidate(
         stack_root,
         output_schema_fields,

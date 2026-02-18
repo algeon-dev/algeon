@@ -17,7 +17,7 @@ pub use semijoin_reduction::{
 use crate::plan::QueryPlan;
 
 /// Native optimizer pass configuration.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeOptimizerOptions {
     pub semijoin_reduction: SemijoinReductionOptions,
 }
@@ -26,12 +26,6 @@ impl NativeOptimizerOptions {
     /// Returns options with all optimizer passes disabled.
     pub fn disabled() -> Self {
         Self { semijoin_reduction: SemijoinReductionOptions::disabled() }
-    }
-}
-
-impl Default for NativeOptimizerOptions {
-    fn default() -> Self {
-        Self { semijoin_reduction: SemijoinReductionOptions::default() }
     }
 }
 

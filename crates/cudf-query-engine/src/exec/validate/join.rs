@@ -107,7 +107,7 @@ pub(super) fn validate_join_capability(
         let predicate_type =
             match validate_join_residual_expr(predicate, left_schema, left_available, right_schema, right_available) {
                 Ok(data_type) => data_type,
-                Err(_error) if join_residual_case_post_filter_supported(join) => validate_post_join_residual_expr(
+                Err(_error) if join_residual_post_filter_supported(join) => validate_post_join_residual_expr(
                     predicate,
                     left_schema,
                     left_available,
@@ -572,14 +572,14 @@ fn validate_post_join_residual_expr(
     }
 }
 
-fn join_residual_case_post_filter_supported(join: &JoinNode) -> bool {
+fn join_residual_post_filter_supported(join: &JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && !join.spec.keys.is_empty()
         && !join.spec.output_projection.is_empty()
-        && join.spec.residual_predicate.as_ref().is_some_and(residual_expr_contains_case)
+        && join.spec.residual_predicate.as_ref().is_some_and(residual_expr_requires_post_filter)
 }
 
-fn residual_expr_contains_case(expr: &Expr) -> bool {
+fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
     match expr {
         Expr::Case { .. } => true,
         Expr::Not(expr)
@@ -589,11 +589,14 @@ fn residual_expr_contains_case(expr: &Expr) -> bool {
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::Extract { expr, .. }
-        | Expr::Alias { expr, .. } => residual_expr_contains_case(expr),
-        Expr::Like { expr, .. } | Expr::Substring { expr, .. } => residual_expr_contains_case(expr),
-        Expr::Binary { left, right, .. } => residual_expr_contains_case(left) || residual_expr_contains_case(right),
+        | Expr::Alias { expr, .. } => residual_expr_requires_post_filter(expr),
+        Expr::Like { expr, .. } | Expr::Substring { expr, .. } => residual_expr_requires_post_filter(expr),
+        Expr::Binary { op: BinaryOp::Or, .. } => true,
+        Expr::Binary { left, right, .. } => {
+            residual_expr_requires_post_filter(left) || residual_expr_requires_post_filter(right)
+        },
         Expr::InList { expr, list, .. } => {
-            residual_expr_contains_case(expr) || list.iter().any(residual_expr_contains_case)
+            residual_expr_requires_post_filter(expr) || list.iter().any(residual_expr_requires_post_filter)
         },
         Expr::Column(_) | Expr::Literal(_) => false,
     }

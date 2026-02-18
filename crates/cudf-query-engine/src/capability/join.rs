@@ -144,6 +144,12 @@ pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
     node_id: NodeId,
     join: &JoinNode,
 ) -> Option<KeyedHashJoinStrategyDecision> {
+    if join_residual_requires_post_join_filter(join) {
+        return Some(keyed_hash_join_strategy_decision(
+            join,
+            keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join),
+        ));
+    }
     if keyed_hash_join_capable(join) {
         return Some(keyed_hash_join_strategy_decision(
             join,
@@ -188,16 +194,30 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     join: &JoinNode,
     input: KeyedHashJoinStrategyInputFacts,
 ) -> KeyedHashJoinStrategyDecision {
-    if join_residual_requires_post_join_filter(join) && one_shot_equi_join_supported(join) {
-        return KeyedHashJoinStrategyDecision::Selected {
-            strategy: KeyedHashJoinStrategy::OneShotEqui,
+    if join_residual_requires_post_join_filter(join) {
+        if one_shot_equi_join_supported(join) {
+            return KeyedHashJoinStrategyDecision::Selected {
+                strategy: KeyedHashJoinStrategy::OneShotEqui,
+                facts: strategy_facts(
+                    join,
+                    input,
+                    KeyedHashJoinStrategy::OneShotEqui,
+                    Some("residual_requires_post_join_filter"),
+                    Some("residual_requires_post_join_filter"),
+                    None,
+                ),
+            };
+        }
+
+        return KeyedHashJoinStrategyDecision::Rejected {
+            reason: "post_join_residual_filter_requires_one_shot_equi_join",
             facts: strategy_facts(
                 join,
                 input,
                 KeyedHashJoinStrategy::OneShotEqui,
-                Some("residual_requires_post_join_filter"),
-                Some("residual_requires_post_join_filter"),
                 None,
+                Some("residual_requires_post_join_filter"),
+                Some("one_shot_equi_requires_keyed_inner_left_or_full_join"),
             ),
         };
     }
@@ -299,10 +319,10 @@ pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
 }
 
 pub(crate) fn join_residual_requires_post_join_filter(join: &JoinNode) -> bool {
-    join.spec.residual_predicate.as_ref().is_some_and(expr_contains_case)
+    join.spec.residual_predicate.as_ref().is_some_and(expr_requires_post_join_filter)
 }
 
-fn expr_contains_case(expr: &Expr) -> bool {
+fn expr_requires_post_join_filter(expr: &Expr) -> bool {
     match expr {
         Expr::Case { .. } => true,
         Expr::Not(expr)
@@ -314,9 +334,14 @@ fn expr_contains_case(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::Alias { expr, .. }
         | Expr::Substring { expr, .. }
-        | Expr::Like { expr, .. } => expr_contains_case(expr),
-        Expr::Binary { left, right, .. } => expr_contains_case(left) || expr_contains_case(right),
-        Expr::InList { expr, list, .. } => expr_contains_case(expr) || list.iter().any(expr_contains_case),
+        | Expr::Like { expr, .. } => expr_requires_post_join_filter(expr),
+        Expr::Binary { op: crate::expr::BinaryOp::Or, .. } => true,
+        Expr::Binary { left, right, .. } => {
+            expr_requires_post_join_filter(left) || expr_requires_post_join_filter(right)
+        },
+        Expr::InList { expr, list, .. } => {
+            expr_requires_post_join_filter(expr) || list.iter().any(expr_requires_post_join_filter)
+        },
         Expr::Column(_) | Expr::Literal(_) => false,
     }
 }
