@@ -142,6 +142,33 @@ async fn native_runtime_reader_pushdown_reduces_source_rows_and_retained_bytes()
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[tokio::test]
+async fn native_runtime_decimal32_reader_pushdown_matches_post_scan() {
+    let dir = unique_temp_dir("datafusion-cudf-native-runtime-decimal32-reader-pushdown");
+    let path = dir.join("input.parquet");
+    write_decimal32_reader_pushdown_parquet_file(&path);
+
+    let mut post_scan_config = SessionConfig::new();
+    post_scan_config.options_mut().execution.parquet.pushdown_filters = false;
+    let post_scan = execute_sql_native_query(&path, post_scan_config, SQL_DECIMAL32_READER_PUSHDOWN_QUERY).await;
+    let mut reader_pushdown_config = SessionConfig::new();
+    reader_pushdown_config.options_mut().execution.parquet.pushdown_filters = true;
+    let reader_pushdown =
+        execute_sql_native_query(&path, reader_pushdown_config, SQL_DECIMAL32_READER_PUSHDOWN_QUERY).await;
+
+    assert_batches_equal(&post_scan.output, &reader_pushdown.output);
+    assert_eq!(post_scan.predicate_disposition, "pruning_only");
+    assert_eq!(reader_pushdown.predicate_disposition, "reader_pushdown");
+    assert!(
+        reader_pushdown.input_rows < post_scan.input_rows,
+        "Decimal32-backed reader pushdown should reduce source rows: reader={} post_scan={}",
+        reader_pushdown.input_rows,
+        post_scan.input_rows
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 struct NativeQueryObservation {
     output: Vec<RecordBatch>,
     predicate_disposition: String,

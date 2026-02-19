@@ -1415,6 +1415,7 @@ dependencies = [
  "csv",
  "cudf-sys",
  "indexmap 2.14.0",
+ "parquet",
  "rapids-interop",
  "smallvec",
  "strum 0.28.0",

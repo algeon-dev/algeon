@@ -97,7 +97,7 @@ fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
 }
 
 #[test]
-fn local_parquet_source_reader_predicate_rejects_decimal32_backed_contract() {
+fn local_parquet_source_reader_predicate_accepts_decimal32_backed_contract() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
         Field::new("amount", DataType::Decimal128(9, 2), false),
@@ -117,7 +117,7 @@ fn local_parquet_source_reader_predicate_rejects_decimal32_backed_contract() {
         Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 9, scale: 2 }),
     );
 
-    assert!(!source.reader_predicate_is_supported(&predicate));
+    assert!(source.reader_predicate_is_supported(&predicate));
 }
 
 #[test]
