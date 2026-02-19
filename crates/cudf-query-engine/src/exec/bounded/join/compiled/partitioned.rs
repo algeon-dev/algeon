@@ -470,7 +470,10 @@ pub(super) fn partitioned_join_reusable_rejected_reason(
 ) -> &'static str {
     if build_rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD || build_bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD {
         "build_side_too_large"
-    } else if probe_bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD {
+    } else if probe_bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD
+        && build_rows > SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD
+        && build_bytes > SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD
+    {
         "probe_side_too_large"
     } else {
         "partitioned_strategy_selected"

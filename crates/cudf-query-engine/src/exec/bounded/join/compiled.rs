@@ -11,7 +11,8 @@ use super::{
 use crate::{
     capability::{
         KeylessConditionalJoinKind, LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD, LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD,
-        LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD, keyed_filtered_semi_anti_join_capable,
+        LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD, SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD,
+        SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD, keyed_filtered_semi_anti_join_capable,
     },
     exec::bounded::strict::CompiledJoinExecutionStrategy,
     expr::{ColumnQualifier, ColumnRef},

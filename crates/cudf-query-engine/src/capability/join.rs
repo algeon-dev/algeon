@@ -8,6 +8,8 @@ use crate::{
 pub(crate) const LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
 pub(crate) const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
 pub(crate) const LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+pub(crate) const SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
+pub(crate) const SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
 
 /// Node-local native join execution capability.
 ///
@@ -225,10 +227,13 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     let large_build = input.observed_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.estimated_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
         || input.build_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD);
+    let small_build = input.observed_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
+        || input.estimated_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
+        || input.build_side_bytes.is_some_and(|bytes| bytes <= SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD);
     let large_probe = input.probe_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD);
     let reusable_rejected_reason = if large_build {
         Some("build_side_too_large")
-    } else if large_probe {
+    } else if large_probe && !small_build {
         Some("probe_side_too_large")
     } else {
         None
@@ -364,6 +369,8 @@ fn strategy_facts(
         ("large_keyed_hash_build_row_threshold", LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD.to_string()),
         ("large_keyed_hash_build_bytes_threshold", LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD.to_string()),
         ("large_keyed_hash_probe_bytes_threshold", LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD.to_string()),
+        ("small_reusable_hash_build_row_threshold", SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD.to_string()),
+        ("small_reusable_hash_build_bytes_threshold", SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD.to_string()),
     ]);
     if let Some(rows) = input.estimated_build_rows {
         facts.insert("estimated_build_rows", rows.to_string());
