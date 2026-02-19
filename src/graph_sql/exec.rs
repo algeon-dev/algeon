@@ -1,0 +1,585 @@
+use std::{
+    any::Any,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+use arrow::{
+    datatypes::{Schema, SchemaRef},
+    record_batch::RecordBatch,
+};
+use cudf_query_engine::{
+    ExecutionContext, GpuDataFrame, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GraphAlgorithm,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphEdgeColumnBindings, GraphLouvainParams, GraphPageRankParams, LimitSpec, ProjectionOutput, QueryMetrics,
+    QueryOutput, QueryPlanBuilder, SourceNode, execute_query_plan, execute_query_plan_with_gpu_inputs,
+};
+use datafusion::{
+    common::{DataFusionError, Result},
+    execution::context::TaskContext,
+    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream, collect,
+        execution_plan::{Boundedness, EmissionType},
+        metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
+        stream::RecordBatchStreamAdapter,
+    },
+};
+use futures::{TryStreamExt, future::BoxFuture};
+
+use super::{
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphGraphConstructionPolicy, plan_error,
+};
+use crate::{
+    error::{Error, ErrorCode},
+    native_exec::{
+        GpuResidentProducerExec, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfMetrics,
+        gpu_resident_producer as native_gpu_resident_producer,
+    },
+};
+
+static NEXT_CUGRAPH_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Debug, Clone)]
+pub struct CugraphAlgoExec {
+    spec: CugraphAlgorithmSpec,
+    edge_source: Arc<dyn ExecutionPlan>,
+    projection: Option<Vec<usize>>,
+    limit: Option<usize>,
+    gpu_result_input_name: String,
+    metrics: ExecutionPlanMetricsSet,
+    cache: Arc<PlanProperties>,
+}
+
+impl CugraphAlgoExec {
+    pub(super) fn try_new(
+        spec: CugraphAlgorithmSpec,
+        edge_source: Arc<dyn ExecutionPlan>,
+        projection: Option<Vec<usize>>,
+        limit: Option<usize>,
+    ) -> Result<Self> {
+        let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
+        Self::try_new_with_gpu_result_input_name(
+            spec,
+            edge_source,
+            projection,
+            limit,
+            format!("__datafusion_cudf_cugraph_result_{id}"),
+        )
+    }
+
+    fn try_new_with_gpu_result_input_name(
+        spec: CugraphAlgorithmSpec,
+        edge_source: Arc<dyn ExecutionPlan>,
+        projection: Option<Vec<usize>>,
+        limit: Option<usize>,
+        gpu_result_input_name: String,
+    ) -> Result<Self> {
+        let schema = projected_schema(&spec.output_schema, projection.as_ref())?;
+        Ok(Self {
+            spec,
+            edge_source,
+            projection,
+            limit,
+            gpu_result_input_name,
+            metrics: ExecutionPlanMetricsSet::new(),
+            cache: Arc::new(PlanProperties::new(
+                EquivalenceProperties::new(schema),
+                Partitioning::UnknownPartitioning(1),
+                EmissionType::Final,
+                Boundedness::Bounded,
+            )),
+        })
+    }
+
+    async fn execute_gpu_result_with_context_impl(
+        &self,
+        native_context: &ExecutionContext,
+        partition: usize,
+        task_context: Arc<TaskContext>,
+    ) -> Result<(String, GpuResultHandle)> {
+        if partition != 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_cudf.cugraph_sql.execute_gpu",
+                "cuGraph SQL GPU-resident producer exposes exactly one output partition",
+            )
+            .with_fact("partition", partition)
+            .into());
+        }
+
+        let edge_schema = self.edge_source.schema();
+        let edge_frame =
+            execute_edge_source_to_gpu(native_context, Arc::clone(&self.edge_source), task_context).await?;
+        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let (handle, query_metrics) =
+            execute_cugraph_query_to_gpu(native_context, &self.spec, edge_schema, edge_frame, self)?;
+        metrics.record_query_metrics(&query_metrics);
+        Ok((self.gpu_result_input_name.clone(), handle))
+    }
+}
+
+impl GpuResidentProducerExec for CugraphAlgoExec {
+    fn gpu_result_input_name(&self) -> &str {
+        &self.gpu_result_input_name
+    }
+
+    fn execute_gpu_result_with_context<'a>(
+        &'a self,
+        native_context: &'a ExecutionContext,
+        partition: usize,
+        task_context: Arc<TaskContext>,
+    ) -> BoxFuture<'a, Result<(String, GpuResultHandle)>> {
+        Box::pin(
+            async move { self.execute_gpu_result_with_context_impl(native_context, partition, task_context).await },
+        )
+    }
+}
+
+pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducerExec> {
+    plan.as_any().downcast_ref::<CugraphAlgoExec>().map(|producer| producer as &dyn GpuResidentProducerExec)
+}
+
+impl DisplayAs for CugraphAlgoExec {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
+                f,
+                "CugraphAlgoExec: algorithm={:?}, table={}, src_col={}, dst_col={}, weight_col={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                self.spec.algorithm,
+                self.spec.table_name,
+                self.spec.src_col,
+                self.spec.dst_col,
+                self.spec.weight_col.as_deref().unwrap_or("<none>"),
+                self.gpu_result_input_name,
+            ),
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "algorithm={:?}", self.spec.algorithm)?;
+                writeln!(f, "table={}", self.spec.table_name)?;
+                writeln!(f, "src_col={}", self.spec.src_col)?;
+                writeln!(f, "dst_col={}", self.spec.dst_col)?;
+                writeln!(f, "weight_col={}", self.spec.weight_col.as_deref().unwrap_or("<none>"))?;
+                writeln!(f, "output_boundary=device_resident_or_device_to_host")?;
+                writeln!(f, "gpu_result_input={}", self.gpu_result_input_name)
+            },
+        }
+    }
+}
+
+impl ExecutionPlan for CugraphAlgoExec {
+    fn name(&self) -> &str {
+        "CugraphAlgoExec"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.cache
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.edge_source]
+    }
+
+    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(Error::new(
+                ErrorCode::InvalidChildCount,
+                "datafusion_cudf.cugraph_sql.with_new_children",
+                "cuGraph SQL execution expects exactly one edge-source child",
+            )
+            .with_fact("actual_child_count", children.len())
+            .into());
+        }
+        Ok(Arc::new(Self::try_new_with_gpu_result_input_name(
+            self.spec.clone(),
+            Arc::clone(&children[0]),
+            self.projection.clone(),
+            self.limit,
+            self.gpu_result_input_name.clone(),
+        )?))
+    }
+
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
+        if partition != 0 {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_cudf.cugraph_sql.execute",
+                "cuGraph SQL execution exposes exactly one output partition",
+            )
+            .with_fact("partition", partition)
+            .into());
+        }
+
+        let schema = self.schema();
+        let spec = self.spec.clone();
+        let edge_source = Arc::clone(&self.edge_source);
+        let projection = self.projection.clone();
+        let limit = self.limit;
+        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let output = futures::stream::once(async move {
+            let execution_config = edge_execution_config(edge_source.as_ref());
+            let context = execution_config.execution_context().map_err(|error| {
+                DataFusionError::from(
+                    error
+                        .with_fact("cugraph_sql_phase", "runtime_context")
+                        .with_fact("cpu_fallback_after_native_start", false),
+                )
+            })?;
+            let edge_schema = edge_source.schema();
+            let edge_frame = execute_edge_source_to_gpu(&context, Arc::clone(&edge_source), task_context).await?;
+            let (batch, query_metrics) =
+                execute_cugraph_query_to_host(&context, &spec, edge_schema, edge_frame, projection.as_ref(), limit)?;
+            metrics.record_query_metrics(&query_metrics);
+            Ok::<Option<RecordBatch>, DataFusionError>(Some(batch.record_output(&metrics.baseline)))
+        })
+        .try_filter_map(|batch| async move { Ok(batch) });
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(schema, output)))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+}
+
+fn projected_schema(schema: &SchemaRef, projection: Option<&Vec<usize>>) -> Result<SchemaRef> {
+    let Some(projection) = projection else {
+        return Ok(Arc::clone(schema));
+    };
+    let fields = projection
+        .iter()
+        .map(|index| {
+            schema
+                .fields()
+                .get(*index)
+                .map(|field| field.as_ref().clone())
+                .ok_or_else(|| plan_error(format!("cuGraph output projection index {index} is out of range")))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn edge_execution_config(plan: &dyn ExecutionPlan) -> NativeCudfExecutionConfig {
+    if let Some(native) = as_native_cudf_exec(plan) {
+        return native.execution_config().clone();
+    }
+    if let Some(native) = as_native_cudf_composed_exec(plan) {
+        return native.execution_config().clone();
+    }
+    NativeCudfExecutionConfig::unbounded()
+}
+
+fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {
+    if let Some(native) = plan.as_any().downcast_ref::<NativeCudfExec>() {
+        return Some(native);
+    }
+    let children = cooperative_exec_children(plan)?;
+    let [child] = children.as_slice() else {
+        return None;
+    };
+    child.as_any().downcast_ref::<NativeCudfExec>()
+}
+
+fn as_native_cudf_composed_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfComposedExec> {
+    if let Some(native) = plan.as_any().downcast_ref::<NativeCudfComposedExec>() {
+        return Some(native);
+    }
+    let children = cooperative_exec_children(plan)?;
+    let [child] = children.as_slice() else {
+        return None;
+    };
+    child.as_any().downcast_ref::<NativeCudfComposedExec>()
+}
+
+fn cooperative_exec_children(plan: &dyn ExecutionPlan) -> Option<Vec<&Arc<dyn ExecutionPlan>>> {
+    (plan.name() == "CooperativeExec").then(|| plan.children())
+}
+
+async fn execute_edge_source_to_gpu(
+    context: &ExecutionContext,
+    plan: Arc<dyn ExecutionPlan>,
+    task_context: Arc<TaskContext>,
+) -> Result<GpuDataFrame> {
+    if let Some(native) = as_native_cudf_exec(plan.as_ref()) {
+        let native_plan = native.native_plan().clone_with_gpu_resident_sink();
+        let result = execute_query_plan(context, &native_plan).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_cudf.cugraph_sql.edge_source_native",
+                "native cuGraph edge-source execution failed",
+                error,
+            ))
+        })?;
+        let (output, _) = result.into_parts();
+        let QueryOutput::GpuResident(handle) = output else {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_cudf.cugraph_sql.edge_source_native",
+                "native cuGraph edge source did not produce a GPU-resident result",
+            )
+            .into());
+        };
+        return Ok(handle.into_gpu_frame());
+    }
+    if let Some(native) = as_native_cudf_composed_exec(plan.as_ref()) {
+        let native_plan = native.native_plan().clone_with_gpu_resident_sink();
+        let mut gpu_inputs = GpuResidentInputMap::new();
+        for child in native.gpu_inputs() {
+            let Some(producer) = native_gpu_resident_producer(child.as_ref()) else {
+                return Err(Error::new(
+                    ErrorCode::InvalidExecutionPlan,
+                    "datafusion_cudf.cugraph_sql.edge_source_composed",
+                    "native composed cuGraph edge-source child was not a GPU-resident producer",
+                )
+                .with_fact("child_name", child.name())
+                .into());
+            };
+            let (input_name, handle) =
+                producer.execute_gpu_result_with_context(context, 0, Arc::clone(&task_context)).await?;
+            gpu_inputs.insert(input_name, handle);
+        }
+        let result = execute_query_plan_with_gpu_inputs(context, &native_plan, &gpu_inputs).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_cudf.cugraph_sql.edge_source_composed",
+                "native composed cuGraph edge-source execution failed",
+                error,
+            ))
+        })?;
+        let (output, _) = result.into_parts();
+        let QueryOutput::GpuResident(handle) = output else {
+            return Err(Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_cudf.cugraph_sql.edge_source_composed",
+                "native composed cuGraph edge source did not produce a GPU-resident result",
+            )
+            .into());
+        };
+        return Ok(handle.into_gpu_frame());
+    }
+
+    let batches = collect(plan, task_context).await?;
+    record_batches_to_gpu(context, &batches)
+}
+
+fn record_batches_to_gpu(context: &ExecutionContext, batches: &[RecordBatch]) -> Result<GpuDataFrame> {
+    let Some(first_batch) = batches.first() else {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            "cuGraph edge source produced no RecordBatches",
+        )
+        .into());
+    };
+    let mut frames = batches
+        .iter()
+        .map(|batch| {
+            cudf::DataFrame::from_record_batch(context.runtime(), batch).map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_cudf.cugraph_sql.edge_source_host_import",
+                    "failed to import host Arrow edge-source batch into cudf",
+                    cudf_query_engine::QueryError::from_cudf(
+                        "datafusion_cudf.cugraph_sql.edge_source_host_import",
+                        "failed to import host Arrow edge-source batch into cudf",
+                        error,
+                    ),
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if frames.len() == 1 {
+        return Ok(GpuDataFrame::new(frames.remove(0)));
+    }
+    let first = frames.remove(0);
+    let rest = frames.iter().collect::<Vec<_>>();
+    let concatenated = first.concat_many(&rest).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            "failed to concatenate imported cuGraph edge-source batches",
+            cudf_query_engine::QueryError::from_cudf(
+                "datafusion_cudf.cugraph_sql.edge_source_host_import",
+                "failed to concatenate imported cuGraph edge-source batches",
+                error,
+            ),
+        ))
+    })?;
+    if concatenated.num_columns() != first_batch.num_columns() {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.cugraph_sql.edge_source_host_import",
+            "cuGraph edge-source import changed column count",
+        )
+        .with_fact("expected_column_count", first_batch.num_columns())
+        .with_fact("actual_column_count", concatenated.num_columns())
+        .into());
+    }
+    Ok(GpuDataFrame::new(concatenated))
+}
+
+fn execute_cugraph_query_to_host(
+    context: &ExecutionContext,
+    spec: &CugraphAlgorithmSpec,
+    edge_schema: SchemaRef,
+    edge_frame: GpuDataFrame,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+) -> Result<(RecordBatch, QueryMetrics)> {
+    let plan =
+        cugraph_query_plan(context, spec, edge_schema, edge_frame, projection, limit, CugraphQuerySink::HostArrow)?;
+    let result = execute_query_plan_with_gpu_inputs(context, &plan.plan, &plan.inputs).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_cudf.cugraph_sql.execute",
+            "native cuGraph SQL query execution failed",
+            error,
+        ))
+    })?;
+    let (output, metrics) = result.into_parts();
+    let QueryOutput::HostArrow(batch) = output else {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.cugraph_sql.execute",
+            "native cuGraph SQL query did not produce host Arrow output",
+        )
+        .into());
+    };
+    Ok((batch, metrics))
+}
+
+fn execute_cugraph_query_to_gpu(
+    context: &ExecutionContext,
+    spec: &CugraphAlgorithmSpec,
+    edge_schema: SchemaRef,
+    edge_frame: GpuDataFrame,
+    exec: &CugraphAlgoExec,
+) -> Result<(GpuResultHandle, QueryMetrics)> {
+    let plan = cugraph_query_plan(
+        context,
+        spec,
+        edge_schema,
+        edge_frame,
+        exec.projection.as_ref(),
+        exec.limit,
+        CugraphQuerySink::GpuResident,
+    )?;
+    let result = execute_query_plan_with_gpu_inputs(context, &plan.plan, &plan.inputs).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_cudf.cugraph_sql.execute_gpu",
+            "native cuGraph SQL GPU-resident query execution failed",
+            error,
+        ))
+    })?;
+    let (output, metrics) = result.into_parts();
+    let QueryOutput::GpuResident(handle) = output else {
+        return Err(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_cudf.cugraph_sql.execute_gpu",
+            "native cuGraph SQL query did not produce GPU-resident output",
+        )
+        .with_fact("result_sink", "host_arrow")
+        .into());
+    };
+    Ok((handle, metrics))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CugraphQuerySink {
+    HostArrow,
+    GpuResident,
+}
+
+struct CugraphQueryPlan {
+    plan: cudf_query_engine::QueryPlan,
+    inputs: GpuResidentInputMap,
+}
+
+fn cugraph_query_plan(
+    context: &ExecutionContext,
+    spec: &CugraphAlgorithmSpec,
+    edge_schema: SchemaRef,
+    edge_frame: GpuDataFrame,
+    projection: Option<&Vec<usize>>,
+    limit: Option<usize>,
+    sink: CugraphQuerySink,
+) -> Result<CugraphQueryPlan> {
+    let input_name = "__datafusion_cudf_cugraph_edges";
+    let handle = GpuResultHandle::new(context, edge_frame, Arc::clone(&edge_schema)).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_cudf.cugraph_sql.gpu_input",
+            "failed to bind cuGraph edge source as a GPU-resident native input",
+            error,
+        ))
+    })?;
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(input_name.to_string(), handle);
+
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(input_name, edge_schema)));
+    let mut root = builder.add_graph_algorithm(input, native_graph_spec(spec));
+    let mut root_schema = Arc::clone(&spec.output_schema);
+    if let Some(projection) = projection {
+        root_schema = projected_schema(&root_schema, Some(projection))?;
+        let outputs = projection
+            .iter()
+            .map(|index| {
+                let field =
+                    spec.output_schema.fields().get(*index).map(|field| field.as_ref().clone()).ok_or_else(|| {
+                        plan_error(format!("cuGraph output projection index {index} is out of range"))
+                    })?;
+                Ok(ProjectionOutput::new(cudf_query_engine::Expr::column(field.name()), field))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        root = builder.add_projection(root, outputs);
+    }
+    if let Some(limit) = limit {
+        root = builder.add_limit(root, LimitSpec::fetch(limit), Arc::clone(&root_schema));
+    }
+    let plan = match sink {
+        CugraphQuerySink::HostArrow => builder.finish_with_host_sink_schema(root, root_schema),
+        CugraphQuerySink::GpuResident => builder.finish_gpu_resident(root),
+    };
+    Ok(CugraphQueryPlan { plan, inputs })
+}
+
+fn native_graph_spec(spec: &CugraphAlgorithmSpec) -> GraphAlgorithmSpec {
+    GraphAlgorithmSpec::new(
+        native_algorithm(spec.algorithm),
+        GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone()),
+        GraphConstructionOptions {
+            directed: spec.graph_options.directed,
+            renumber: spec.graph_options.renumber,
+            policy: match spec.graph_options.construction_policy {
+                CugraphGraphConstructionPolicy::PythonCugraph => GraphConstructionPolicy::PythonCugraph,
+            },
+        },
+        native_algorithm_params(&spec.params),
+        Arc::clone(&spec.output_schema),
+    )
+}
+
+fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
+    match algorithm {
+        CugraphAlgorithm::PageRank => GraphAlgorithm::PageRank,
+        CugraphAlgorithm::Bfs => GraphAlgorithm::Bfs,
+        CugraphAlgorithm::Louvain => GraphAlgorithm::Louvain,
+    }
+}
+
+fn native_algorithm_params(params: &CugraphAlgorithmParams) -> GraphAlgorithmParams {
+    match params {
+        CugraphAlgorithmParams::PageRank(params) => GraphAlgorithmParams::PageRank(GraphPageRankParams {
+            alpha: params.alpha,
+            epsilon: params.epsilon,
+            max_iterations: params.max_iterations,
+        }),
+        CugraphAlgorithmParams::Bfs(params) => GraphAlgorithmParams::Bfs(GraphBfsParams {
+            source_vertex: params.source_vertex,
+            depth_limit: params.depth_limit,
+        }),
+        CugraphAlgorithmParams::Louvain(params) => {
+            GraphAlgorithmParams::Louvain(GraphLouvainParams { resolution: params.resolution })
+        },
+    }
+}

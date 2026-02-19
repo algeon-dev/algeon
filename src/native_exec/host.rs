@@ -61,7 +61,7 @@ impl NativeCudfExec {
         &self.plan
     }
 
-    #[cfg(feature = "cugraph")]
+    #[cfg_attr(not(feature = "cugraph"), allow(dead_code))]
     pub(crate) fn execution_config(&self) -> &NativeCudfExecutionConfig {
         &self.execution_config
     }
