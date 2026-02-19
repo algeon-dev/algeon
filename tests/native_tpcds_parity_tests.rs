@@ -349,6 +349,20 @@ async fn tpcds_sf1_q61_matches_after_physical_cross_join_admission() {
     let root = Path::new(TPCDS_SF1_FIXTURE);
     assert!(root.join("store_sales.parquet").is_file(), "TPC-DS SF1 fixture is missing at {}", root.display());
 
+    let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q61").await);
+    assert_eq!(lowering.rewritten_count(), 1, "q61 outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "q61 outcomes={:?}", lowering.report.outcomes());
+    let reader_pushdown_sources = lowering
+        .source_diagnostics
+        .iter()
+        .filter(|diagnostics| diagnostics.predicate_disposition.as_str() == "reader_pushdown")
+        .count();
+    assert!(
+        reader_pushdown_sources >= 2,
+        "q61 decimal offset predicates should remain source reader pushdown; source_diagnostics={:?}",
+        lowering.source_diagnostics
+    );
+
     let query_filter = vec!["q61".to_string()];
     let items = tpcds_parity_workload_items(
         root,

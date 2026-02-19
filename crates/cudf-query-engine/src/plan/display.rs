@@ -152,6 +152,20 @@ impl QueryNode {
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
+            PlanNode::EdgeNormalize(node) => writeln!(
+                f,
+                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} add_reverse={} dedup={} weight_combiner={} placement={} schema_behavior={}",
+                self.id,
+                node.input,
+                node.spec.edge_columns.source,
+                node.spec.edge_columns.destination,
+                node.spec.edge_columns.weight.as_deref().unwrap_or("none"),
+                node.spec.add_reverse,
+                node.spec.dedup,
+                node.spec.weight_combiner,
+                self.facts.placement,
+                self.facts.schema_behavior
+            ),
             PlanNode::GraphAlgorithm(node) => writeln!(
                 f,
                 "{padding}{} GraphAlgorithm input={} algorithm={} src_col={} dst_col={} weight_col={} directed={} renumber={} construction_policy={} params={} output_schema_fields={} placement={} schema_behavior={}",

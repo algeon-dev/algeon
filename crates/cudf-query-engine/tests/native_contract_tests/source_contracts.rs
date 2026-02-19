@@ -97,7 +97,7 @@ fn local_parquet_source_reader_predicate_accepts_decimal_contract() {
 }
 
 #[test]
-fn local_parquet_source_reader_predicate_accepts_decimal32_backed_contract() {
+fn local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in_list() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
         Field::new("amount", DataType::Decimal128(9, 2), false),
@@ -111,13 +111,28 @@ fn local_parquet_source_reader_predicate_accepts_decimal32_backed_contract() {
         schema,
         vec!["key".to_string(), "amount".to_string()],
     );
-    let predicate = Expr::binary(
+    let range_predicate = Expr::binary(
+        Expr::column("amount"),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 9, scale: 2 }),
+    );
+    let equality_predicate = Expr::binary(
         Expr::column("amount"),
         BinaryOp::Eq,
         Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 9, scale: 2 }),
     );
+    let in_list_predicate = Expr::InList {
+        expr: Box::new(Expr::column("amount")),
+        list: vec![
+            Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 9, scale: 2 }),
+            Expr::literal(LiteralValue::Int32(10)),
+        ],
+        negated: false,
+    };
 
-    assert!(source.reader_predicate_is_supported(&predicate));
+    assert!(source.reader_predicate_is_supported(&range_predicate));
+    assert!(source.reader_predicate_is_supported(&equality_predicate));
+    assert!(source.reader_predicate_is_supported(&in_list_predicate));
 }
 
 #[test]

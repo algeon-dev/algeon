@@ -18,23 +18,36 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
         GraphAlgorithmParams::PageRank(GraphPageRankParams { alpha: 0.7, epsilon: 0.001, max_iterations: 25 }),
         edge_schema(DataType::Int64, DataType::Float64, false),
     );
+    assert!(plan.contains_edge_normalize());
 
     let graph_node = plan.root_node();
     let PlanNode::GraphAlgorithm(graph) = &graph_node.kind else {
         panic!("expected graph algorithm root");
     };
 
-    assert_eq!(graph.input.index(), 0);
+    assert_eq!(graph.input.index(), 1);
     assert_eq!(graph.spec.algorithm, GraphAlgorithm::PageRank);
     assert_eq!(graph.spec.edge_columns.source, "src");
     assert_eq!(graph.spec.edge_columns.destination, "dst");
     assert_eq!(graph.spec.edge_columns.weight.as_deref(), Some("weight"));
-    assert_eq!(graph.spec.graph_options.directed, true);
-    assert_eq!(graph.spec.graph_options.renumber, true);
-    assert_eq!(graph.spec.graph_options.policy, GraphConstructionPolicy::PythonCugraph);
+    assert!(graph.spec.graph_options.directed);
+    assert!(graph.spec.graph_options.renumber);
+    assert_eq!(graph.spec.graph_options.policy, GraphConstructionPolicy::RawLibcugraph);
     assert_eq!(graph.output_schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::PageRank).as_ref());
 
+    let normalize_node = plan.node(graph.input).expect("graph input must exist");
+    let PlanNode::EdgeNormalize(edge_normalize) = &normalize_node.kind else {
+        panic!("expected edge normalize input");
+    };
+    assert_eq!(edge_normalize.input.index(), 0);
+    assert!(!edge_normalize.spec.add_reverse);
+    assert_eq!(edge_normalize.spec.dedup.as_str(), "keep_first");
+    assert_eq!(edge_normalize.spec.weight_combiner.as_str(), "min_weight");
+
     let display = plan.to_string();
+    assert!(display.contains("EdgeNormalize"));
+    assert!(display.contains("dedup=keep_first"));
+    assert!(display.contains("weight_combiner=min_weight"));
     assert!(display.contains("GraphAlgorithm"));
     assert!(display.contains("algorithm=pagerank"));
     assert!(display.contains("src_col=src"));
@@ -42,7 +55,34 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(display.contains("weight_col=weight"));
     assert!(display.contains("directed=true"));
     assert!(display.contains("renumber=true"));
+    assert!(display.contains("construction_policy=raw_libcugraph"));
     assert!(display.contains("output_schema_fields=2"));
+}
+
+#[test]
+fn raw_graph_construction_policy_does_not_insert_edge_normalize() {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        edge_schema(DataType::Int64, DataType::Float64, false),
+    )));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let graph = builder.add_graph_algorithm(input, spec);
+    let plan = builder.finish_with_host_sink(graph);
+
+    assert!(!plan.contains_edge_normalize());
+    assert_eq!(plan.node_count(), 2);
+    let PlanNode::GraphAlgorithm(graph) = &plan.root_node().kind else {
+        panic!("expected graph algorithm root");
+    };
+    assert_eq!(graph.input.index(), 0);
+    assert_eq!(graph.spec.graph_options.policy, GraphConstructionPolicy::RawLibcugraph);
+    assert!(!plan.to_string().contains("EdgeNormalize"));
 }
 
 #[test]
@@ -96,6 +136,12 @@ fn graph_algorithm_strict_bounded_contract_surface_lists_lower_level_gaps() {
             .all(|contract| !contract.required_surface.contains("estimate")),
         "graph strict bounded support must wait for lower-level contract surfaces, not adapter estimates"
     );
+}
+
+#[test]
+fn graph_construction_policy_label_round_trips() {
+    assert_eq!(GraphConstructionPolicy::PythonCugraph.as_str(), "python_cugraph");
+    assert_eq!(GraphConstructionPolicy::RawLibcugraph.as_str(), "raw_libcugraph");
 }
 
 #[test]

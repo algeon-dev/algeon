@@ -87,20 +87,92 @@ impl Default for GraphConstructionOptions {
 }
 
 /// Graph construction policy understood by the native IR.
+///
+/// Mirrors `cugraph::cudf_interop::GraphConstructionPolicy`. See
+/// `datafusion_cudf::CugraphGraphConstructionPolicy` for the SQL-level
+/// semantics and trade-offs between the two variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphConstructionPolicy {
     PythonCugraph,
+    RawLibcugraph,
 }
 
 impl GraphConstructionPolicy {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PythonCugraph => "python_cugraph",
+            Self::RawLibcugraph => "raw_libcugraph",
         }
     }
 }
 
 impl fmt::Display for GraphConstructionPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Edge-list normalization inserted before raw cuGraph construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EdgeNormalizeSpec {
+    pub edge_columns: GraphEdgeColumnBindings,
+    pub add_reverse: bool,
+    pub dedup: EdgeDedupStrategy,
+    pub weight_combiner: EdgeWeightCombiner,
+}
+
+impl EdgeNormalizeSpec {
+    pub fn python_cugraph(edge_columns: GraphEdgeColumnBindings, graph_options: &GraphConstructionOptions) -> Self {
+        Self {
+            edge_columns: edge_columns.clone(),
+            add_reverse: !graph_options.directed,
+            dedup: EdgeDedupStrategy::KeepFirst,
+            weight_combiner: if edge_columns.weight.is_some() {
+                EdgeWeightCombiner::MinWeight
+            } else {
+                EdgeWeightCombiner::None
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeDedupStrategy {
+    None,
+    KeepFirst,
+}
+
+impl EdgeDedupStrategy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::KeepFirst => "keep_first",
+        }
+    }
+}
+
+impl fmt::Display for EdgeDedupStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EdgeWeightCombiner {
+    None,
+    MinWeight,
+}
+
+impl EdgeWeightCombiner {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::MinWeight => "min_weight",
+        }
+    }
+}
+
+impl fmt::Display for EdgeWeightCombiner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }

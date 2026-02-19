@@ -94,6 +94,10 @@ impl CugraphAlgoExec {
         })
     }
 
+    pub(crate) fn edge_normalize_inserted(&self) -> bool {
+        self.spec.graph_options.construction_policy == CugraphGraphConstructionPolicy::PythonCugraph
+    }
+
     async fn execute_gpu_result_with_context_impl(
         &self,
         native_context: &ExecutionContext,
@@ -147,12 +151,14 @@ impl DisplayAs for CugraphAlgoExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "CugraphAlgoExec: algorithm={:?}, table={}, src_col={}, dst_col={}, weight_col={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
+                "CugraphAlgoExec: algorithm={:?}, table={}, src_col={}, dst_col={}, weight_col={}, construction_policy={}, edge_normalize_inserted={}, output_boundary=device_resident_or_device_to_host, gpu_result_input={}",
                 self.spec.algorithm,
                 self.spec.table_name,
                 self.spec.src_col,
                 self.spec.dst_col,
                 self.spec.weight_col.as_deref().unwrap_or("<none>"),
+                self.spec.graph_options.construction_policy.as_str(),
+                self.edge_normalize_inserted(),
                 self.gpu_result_input_name,
             ),
             DisplayFormatType::TreeRender => {
@@ -161,6 +167,8 @@ impl DisplayAs for CugraphAlgoExec {
                 writeln!(f, "src_col={}", self.spec.src_col)?;
                 writeln!(f, "dst_col={}", self.spec.dst_col)?;
                 writeln!(f, "weight_col={}", self.spec.weight_col.as_deref().unwrap_or("<none>"))?;
+                writeln!(f, "construction_policy={}", self.spec.graph_options.construction_policy.as_str())?;
+                writeln!(f, "edge_normalize_inserted={}", self.edge_normalize_inserted())?;
                 writeln!(f, "output_boundary=device_resident_or_device_to_host")?;
                 writeln!(f, "gpu_result_input={}", self.gpu_result_input_name)
             },
@@ -552,6 +560,7 @@ fn native_graph_spec(spec: &CugraphAlgorithmSpec) -> GraphAlgorithmSpec {
             renumber: spec.graph_options.renumber,
             policy: match spec.graph_options.construction_policy {
                 CugraphGraphConstructionPolicy::PythonCugraph => GraphConstructionPolicy::PythonCugraph,
+                CugraphGraphConstructionPolicy::RawLibcugraph => GraphConstructionPolicy::RawLibcugraph,
             },
         },
         native_algorithm_params(&spec.params),

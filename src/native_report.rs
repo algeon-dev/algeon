@@ -28,6 +28,8 @@ use datafusion::{
     },
 };
 
+#[cfg(feature = "cugraph")]
+use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     CandidateOutcome, FallbackReason, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
     NativeCudfGpuProducerExec, lower_physical_plan_to_native,
@@ -235,6 +237,32 @@ fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> 
     rewritten.next().is_none().then_some(candidate)
 }
 
+fn post_native_plan_edge_normalize_inserted(plan: &dyn ExecutionPlan) -> bool {
+    if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfExec>()
+        && exec.native_plan().contains_edge_normalize()
+    {
+        return true;
+    }
+    if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfComposedExec>()
+        && exec.native_plan().contains_edge_normalize()
+    {
+        return true;
+    }
+    if let Some(exec) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>()
+        && exec.native_plan().contains_edge_normalize()
+    {
+        return true;
+    }
+    #[cfg(feature = "cugraph")]
+    if let Some(exec) = plan.as_any().downcast_ref::<CugraphAlgoExec>()
+        && exec.edge_normalize_inserted()
+    {
+        return true;
+    }
+
+    plan.children().iter().any(|child| post_native_plan_edge_normalize_inserted(child.as_ref()))
+}
+
 fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem) -> Vec<NativeDataFusionPlanningRow> {
     let (planned_plan, native_diagnostics) = match item.input {
         NativeDataFusionPlanningWorkloadInput::Planned { planned_plan, native_diagnostics } => {
@@ -246,6 +274,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
     };
     let post_native_plan_root = planned_plan.name().to_string();
     let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
+    let edge_normalize_inserted = post_native_plan_edge_normalize_inserted(planned_plan.as_ref());
     let join_diagnostics = join_diagnostics(planned_plan.as_ref());
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
@@ -279,6 +308,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     candidate,
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
+                edge_normalize_inserted,
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -311,6 +341,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     candidate,
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
+                edge_normalize_inserted,
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -440,6 +471,7 @@ fn datafusion_planning_row_for_planning_failure(
         strict_bounded_compiled_graphs: Vec::new(),
         adaptive_pipeline_rows: Vec::new(),
         native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics::default(),
+        edge_normalize_inserted: false,
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),

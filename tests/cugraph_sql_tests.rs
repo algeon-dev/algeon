@@ -131,6 +131,54 @@ fn cugraph_sql_planning_parses_algorithm_options() {
 }
 
 #[test]
+fn cugraph_sql_planning_parses_construction_policy_options() {
+    let config = CugraphSqlConfig::default();
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::PageRank,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"construction_policy":"python_cugraph"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(spec.graph_options.construction_policy, CugraphGraphConstructionPolicy::PythonCugraph);
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::PageRank,
+        &[
+            lit("graph_edges"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"construction_policy":"raw_libcugraph"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(spec.graph_options.construction_policy, CugraphGraphConstructionPolicy::RawLibcugraph);
+
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::PageRank,
+            &[
+                lit("graph_edges"),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"construction_policy":"networkx"}"#),
+            ],
+            &config,
+        ),
+        "unsupported cuGraph construction_policy 'networkx'",
+    );
+}
+
+#[test]
 fn cugraph_sql_planning_rejects_invalid_arguments() {
     let config = CugraphSqlConfig::default();
     assert_error_contains(
@@ -277,6 +325,35 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
     assert_eq!(
         plan.schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
         vec!["vertex", "partition"]
+    );
+    let plan_display = displayable(plan.as_ref()).indent(false).to_string();
+    assert!(
+        plan_display.contains("construction_policy=python_cugraph"),
+        "cuGraph SQL EXPLAIN must expose the selected construction policy:\n{plan_display}"
+    );
+    assert!(
+        plan_display.contains("edge_normalize_inserted=true"),
+        "default Python-compatible cuGraph SQL planning should surface the inserted EdgeNormalize step:\n{plan_display}"
+    );
+
+    let raw_df = ctx
+        .sql(
+            "SELECT vertex, partition \
+             FROM cugraph_louvain('tiny_communities', 'src', 'dst', 'weight', \
+                                  '{\"directed\":false,\"construction_policy\":\"raw_libcugraph\"}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let raw_plan = raw_df.create_physical_plan().await.unwrap();
+    let raw_plan_display = displayable(raw_plan.as_ref()).indent(false).to_string();
+    assert!(
+        raw_plan_display.contains("construction_policy=raw_libcugraph"),
+        "raw cuGraph SQL EXPLAIN must expose the selected construction policy:\n{raw_plan_display}"
+    );
+    assert!(
+        raw_plan_display.contains("edge_normalize_inserted=false"),
+        "raw cuGraph SQL planning should expose that EdgeNormalize was skipped:\n{raw_plan_display}"
     );
 
     fs::remove_dir_all(dir).ok();

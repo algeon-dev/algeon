@@ -18,6 +18,7 @@ use cudf::{
 };
 
 mod bounded;
+mod edge_normalize;
 mod graph_algorithm;
 mod join;
 mod lowering;
@@ -40,6 +41,7 @@ pub use bounded::{
     AdaptivePipelineAdmission, adaptive_bounded_pipeline_admission,
     adaptive_bounded_pipeline_admission_with_memory_history,
 };
+use edge_normalize::execute_edge_normalize;
 pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
 pub use types::{
     GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
@@ -412,6 +414,10 @@ fn execute_node(
                 .map(|input| execute_node(context, plan, *input, gpu_inputs, scratch, metrics))
                 .collect::<Result<Vec<_>>>()?;
             execute_union(context, node.id, inputs, metrics)
+        },
+        PlanNode::EdgeNormalize(edge_normalize) => {
+            let input = execute_node(context, plan, edge_normalize.input, gpu_inputs, scratch, metrics)?;
+            execute_edge_normalize(context, node.id, edge_normalize, input, metrics)
         },
         PlanNode::GraphAlgorithm(graph) => {
             let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;

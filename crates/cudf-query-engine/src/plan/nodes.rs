@@ -157,3 +157,12 @@ pub struct UnionNode {
     /// Inputs concatenated in order.
     pub inputs: Vec<NodeId>,
 }
+
+/// Plan-visible edge-list canonicalization before a cuGraph algorithm.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EdgeNormalizeNode {
+    /// Edge-list input.
+    pub input: NodeId,
+    /// Normalization operations applied to the edge list.
+    pub spec: EdgeNormalizeSpec,
+}

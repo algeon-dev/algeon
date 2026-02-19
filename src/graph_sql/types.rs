@@ -108,9 +108,40 @@ impl Default for CugraphGraphOptions {
     }
 }
 
+/// SQL-facing selector for the cuGraph edge-list ingress contract.
+///
+/// Mirrors `cugraph::cudf_interop::GraphConstructionPolicy` and is the public
+/// `construction_policy` option exposed in the cuGraph table-function JSON.
+///
+/// - [`PythonCugraph`](Self::PythonCugraph): default. Match Python
+///   `cugraph.Graph.from_cudf_edgelist(...)` semantics. The ingress layer
+///   normalizes the edge DataFrame before raw graph construction (drop
+///   duplicate directed edges, keep the minimum weight, and add reverse edges
+///   for undirected simple graphs). Safe for callers whose SQL has not
+///   pre-normalized the edge list. Carries an extra sort + dedup cost and may
+///   import borrowed/prepared edge columns into owned cudf objects, which
+///   breaks the zero-copy ingress path documented in
+///   `cugraph::cudf_interop`.
+/// - [`RawLibcugraph`](Self::RawLibcugraph): pass the SQL edge list straight
+///   through to libcugraph without ingress-side normalization. Use when the
+///   query plan (or the caller) already guarantees a well-formed edge list:
+///   no duplicate directed edges in simple-graph mode, and reverse edges
+///   already present for undirected simple graphs. Preserves zero-copy
+///   ingress and avoids a second pass of dedup work that DataFusion can
+///   already express.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CugraphGraphConstructionPolicy {
     PythonCugraph,
+    RawLibcugraph,
+}
+
+impl CugraphGraphConstructionPolicy {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PythonCugraph => "python_cugraph",
+            Self::RawLibcugraph => "raw_libcugraph",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -226,6 +226,7 @@ fn trace_right_origin(
             | PlanNode::Aggregate(_)
             | PlanNode::Window(_)
             | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
             | PlanNode::GraphAlgorithm(_) => return None,
         }
     }

@@ -423,6 +423,9 @@ fn graph_construction_policy(
         crate::plan::GraphConstructionPolicy::PythonCugraph => {
             cugraph::cudf_interop::GraphConstructionPolicy::PythonCugraph
         },
+        crate::plan::GraphConstructionPolicy::RawLibcugraph => {
+            cugraph::cudf_interop::GraphConstructionPolicy::RawLibcugraph
+        },
     }
 }
 

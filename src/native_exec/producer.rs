@@ -185,15 +185,17 @@ impl DisplayAs for NativeCudfGpuProducerExec {
         match t {
             DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
                 f,
-                "NativeCudfGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident",
+                "NativeCudfGpuProducerExec: input_name={}, native_nodes={}, sink=gpu_resident, output_boundary=device_resident, edge_normalize_inserted={}",
                 self.input_name,
                 self.plan.node_count(),
+                self.plan.contains_edge_normalize(),
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "input_name={}", self.input_name)?;
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
                 writeln!(f, "sink=gpu_resident")?;
-                writeln!(f, "output_boundary=device_resident")
+                writeln!(f, "output_boundary=device_resident")?;
+                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())
             },
         }
     }

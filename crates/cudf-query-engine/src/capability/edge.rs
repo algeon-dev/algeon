@@ -125,6 +125,7 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
         PlanNode::Union(_) => "union",
+        PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
     }
 }
@@ -136,6 +137,7 @@ pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::Sort(_) => InputRole::SortInput,
         PlanNode::Limit(_) => InputRole::LimitInput,
         PlanNode::Union(_) => InputRole::UnionInput { input_index },
+        PlanNode::EdgeNormalize(_) => InputRole::UnaryInput,
         PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };

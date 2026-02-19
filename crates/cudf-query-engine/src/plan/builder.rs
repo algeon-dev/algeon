@@ -114,9 +114,26 @@ impl QueryPlanBuilder {
         self.push(PlanNode::Union(UnionNode { inputs }), PlanFacts::device(output_schema, SchemaBehavior::Union))
     }
 
-    /// Adds a graph algorithm node over an edge-list input.
-    pub fn add_graph_algorithm(&mut self, input: NodeId, spec: GraphAlgorithmSpec) -> NodeId {
+    /// Adds edge-list normalization before cuGraph raw graph construction.
+    pub fn add_edge_normalize(&mut self, input: NodeId, spec: EdgeNormalizeSpec, output_schema: SchemaRef) -> NodeId {
         self.assert_input_exists(input);
+        self.push(
+            PlanNode::EdgeNormalize(EdgeNormalizeNode { input, spec }),
+            PlanFacts::device(output_schema, SchemaBehavior::EdgeNormalize),
+        )
+    }
+
+    /// Adds a graph algorithm node over an edge-list input.
+    pub fn add_graph_algorithm(&mut self, input: NodeId, mut spec: GraphAlgorithmSpec) -> NodeId {
+        self.assert_input_exists(input);
+        let input = if spec.graph_options.policy == GraphConstructionPolicy::PythonCugraph {
+            let normalize_spec = EdgeNormalizeSpec::python_cugraph(spec.edge_columns.clone(), &spec.graph_options);
+            spec.graph_options.policy = GraphConstructionPolicy::RawLibcugraph;
+            let output_schema = edge_normalize_output_schema(self.node(input).output_schema(), &normalize_spec);
+            self.add_edge_normalize(input, normalize_spec, output_schema)
+        } else {
+            input
+        };
         let output_schema = Arc::clone(&spec.output_schema);
         self.push(
             PlanNode::GraphAlgorithm(GraphAlgorithmNode { input, spec }),
@@ -163,4 +180,24 @@ impl QueryPlanBuilder {
     fn node(&self, id: NodeId) -> &QueryNode {
         self.nodes.get(id.index()).expect("query plan node must exist")
     }
+}
+
+fn edge_normalize_output_schema(input_schema: &SchemaRef, spec: &EdgeNormalizeSpec) -> SchemaRef {
+    let mut fields = Vec::with_capacity(2 + usize::from(spec.edge_columns.weight.is_some()));
+    fields.push(
+        input_schema
+            .field_with_name(&spec.edge_columns.source)
+            .expect("edge normalize source column must exist")
+            .clone(),
+    );
+    fields.push(
+        input_schema
+            .field_with_name(&spec.edge_columns.destination)
+            .expect("edge normalize destination column must exist")
+            .clone(),
+    );
+    if let Some(weight) = &spec.edge_columns.weight {
+        fields.push(input_schema.field_with_name(weight).expect("edge normalize weight column must exist").clone());
+    }
+    Arc::new(Schema::new(fields))
 }

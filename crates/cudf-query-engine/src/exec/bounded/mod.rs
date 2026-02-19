@@ -370,12 +370,14 @@ fn execute_bounded_generic_node(
                 .collect::<Result<Vec<_>>>()?;
             execute_bounded_generic_union(context, id, inputs, reservations, metrics)
         },
-        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::GraphAlgorithm(_) => Err(unsupported_bounded_shape(
+        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
+            Err(unsupported_bounded_shape(
             "bounded generic execution supports only source, filter, projection, window, sort, limit, and union nodes",
             "bounded_generic_plan_shape_unsupported",
         )
         .with_fact("node_id", id)
-        .with_fact("node_kind", bounded_generic_node_kind(&node.kind))),
+        .with_fact("node_kind", bounded_generic_node_kind(&node.kind)))
+        },
     }?;
 
     Ok(frame)
@@ -943,6 +945,7 @@ fn bounded_generic_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
         PlanNode::Union(_) => "union",
+        PlanNode::EdgeNormalize(_) => "edge_normalize",
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
     }
 }

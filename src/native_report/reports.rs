@@ -117,7 +117,7 @@ impl NativeDataFusionPlanningReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -130,6 +130,7 @@ impl NativeDataFusionPlanningReport {
                 format_strict_bounded_compiled_graphs(&row.strict_bounded_compiled_graphs),
                 format_adaptive_pipeline_rows(&row.adaptive_pipeline_rows),
                 format_native_optimizer_diagnostics(&row.native_optimizer),
+                row.edge_normalize_inserted,
                 format_join_diagnostics(&row.join_diagnostics),
                 format_source_diagnostics(&row.source_diagnostics),
                 row.post_native_plan_root,
