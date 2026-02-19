@@ -45,6 +45,15 @@ impl QueryPlan {
         &self.sink
     }
 
+    /// Return a copy of this plan with the same root and a GPU-resident sink.
+    ///
+    /// This is used by embedding frontends that need to feed a native plan's
+    /// output into another GPU consumer instead of materializing the existing
+    /// host-arrow boundary.
+    pub fn clone_with_gpu_resident_sink(&self) -> Self {
+        Self { nodes: self.nodes.clone(), root: self.root, sink: ResultSink::GpuResident { input: self.root } }
+    }
+
     /// Returns all nodes in append order.
     ///
     /// The slice order is also the [`NodeId::index`] address space. Existing
@@ -79,6 +88,11 @@ impl QueryPlan {
     /// Returns true when the plan contains at least one native join node.
     pub fn contains_join(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::Join(_)))
+    }
+
+    /// Returns true when the plan contains at least one native graph algorithm node.
+    pub fn contains_graph_algorithm(&self) -> bool {
+        self.nodes.iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
     }
 
     /// Returns diagnostic facts for join plans rejected by every bounded join path.
@@ -183,6 +197,7 @@ impl QueryNode {
     pub fn output_schema(&self) -> &SchemaRef {
         match &self.kind {
             PlanNode::Projection(projection) => projection.output_schema(),
+            PlanNode::GraphAlgorithm(graph) => graph.output_schema(),
             _ => &self.facts.output_schema,
         }
     }
@@ -220,6 +235,8 @@ pub enum PlanNode {
     Join(JoinNode),
     /// Concatenates N schema-compatible inputs in order.
     Union(UnionNode),
+    /// Runs a graph algorithm over an edge-list input.
+    GraphAlgorithm(GraphAlgorithmNode),
 }
 
 impl PlanNode {
@@ -238,6 +255,7 @@ impl PlanNode {
             Self::Limit(node) => std::slice::from_ref(&node.input),
             Self::Join(node) => &node.inputs,
             Self::Union(node) => &node.inputs,
+            Self::GraphAlgorithm(node) => std::slice::from_ref(&node.input),
         }
     }
 }

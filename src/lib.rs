@@ -1,6 +1,8 @@
 //! DataFusion adapter for native cudf-rs GPU execution.
 
 pub mod error;
+#[cfg(feature = "cugraph")]
+pub mod graph_sql;
 #[cfg(feature = "iceberg")]
 pub mod iceberg;
 pub mod native;
@@ -18,6 +20,13 @@ pub use cudf_query_engine::{
     NativePipelineExecutionMode, SemijoinReductionOptions,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
+#[cfg(feature = "cugraph")]
+pub use graph_sql::{
+    CUGRAPH_BFS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_PAGERANK_FUNCTION, CugraphAlgoTableProvider,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsParams, CugraphGraphConstructionPolicy,
+    CugraphGraphOptions, CugraphLouvainParams, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
+    cugraph_table_functions, parse_cugraph_algorithm_spec, register_cugraph_udtfs, stable_result_schema,
+};
 #[cfg(feature = "iceberg")]
 pub use iceberg::{
     CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig, GlueIcebergTableDiagnostics,
@@ -39,10 +48,10 @@ pub use native_report::{
     NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem,
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
-    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeJoinDiagnosticSummary,
-    NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
-    NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
+    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeGraphRuntimeMetricRow,
+    NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome,
+    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
     ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata,

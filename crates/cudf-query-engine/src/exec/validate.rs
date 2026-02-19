@@ -118,6 +118,12 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 validate_union_node(plan, union, node.id, node.output_schema(), &available_columns_by_node)?;
                 schema_column_names(node.output_schema())
             },
+            PlanNode::GraphAlgorithm(graph) => {
+                let input = input_node(plan, graph.input, node.id)?;
+                let input_available = available_columns(&available_columns_by_node, graph.input)?;
+                validate_graph_algorithm_node(graph, input.output_schema(), input_available, node.output_schema())?;
+                schema_column_names(node.output_schema())
+            },
         };
         available_columns_by_node.push(available_columns);
     }
@@ -304,7 +310,109 @@ fn plan_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
         PlanNode::Union(_) => "union",
+        PlanNode::GraphAlgorithm(_) => "graph_algorithm",
     }
+}
+
+fn validate_graph_algorithm_node(
+    graph: &crate::plan::GraphAlgorithmNode,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+    output_schema: &SchemaRef,
+) -> Result<()> {
+    if output_schema.as_ref() != crate::plan::stable_graph_result_schema(graph.spec.algorithm).as_ref() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.validate",
+            "graph algorithm output schema must match the stable algorithm schema",
+        )
+        .with_fact("algorithm", graph.spec.algorithm.as_str())
+        .with_fact("output_fields", output_schema.fields().len()));
+    }
+    validate_graph_vertex_column("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
+    validate_graph_vertex_column("destination", &graph.spec.edge_columns.destination, input_schema, input_available)?;
+    if let Some(weight_col) = graph.spec.edge_columns.weight.as_deref() {
+        validate_graph_weight_column(weight_col, input_schema, input_available)?;
+    }
+    Ok(())
+}
+
+fn validate_graph_vertex_column(
+    role: &'static str,
+    column: &str,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+) -> Result<()> {
+    let field = graph_edge_field(role, column, input_schema, input_available)?;
+    if field.is_nullable() {
+        return Err(graph_algorithm_error("graph edge vertex columns must be non-null")
+            .with_fact("reason", "nullable_edge_column")
+            .with_fact("edge_column_role", role)
+            .with_fact("column", column));
+    }
+    if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.graph_algorithm.validate",
+            "graph edge vertex column type is unsupported",
+        )
+        .with_fact("reason", "unsupported_vertex_type")
+        .with_fact("edge_column_role", role)
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{:?}", field.data_type())));
+    }
+    Ok(())
+}
+
+fn validate_graph_weight_column(
+    column: &str,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+) -> Result<()> {
+    let field = graph_edge_field("weight", column, input_schema, input_available)?;
+    if field.is_nullable() {
+        return Err(graph_algorithm_error("graph edge weight column must be non-null")
+            .with_fact("reason", "nullable_edge_column")
+            .with_fact("edge_column_role", "weight")
+            .with_fact("column", column));
+    }
+    if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.graph_algorithm.validate",
+            "graph edge weight column type is unsupported",
+        )
+        .with_fact("reason", "unsupported_weight_type")
+        .with_fact("edge_column_role", "weight")
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{:?}", field.data_type())));
+    }
+    Ok(())
+}
+
+fn graph_edge_field<'a>(
+    role: &'static str,
+    column: &str,
+    input_schema: &'a SchemaRef,
+    input_available: &BTreeSet<String>,
+) -> Result<&'a Field> {
+    if !input_available.contains(column) {
+        return Err(graph_algorithm_error("graph edge column is not produced by the input node")
+            .with_fact("reason", "missing_edge_column")
+            .with_fact("edge_column_role", role)
+            .with_fact("column", column)
+            .with_fact("available_columns", comma_separated(input_available)));
+    }
+    input_schema.field_with_name(column).map_err(|_| {
+        graph_algorithm_error("graph edge column is not present in the input schema")
+            .with_fact("reason", "missing_edge_column")
+            .with_fact("edge_column_role", role)
+            .with_fact("column", column)
+    })
+}
+
+fn graph_algorithm_error(message: &'static str) -> QueryError {
+    QueryError::new(QueryErrorCode::InvalidPlan, "cudf_query_engine.graph_algorithm.validate", message)
 }
 
 fn validate_union_node(

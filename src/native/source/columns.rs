@@ -212,6 +212,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
 
     let mut filter_columns: BTreeSet<String> = BTreeSet::new();
     let mut output_columns: BTreeSet<String> = BTreeSet::new();
+    let mut ordered_output_columns = Vec::new();
     let mut scan_output_columns: BTreeSet<String> = BTreeSet::new();
 
     if filter.is_none() {
@@ -225,21 +226,24 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
     for index in required_scan_output_indices {
         let field = scan_output_schema.fields().get(*index).ok_or(FallbackReason::UnsupportedExpression)?;
         let expr: Arc<dyn PhysicalExpr> = Arc::new(Column::new(field.name(), *index));
-        collect_source_required_columns(&expr, scan_projection, &table_schema, &mut output_columns)?;
+        let mut expr_output_columns = BTreeSet::new();
+        collect_source_required_columns(&expr, scan_projection, &table_schema, &mut expr_output_columns)?;
+        for column in expr_output_columns {
+            if output_columns.insert(column.clone()) {
+                ordered_output_columns.push(column);
+            }
+        }
         scan_output_columns.insert(field.name().clone());
     }
 
+    let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
     let mut read_columns: BTreeSet<String> = BTreeSet::new();
     read_columns.extend(filter_columns.iter().cloned());
     read_columns.extend(output_columns.iter().cloned());
-
     let read_columns =
-        read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<BTreeSet<_>>();
-
-    let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
-    let read_columns = read_columns.into_iter().collect::<Vec<_>>();
+        read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<Vec<_>>();
     let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
-    let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
+    let projected_output_columns = ordered_output_columns;
     let (partition_columns, partition_column_indices) =
         native_required_partition_columns(file_scan, &required_source_columns)?;
     let missing_columns =

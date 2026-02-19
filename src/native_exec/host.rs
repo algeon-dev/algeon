@@ -60,6 +60,11 @@ impl NativeCudfExec {
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn execution_config(&self) -> &NativeCudfExecutionConfig {
+        &self.execution_config
+    }
 }
 
 impl DisplayAs for NativeCudfExec {

@@ -50,6 +50,8 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
 pub(crate) mod bounded_join_admission;
 #[path = "native_contract_tests/expr_contracts.rs"]
 mod expr_contracts;
+#[path = "native_contract_tests/graph_algorithm.rs"]
+mod graph_algorithm;
 #[path = "native_contract_tests/optimizer_contracts.rs"]
 mod optimizer_contracts;
 #[path = "native_contract_tests/phase_e_module_boundaries.rs"]

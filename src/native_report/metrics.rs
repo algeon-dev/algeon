@@ -5,6 +5,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 use super::tsv::{metric_count, optional_observed_metric_count};
 
 const NATIVE_JOIN_STRATEGY_ROWS_METRIC_NAME: &str = "native_join_strategy_rows";
+const NATIVE_GRAPH_RUNTIME_ROWS_METRIC_NAME: &str = "native_graph_runtime_rows";
 const NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME: &str = "native_task_operator_rows";
 const NATIVE_TASK_RUNTIME_ROWS_METRIC_NAME: &str = "native_task_runtime_rows";
 
@@ -32,6 +33,7 @@ pub struct NativeDataFusionExecutionMetrics {
     pub max_task_reservation_bytes: usize,
     pub max_task_observed_peak_bytes: Option<usize>,
     pub max_task_retained_bytes: Option<usize>,
+    pub graph_runtime_rows: Vec<NativeGraphRuntimeMetricRow>,
     pub task_operator_rows: Vec<NativeTaskOperatorMetricRow>,
     pub task_runtime_rows: Vec<NativeTaskRuntimeMetricRow>,
     pub source_chunks_planned: usize,
@@ -109,6 +111,7 @@ impl NativeDataFusionExecutionMetrics {
             max_task_reservation_bytes: metric_count(metrics, "max_task_reservation_bytes"),
             max_task_observed_peak_bytes: optional_observed_metric_count(metrics, "max_task_observed_peak_bytes"),
             max_task_retained_bytes: optional_observed_metric_count(metrics, "max_task_retained_bytes"),
+            graph_runtime_rows: graph_runtime_rows(metrics),
             task_operator_rows: task_operator_rows(metrics),
             task_runtime_rows: task_runtime_rows(metrics),
             source_chunks_planned: metric_count(metrics, "source_chunks_planned"),
@@ -173,6 +176,18 @@ impl NativeDataFusionExecutionMetrics {
         self.join_strategy_rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
     }
 
+    pub fn merge_graph_runtime_rows(&mut self, rows: Vec<NativeGraphRuntimeMetricRow>) {
+        self.graph_runtime_rows.extend(rows);
+        self.graph_runtime_rows.sort_by(|left, right| {
+            left.node_id
+                .cmp(&right.node_id)
+                .then_with(|| left.algorithm.cmp(&right.algorithm))
+                .then_with(|| left.source_column.cmp(&right.source_column))
+                .then_with(|| left.destination_column.cmp(&right.destination_column))
+                .then_with(|| left.to_stable_kv_row().cmp(&right.to_stable_kv_row()))
+        });
+    }
+
     pub fn merge_task_operator_rows(&mut self, rows: Vec<NativeTaskOperatorMetricRow>) {
         for row in rows {
             if let Some(existing) =
@@ -221,6 +236,62 @@ impl NativeDataFusionExecutionMetrics {
             }
         }
         self.task_runtime_rows.sort_by(|left, right| left.compiled_task_id.cmp(&right.compiled_task_id));
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeGraphRuntimeMetricRow {
+    pub node_id: String,
+    pub algorithm: String,
+    pub runtime_outcome: String,
+    pub input_boundary: String,
+    pub output_boundary: String,
+    pub construction_policy: String,
+    pub source_column: String,
+    pub destination_column: String,
+    pub weight_column: Option<String>,
+    pub directed: bool,
+    pub renumber: bool,
+    pub algorithm_parameters: String,
+    pub algorithm_metadata: String,
+    pub input_rows: usize,
+    pub input_columns: usize,
+    pub output_rows: usize,
+    pub output_columns: usize,
+    pub output_device_bytes: Option<usize>,
+    pub elapsed_ns: usize,
+    pub gpu_resident_input_handoffs: usize,
+    pub host_to_device_uploads: usize,
+    pub device_to_host_materializations: usize,
+}
+
+impl NativeGraphRuntimeMetricRow {
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "node_id={},algorithm={},runtime_outcome={},input_boundary={},output_boundary={},construction_policy={},source_column={},destination_column={},weight_column={},directed={},renumber={},algorithm_parameters={},algorithm_metadata={},input_rows={},input_columns={},output_rows={},output_columns={},output_device_bytes={},elapsed_ns={},gpu_resident_input_handoffs={},host_to_device_uploads={},device_to_host_materializations={}",
+            self.node_id,
+            self.algorithm,
+            self.runtime_outcome,
+            self.input_boundary,
+            self.output_boundary,
+            self.construction_policy,
+            self.source_column,
+            self.destination_column,
+            optional_str(self.weight_column.as_deref()),
+            self.directed,
+            self.renumber,
+            self.algorithm_parameters,
+            self.algorithm_metadata,
+            self.input_rows,
+            self.input_columns,
+            self.output_rows,
+            self.output_columns,
+            optional_usize(self.output_device_bytes),
+            self.elapsed_ns,
+            self.gpu_resident_input_handoffs,
+            self.host_to_device_uploads,
+            self.device_to_host_materializations,
+        )
     }
 }
 
@@ -450,6 +521,23 @@ fn task_operator_rows(metrics: &MetricsSet) -> Vec<NativeTaskOperatorMetricRow> 
     rows
 }
 
+fn graph_runtime_rows(metrics: &MetricsSet) -> Vec<NativeGraphRuntimeMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_GRAPH_RUNTIME_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "algorithm"))
+        .map(|metric| labels_to_graph_runtime_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        left.node_id
+            .cmp(&right.node_id)
+            .then_with(|| left.algorithm.cmp(&right.algorithm))
+            .then_with(|| left.source_column.cmp(&right.source_column))
+            .then_with(|| left.destination_column.cmp(&right.destination_column))
+    });
+    rows
+}
+
 fn task_runtime_rows(metrics: &MetricsSet) -> Vec<NativeTaskRuntimeMetricRow> {
     let mut rows = metrics
         .iter()
@@ -463,6 +551,33 @@ fn task_runtime_rows(metrics: &MetricsSet) -> Vec<NativeTaskRuntimeMetricRow> {
 
 fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
+}
+
+fn labels_to_graph_runtime_row(labels: BTreeMap<&str, &str>) -> NativeGraphRuntimeMetricRow {
+    NativeGraphRuntimeMetricRow {
+        node_id: string_label(&labels, "node_id"),
+        algorithm: string_label(&labels, "algorithm"),
+        runtime_outcome: string_label(&labels, "runtime_outcome"),
+        input_boundary: string_label(&labels, "input_boundary"),
+        output_boundary: string_label(&labels, "output_boundary"),
+        construction_policy: string_label(&labels, "construction_policy"),
+        source_column: string_label(&labels, "source_column"),
+        destination_column: string_label(&labels, "destination_column"),
+        weight_column: optional_string_label(&labels, "weight_column"),
+        directed: bool_label(&labels, "directed"),
+        renumber: bool_label(&labels, "renumber"),
+        algorithm_parameters: string_label(&labels, "algorithm_parameters"),
+        algorithm_metadata: string_label(&labels, "algorithm_metadata"),
+        input_rows: usize_label(&labels, "input_rows"),
+        input_columns: usize_label(&labels, "input_columns"),
+        output_rows: usize_label(&labels, "output_rows"),
+        output_columns: usize_label(&labels, "output_columns"),
+        output_device_bytes: optional_usize_label(&labels, "output_device_bytes"),
+        elapsed_ns: usize_label(&labels, "elapsed_ns"),
+        gpu_resident_input_handoffs: usize_label(&labels, "gpu_resident_input_handoffs"),
+        host_to_device_uploads: usize_label(&labels, "host_to_device_uploads"),
+        device_to_host_materializations: usize_label(&labels, "device_to_host_materializations"),
+    }
 }
 
 fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrategyMetricRow {
@@ -544,6 +659,10 @@ fn optional_string_label(labels: &BTreeMap<&str, &str>, name: &str) -> Option<St
 
 fn usize_label(labels: &BTreeMap<&str, &str>, name: &str) -> usize {
     labels.get(name).and_then(|value| value.parse().ok()).unwrap_or(0)
+}
+
+fn bool_label(labels: &BTreeMap<&str, &str>, name: &str) -> bool {
+    labels.get(name).and_then(|value| value.parse().ok()).unwrap_or(false)
 }
 
 fn optional_usize_label(labels: &BTreeMap<&str, &str>, name: &str) -> Option<usize> {

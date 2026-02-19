@@ -7,7 +7,7 @@ use std::{
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use crate::{
-    datatypes::is_supported_arrow_type,
+    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
     expr::{Expr, LiteralValue},
 };
 
@@ -575,10 +575,12 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
             reader_predicate_binary_operator_is_supported(*op)
                 && reader_predicate_expr_is_supported(source, left)
                 && reader_predicate_expr_is_supported(source, right)
+                && reader_predicate_binary_operand_types_are_supported(source, left, *op, right)
         },
         Expr::InList { expr, list, .. } => {
             !list.is_empty()
                 && reader_predicate_expr_is_supported(source, expr)
+                && reader_predicate_in_list_literal_types_are_supported(source, expr, list)
                 && list
                     .iter()
                     .all(|value| matches!(value, Expr::Literal(_)) && reader_predicate_expr_is_supported(source, value))
@@ -618,12 +620,211 @@ fn reader_predicate_binary_operator_is_supported(op: crate::expr::BinaryOp) -> b
     )
 }
 
+fn reader_predicate_operator_outputs_boolean(op: crate::expr::BinaryOp) -> bool {
+    use crate::expr::BinaryOp;
+    matches!(
+        op,
+        BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::LtEq
+            | BinaryOp::Gt
+            | BinaryOp::GtEq
+            | BinaryOp::And
+            | BinaryOp::Or
+    )
+}
+
 fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
-    is_supported_arrow_type(data_type)
+    match data_type {
+        // libcudf reader predicates currently reject Decimal32-backed Parquet
+        // predicates with "Mismatched predicate column and literal types".
+        // Keep those predicates as native post-scan filters until the reader
+        // contract can honor the small-decimal physical storage.
+        DataType::Decimal128(precision, _) if *precision <= 9 => false,
+        _ => is_supported_arrow_type(data_type),
+    }
 }
 
 fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
     !matches!(value, LiteralValue::Null(_) | LiteralValue::IntervalMonthDayNano { .. })
+}
+
+fn reader_predicate_binary_operand_types_are_supported(
+    source: &LocalParquetSource,
+    left: &Expr,
+    op: crate::expr::BinaryOp,
+    right: &Expr,
+) -> bool {
+    use crate::expr::BinaryOp;
+    if matches!(op, BinaryOp::And | BinaryOp::Or) {
+        return true;
+    }
+    reader_predicate_literal_matches_expr_type(source, left, right)
+        && reader_predicate_literal_matches_expr_type(source, right, left)
+}
+
+fn reader_predicate_in_list_literal_types_are_supported(
+    source: &LocalParquetSource,
+    expr: &Expr,
+    list: &[Expr],
+) -> bool {
+    list.iter().all(|value| reader_predicate_literal_matches_expr_type(source, value, expr))
+}
+
+fn reader_predicate_literal_matches_expr_type(source: &LocalParquetSource, literal: &Expr, typed_expr: &Expr) -> bool {
+    let Expr::Literal(value) = literal else {
+        return true;
+    };
+    let Some(data_type) = reader_predicate_expr_type(source, typed_expr) else {
+        return true;
+    };
+    reader_predicate_literal_is_supported_for_type(value, &data_type)
+}
+
+fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Option<DataType> {
+    match expr {
+        Expr::Column(column) => {
+            source.schema.field_with_name(column.name()).ok().map(|field| field.data_type().clone())
+        },
+        Expr::Literal(value) => Some(value.data_type()),
+        Expr::Alias { expr, .. } => reader_predicate_expr_type(source, expr),
+        Expr::Cast { target_type, .. } | Expr::Round { output_type: target_type, .. } => Some(target_type.clone()),
+        Expr::Not(_) | Expr::IsNull(_) | Expr::IsNotNull(_) | Expr::InList { .. } => Some(DataType::Boolean),
+        Expr::Binary { output_type: Some(output_type), .. } => Some(output_type.clone()),
+        Expr::Binary { op, .. } if reader_predicate_operator_outputs_boolean(*op) => Some(DataType::Boolean),
+        Expr::Lower(_) | Expr::Upper(_) | Expr::Concat(_) => Some(DataType::Utf8),
+        Expr::Substring { .. }
+        | Expr::Like { .. }
+        | Expr::Abs(_)
+        | Expr::Case { .. }
+        | Expr::Extract { .. }
+        | Expr::Binary { .. } => None,
+    }
+}
+
+fn reader_predicate_literal_is_supported_for_type(value: &LiteralValue, data_type: &DataType) -> bool {
+    if !reader_predicate_literal_is_supported(value) || cudf_dtype_from_arrow_type(data_type).is_none() {
+        return false;
+    }
+    match data_type {
+        DataType::Boolean => matches!(value, LiteralValue::Boolean(_)),
+        DataType::Int8 => signed_literal_fits(value, i128::from(i8::MIN), i128::from(i8::MAX)),
+        DataType::Int16 => signed_literal_fits(value, i128::from(i16::MIN), i128::from(i16::MAX)),
+        DataType::Int32 => signed_literal_fits(value, i128::from(i32::MIN), i128::from(i32::MAX)),
+        DataType::Int64 => signed_literal_fits(value, i128::from(i64::MIN), i128::from(i64::MAX)),
+        DataType::UInt8 => unsigned_literal_fits(value, u128::from(u8::MAX)),
+        DataType::UInt16 => unsigned_literal_fits(value, u128::from(u16::MAX)),
+        DataType::UInt32 => unsigned_literal_fits(value, u128::from(u32::MAX)),
+        DataType::UInt64 => unsigned_literal_fits(value, u128::from(u64::MAX)),
+        DataType::Float32 => matches!(
+            value,
+            LiteralValue::Float32(_)
+                | LiteralValue::Int8(_)
+                | LiteralValue::Int16(_)
+                | LiteralValue::Int32(_)
+                | LiteralValue::UInt8(_)
+                | LiteralValue::UInt16(_)
+        ),
+        DataType::Float64 => matches!(
+            value,
+            LiteralValue::Float32(_)
+                | LiteralValue::Float64(_)
+                | LiteralValue::Int8(_)
+                | LiteralValue::Int16(_)
+                | LiteralValue::Int32(_)
+                | LiteralValue::UInt8(_)
+                | LiteralValue::UInt16(_)
+                | LiteralValue::UInt32(_)
+        ),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
+            matches!(value, LiteralValue::Utf8(_) | LiteralValue::LargeUtf8(_))
+        },
+        DataType::Decimal128(_precision, scale) => decimal_literal_can_target_scale(value, *scale),
+        DataType::Date32 => matches!(value, LiteralValue::Date32(_)),
+        DataType::Timestamp(unit, None) => {
+            matches!(value, LiteralValue::Timestamp { unit: literal_unit, .. } if literal_unit == unit)
+        },
+        DataType::Duration(unit) => {
+            matches!(value, LiteralValue::Duration { unit: literal_unit, .. } if literal_unit == unit)
+        },
+        _ => false,
+    }
+}
+
+fn signed_literal_fits(value: &LiteralValue, min: i128, max: i128) -> bool {
+    integer_literal_raw(value).is_some_and(|raw| raw >= min && raw <= max)
+}
+
+fn unsigned_literal_fits(value: &LiteralValue, max: u128) -> bool {
+    unsigned_literal_raw(value).is_some_and(|raw| raw <= max)
+}
+
+fn unsigned_literal_raw(value: &LiteralValue) -> Option<u128> {
+    match value {
+        LiteralValue::UInt8(value) => Some(u128::from(*value)),
+        LiteralValue::UInt16(value) => Some(u128::from(*value)),
+        LiteralValue::UInt32(value) => Some(u128::from(*value)),
+        LiteralValue::UInt64(value) => Some(u128::from(*value)),
+        LiteralValue::Int8(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int16(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int32(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int64(value) => u128::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn integer_literal_raw(value: &LiteralValue) -> Option<i128> {
+    match value {
+        LiteralValue::Int8(value) => Some(i128::from(*value)),
+        LiteralValue::Int16(value) => Some(i128::from(*value)),
+        LiteralValue::Int32(value) => Some(i128::from(*value)),
+        LiteralValue::Int64(value) => Some(i128::from(*value)),
+        LiteralValue::UInt8(value) => Some(i128::from(*value)),
+        LiteralValue::UInt16(value) => Some(i128::from(*value)),
+        LiteralValue::UInt32(value) => Some(i128::from(*value)),
+        LiteralValue::UInt64(value) => Some(i128::from(*value)),
+        _ => None,
+    }
+}
+
+fn decimal_literal_can_target_scale(value: &LiteralValue, target_arrow_scale: i8) -> bool {
+    let target_cudf_scale = -i32::from(target_arrow_scale);
+    if let Some(raw) = integer_literal_raw(value) {
+        return decimal_raw_for_integer_value(raw, target_cudf_scale).is_some();
+    }
+    if let LiteralValue::Decimal128 { raw, scale, .. } = value {
+        return rescale_decimal_raw_for_reader_support(*raw, -i32::from(*scale), target_cudf_scale).is_some();
+    }
+    false
+}
+
+fn decimal_raw_for_integer_value(value: i128, target_scale: i32) -> Option<i128> {
+    if target_scale <= 0 {
+        checked_pow10(target_scale.unsigned_abs()).and_then(|multiplier| value.checked_mul(multiplier))
+    } else {
+        let divisor = checked_pow10(target_scale as u32)?;
+        (value % divisor == 0).then_some(value / divisor)
+    }
+}
+
+fn rescale_decimal_raw_for_reader_support(raw: i128, source_scale: i32, target_scale: i32) -> Option<i128> {
+    let scale_delta = source_scale.checked_sub(target_scale)?;
+    if scale_delta >= 0 {
+        let multiplier = checked_pow10(scale_delta as u32)?;
+        raw.checked_mul(multiplier)
+    } else {
+        let divisor = checked_pow10(scale_delta.unsigned_abs())?;
+        (raw % divisor == 0).then_some(raw / divisor)
+    }
+}
+
+fn checked_pow10(exponent: u32) -> Option<i128> {
+    let mut value = 1i128;
+    for _ in 0..exponent {
+        value = value.checked_mul(10)?;
+    }
+    Some(value)
 }
 
 #[derive(Debug, Clone, PartialEq)]

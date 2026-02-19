@@ -14,7 +14,7 @@ use datafusion::{
 
 use super::{
     FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
-    expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings, physical_expr_field},
+    expr::{alias_if_needed, collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input, projection_outputs,
     source::required_scan_projection,
 };

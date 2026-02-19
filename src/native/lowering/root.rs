@@ -65,16 +65,16 @@ pub(super) fn lower_slice1_plan(
         && column_requirements.read_columns.is_empty();
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let scan_projection = file_scan.file_source().projection();
-    let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
-        let required_scan_projection =
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
-        required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema)
-    });
     let source_output_schema = if zero_column_count_safe {
         source_exec.schema()
     } else {
         native_source_output_schema(file_scan, &column_requirements)?
     };
+    let scan_projection_requires_native = scan_projection.is_some_and(|scan_projection| {
+        let required_scan_projection =
+            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+        required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema)
+    });
 
     validate_schema(Arc::clone(&source_output_schema))?;
     validate_aggregate_root_operator_schemas(root, pre_aggregate_projection, post_aggregate_projection, sort)?;
@@ -145,6 +145,23 @@ pub(super) fn lower_slice1_plan(
 
     let mut builder = NativeQueryPlanBuilder::new();
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(source));
+    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
+        parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
+    } else {
+        None
+    };
+    let (scan_input_node, scan_input_schema) = if let Some(predicate) = scan_only_post_scan_predicate.as_ref() {
+        (
+            builder.add_filter(
+                source_node,
+                lower_physical_expr(predicate, &source_output_schema)?,
+                Arc::clone(&source_output_schema),
+            ),
+            Arc::clone(&source_output_schema),
+        )
+    } else {
+        (source_node, Arc::clone(&source_output_schema))
+    };
     let (scan_output_node, scan_output_schema) = if let Some(scan_projection) = scan_projection
         && !zero_column_count_safe
     {
@@ -153,12 +170,12 @@ pub(super) fn lower_slice1_plan(
         if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
             let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
             let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (builder.add_projection(source_node, projection_outputs(expressions, &schema)?), schema)
+            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?), schema)
         } else {
-            (source_node, Arc::clone(&source_output_schema))
+            (scan_input_node, scan_input_schema)
         }
     } else {
-        (source_node, Arc::clone(&source_output_schema))
+        (scan_input_node, scan_input_schema)
     };
     let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
     let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
@@ -169,11 +186,6 @@ pub(super) fn lower_slice1_plan(
         required_aggregate_input_fields(aggregate, pre_aggregate_projection)?
     } else {
         RequiredFields::all()
-    };
-    let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
-        parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
-    } else {
-        None
     };
     let filtered = if let Some(filter) = filter {
         if reader_pushdown_covers_filter {
@@ -212,19 +224,11 @@ pub(super) fn lower_slice1_plan(
                 LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings)
             }
         }
-    } else if let Some(predicate) = scan_only_post_scan_predicate {
-        let filtered_node = builder.add_filter(
-            scan_output.node,
-            lower_physical_expr(&predicate, &scan_output.schema)?,
-            Arc::clone(&scan_output.schema),
-        );
-        LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings)
     } else {
         scan_output
     };
-    let aggregate_output_schema_and_bindings =
+    let (aggregate_output_schema, aggregate_output_bindings) =
         executable_schema_and_bindings(&root.aggregate_output_schema, &RequiredFields::all())?;
-    let (aggregate_output_schema, aggregate_output_bindings) = aggregate_output_schema_and_bindings;
     let aggregate_output = if aggregate.group_expr().has_grouping_set() {
         let aggregate_input = if let Some(projection) = pre_aggregate_projection {
             add_projection_node_with_input(&mut builder, filtered, projection)?

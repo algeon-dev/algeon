@@ -367,7 +367,8 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
             | PlanNode::Window(_)
             | PlanNode::Sort(_)
             | PlanNode::Limit(_)
-            | PlanNode::Union(_) => Err(SemijoinReductionRejectedReason::UnsupportedLeftShape),
+            | PlanNode::Union(_)
+            | PlanNode::GraphAlgorithm(_) => Err(SemijoinReductionRejectedReason::UnsupportedLeftShape),
         }
     }
 
@@ -479,6 +480,11 @@ impl<'a> SemijoinReductionRewriter<'a> {
                 let mut union = union.clone();
                 union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
                 PlanNode::Union(union)
+            },
+            PlanNode::GraphAlgorithm(graph) => {
+                let mut graph = graph.clone();
+                graph.input = self.rewrite_subtree(graph.input);
+                PlanNode::GraphAlgorithm(graph)
             },
         }
     }
@@ -809,7 +815,8 @@ fn is_aggregate_keyset_shape(plan: &QueryPlan, node_id: NodeId) -> bool {
         | PlanNode::Window(_)
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
-        | PlanNode::Union(_) => false,
+        | PlanNode::Union(_)
+        | PlanNode::GraphAlgorithm(_) => false,
     }
 }
 
@@ -826,7 +833,8 @@ fn is_source_derived_keyset_input(plan: &QueryPlan, node_id: NodeId) -> bool {
         | PlanNode::Window(_)
         | PlanNode::Sort(_)
         | PlanNode::Limit(_)
-        | PlanNode::Union(_) => false,
+        | PlanNode::Union(_)
+        | PlanNode::GraphAlgorithm(_) => false,
     }
 }
 

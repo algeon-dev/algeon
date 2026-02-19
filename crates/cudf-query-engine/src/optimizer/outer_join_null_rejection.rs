@@ -222,7 +222,11 @@ fn trace_right_origin(
                 }
                 return Some(NullRejectingTrace { outer_join_id: node_id, rejecting_column: String::new(), path });
             },
-            PlanNode::Source(_) | PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::Union(_) => return None,
+            PlanNode::Source(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Union(_)
+            | PlanNode::GraphAlgorithm(_) => return None,
         }
     }
 }

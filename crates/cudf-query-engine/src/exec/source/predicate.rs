@@ -108,7 +108,7 @@ fn lower_source_reader_ast_expr(
                     "reader predicate IN list must not be empty",
                 ));
             }
-            let list_literal_target_type = source_reader_decimal_column_dtype(source, parquet_path, expr)?;
+            let list_literal_target_type = source_reader_column_dtype(source, parquet_path, expr)?;
             let input = lower_source_reader_ast_expr(context, source, parquet_path, expr, None)?;
             let values = list
                 .iter()
@@ -195,26 +195,26 @@ fn source_reader_binary_literal_target_types(
         return Ok((None, None));
     }
     Ok((
-        source_reader_decimal_column_dtype(source, parquet_path, right)?,
-        source_reader_decimal_column_dtype(source, parquet_path, left)?,
+        source_reader_column_dtype(source, parquet_path, right)?,
+        source_reader_column_dtype(source, parquet_path, left)?,
     ))
 }
 
-fn source_reader_decimal_column_dtype(
+fn source_reader_column_dtype(
     source: &LocalParquetSource,
     parquet_path: &Path,
     expr: &Expr,
 ) -> Result<Option<CudfDataType>> {
     let column = match expr {
         Expr::Column(column) => column,
-        Expr::Alias { expr, .. } => return source_reader_decimal_column_dtype(source, parquet_path, expr),
+        Expr::Alias { expr, .. } => return source_reader_column_dtype(source, parquet_path, expr),
         _ => return Ok(None),
     };
     let Some(field) = source.schema.field_with_name(column.name()).ok() else {
         return Ok(None);
     };
     if !matches!(field.data_type(), ArrowDataType::Decimal128(_, _)) {
-        return Ok(None);
+        return Ok(crate::datatypes::cudf_dtype_from_arrow_type(field.data_type()));
     }
     let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
         return Ok(None);
@@ -344,18 +344,11 @@ fn lower_source_reader_ast_literal(
     target_type: Option<CudfDataType>,
 ) -> Result<AstExpression> {
     let runtime = context.runtime();
-    if let Some(target_type) = target_type.filter(|target_type| target_type.id().is_decimal())
-        && let Some(raw) = integer_literal_as_decimal_raw(value, target_type.scale())?
+    if let Some(target_type) = target_type
+        && let Some(scalar) = lower_source_reader_ast_literal_with_target(context, value, target_type)?
     {
-        return AstExpression::literal(runtime.decimal_raw_scalar(raw, target_type).map_err(|error| {
-            QueryError::from_cudf(
-                OP_READER_PREDICATE,
-                "failed to build cudf scalar for reader predicate AST literal",
-                error,
-            )
-            .with_fact("literal", value)
-        })?)
-        .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error));
+        return AstExpression::literal(scalar)
+            .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error));
     }
     let scalar = match value {
         LiteralValue::Boolean(value) => runtime.scalar(*value),
@@ -415,6 +408,107 @@ fn lower_source_reader_ast_literal(
     })?;
     AstExpression::literal(scalar)
         .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error))
+}
+
+fn lower_source_reader_ast_literal_with_target(
+    context: &ExecutionContext,
+    value: &LiteralValue,
+    target_type: CudfDataType,
+) -> Result<Option<cudf::core::Scalar>> {
+    let runtime = context.runtime();
+    match target_type.id() {
+        TypeId::Bool8 => match value {
+            LiteralValue::Boolean(value) => runtime.scalar(*value).map(Some),
+            _ => Ok(None),
+        },
+        TypeId::Int8 => integer_literal_as::<i8>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::Int16 => integer_literal_as::<i16>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::Int32 => integer_literal_as::<i32>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::Int64 => integer_literal_as::<i64>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::UInt8 => unsigned_literal_as::<u8>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::UInt16 => unsigned_literal_as::<u16>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::UInt32 => unsigned_literal_as::<u32>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::UInt64 => unsigned_literal_as::<u64>(value).map(|value| runtime.scalar(value)).transpose(),
+        TypeId::Float32 => match value {
+            LiteralValue::Float32(value) => runtime.scalar(*value).map(Some),
+            LiteralValue::Int8(value) => runtime.scalar(f32::from(*value)).map(Some),
+            LiteralValue::Int16(value) => runtime.scalar(f32::from(*value)).map(Some),
+            LiteralValue::Int32(value) => runtime.scalar(*value as f32).map(Some),
+            LiteralValue::UInt8(value) => runtime.scalar(f32::from(*value)).map(Some),
+            LiteralValue::UInt16(value) => runtime.scalar(f32::from(*value)).map(Some),
+            _ => Ok(None),
+        },
+        TypeId::Float64 => match value {
+            LiteralValue::Float32(value) => runtime.scalar(f64::from(*value)).map(Some),
+            LiteralValue::Float64(value) => runtime.scalar(*value).map(Some),
+            LiteralValue::Int8(value) => runtime.scalar(f64::from(*value)).map(Some),
+            LiteralValue::Int16(value) => runtime.scalar(f64::from(*value)).map(Some),
+            LiteralValue::Int32(value) => runtime.scalar(f64::from(*value)).map(Some),
+            LiteralValue::UInt8(value) => runtime.scalar(f64::from(*value)).map(Some),
+            LiteralValue::UInt16(value) => runtime.scalar(f64::from(*value)).map(Some),
+            LiteralValue::UInt32(value) => runtime.scalar(f64::from(*value)).map(Some),
+            _ => Ok(None),
+        },
+        TypeId::String => match value {
+            LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.string_scalar(value).map(Some),
+            _ => Ok(None),
+        },
+        TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
+            let raw = if let Some(raw) = integer_literal_as_decimal_raw(value, target_type.scale())? {
+                raw
+            } else if let LiteralValue::Decimal128 { raw, scale, .. } = value {
+                rescale_decimal_raw(
+                    *raw,
+                    crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
+                    target_type.scale(),
+                )?
+            } else {
+                return Ok(None);
+            };
+            runtime.decimal_raw_scalar(raw, target_type).map(Some)
+        },
+        TypeId::TimestampDays => match value {
+            LiteralValue::Date32(value) => {
+                runtime.timestamp_raw_scalar(i64::from(*value), cudf::TimestampResolution::Days).map(Some)
+            },
+            _ => Ok(None),
+        },
+        _ => Ok(None),
+    }
+    .map_err(|error| {
+        QueryError::from_cudf(
+            OP_READER_PREDICATE,
+            "failed to build cudf scalar for typed reader predicate AST literal",
+            error,
+        )
+        .with_fact("literal", value)
+        .with_fact("target_type_id", target_type.id())
+        .with_fact("target_type_scale", target_type.scale())
+    })
+}
+
+fn integer_literal_as<T>(value: &LiteralValue) -> Option<T>
+where T: TryFrom<i128> {
+    integer_literal_raw(value).and_then(|value| T::try_from(value).ok())
+}
+
+fn unsigned_literal_as<T>(value: &LiteralValue) -> Option<T>
+where T: TryFrom<u128> {
+    unsigned_literal_raw(value).and_then(|value| T::try_from(value).ok())
+}
+
+fn unsigned_literal_raw(value: &LiteralValue) -> Option<u128> {
+    match value {
+        LiteralValue::UInt8(value) => Some(u128::from(*value)),
+        LiteralValue::UInt16(value) => Some(u128::from(*value)),
+        LiteralValue::UInt32(value) => Some(u128::from(*value)),
+        LiteralValue::UInt64(value) => Some(u128::from(*value)),
+        LiteralValue::Int8(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int16(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int32(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int64(value) => u128::try_from(*value).ok(),
+        _ => None,
+    }
 }
 
 fn integer_literal_as_decimal_raw(value: &LiteralValue, target_scale: i32) -> Result<Option<i128>> {

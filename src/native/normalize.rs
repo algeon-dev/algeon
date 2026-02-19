@@ -17,7 +17,10 @@ use datafusion::{
     },
 };
 
-use crate::{policy::FallbackReason, report::GpuCandidate, table_format::CudfTableFormatScanExec};
+use crate::{
+    native_exec::gpu_resident_producer_input_name, policy::FallbackReason, report::GpuCandidate,
+    table_format::CudfTableFormatScanExec,
+};
 
 mod distributed_aggregate;
 mod shape;
@@ -157,6 +160,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
 
     if plan.as_any().downcast_ref::<FilterExec>().is_some()
         || plan.as_any().downcast_ref::<DataSourceExec>().is_some()
+        || gpu_resident_producer_input_name(plan).is_some()
         || plan.as_any().downcast_ref::<CudfTableFormatScanExec>().is_some()
     {
         let candidate = input_root_candidate(None, plan.schema().fields().len(), plan.name().to_string(), false, 1);
@@ -421,6 +425,12 @@ fn normalize_native_input<'a>(
         return Ok(NormalizedNativeInput::Source(NormalizedNativeSource {
             scan: NormalizedNativeScan::TableFormat(scan_exec),
             filter: None,
+        }));
+    }
+    if let Some(input_name) = gpu_resident_producer_input_name(plan) {
+        return Ok(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
+            source_exec: plan,
+            input_name,
         }));
     }
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {

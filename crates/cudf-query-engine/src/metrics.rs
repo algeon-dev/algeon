@@ -179,6 +179,7 @@ impl MemoryReservationEvent {
 pub struct QueryMetrics {
     pub boundary: BoundaryMetrics,
     pub operators: Vec<OperatorMetrics>,
+    pub graph_algorithm_runtime_rows: Vec<GraphAlgorithmRuntimeMetrics>,
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
     pub phase_c_memory_control_policy: MemoryControlPolicy,
     pub execution_boundary_policy: ExecutionBoundaryPolicy,
@@ -307,6 +308,10 @@ pub struct QueryMetrics {
 impl QueryMetrics {
     pub fn record_operator_metrics(&mut self, metrics: OperatorMetrics) {
         self.operators.push(metrics);
+    }
+
+    pub fn record_graph_algorithm_runtime(&mut self, metrics: GraphAlgorithmRuntimeMetrics) {
+        self.graph_algorithm_runtime_rows.push(metrics);
     }
 
     pub fn record_join_strategy_decision(&mut self, node_id: impl ToString, facts: &BTreeMap<&'static str, String>) {
@@ -755,6 +760,7 @@ impl QueryMetrics {
     pub fn merge_from(&mut self, other: QueryMetrics) {
         self.boundary.merge_from(other.boundary);
         self.operators.extend(other.operators);
+        self.graph_algorithm_runtime_rows.extend(other.graph_algorithm_runtime_rows);
         self.join_strategy_decisions.extend(other.join_strategy_decisions);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
@@ -1064,6 +1070,32 @@ impl OperatorMetrics {
     pub fn join(node_id: impl ToString, join: JoinOperatorMetrics) -> Self {
         Self { node_id: node_id.to_string(), operator_kind: "join".to_string(), join: Some(join), ..Default::default() }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GraphAlgorithmRuntimeMetrics {
+    pub node_id: String,
+    pub algorithm: String,
+    pub runtime_outcome: String,
+    pub input_boundary: String,
+    pub output_boundary: String,
+    pub construction_policy: String,
+    pub source_column: String,
+    pub destination_column: String,
+    pub weight_column: Option<String>,
+    pub directed: bool,
+    pub renumber: bool,
+    pub algorithm_parameters: String,
+    pub algorithm_metadata: String,
+    pub input_rows: u64,
+    pub input_columns: u64,
+    pub output_rows: u64,
+    pub output_columns: u64,
+    pub output_device_bytes: Option<u64>,
+    pub elapsed_ns: u64,
+    pub gpu_resident_input_handoffs: u64,
+    pub host_to_device_uploads: u64,
+    pub device_to_host_materializations: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

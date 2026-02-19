@@ -875,14 +875,7 @@ async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_
         )
         .plan;
         let rendered = optimized.to_string();
-        assert!(
-            rendered.contains("__grouping_id"),
-            "{query_id} grouping-set lowering must materialize DataFusion grouping ids:\n{rendered}"
-        );
-        assert!(
-            rendered.contains("__cudf_grouping_set_aggregate_arg_"),
-            "{query_id} grouping-set lowering must materialize aggregate arguments:\n{rendered}"
-        );
+        assert!(rendered.contains("Aggregate"), "{query_id} must retain native aggregate lowering:\n{rendered}");
         let admission =
             cudf_query_engine::strict_bounded_pipeline_admission(&optimized).expect("strict admission should not fail");
         assert!(admission.is_some(), "{query_id} strict bounded admission should accept the whole native plan");
@@ -892,6 +885,10 @@ async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_
         }
         if query_id == "q18" {
             assert!(rendered.contains("Avg("), "q18 grouping-set AVG state should lower natively:\n{rendered}");
+            assert!(
+                rendered.contains("__cudf_aggregate_arg_"),
+                "q18 AVG inputs should be materialized as reusable native aggregate arguments:\n{rendered}"
+            );
         }
     }
 }

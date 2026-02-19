@@ -341,6 +341,7 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
             max_optional_metric(aggregate.max_task_observed_peak_bytes, current.max_task_observed_peak_bytes);
         aggregate.max_task_retained_bytes =
             max_optional_metric(aggregate.max_task_retained_bytes, current.max_task_retained_bytes);
+        aggregate.merge_graph_runtime_rows(current.graph_runtime_rows);
         aggregate.merge_task_operator_rows(current.task_operator_rows);
         aggregate.merge_task_runtime_rows(current.task_runtime_rows);
         aggregate.source_chunks_planned = aggregate.source_chunks_planned.saturating_add(current.source_chunks_planned);

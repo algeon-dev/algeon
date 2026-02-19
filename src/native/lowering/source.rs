@@ -131,26 +131,45 @@ pub(super) fn lower_source_input(
     );
 
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
-    let (scan_output_node, scan_output_schema) = if let Some(scan_projection) = scan_projection {
-        let required_scan_projection =
-            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
-        if required_scan_projection_requires_native_projection(&required_scan_projection, &table_schema) {
-            let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
-            let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
-            (builder.add_projection(source_node, projection_outputs(expressions, &schema)?), schema)
-        } else {
-            (source_node, Arc::clone(&source_output_schema))
-        }
-    } else {
-        (source_node, Arc::clone(&source_output_schema))
-    };
-    let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
-    let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
     let scan_only_post_scan_predicate = if filter.is_none() && !reader_pushdown {
         parquet_source.filter().and_then(|predicate| scan_predicate_without_dynamic_filter_hints(&predicate))
     } else {
         None
     };
+    let (scan_input_node, scan_input_schema) = if let Some(predicate) = scan_only_post_scan_predicate.as_ref() {
+        (
+            builder.add_filter(
+                source_node,
+                lower_physical_expr(predicate, &source_output_schema)?,
+                Arc::clone(&source_output_schema),
+            ),
+            Arc::clone(&source_output_schema),
+        )
+    } else {
+        (source_node, Arc::clone(&source_output_schema))
+    };
+    let (scan_output_node, scan_output_schema) = if let Some(scan_projection) = scan_projection {
+        let required_scan_projection =
+            required_scan_projection(scan_projection, source_exec.schema(), &column_requirements.scan_output_columns);
+        if filter.is_none()
+            && required_scan_projection_needs_native_projection(
+                &required_scan_projection,
+                &table_schema,
+                &source_output_schema,
+                source_exec.schema(),
+            )?
+        {
+            let expressions = lower_required_file_source_projection_exprs(&required_scan_projection, &table_schema)?;
+            let schema = required_scan_projection_schema(&required_scan_projection, source_exec.schema())?;
+            (builder.add_projection(scan_input_node, projection_outputs(expressions, &schema)?), schema)
+        } else {
+            (scan_input_node, scan_input_schema)
+        }
+    } else {
+        (scan_input_node, scan_input_schema)
+    };
+    let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
+    let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
     if let Some(filter) = filter {
         if reader_pushdown_covers_filter {
             if let Some(projection) = filter.projection() {
@@ -188,19 +207,6 @@ pub(super) fn lower_source_input(
         } else {
             Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
         }
-    } else if let Some(predicate) = scan_only_post_scan_predicate {
-        let filtered_node = builder.add_filter(
-            scan_output.node,
-            lower_physical_expr(&predicate, &scan_output.schema)?,
-            Arc::clone(&scan_output.schema),
-        );
-        project_scan_output_columns(
-            builder,
-            filtered_node,
-            scan_output.schema,
-            scan_output.bindings,
-            required_output_fields,
-        )
     } else {
         project_scan_output_columns(
             builder,
@@ -669,7 +675,7 @@ pub(super) fn source_reader_pushdown_predicate(
     parquet_source: &ParquetSource,
     filter: Option<&datafusion::physical_plan::filter::FilterExec>,
     scan_limit: Option<usize>,
-    scan_projection_requires_native: bool,
+    _scan_projection_requires_native: bool,
     source_output_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     native_source: &NativeLocalParquetSource,
@@ -685,7 +691,7 @@ pub(super) fn source_reader_pushdown_predicate(
         return Ok(None);
     }
     let reader_scan_predicate = scan_predicate_without_dynamic_filter_hints(&scan_predicate);
-    if scan_limit.is_some() || scan_projection_requires_native {
+    if scan_limit.is_some() {
         return if filter.is_some() { Ok(None) } else { Err(FallbackReason::NativeSourcePushedDownParquetPredicate) };
     }
     if let Some(filter) = filter
@@ -841,6 +847,19 @@ pub(super) fn required_scan_projection_requires_native_projection(
         };
         input_schema.fields().get(column.index()).is_none_or(|field| field.name() != projection_expr.alias)
     })
+}
+
+pub(super) fn required_scan_projection_needs_native_projection(
+    projection: &[RequiredScanProjectionExpr<'_>],
+    input_schema: &SchemaRef,
+    current_source_schema: &SchemaRef,
+    scan_output_schema: SchemaRef,
+) -> Result<bool, FallbackReason> {
+    if required_scan_projection_requires_native_projection(projection, input_schema) {
+        return Ok(true);
+    }
+    let projected_schema = required_scan_projection_schema(projection, scan_output_schema)?;
+    Ok(projected_schema.as_ref() != current_source_schema.as_ref())
 }
 
 pub(super) fn required_scan_projection_schema(

@@ -46,6 +46,7 @@ pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
             build_side: join.spec.build_side,
         },
         PlanNode::Union(union) => NodeOperator::Union { input_count: union.inputs.len() },
+        PlanNode::GraphAlgorithm(graph) => NodeOperator::GraphAlgorithm { algorithm: graph.spec.algorithm },
     }
 }
 
@@ -90,6 +91,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
         PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
         PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join),
         PlanNode::Union(union) => union_node_executable_decision(plan, node.id, union),
+        PlanNode::GraphAlgorithm(graph) => graph_algorithm_node_executable_decision(plan, node.id, graph),
     }
 }
 
@@ -402,6 +404,109 @@ fn union_node_executable_decision(plan: &QueryPlan, node_id: NodeId, union: &Uni
     CapabilityDecision::Satisfied
 }
 
+fn graph_algorithm_node_executable_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    graph: &crate::plan::GraphAlgorithmNode,
+) -> CapabilityDecision {
+    let Some(input) = plan.node(graph.input) else {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "missing_input_node".to_string())],
+        );
+    };
+    for (role, column) in [
+        ("source", graph.spec.edge_columns.source.as_str()),
+        ("destination", graph.spec.edge_columns.destination.as_str()),
+    ] {
+        let Some(field) = input.output_schema().field_with_name(column).ok() else {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "missing_edge_column".to_string()),
+                    ("edge_column_role", role.to_string()),
+                    ("column", column.to_string()),
+                ],
+            );
+        };
+        if field.is_nullable() {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "nullable_edge_column".to_string()),
+                    ("edge_column_role", role.to_string()),
+                    ("column", column.to_string()),
+                ],
+            );
+        }
+        if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "unsupported_vertex_type".to_string()),
+                    ("edge_column_role", role.to_string()),
+                    ("column", column.to_string()),
+                    ("data_type", format!("{:?}", field.data_type())),
+                ],
+            );
+        }
+    }
+
+    if let Some(weight_col) = graph.spec.edge_columns.weight.as_deref() {
+        let Some(field) = input.output_schema().field_with_name(weight_col).ok() else {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "missing_edge_column".to_string()),
+                    ("edge_column_role", "weight".to_string()),
+                    ("column", weight_col.to_string()),
+                ],
+            );
+        };
+        if field.is_nullable() {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "nullable_edge_column".to_string()),
+                    ("edge_column_role", "weight".to_string()),
+                    ("column", weight_col.to_string()),
+                ],
+            );
+        }
+        if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
+            return CapabilityDecision::rejected(
+                "unsupported_graph_algorithm_node_capability",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("reason", "unsupported_weight_type".to_string()),
+                    ("edge_column_role", "weight".to_string()),
+                    ("column", weight_col.to_string()),
+                    ("data_type", format!("{:?}", field.data_type())),
+                ],
+            );
+        }
+    }
+
+    if graph.output_schema().as_ref() != crate::plan::stable_graph_result_schema(graph.spec.algorithm).as_ref() {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "non_stable_output_schema".to_string()),
+                ("algorithm", graph.spec.algorithm.as_str().to_string()),
+                ("schema_field_count", graph.output_schema().fields().len().to_string()),
+            ],
+        );
+    }
+
+    CapabilityDecision::Satisfied
+}
+
 pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
     let mut properties = Vec::new();
     if node.facts.placement == crate::plan::DataPlacement::Device {
@@ -507,6 +612,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             ReservationKind::OperatorOutput,
             "union_concat_output",
             "union_concat_output_size_preflight",
+            ContractQuality::ExactPreflight,
+        )],
+        PlanNode::GraphAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(
+            ReservationKind::OperatorOutput,
+            crate::plan::GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
+            crate::plan::GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
             ContractQuality::ExactPreflight,
         )],
         _ => Vec::new(),

@@ -49,6 +49,9 @@ pub(super) fn edge_contract_kinds(
     if matches!(consumer_kind, PlanNode::Window(_)) {
         kinds.push(EdgeContractKind::WindowInput);
     }
+    if matches!(consumer_kind, PlanNode::GraphAlgorithm(_)) {
+        kinds.push(EdgeContractKind::GraphAlgorithmInput);
+    }
     match input_role {
         InputRole::JoinBuildInput { side } => kinds.push(EdgeContractKind::JoinBuildInput { side }),
         InputRole::JoinProbeInput { side } => kinds.push(EdgeContractKind::JoinProbeInput { side }),
@@ -122,6 +125,7 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
         PlanNode::Union(_) => "union",
+        PlanNode::GraphAlgorithm(_) => "graph_algorithm",
     }
 }
 
@@ -132,6 +136,7 @@ pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::Sort(_) => InputRole::SortInput,
         PlanNode::Limit(_) => InputRole::LimitInput,
         PlanNode::Union(_) => InputRole::UnionInput { input_index },
+        PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {

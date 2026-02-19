@@ -610,6 +610,9 @@ fn assert_q16_join_leaf_subtree_has_no_aggregate_sort_or_limit(plan: &QueryPlan,
             PlanNode::Window(_) => panic!("q16 join leaf subtree must not contain window nodes below joins"),
             PlanNode::Sort(_) => panic!("q16 join leaf subtree must not contain sort nodes below joins"),
             PlanNode::Limit(_) => panic!("q16 join leaf subtree must not contain limit nodes below joins"),
+            PlanNode::GraphAlgorithm(_) => {
+                panic!("q16 join leaf subtree must not contain graph algorithm nodes below joins")
+            },
             PlanNode::Source(_)
             | PlanNode::Filter(_)
             | PlanNode::Projection(_)
@@ -667,6 +670,7 @@ fn source_tables_below(plan: &QueryPlan, root: NodeId) -> BTreeSet<String> {
             | PlanNode::Sort(_)
             | PlanNode::Limit(_)
             | PlanNode::Join(_)
+            | PlanNode::GraphAlgorithm(_)
             | PlanNode::Union(_) => stack.extend(node.input_ids().iter().copied()),
         }
     }

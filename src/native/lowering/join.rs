@@ -560,6 +560,7 @@ fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::Norma
         NormalizedNativeInput::Projection(projection) => normalized_input_is_scalar_single_row(&projection.input),
         NormalizedNativeInput::Limit(limit) => normalized_input_is_scalar_single_row(&limit.input),
         NormalizedNativeInput::Aggregate(aggregate) => aggregate.aggregate.group_expr().expr().is_empty(),
+        NormalizedNativeInput::GpuResidentSource(_) => false,
         NormalizedNativeInput::Source(_)
         | NormalizedNativeInput::Filter(_)
         | NormalizedNativeInput::Sort(_)

@@ -58,9 +58,9 @@ pub use expr::{
     GroupingSetsSpec, LimitSpec, LiteralValue, SortExpr, SortSpec,
 };
 pub use metrics::{
-    BoundaryMetrics, BudgetedExecutionEvent, JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent,
-    MemoryReservationEventAction, MemoryReservationEventOutcome, OperatorMetrics, QueryMetrics, TaskOperatorMetrics,
-    TaskRuntimeMetrics,
+    BoundaryMetrics, BudgetedExecutionEvent, GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics,
+    JoinStrategyDecisionMetrics, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
+    OperatorMetrics, QueryMetrics, TaskOperatorMetrics, TaskRuntimeMetrics,
 };
 pub use mode::{AdaptiveExecutionMode, NativePipelineExecutionMode, StrictBoundedExecutionMode};
 pub use optimizer::{
@@ -83,10 +83,14 @@ pub use pipeline::{
     compile_pipeline,
 };
 pub use plan::{
-    AggregateNode, DataPlacement, FilterNode, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode,
-    ProjectionOutput, QueryNode, QueryPlan, QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode, WindowFrame,
-    WindowFunction, WindowNode, WindowSpec,
+    AggregateNode, DataPlacement, FilterNode, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GraphAlgorithm,
+    GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec, GraphAlgorithmStrictBoundedLowerLevelContract,
+    GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphLouvainParams,
+    GraphPageRankParams, HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide,
+    JoinSpec, JoinType, LimitNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan,
+    QueryPlanBuilder, ResultSink, SchemaBehavior, SortNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
+    stable_graph_result_schema,
 };
 pub use runtime::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,

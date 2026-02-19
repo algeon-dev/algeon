@@ -273,6 +273,7 @@ fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
         PlanNode::Sort(_) => InputRole::SortInput,
         PlanNode::Limit(_) => InputRole::LimitInput,
         PlanNode::Union(_) => InputRole::UnionInput { input_index },
+        PlanNode::GraphAlgorithm(_) => InputRole::GraphAlgorithmInput,
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {
@@ -408,6 +409,11 @@ fn build_tasks(
                         .with_output_resources(vec![output])
                         .with_gates(gates),
                 );
+            },
+            PlanNode::GraphAlgorithm(_) => {
+                return Err(invalid("graph algorithm nodes are not supported by the strict compiled pipeline")
+                    .with_fact("node_id", node_id)
+                    .with_fact("operator", "graph_algorithm"));
             },
             PlanNode::Join(_) => {
                 let NodeTasks::Join { build, probe, materialize } = tasks_for(task_ids, *node_id)? else {
@@ -736,7 +742,8 @@ fn build_barriers(
             | PlanNode::Filter(_)
             | PlanNode::Projection(_)
             | PlanNode::Limit(_)
-            | PlanNode::Union(_) => {},
+            | PlanNode::Union(_)
+            | PlanNode::GraphAlgorithm(_) => {},
         }
     }
     let sink_input = sink_task.unwrap_or_else(|| {
@@ -929,6 +936,7 @@ fn input_role_label(role: InputRole) -> &'static str {
         InputRole::SortInput => "sort_input",
         InputRole::LimitInput => "limit_input",
         InputRole::UnionInput { .. } => "union_input",
+        InputRole::GraphAlgorithmInput => "graph_algorithm_input",
         InputRole::JoinBuildInput { .. } => "join_build_input",
         InputRole::JoinProbeInput { .. } => "join_probe_input",
         InputRole::SinkInput => "sink_input",

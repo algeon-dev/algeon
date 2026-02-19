@@ -75,6 +75,8 @@ pub enum SchemaBehavior {
     Join,
     /// Schema is shared by all union inputs.
     Union,
+    /// Schema is produced by a graph algorithm result contract.
+    GraphAlgorithm,
 }
 
 impl fmt::Display for SchemaBehavior {
@@ -86,6 +88,7 @@ impl fmt::Display for SchemaBehavior {
             Self::Aggregate => "aggregate",
             Self::Join => "join",
             Self::Union => "union",
+            Self::GraphAlgorithm => "graph_algorithm",
         })
     }
 }

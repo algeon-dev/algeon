@@ -19,7 +19,7 @@ use super::{
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
-    producer::NativeCudfGpuProducerExec,
+    producer::{execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name},
 };
 use crate::error::{Error, ErrorCode};
 
@@ -65,7 +65,7 @@ impl NativeCudfComposedExec {
         let required_inputs = gpu_resident_source_names(&plan);
         let mut provided_inputs = BTreeSet::new();
         for child in &gpu_inputs {
-            let Some(producer) = child.as_any().downcast_ref::<NativeCudfGpuProducerExec>() else {
+            let Some(input_name) = gpu_resident_producer_input_name(child.as_ref()) else {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
                     "datafusion_cudf.native_composed.try_new",
@@ -73,13 +73,13 @@ impl NativeCudfComposedExec {
                 )
                 .with_fact("child_name", child.name()));
             };
-            if !provided_inputs.insert(producer.input_name().to_string()) {
+            if !provided_inputs.insert(input_name.clone()) {
                 return Err(Error::new(
                     ErrorCode::InvalidExecutionPlan,
                     "datafusion_cudf.native_composed.try_new",
                     "native composed execution received duplicate GPU-resident producer input names",
                 )
-                .with_fact("input_name", producer.input_name()));
+                .with_fact("input_name", input_name));
             }
         }
 
@@ -113,6 +113,16 @@ impl NativeCudfComposedExec {
 
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn execution_config(&self) -> &NativeCudfExecutionConfig {
+        &self.execution_config
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn gpu_inputs(&self) -> &[Arc<dyn ExecutionPlan>] {
+        &self.gpu_inputs
     }
 }
 
@@ -172,7 +182,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
             .map_err(DataFusionError::from)
     }
 
-    fn execute(&self, partition: usize, _context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
+    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
         // Composed native execution also presents one final DataFusion output partition.
         if partition != 0 {
             return Err(Error::new(
@@ -197,17 +207,13 @@ impl ExecutionPlan for NativeCudfComposedExec {
                 .map_err(|error| DataFusionError::from(mark_native_runtime_error(error, "runtime_context")))?;
             let mut input_map = GpuResidentInputMap::new();
             for child in gpu_inputs {
-                let Some(producer) = child.as_any().downcast_ref::<NativeCudfGpuProducerExec>() else {
-                    return Err(DataFusionError::from(
-                        Error::new(
-                            ErrorCode::InvalidExecutionPlan,
-                            "datafusion_cudf.native_composed.execute",
-                            "native composed execution child was not a GPU-resident native producer",
-                        )
-                        .with_fact("child_name", child.name()),
-                    ));
-                };
-                let (input_name, handle) = producer.execute_gpu_result_with_context(&context, partition)?;
+                let (input_name, handle) = execute_gpu_resident_producer_with_context(
+                    child.as_ref(),
+                    &context,
+                    partition,
+                    Arc::clone(&task_context),
+                )
+                .await?;
                 input_map.insert(input_name, handle);
             }
 

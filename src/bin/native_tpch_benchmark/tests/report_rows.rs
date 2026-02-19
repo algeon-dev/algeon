@@ -59,6 +59,30 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             max_task_reservation_bytes: 64,
             max_task_observed_peak_bytes: Some(65),
             max_task_retained_bytes: Some(66),
+            graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
+                node_id: "g0".to_string(),
+                algorithm: "pagerank".to_string(),
+                runtime_outcome: "succeeded".to_string(),
+                input_boundary: "device".to_string(),
+                output_boundary: "device".to_string(),
+                construction_policy: "python_cugraph".to_string(),
+                source_column: "src".to_string(),
+                destination_column: "dst".to_string(),
+                weight_column: Some("weight".to_string()),
+                directed: true,
+                renumber: true,
+                algorithm_parameters: "alpha=0.85,epsilon=0.000001,max_iterations=100".to_string(),
+                algorithm_metadata: "converged=true,iterations=12".to_string(),
+                input_rows: 100,
+                input_columns: 3,
+                output_rows: 4,
+                output_columns: 2,
+                output_device_bytes: Some(320),
+                elapsed_ns: 123_000,
+                gpu_resident_input_handoffs: 1,
+                host_to_device_uploads: 0,
+                device_to_host_materializations: 0,
+            }],
             task_operator_rows: vec![NativeTaskOperatorMetricRow {
                 operator_kind: "source_read".to_string(),
                 task_count: 3,
@@ -190,7 +214,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(text.contains(
         "\t28\t29\t30\t31\t32\t33\t34\t35\t36\t37\t38\t39\t40\t41\t42\t43\t44\t45\t46\t47\t48\t49\t50\t51\t52\t53\t54\t55\t"
     ));
-    assert!(text.contains("\t64\t65\t66\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
+    assert!(text.contains("\t64\t65\t66\tnode_id=g0,algorithm=pagerank,runtime_outcome=succeeded,input_boundary=device,output_boundary=device,construction_policy=python_cugraph,source_column=src,destination_column=dst,weight_column=weight,directed=true,renumber=true,algorithm_parameters=alpha=0.85,epsilon=0.000001,max_iterations=100,algorithm_metadata=converged=true,iterations=12,input_rows=100,input_columns=3,output_rows=4,output_columns=2,output_device_bytes=320,elapsed_ns=123000,gpu_resident_input_handoffs=1,host_to_device_uploads=0,device_to_host_materializations=0\toperator_kind=source_read,task_count=3,elapsed_ns=7000000,reservation_requested_bytes=0,reservation_granted_bytes=0,reservation_released_bytes=0,reservation_live_peak_bytes=64,max_observed_peak_bytes=none,max_retained_bytes=none\tcompiled_task_id=t0,operator_kind=source_read,elapsed_ns=7000000,reservation_requested_bytes=64,reservation_granted_bytes=64,reservation_released_bytes=64,reservation_live_peak_bytes=64,max_observed_peak_bytes=65,max_retained_bytes=66\t"));
     let mut lines = text.lines().filter(|line| !line.starts_with('#'));
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let fields = lines.next().expect("benchmark report should contain a q01 row").split('\t').collect::<Vec<_>>();
