@@ -72,6 +72,14 @@ FROM bench
 WHERE payload >= 10
 ";
 
+pub(super) const SQL_ROUND_DECIMAL_INTEGRAL_CAST_QUERY: &str = "
+SELECT key, CAST(ROUND(SUM(amount) / CAST(50 AS DECIMAL(20, 0))) AS INT) AS segment
+FROM bench
+GROUP BY key
+ORDER BY segment ASC, key ASC
+LIMIT 10
+";
+
 pub(super) const SQL_Q6_SHAPED_QUERY: &str = "
 SELECT
     SUM(l_extendedprice * l_discount) AS revenue

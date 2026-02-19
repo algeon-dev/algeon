@@ -24,3 +24,8 @@ log
 
 # Large generated benchmark/test datasets
 /tests/data/
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd

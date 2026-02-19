@@ -135,3 +135,55 @@ fn bounded_native_query_executes_non_aggregate_source_plan() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn bounded_native_query_executes_union_plan_without_legacy_aggregate_path() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let left_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2]))]).unwrap();
+    let right_batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![3, 4]))]).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024 * 1024,
+            max_source_chunk_bytes: 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "left".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "right".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should return a RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(result.metrics().reservation_denied_count, 0);
+}

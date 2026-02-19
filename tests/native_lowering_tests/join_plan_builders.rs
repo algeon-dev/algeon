@@ -427,6 +427,46 @@ pub(super) fn right_only_hash_join_aggregate_sort_limit_plan(
     aggregate_sort_limit_single_measure_join_plan(join, "r_m01")
 }
 
+pub(super) fn hash_join_count_star_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    join_type: JoinType,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            None,
+            &join_type,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    let join_schema = join.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&join_schema))
+        .alias("count_star")
+        .build()
+        .unwrap();
+    Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::default(),
+            vec![Arc::new(count)],
+            vec![None],
+            join,
+            join_schema,
+        )
+        .unwrap(),
+    )
+}
+
 pub(super) fn nested_loop_join_filter_aggregate_sort_limit_plan(
     left: Arc<dyn ExecutionPlan>,
     right: Arc<dyn ExecutionPlan>,

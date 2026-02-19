@@ -193,7 +193,7 @@ fn probe_hash_join(
         JoinType::Inner => hash_join.inner_probe_size_in(probe, probe_keys, overrides),
         JoinType::Left => hash_join.left_probe_size_in(probe, probe_keys, overrides),
         JoinType::Full => hash_join.full_probe_size_in(probe, probe_keys, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => {
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "cudf_query_engine.join.execute",
@@ -208,7 +208,7 @@ fn probe_hash_join(
         JoinType::Inner => hash_join.inner_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
         JoinType::Left => hash_join.left_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
         JoinType::Full => hash_join.full_probe_with_output_size_in(probe, probe_keys, output_size, overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => {
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "cudf_query_engine.join.execute",

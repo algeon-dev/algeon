@@ -10,15 +10,28 @@ use datafusion::{
 use super::{NativePlanRejection, peel_repartition};
 use crate::{native::validate::is_supported_native_type, policy::FallbackReason, report::GpuCandidate};
 
+#[derive(Debug, Clone)]
+pub(in crate::native) struct DistributedAggregatePeel<'a> {
+    pub(in crate::native) aggregate: &'a AggregateExec,
+    pub(in crate::native) aggregate_allows_partial: bool,
+    pub(in crate::native) has_distributed_aggregate: bool,
+    pub(in crate::native) aggregate_output_schema: SchemaRef,
+}
+
 pub(super) fn peel_distributed_aggregate_pair_if_present(
     aggregate: &AggregateExec,
     candidate: GpuCandidate,
-) -> Result<(&AggregateExec, bool, bool, SchemaRef), NativePlanRejection> {
+) -> Result<DistributedAggregatePeel<'_>, NativePlanRejection> {
     // DataFusion distributed aggregates appear as final aggregate over a
     // repartition/coalesce boundary over a partial aggregate. Lowering keeps the
     // partial node as the executable aggregate but preserves the final schema.
     if !matches!(aggregate.mode(), AggregateMode::Final | AggregateMode::FinalPartitioned) {
-        return Ok((aggregate, false, false, aggregate.schema()));
+        return Ok(DistributedAggregatePeel {
+            aggregate,
+            aggregate_allows_partial: false,
+            has_distributed_aggregate: false,
+            aggregate_output_schema: aggregate.schema(),
+        });
     }
 
     let partial = peel_repartition(aggregate.input().as_ref()).as_any().downcast_ref::<AggregateExec>().ok_or(
@@ -31,7 +44,12 @@ pub(super) fn peel_distributed_aggregate_pair_if_present(
         return Err(NativePlanRejection { candidate, reason: FallbackReason::NativeDistributedAggregateUnsupported });
     }
 
-    Ok((partial, true, true, aggregate.schema()))
+    Ok(DistributedAggregatePeel {
+        aggregate: partial,
+        aggregate_allows_partial: true,
+        has_distributed_aggregate: true,
+        aggregate_output_schema: aggregate.schema(),
+    })
 }
 
 fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
@@ -39,6 +57,7 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
     // aggregate functions and state fields must match, and no distinct/order
     // by/filter semantics may be hidden in the pair.
     matches!(partial_aggregate.mode(), AggregateMode::Partial)
+        && distributed_group_expr_layout_is_native_safe(final_aggregate, partial_aggregate)
         && final_aggregate.group_expr().expr().len() == partial_group_output_count(partial_aggregate)
         && final_aggregate.aggr_expr().len() == partial_aggregate.aggr_expr().len()
         && final_aggregate.filter_expr().iter().all(Option::is_none)
@@ -54,6 +73,24 @@ fn distributed_aggregate_pair_is_safe(final_aggregate: &AggregateExec, partial_a
                 && partial_expr.order_bys().is_empty()
         })
         && distributed_aggregate_state_exprs_are_native_safe(final_aggregate, partial_aggregate)
+}
+
+fn distributed_group_expr_layout_is_native_safe(
+    final_aggregate: &AggregateExec,
+    partial_aggregate: &AggregateExec,
+) -> bool {
+    let final_group_by = final_aggregate.group_expr();
+    let partial_group_by = partial_aggregate.group_expr();
+    if partial_group_by.has_grouping_set() {
+        let partial_group_expr_count = partial_group_by.expr().len();
+        final_group_by.is_single()
+            && !final_group_by.has_grouping_set()
+            && final_group_by.expr().len() == partial_group_expr_count + 1
+            && partial_group_by.null_expr().len() == partial_group_expr_count
+            && partial_group_by.groups().iter().all(|group| group.len() == partial_group_expr_count)
+    } else {
+        final_group_by.expr().len() == partial_group_by.expr().len()
+    }
 }
 
 fn distributed_group_exprs_are_native_safe(final_aggregate: &AggregateExec, partial_aggregate: &AggregateExec) -> bool {
@@ -144,7 +181,7 @@ fn distributed_final_output_is_native_safe(
         return false;
     };
     if function_name.eq_ignore_ascii_case("avg") {
-        matches!(field.data_type(), DataType::Float32 | DataType::Float64)
+        matches!(field.data_type(), DataType::Float32 | DataType::Float64 | DataType::Decimal128(_, _))
     } else {
         is_supported_native_type(field.data_type())
     }

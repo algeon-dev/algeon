@@ -17,6 +17,11 @@ fn native_expr_can_represent_numeric_cast() {
 #[test]
 fn native_expr_can_represent_phase2_core_expression_surface() {
     let modulo = Expr::binary(Expr::column("payload"), BinaryOp::Modulo, Expr::literal(LiteralValue::Int64(10)));
+    let bitwise_and = Expr::binary(Expr::column("flags"), BinaryOp::BitwiseAnd, Expr::literal(LiteralValue::Int64(3)));
+    let bitwise_or = Expr::binary(Expr::column("flags"), BinaryOp::BitwiseOr, Expr::literal(LiteralValue::Int64(8)));
+    let bitwise_xor = Expr::binary(Expr::column("flags"), BinaryOp::BitwiseXor, Expr::literal(LiteralValue::Int64(1)));
+    let shift_left = Expr::binary(Expr::column("flags"), BinaryOp::ShiftLeft, Expr::literal(LiteralValue::Int64(1)));
+    let shift_right = Expr::binary(Expr::column("flags"), BinaryOp::ShiftRight, Expr::literal(LiteralValue::Int64(1)));
     let like = Expr::like(Expr::column("name"), "A%");
     let not_like = Expr::not_like_escape(Expr::column("name"), "A!_%", "!");
     let substring = Expr::substring(Expr::column("name"), 2, Some(3));
@@ -44,6 +49,8 @@ fn native_expr_can_represent_phase2_core_expression_surface() {
     let extract = Expr::extract(DatePart::Year, Expr::column("event_ts"));
     let is_null = Expr::is_null(Expr::column("discount"));
     let is_not_null = Expr::is_not_null(Expr::column("discount"));
+    let abs = Expr::abs(Expr::column("variance"));
+    let round = Expr::round(Expr::column("ratio"), 2, DataType::Float64);
     let timestamp_plus_duration = Expr::binary(
         Expr::column("event_ts"),
         BinaryOp::Add,
@@ -56,6 +63,11 @@ fn native_expr_can_represent_phase2_core_expression_surface() {
     );
 
     assert_eq!(modulo.to_string(), "(payload % 10)");
+    assert_eq!(bitwise_and.to_string(), "(flags & 3)");
+    assert_eq!(bitwise_or.to_string(), "(flags | 8)");
+    assert_eq!(bitwise_xor.to_string(), "(flags ^ 1)");
+    assert_eq!(shift_left.to_string(), "(flags << 1)");
+    assert_eq!(shift_right.to_string(), "(flags >> 1)");
     assert_eq!(like.to_string(), "name LIKE \"A%\"");
     assert_eq!(not_like.to_string(), "name NOT LIKE \"A!_%\" ESCAPE \"!\"");
     assert_eq!(substring.to_string(), "SUBSTRING(name FROM 2 FOR 3)");
@@ -65,6 +77,8 @@ fn native_expr_can_represent_phase2_core_expression_surface() {
     assert_eq!(extract.to_string(), "EXTRACT(YEAR FROM event_ts)");
     assert_eq!(is_null.to_string(), "discount IS NULL");
     assert_eq!(is_not_null.to_string(), "discount IS NOT NULL");
+    assert_eq!(abs.to_string(), "ABS(variance)");
+    assert_eq!(round.to_string(), "ROUND(ratio, 2)::Float64");
     assert_eq!(timestamp_plus_duration.to_string(), "(event_ts + DURATION(10, Nanosecond))");
     assert_eq!(date_plus_interval.to_string(), "(shipdate + INTERVAL(months=1, days=2, nanoseconds=0))");
 }

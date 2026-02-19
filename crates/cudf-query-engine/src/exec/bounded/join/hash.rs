@@ -194,7 +194,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
         JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let gather_map_reservation_bytes = build
@@ -240,7 +242,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
             output_size,
             &overrides,
         ),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
@@ -286,7 +290,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
         JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let gather_map_reservation_bytes = build
@@ -332,7 +338,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
             output_size,
             &overrides,
         ),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
@@ -379,7 +387,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_from_
         JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
         JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let gather_map_reservation_bytes = build
@@ -425,7 +435,9 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_from_
             output_size,
             &overrides,
         ),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => unreachable!("validated above"),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
     }
     .map_err(|error| join_index_error(error, node))?;
     let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {

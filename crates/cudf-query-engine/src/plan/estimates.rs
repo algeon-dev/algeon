@@ -21,9 +21,13 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
         },
         PlanNode::Projection(projection) => estimated_output_rows(plan, projection.input),
         PlanNode::Filter(filter) => estimated_output_rows(plan, filter.input),
+        PlanNode::Window(window) => estimated_output_rows(plan, window.input),
         PlanNode::Sort(sort) => estimated_output_rows(plan, sort.input),
         PlanNode::Limit(limit) => estimated_output_rows(plan, limit.input)
             .map(|rows| rows.min(limit.spec.skip.saturating_add(limit.spec.fetch) as u64)),
+        PlanNode::Union(union) => {
+            union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_rows(plan, *input)?))
+        },
         PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty() => Some(1),
         PlanNode::Aggregate(_) | PlanNode::Join(_) => None,
     }
@@ -51,7 +55,11 @@ pub(crate) fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Optio
         },
         PlanNode::Projection(projection) => estimated_output_bytes(plan, projection.input),
         PlanNode::Filter(filter) => estimated_output_bytes(plan, filter.input),
+        PlanNode::Window(_) => None,
         PlanNode::Sort(sort) => estimated_output_bytes(plan, sort.input),
+        PlanNode::Union(union) => {
+            union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_bytes(plan, *input)?))
+        },
         PlanNode::Limit(_) | PlanNode::Aggregate(_) | PlanNode::Join(_) => None,
     }
 }

@@ -33,7 +33,7 @@ impl QueryNode {
                         "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
                         self.id,
                         source.diagnostics.file_count,
-                        source.files.first().map_or_else(|| "none".to_string(), |file| file.path.display().to_string()),
+                        source.files.first().map_or_else(|| "none".to_string(), |file| file.location.reader_path()),
                         source.diagnostics.format,
                         source.diagnostics.direct_device_read,
                         source.diagnostics.known_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
@@ -98,6 +98,20 @@ impl QueryNode {
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
+            PlanNode::Window(node) => writeln!(
+                f,
+                "{padding}{} Window input={} partition_count={} order_count={} function_count={} partitions={} order={} functions={} placement={} schema_behavior={}",
+                self.id,
+                node.input,
+                node.spec.partition_by.len(),
+                node.spec.order_by.len(),
+                node.spec.functions.len(),
+                format_exprs(&node.spec.partition_by),
+                format_sort_exprs(&node.spec.order_by),
+                format_window_functions(&node.spec.functions),
+                self.facts.placement,
+                self.facts.schema_behavior
+            ),
             PlanNode::Sort(node) => writeln!(
                 f,
                 "{padding}{} Sort input={} expr_count={} expressions={} placement={} schema_behavior={}",
@@ -129,8 +143,21 @@ impl QueryNode {
                 self.facts.placement,
                 self.facts.schema_behavior
             ),
+            PlanNode::Union(node) => writeln!(
+                f,
+                "{padding}{} Union inputs={} input_count={} placement={} schema_behavior={}",
+                self.id,
+                format_node_ids(&node.inputs),
+                node.inputs.len(),
+                self.facts.placement,
+                self.facts.schema_behavior
+            ),
         }
     }
+}
+
+fn format_node_ids(ids: &[super::NodeId]) -> String {
+    if ids.is_empty() { "none".to_string() } else { ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(",") }
 }
 
 fn format_exprs(expressions: &[Expr]) -> String {
@@ -147,7 +174,27 @@ fn format_aggregate_exprs(expressions: &[crate::expr::AggregateExpr]) -> String 
     } else {
         expressions
             .iter()
-            .map(|expr| format!("{:?}({}) AS {}", expr.function, expr.expr, expr.alias))
+            .map(|expr| {
+                let distinct = if expr.distinct { "DISTINCT " } else { "" };
+                format!("{:?}({distinct}{}) AS {}", expr.function, expr.expr, expr.alias)
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
+fn format_window_functions(functions: &[super::WindowFunction]) -> String {
+    if functions.is_empty() {
+        "none".to_string()
+    } else {
+        functions
+            .iter()
+            .map(|function| match function {
+                super::WindowFunction::Aggregate { function, expr, alias, frame } => {
+                    format!("{function:?}({expr}) {frame:?} AS {alias}")
+                },
+                super::WindowFunction::Rank { alias } => format!("RANK() AS {alias}"),
+            })
             .collect::<Vec<_>>()
             .join(",")
     }

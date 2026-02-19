@@ -360,6 +360,8 @@ fn accepted_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         source_diagnostics: Vec::new(),
         post_native_plan_root: "NativeCudfExec".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Native,
+        native_plan_fragment_count: 1,
+        host_datafusion_boundary_count: 0,
         rejected_before_execution: false,
     }
 }
@@ -382,6 +384,8 @@ fn rejected_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
         source_diagnostics: Vec::new(),
         post_native_plan_root: "SortExec".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        native_plan_fragment_count: 0,
+        host_datafusion_boundary_count: 0,
         rejected_before_execution: true,
     }
 }

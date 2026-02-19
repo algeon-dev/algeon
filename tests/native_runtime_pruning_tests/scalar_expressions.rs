@@ -80,7 +80,10 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
         ("extract", SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY),
         ("interval", SQL_PHASE2_NULL_SEMANTICS_INTERVAL_QUERY),
         ("modulo", SQL_PHASE2_NULL_SEMANTICS_MODULO_QUERY),
+        ("bitwise", SQL_PHASE7_BITWISE_SCALAR_QUERY),
         ("is-null", SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY),
+        ("round", SQL_PHASE5_ROUND_SCALAR_QUERY),
+        ("abs", SQL_PHASE7_ABS_SCALAR_QUERY),
     ];
 
     for (name, sql) in cases {

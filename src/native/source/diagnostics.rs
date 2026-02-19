@@ -54,8 +54,17 @@ fn collect_source_diagnostics_for_input(
         NormalizedNativeInput::Projection(projection) => {
             collect_source_diagnostics_for_input(&projection.input, normalized, diagnostics);
         },
+        NormalizedNativeInput::Limit(limit) => {
+            collect_source_diagnostics_for_input(&limit.input, normalized, diagnostics);
+        },
         NormalizedNativeInput::Aggregate(aggregate) => {
             collect_source_diagnostics_for_input(&aggregate.input, normalized, diagnostics);
+        },
+        NormalizedNativeInput::Sort(sort) => {
+            collect_source_diagnostics_for_input(&sort.input, normalized, diagnostics);
+        },
+        NormalizedNativeInput::Window(window) => {
+            collect_source_diagnostics_for_input(&window.input, normalized, diagnostics);
         },
         NormalizedNativeInput::HashJoin(join) => {
             collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
@@ -69,6 +78,11 @@ fn collect_source_diagnostics_for_input(
             collect_source_diagnostics_for_input(&join.left, normalized, diagnostics);
             collect_source_diagnostics_for_input(&join.right, normalized, diagnostics);
         },
+        NormalizedNativeInput::Union(union) => {
+            for input in &union.inputs {
+                collect_source_diagnostics_for_input(input, normalized, diagnostics);
+            }
+        },
     }
 }
 
@@ -76,7 +90,8 @@ fn source_diagnostics_for_source(
     source: &NormalizedNativeSource<'_>,
     normalized: &NormalizedNativePlan<'_>,
 ) -> Option<NativeSourceDiagnostics> {
-    let (file_scan, parquet_source) = source.source_exec.downcast_to_file_source::<ParquetSource>()?;
+    let source_exec = source.local_parquet_source_exec()?;
+    let (file_scan, parquet_source) = source_exec.downcast_to_file_source::<ParquetSource>()?;
     let table_schema = Arc::clone(file_scan.file_source().table_schema().table_schema());
     let aggregate_root = normalized.aggregate_root();
     let column_requirements = aggregate_root.and_then(|root| {

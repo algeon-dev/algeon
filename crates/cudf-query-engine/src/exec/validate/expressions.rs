@@ -36,7 +36,9 @@ pub(super) fn validate_expr(
         Expr::Cast { expr, target_type } => {
             let source_type =
                 validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
-            if !is_supported_arrow_cast(&source_type, target_type) {
+            if !is_supported_arrow_cast(&source_type, target_type)
+                && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
+            {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "cudf_query_engine.plan.validate_expr",
@@ -69,6 +71,27 @@ pub(super) fn validate_expr(
             require_string(&data_type, "string case input")?;
             Ok(data_type)
         },
+        Expr::Concat(exprs) => validate_concat_expr(exprs, input_schema, available_columns),
+        Expr::Abs(expr) => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_arithmetic_type(&data_type, "ABS input")?;
+            Ok(data_type)
+        },
+        Expr::Round { expr, output_type, .. } => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_arithmetic_type(&data_type, "ROUND input")?;
+            require_arithmetic_type(output_type, "ROUND output")?;
+            if is_decimal_type(&data_type) != is_decimal_type(output_type) {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.plan.validate_expr",
+                    "native ROUND input and output must both be decimal or both be non-decimal",
+                )
+                .with_fact("input_type", format!("{data_type:?}"))
+                .with_fact("output_type", format!("{output_type:?}")));
+            }
+            Ok(output_type.clone())
+        },
         Expr::InList { expr, list, .. } => validate_in_list_expr(expr, list, input_schema, available_columns),
         Expr::Case { branches, else_expr } => validate_case_expr(branches, else_expr, input_schema, available_columns),
         Expr::Extract { expr, .. } => {
@@ -98,7 +121,9 @@ fn validate_expr_with_expected_type(
         Expr::Cast { expr, target_type } => {
             let source_type =
                 validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
-            if !is_supported_arrow_cast(&source_type, target_type) {
+            if !is_supported_arrow_cast(&source_type, target_type)
+                && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
+            {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
                     "cudf_query_engine.plan.validate_expr",
@@ -249,6 +274,16 @@ fn validate_binary_expr_with_expected_type(
             require_integral_type(&left_type, "modulo left operand")?;
             require_integral_type(&right_type, "modulo right operand")?;
             require_compatible_types(&left_type, &right_type, "modulo operands")?;
+            Ok(left_type)
+        },
+        BinaryOp::BitwiseAnd
+        | BinaryOp::BitwiseOr
+        | BinaryOp::BitwiseXor
+        | BinaryOp::ShiftLeft
+        | BinaryOp::ShiftRight => {
+            require_integral_type(&left_type, "bitwise left operand")?;
+            require_integral_type(&right_type, "bitwise right operand")?;
+            require_compatible_types(&left_type, &right_type, "bitwise operands")?;
             Ok(left_type)
         },
         BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
@@ -426,6 +461,119 @@ fn validate_in_list_expr(
         require_compatible_types(&expr_type, &item_type, "IN list value")?;
     }
     Ok(ArrowDataType::Boolean)
+}
+
+fn validate_concat_expr(
+    exprs: &[Expr],
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    if exprs.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.plan.validate_expr",
+            "native CONCAT requires at least one argument",
+        ));
+    }
+    let mut output_type = ArrowDataType::Utf8;
+    for expr in exprs {
+        let data_type = validate_expr(expr, input_schema, available_columns)?;
+        require_string(&data_type, "CONCAT input")?;
+        if data_type == ArrowDataType::Utf8View {
+            output_type = ArrowDataType::Utf8View;
+        } else if data_type == ArrowDataType::LargeUtf8 && output_type != ArrowDataType::Utf8View {
+            output_type = ArrowDataType::LargeUtf8;
+        }
+    }
+    Ok(output_type)
+}
+
+fn bounded_nonnegative_integral_cast_is_supported(
+    expr: &Expr,
+    source_type: &ArrowDataType,
+    target_type: &ArrowDataType,
+) -> bool {
+    if !is_integral_type(source_type) || !is_integral_type(target_type) {
+        return false;
+    }
+    let Some(max_value) = nonnegative_integral_expr_max(expr) else {
+        return false;
+    };
+    target_integral_max(target_type).is_some_and(|target_max| max_value <= target_max)
+}
+
+fn nonnegative_integral_expr_max(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Literal(value) => nonnegative_integral_literal_value(value),
+        Expr::Alias { expr, .. } | Expr::Cast { expr, .. } => nonnegative_integral_expr_max(expr),
+        Expr::Binary { left, op: BinaryOp::BitwiseAnd, right, .. } => {
+            nonnegative_integral_expr_max(left).or_else(|| nonnegative_integral_expr_max(right))
+        },
+        Expr::Binary { left, op: BinaryOp::ShiftRight, right, .. } => {
+            let left_max = nonnegative_integral_expr_max(left)?;
+            let shift = nonnegative_integral_expr_literal_value(right)?;
+            if shift >= 128 { Some(0) } else { Some(left_max >> shift) }
+        },
+        Expr::Binary { left, op: BinaryOp::ShiftLeft, right, .. } => {
+            let left_max = nonnegative_integral_expr_max(left)?;
+            let shift = u32::try_from(nonnegative_integral_expr_literal_value(right)?).ok()?;
+            left_max.checked_shl(shift)
+        },
+        Expr::Binary { left, op: BinaryOp::BitwiseOr | BinaryOp::BitwiseXor, right, .. } => {
+            Some(nonnegative_integral_expr_max(left)? | nonnegative_integral_expr_max(right)?)
+        },
+        _ => None,
+    }
+}
+
+fn nonnegative_integral_expr_literal_value(expr: &Expr) -> Option<u128> {
+    match expr {
+        Expr::Literal(value) => nonnegative_integral_literal_value(value),
+        Expr::Alias { expr, .. } | Expr::Cast { expr, .. } => nonnegative_integral_expr_literal_value(expr),
+        _ => None,
+    }
+}
+
+fn nonnegative_integral_literal_value(value: &LiteralValue) -> Option<u128> {
+    match value {
+        LiteralValue::Int8(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int16(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int32(value) => u128::try_from(*value).ok(),
+        LiteralValue::Int64(value) => u128::try_from(*value).ok(),
+        LiteralValue::UInt8(value) => Some(u128::from(*value)),
+        LiteralValue::UInt16(value) => Some(u128::from(*value)),
+        LiteralValue::UInt32(value) => Some(u128::from(*value)),
+        LiteralValue::UInt64(value) => Some(u128::from(*value)),
+        _ => None,
+    }
+}
+
+fn target_integral_max(data_type: &ArrowDataType) -> Option<u128> {
+    match data_type {
+        ArrowDataType::Int8 => Some(i8::MAX as u128),
+        ArrowDataType::Int16 => Some(i16::MAX as u128),
+        ArrowDataType::Int32 => Some(i32::MAX as u128),
+        ArrowDataType::Int64 => Some(i64::MAX as u128),
+        ArrowDataType::UInt8 => Some(u128::from(u8::MAX)),
+        ArrowDataType::UInt16 => Some(u128::from(u16::MAX)),
+        ArrowDataType::UInt32 => Some(u128::from(u32::MAX)),
+        ArrowDataType::UInt64 => Some(u128::from(u64::MAX)),
+        _ => None,
+    }
+}
+
+fn is_integral_type(data_type: &ArrowDataType) -> bool {
+    matches!(
+        data_type,
+        ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+    )
 }
 
 fn validate_case_expr(

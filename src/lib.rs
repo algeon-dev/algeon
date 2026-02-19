@@ -1,6 +1,8 @@
 //! DataFusion adapter for native cudf-rs GPU execution.
 
 pub mod error;
+#[cfg(feature = "iceberg")]
+pub mod iceberg;
 pub mod native;
 pub mod native_exec;
 pub mod native_report;
@@ -8,6 +10,7 @@ pub mod planner;
 pub mod policy;
 pub mod report;
 pub mod session;
+pub mod table_format;
 mod workload;
 
 pub use cudf_query_engine::{
@@ -15,6 +18,12 @@ pub use cudf_query_engine::{
     NativePipelineExecutionMode, SemijoinReductionOptions,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
+#[cfg(feature = "iceberg")]
+pub use iceberg::{
+    CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig, GlueIcebergTableDiagnostics,
+    GlueIcebergTableRegistration, IcebergTableFormatPlanner, LoadedGlueIcebergTable,
+    iceberg_file_scan_tasks_to_table_format_scan_plan, load_glue_table, register_glue_table,
+};
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
 pub use native_exec::{
     NATIVE_CUDF_DATAFUSION_METRIC_NAMES, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
@@ -51,37 +60,47 @@ pub use session::{
     CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt, PhysicalOptimizerRules,
     cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
 };
+pub use table_format::{
+    CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
+    TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
+    TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatPartitionValue,
+    TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanDiagnostics,
+    TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+};
 pub use tpcds::{
     CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
     CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
-    CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_QUERIES,
-    TPCDS_QUERY_COUNT, TPCDS_TABLES, TpcdsDatasetMetadata, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig,
-    TpcdsQuery, TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError, TpcdsWorkloadResult,
-    describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout,
-    external_tpcds_dataset_metadata, prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
-    tpcds_datafusion_execution_workload_items, tpcds_datafusion_execution_workload_items_with_optimizer_config,
-    tpcds_datafusion_planning_workload_items, tpcds_datafusion_planning_workload_items_with_optimizer_config,
-    tpcds_fallback_pressure_workload_items, tpcds_native_optimizer_config, tpcds_parity_workload_items,
-    tpcds_parity_workload_items_with_external_oracles, tpcds_query_ids, tpcds_report_session_config,
-    write_tiny_tpcds_parquet_dataset,
+    CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR,
+    DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, TpcdsDatasetMetadata,
+    TpcdsExecutionProgressEvent, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsQuery,
+    TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError, TpcdsWorkloadResult,
+    default_tpcds_sf1_parquet_root, describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint,
+    discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset,
+    tiny_tpcds_dataset_metadata, tpcds_datafusion_execution_workload_items,
+    tpcds_datafusion_execution_workload_items_filtered,
+    tpcds_datafusion_execution_workload_items_with_optimizer_config, tpcds_datafusion_planning_workload_items,
+    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_fallback_pressure_workload_items,
+    tpcds_native_optimizer_config, tpcds_parity_workload_items, tpcds_parity_workload_items_with_external_oracles,
+    tpcds_query_ids, tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
 };
 pub use tpch::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,
     AdHocOlapLoweringExpectation, AdHocOlapQuery, AdHocOlapWorkloadClass, CUDF_TPCH_CONTENT_FINGERPRINT_ENV,
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
-    DEFAULT_NVME_TPCH_SF1_PARQUET_DIR, DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
-    DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR, TPCH_QUERIES, TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata,
-    TpchQuery, TpchTableFileMetadata, TpchTableLayout, TpchTableMetadata, TpchWorkloadError, TpchWorkloadResult,
-    ad_hoc_olap_datafusion_planning_workload_items,
+    DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR, DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR,
+    DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR, DEFAULT_NVME_MOUNT_ROOT, DEFAULT_NVME_TPCH_SF1_PARQUET_DIR,
+    DEFAULT_NVME_TPCH_SF10_PARQUET_DIR, DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR, TPCH_QUERIES, TPCH_QUERY_COUNT,
+    TPCH_TABLES, TpchDatasetMetadata, TpchDefaultScale, TpchQuery, TpchTableFileMetadata, TpchTableLayout,
+    TpchTableMetadata, TpchWorkloadError, TpchWorkloadResult, ad_hoc_olap_datafusion_planning_workload_items,
     ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config, ad_hoc_olap_fallback_pressure_workload_items,
-    ad_hoc_olap_query_ids, default_nvme_tpch_dataset, default_nvme_tpch_dataset_with_fingerprint,
-    describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint, discover_tpch_table_layout,
-    external_tpch_dataset_metadata, prepare_tpch_report_dataset, register_tpch_table_layout,
-    tiny_tpch_dataset_metadata, tpch_datafusion_execution_workload_items,
-    tpch_datafusion_execution_workload_items_with_optimizer_config, tpch_datafusion_planning_workload_items,
-    tpch_datafusion_planning_workload_items_with_optimizer_config, tpch_fallback_pressure_workload_items,
-    tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
+    ad_hoc_olap_query_ids, default_nvme_mount_present, default_nvme_tpch_dataset,
+    default_nvme_tpch_dataset_with_fingerprint, default_tpch_parquet_root, describe_tpch_dataset,
+    describe_tpch_dataset_with_content_fingerprint, discover_tpch_table_layout, external_tpch_dataset_metadata,
+    prepare_tpch_report_dataset, register_tpch_table_layout, tiny_tpch_dataset_metadata,
+    tpch_datafusion_execution_workload_items, tpch_datafusion_execution_workload_items_with_optimizer_config,
+    tpch_datafusion_planning_workload_items, tpch_datafusion_planning_workload_items_with_optimizer_config,
+    tpch_fallback_pressure_workload_items, tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
     tpch_scalar_fallback_pressure_workload_items, tpch_tuned_cpu_session_config, write_tiny_tpch_parquet_dataset,
 };
 pub use workload::{tpcds, tpch};

@@ -123,6 +123,481 @@ pub(super) fn execute_limit(
     execute_limit_on_frame(context, node, input.into_frame(), metrics)
 }
 
+pub(super) fn execute_union(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    inputs: Vec<GpuDataFrame>,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let mut frames = inputs.into_iter().map(GpuDataFrame::into_frame).collect::<Vec<_>>();
+    if frames.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.union.execute",
+            "union execution requires at least one input",
+        )
+        .with_fact("node_id", node_id));
+    }
+    if frames.len() == 1 {
+        return Ok(GpuDataFrame::new(frames.remove(0)));
+    }
+
+    let input_count = frames.len();
+    let first = frames.remove(0);
+    let rest = frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
+        QueryError::from_cudf("cudf_query_engine.union.concat", "failed to concatenate native union inputs", error)
+            .with_fact("node_id", node_id)
+            .with_fact("input_count", input_count)
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
+pub(super) fn execute_window(
+    context: &ExecutionContext,
+    node: &WindowNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    input: GpuDataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if node.spec.functions.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.window.execute",
+            "window node requires at least one function",
+        ));
+    }
+
+    let mut frame = input.into_frame();
+    if node.spec.functions.iter().any(|function| {
+        matches!(function, crate::plan::WindowFunction::Aggregate { frame: WindowFrame::WholePartition, .. })
+    }) {
+        frame = execute_partition_window_aggregate(context, node, input_schema, frame, output_schema, metrics)?;
+    }
+    if node.spec.functions.iter().any(|function| {
+        matches!(
+            function,
+            crate::plan::WindowFunction::Aggregate { frame: WindowFrame::RowsUnboundedPrecedingToCurrent, .. }
+        )
+    }) {
+        frame = execute_cumulative_window_aggregate(context, node, frame, metrics)?;
+    }
+    for function in &node.spec.functions {
+        if let crate::plan::WindowFunction::Rank { alias } = function {
+            frame = execute_rank_window(context, node, frame, alias.as_str(), metrics)?;
+        }
+    }
+
+    let output_names = output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
+    let output = frame.select(output_names).map_err(|error| {
+        QueryError::from_cudf("cudf_query_engine.window.select", "failed to select native window output columns", error)
+    })?;
+    Ok(GpuDataFrame::new(output))
+}
+
+fn execute_partition_window_aggregate(
+    context: &ExecutionContext,
+    node: &WindowNode,
+    input_schema: &arrow::datatypes::SchemaRef,
+    frame: DataFrame,
+    output_schema: &arrow::datatypes::SchemaRef,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    if node.spec.partition_by.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.window.aggregate",
+            "native partition aggregate windows currently require at least one partition key",
+        ));
+    }
+    if !node.spec.order_by.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.window.aggregate",
+            "native partition aggregate windows require a constant-in-partition frame without ORDER BY",
+        ));
+    }
+
+    let group_exprs = node
+        .spec
+        .partition_by
+        .iter()
+        .map(|expr| {
+            let name = lower_column_expr(expr, "cudf_query_engine.window.aggregate.partition")?;
+            Ok(Expr::column(name.clone()).alias(name))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let aggr_exprs = node
+        .spec
+        .functions
+        .iter()
+        .filter_map(|function| match function {
+            crate::plan::WindowFunction::Aggregate { function, expr, alias, frame: WindowFrame::WholePartition } => {
+                Some(AggregateExpr::new(*function, expr.clone(), alias.clone()))
+            },
+            crate::plan::WindowFunction::Aggregate { .. } | crate::plan::WindowFunction::Rank { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    let aggregate_spec = AggregateSpec::new(group_exprs, aggr_exprs);
+    let aggregate_schema = window_aggregate_schema(input_schema, output_schema, node)?;
+    let aggregate = AggregateNode { input: node.input, spec: aggregate_spec };
+    let aggregate_frame = execute_aggregate(
+        context,
+        &aggregate,
+        input_schema,
+        GpuDataFrame::new(frame.clone()),
+        &aggregate_schema,
+        metrics,
+    )?
+    .into_frame();
+
+    let keys = node
+        .spec
+        .partition_by
+        .iter()
+        .map(|expr| lower_column_expr(expr, "cudf_query_engine.window.aggregate.merge_key"))
+        .collect::<Result<Vec<_>>>()?;
+    let output = frame
+        .with_execution(&execution_overrides(context))
+        .merge(
+            &aggregate_frame,
+            cudf::MergeOptions::new().how(cudf::JoinType::Left).on(keys.iter().map(String::as_str)),
+        )
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.aggregate.merge",
+                "failed to align native partition aggregate window outputs",
+                error,
+            )
+        })?;
+    Ok(output)
+}
+
+fn window_aggregate_schema(
+    input_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &arrow::datatypes::SchemaRef,
+    node: &WindowNode,
+) -> Result<arrow::datatypes::SchemaRef> {
+    let mut fields = Vec::with_capacity(node.spec.partition_by.len() + node.spec.functions.len());
+    for expr in &node.spec.partition_by {
+        let name = lower_column_expr(expr, "cudf_query_engine.window.aggregate.schema_key")?;
+        fields.push(input_schema.field_with_name(name.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.window.aggregate.schema_key",
+                "partition key field is missing from input schema",
+            )
+            .with_fact("field", name)
+        })?);
+    }
+    for function in &node.spec.functions {
+        let crate::plan::WindowFunction::Aggregate { alias, frame: WindowFrame::WholePartition, .. } = function else {
+            continue;
+        };
+        fields.push(output_schema.field_with_name(alias.as_str()).map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.window.aggregate.schema_output",
+                "window aggregate output field is missing from output schema",
+            )
+            .with_fact("field", alias.as_str())
+        })?);
+    }
+    Ok(Arc::new(Schema::new(fields.into_iter().cloned().collect::<Vec<_>>())))
+}
+
+fn execute_cumulative_window_aggregate(
+    context: &ExecutionContext,
+    node: &WindowNode,
+    frame: DataFrame,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    if node.spec.order_by.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.window.cumulative",
+            "native cumulative aggregate windows require ORDER BY",
+        ));
+    }
+
+    let timer = Instant::now();
+    let mut temp_columns = Vec::new();
+    let row_index_name = unique_temp_column_name(&frame, "__cudf_window_input_row_index");
+    let row_index_series = frame.row_positions().map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.cumulative.row_index",
+            "failed to create cumulative window row index",
+            error,
+        )
+    })?;
+    let mut working = frame.with_column(row_index_name.as_str(), row_index_series).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.cumulative.row_index",
+            "failed to append cumulative window row index",
+            error,
+        )
+    })?;
+    temp_columns.push(row_index_name.clone());
+
+    let (with_partition_key, partition_keys) =
+        rank_partition_keys(context, working, &node.spec.partition_by, &mut temp_columns)?;
+    working = with_partition_key;
+
+    let mut sort_columns = partition_keys.clone();
+    let mut descending = vec![false; partition_keys.len()];
+    let mut nulls_first = vec![false; partition_keys.len()];
+    for sort_expr in &node.spec.order_by {
+        sort_columns.push(lower_column_expr(&sort_expr.expr, "cudf_query_engine.window.cumulative.order_key")?);
+        descending.push(sort_expr.descending);
+        nulls_first.push(sort_expr.nulls_first);
+    }
+    let sort_options = CudfSortOptions::new().with_descending(descending).with_nulls_first(nulls_first);
+    working = working.with_execution(&execution_overrides(context)).sort_values(sort_columns, sort_options).map_err(
+        |error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.sort",
+                "failed to sort cumulative window input",
+                error,
+            )
+        },
+    )?;
+
+    for (function_index, function) in node.spec.functions.iter().enumerate() {
+        let crate::plan::WindowFunction::Aggregate {
+            function,
+            expr,
+            alias,
+            frame: WindowFrame::RowsUnboundedPrecedingToCurrent,
+        } = function
+        else {
+            continue;
+        };
+        let scan_agg = cumulative_scan_agg(*function)?;
+        let value_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_value_{function_index}"));
+        let value_expr = lower_expr(expr)?.alias(value_name.as_str());
+        working =
+            working.with_execution(&execution_overrides(context)).with_columns([value_expr]).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.window.cumulative.value",
+                    "failed to materialize cumulative window input expression",
+                    error,
+                )
+            })?;
+        temp_columns.push(value_name.clone());
+
+        let scan_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_scan_{function_index}"));
+        let scanned = working
+            .group_scan_sorted(partition_keys.iter().map(String::as_str), value_name.as_str(), scan_agg)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.window.cumulative.scan",
+                    "failed to execute grouped cumulative window scan",
+                    error,
+                )
+                .with_fact("function", format!("{function:?}"))
+            })?;
+        working = working.with_column(scan_name.as_str(), scanned).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.output",
+                "failed to append cumulative window scan output",
+                error,
+            )
+            .with_fact("scan_column", scan_name.as_str())
+        })?;
+        temp_columns.push(scan_name.clone());
+
+        let valid_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_valid_{function_index}"));
+        let valid_expr = when(col(value_name.as_str()).is_null()).then(0i32).otherwise(1i32).alias(valid_name.as_str());
+        working = working.with_columns([valid_expr]).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.validity",
+                "failed to append cumulative window validity indicator",
+                error,
+            )
+        })?;
+        temp_columns.push(valid_name.clone());
+
+        let seen_name = unique_temp_column_name(&working, &format!("__cudf_window_cumulative_seen_{function_index}"));
+        let seen = working
+            .group_scan_sorted(partition_keys.iter().map(String::as_str), valid_name.as_str(), ScanAgg::Sum)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.window.cumulative.validity_scan",
+                    "failed to execute grouped cumulative window validity scan",
+                    error,
+                )
+            })?;
+        working = working.with_column(seen_name.as_str(), seen).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.validity_scan",
+                "failed to append cumulative window validity scan output",
+                error,
+            )
+            .with_fact("seen_column", seen_name.as_str())
+        })?;
+        temp_columns.push(seen_name.clone());
+
+        let filled_name =
+            unique_temp_column_name(&working, &format!("__cudf_window_cumulative_filled_{function_index}"));
+        let filled = working.series(scan_name.as_str()).and_then(|series| series.ffill()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.fill",
+                "failed to forward-fill cumulative window scan output",
+                error,
+            )
+            .with_fact("scan_column", scan_name.as_str())
+        })?;
+        working = working.with_column(filled_name.as_str(), filled).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.fill",
+                "failed to append forward-filled cumulative window scan output",
+                error,
+            )
+            .with_fact("filled_column", filled_name.as_str())
+        })?;
+        temp_columns.push(filled_name.clone());
+
+        let output_expr = when(col(seen_name.as_str()).gt(0i32))
+            .then(col(filled_name.as_str()))
+            .otherwise(col(scan_name.as_str()))
+            .alias(alias.as_str());
+        working = working.with_columns([output_expr]).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.output",
+                "failed to append cumulative window output",
+                error,
+            )
+            .with_fact("alias", alias.as_str())
+        })?;
+    }
+
+    working = working
+        .sort_values([row_index_name.as_str()], CudfSortOptions::new().with_stable(true))
+        .and_then(|frame| frame.without_columns(temp_columns.iter().map(String::as_str)))
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.window.cumulative.cleanup",
+                "failed to restore cumulative window input order",
+                error,
+            )
+        })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(working)
+}
+
+fn cumulative_scan_agg(function: AggregateFunction) -> Result<ScanAgg> {
+    match function {
+        AggregateFunction::Sum => Ok(ScanAgg::Sum),
+        AggregateFunction::Min => Ok(ScanAgg::Min),
+        AggregateFunction::Max => Ok(ScanAgg::Max),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.window.cumulative.function",
+            "native cumulative aggregate window function is unsupported",
+        )
+        .with_fact("function", format!("{function:?}"))),
+    }
+}
+
+fn execute_rank_window(
+    context: &ExecutionContext,
+    node: &WindowNode,
+    frame: DataFrame,
+    alias: &str,
+    metrics: &mut QueryMetrics,
+) -> Result<DataFrame> {
+    if node.spec.order_by.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedOperator,
+            "cudf_query_engine.window.rank",
+            "native rank windows require ORDER BY",
+        ));
+    }
+    let timer = Instant::now();
+    let mut output = frame;
+    let mut temp_columns = Vec::new();
+    let (with_partition_key, partition_keys) =
+        rank_partition_keys(context, output, &node.spec.partition_by, &mut temp_columns)?;
+    output = with_partition_key;
+    let mut peer_keys = partition_keys.clone();
+    for sort_expr in &node.spec.order_by {
+        peer_keys.push(lower_column_expr(&sort_expr.expr, "cudf_query_engine.window.rank.order_key")?);
+    }
+
+    let partition_rank_name = unique_temp_column_name(&output, "__cudf_window_partition_rank");
+    let peer_rank_name = unique_temp_column_name(&output, "__cudf_window_peer_rank");
+    let partition_rank = output.group_cumcount(partition_keys.iter().map(String::as_str)).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.window.rank.partition",
+            "failed to compute partition row numbers",
+            error,
+        )
+    })?;
+    let peer_rank = output.group_cumcount(peer_keys.iter().map(String::as_str)).map_err(|error| {
+        QueryError::from_cudf("cudf_query_engine.window.rank.peer", "failed to compute rank peer offsets", error)
+    })?;
+    output = output
+        .with_column(partition_rank_name.as_str(), partition_rank)
+        .and_then(|frame| frame.with_column(peer_rank_name.as_str(), peer_rank))
+        .map_err(|error| {
+            QueryError::from_cudf("cudf_query_engine.window.rank.columns", "failed to append rank work columns", error)
+        })?;
+
+    let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
+    let rank_expr = (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)
+        - col(peer_rank_name.as_str()).cast(uint64))
+    .alias(alias);
+    output = output.with_execution(&execution_overrides(context)).with_columns([rank_expr]).map_err(|error| {
+        QueryError::from_cudf("cudf_query_engine.window.rank.output", "failed to append rank output column", error)
+    })?;
+    temp_columns.push(partition_rank_name);
+    temp_columns.push(peer_rank_name);
+    output = output.without_columns(temp_columns.iter().map(String::as_str)).map_err(|error| {
+        QueryError::from_cudf("cudf_query_engine.window.rank.cleanup", "failed to remove rank work columns", error)
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(output)
+}
+
+fn rank_partition_keys(
+    _context: &ExecutionContext,
+    frame: DataFrame,
+    partition_by: &[Expr],
+    temp_columns: &mut Vec<String>,
+) -> Result<(DataFrame, Vec<String>)> {
+    if !partition_by.is_empty() {
+        let keys = partition_by
+            .iter()
+            .map(|expr| lower_column_expr(expr, "cudf_query_engine.window.rank.partition_key"))
+            .collect::<Result<Vec<_>>>()?;
+        return Ok((frame, keys));
+    }
+    let key = unique_temp_column_name(&frame, "__cudf_window_global_partition");
+    let with_key = frame.with_columns([lit(0i32).alias(key.as_str())]).map_err(|error| {
+        QueryError::from_cudf("cudf_query_engine.window.rank.global_key", "failed to append rank partition key", error)
+    })?;
+    temp_columns.push(key.clone());
+    Ok((with_key, vec![key]))
+}
+
+fn unique_temp_column_name(frame: &DataFrame, base: &str) -> String {
+    let names = frame.column_names();
+    if !names.contains(&base) {
+        return base.to_string();
+    }
+    for index in 0usize.. {
+        let candidate = format!("{base}_{index}");
+        if !names.contains(&candidate.as_str()) {
+            return candidate;
+        }
+    }
+    unreachable!("usize suffix space is finite but practically inexhaustible")
+}
+
 pub(super) fn execute_limit_on_frame(
     context: &ExecutionContext,
     node: &LimitNode,

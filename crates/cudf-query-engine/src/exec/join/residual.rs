@@ -107,6 +107,8 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner)
         | Expr::Cast { expr: inner, .. }
+        | Expr::Abs(inner)
+        | Expr::Round { expr: inner, .. }
         | Expr::Alias { expr: inner, .. } => collect_join_expr_columns(inner, left, right),
         Expr::Binary { left: lhs, right: rhs, .. } => {
             collect_join_expr_columns(lhs, left, right)?;
@@ -116,6 +118,12 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             collect_join_expr_columns(expr, left, right)?;
             for item in list {
                 collect_join_expr_columns(item, left, right)?;
+            }
+            Ok(())
+        },
+        Expr::Concat(exprs) => {
+            for expr in exprs {
+                collect_join_expr_columns(expr, left, right)?;
             }
             Ok(())
         },
@@ -298,6 +306,21 @@ fn lower_join_ast_expr(
                 .with_fact("target_type", format!("{target_type:?}"))
             })
         },
+        Expr::Binary { left, op, right, .. }
+            if join_ast_operator_is_comparison(*op)
+                && (expr_contains_interval_literal(left) || expr_contains_interval_literal(right)) =>
+        {
+            lower_join_ast_datetime_interval_comparison(context, left, *op, right, residual_columns)
+        },
+        Expr::Binary { left, op, right, .. }
+            if expr_contains_interval_literal(left) || expr_contains_interval_literal(right) =>
+        {
+            Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.lower_residual",
+                "join residual interval arithmetic is supported only inside a comparison",
+            ))
+        },
         Expr::Binary { left, op, right, .. } => {
             let left = lower_join_ast_expr(context, left, residual_columns)?;
             let right = lower_join_ast_expr(context, right, residual_columns)?;
@@ -353,6 +376,9 @@ fn lower_join_ast_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Round { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -363,6 +389,206 @@ fn lower_join_ast_expr(
     }
 }
 
+fn lower_join_ast_datetime_interval_comparison(
+    context: &ExecutionContext,
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    residual_columns: &JoinResidualColumns,
+) -> Result<AstExpression> {
+    let (diff_left, raw_days) = if let Some((base, raw_days)) = interval_date_offset_expr(right)? {
+        let left = lower_join_ast_expr(context, left, residual_columns)?;
+        let base = lower_join_ast_expr(context, base, residual_columns)?;
+        (
+            AstExpression::binary(AstOperator::Sub, left, base).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.join.lower_residual",
+                    "failed to build cudf AST timestamp difference for interval comparison",
+                    error,
+                )
+            })?,
+            raw_days,
+        )
+    } else if let Some((base, raw_days)) = interval_date_offset_expr(left)? {
+        let base = lower_join_ast_expr(context, base, residual_columns)?;
+        let right = lower_join_ast_expr(context, right, residual_columns)?;
+        (
+            AstExpression::binary(AstOperator::Sub, base, right).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.join.lower_residual",
+                    "failed to build cudf AST timestamp difference for interval comparison",
+                    error,
+                )
+            })?,
+            raw_days.checked_neg().ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.lower_residual",
+                    "join residual interval day count cannot be negated without overflow",
+                )
+                .with_fact("raw_days", raw_days)
+            })?,
+        )
+    } else {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "join residual interval comparison requires one datetime plus/minus fixed-day interval operand",
+        ));
+    };
+    let duration = lower_duration_days_ast_literal(context, raw_days)?;
+    let op = lower_join_ast_operator(op)?;
+    AstExpression::binary(op, diff_left, duration).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.join.lower_residual",
+            "failed to build cudf AST datetime interval comparison expression",
+            error,
+        )
+    })
+}
+
+fn interval_date_offset_expr(expr: &Expr) -> Result<Option<(&Expr, i32)>> {
+    let Expr::Binary { left, op, right, .. } = expr else {
+        return Ok(None);
+    };
+    let left_interval = interval_month_day_nano(left);
+    let right_interval = interval_month_day_nano(right);
+    if left_interval.is_none() && right_interval.is_none() {
+        return Ok(None);
+    }
+    if left_interval.is_some() == right_interval.is_some() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "join residual interval arithmetic requires exactly one interval literal operand",
+        ));
+    }
+    if let Some(interval) = left_interval {
+        if *op != BinaryOp::Add {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.lower_residual",
+                "join residual interval arithmetic supports interval + datetime but not interval minus datetime",
+            ));
+        }
+        return Ok(Some((right, fixed_day_interval_raw(interval.0, interval.1, interval.2)?)));
+    }
+    let interval = right_interval.expect("right interval checked above");
+    if !matches!(op, BinaryOp::Add | BinaryOp::Subtract) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "join residual interval arithmetic supports only datetime plus/minus interval",
+        ));
+    }
+    let raw_days = fixed_day_interval_raw(interval.0, interval.1, interval.2)?;
+    let raw_days = if *op == BinaryOp::Subtract {
+        raw_days.checked_neg().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                "cudf_query_engine.join.lower_residual",
+                "join residual interval day count cannot be negated without overflow",
+            )
+            .with_fact("raw_days", raw_days)
+        })?
+    } else {
+        raw_days
+    };
+    Ok(Some((left, raw_days)))
+}
+
+fn lower_duration_days_ast_literal(context: &ExecutionContext, value: i32) -> Result<AstExpression> {
+    let scalar =
+        context.runtime().duration_raw_scalar(i64::from(value), cudf::TimestampResolution::Days).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.join.lower_residual",
+                "failed to build duration-days scalar for join residual interval literal",
+                error,
+            )
+            .with_fact("value", value)
+        })?;
+    AstExpression::literal(scalar).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.join.lower_residual",
+            "failed to build cudf AST duration-days literal",
+            error,
+        )
+        .with_fact("value", value)
+    })
+}
+
+fn fixed_day_interval_raw(months: i32, days: i32, nanoseconds: i64) -> Result<i32> {
+    const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+    if months != 0 || nanoseconds % NANOS_PER_DAY != 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "join residual AST interval arithmetic currently supports only fixed day-resolution intervals",
+        )
+        .with_fact("months", months)
+        .with_fact("nanoseconds", nanoseconds));
+    }
+    let nanos_days = i32::try_from(nanoseconds / NANOS_PER_DAY).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "join residual interval day count exceeds i32 range",
+        )
+        .with_fact("nanoseconds", nanoseconds)
+    })?;
+    days.checked_add(nanos_days).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.lower_residual",
+            "join residual interval day count overflows i32",
+        )
+        .with_fact("days", days)
+        .with_fact("nanoseconds", nanoseconds)
+    })
+}
+
+fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
+    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
+        return None;
+    };
+    Some((*months, *days, *nanoseconds))
+}
+
+fn expr_contains_interval_literal(expr: &Expr) -> bool {
+    match expr {
+        Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }) => true,
+        Expr::Not(expr)
+        | Expr::IsNull(expr)
+        | Expr::IsNotNull(expr)
+        | Expr::Cast { expr, .. }
+        | Expr::Lower(expr)
+        | Expr::Upper(expr)
+        | Expr::Extract { expr, .. }
+        | Expr::Abs(expr)
+        | Expr::Round { expr, .. }
+        | Expr::Alias { expr, .. }
+        | Expr::Substring { expr, .. }
+        | Expr::Like { expr, .. } => expr_contains_interval_literal(expr),
+        Expr::Binary { left, right, .. } => {
+            expr_contains_interval_literal(left) || expr_contains_interval_literal(right)
+        },
+        Expr::Concat(exprs) => exprs.iter().any(expr_contains_interval_literal),
+        Expr::InList { expr, list, .. } => {
+            expr_contains_interval_literal(expr) || list.iter().any(expr_contains_interval_literal)
+        },
+        Expr::Case { branches, else_expr } => {
+            branches.iter().any(|branch| {
+                expr_contains_interval_literal(&branch.when) || expr_contains_interval_literal(&branch.then)
+            }) || expr_contains_interval_literal(else_expr)
+        },
+        Expr::Column(_) | Expr::Literal(_) => false,
+    }
+}
+
+fn join_ast_operator_is_comparison(op: BinaryOp) -> bool {
+    matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq)
+}
+
 fn lower_join_ast_operator(op: BinaryOp) -> Result<AstOperator> {
     match op {
         BinaryOp::Add => Ok(AstOperator::Add),
@@ -370,14 +596,23 @@ fn lower_join_ast_operator(op: BinaryOp) -> Result<AstOperator> {
         BinaryOp::Multiply => Ok(AstOperator::Mul),
         BinaryOp::Divide => Ok(AstOperator::Div),
         BinaryOp::Modulo => Ok(AstOperator::Mod),
+        BinaryOp::BitwiseAnd => Ok(AstOperator::BitwiseAnd),
+        BinaryOp::BitwiseOr => Ok(AstOperator::BitwiseOr),
+        BinaryOp::BitwiseXor => Ok(AstOperator::BitwiseXor),
         BinaryOp::Eq => Ok(AstOperator::Equal),
         BinaryOp::NotEq => Ok(AstOperator::NotEqual),
         BinaryOp::Lt => Ok(AstOperator::Less),
         BinaryOp::LtEq => Ok(AstOperator::LessEqual),
         BinaryOp::Gt => Ok(AstOperator::Greater),
         BinaryOp::GtEq => Ok(AstOperator::GreaterEqual),
-        BinaryOp::And => Ok(AstOperator::LogicalAnd),
-        BinaryOp::Or => Ok(AstOperator::LogicalOr),
+        BinaryOp::And => Ok(AstOperator::NullLogicalAnd),
+        BinaryOp::Or => Ok(AstOperator::NullLogicalOr),
+        BinaryOp::ShiftLeft | BinaryOp::ShiftRight => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.residual",
+            "native join residual AST does not support bit-shift operators",
+        )
+        .with_fact("operator", op.to_string())),
     }
 }
 

@@ -339,6 +339,33 @@ fn node_signature(node: &PlanNode) -> String {
             });
             format!("aggregate:groups={}:aggregates={}", join_signatures(groups), join_signatures(aggregates))
         },
+        PlanNode::Window(node) => {
+            let partitions = node.spec.partition_by.iter().map(expr_signature);
+            let orderings = node.spec.order_by.iter().map(|expr| {
+                format!(
+                    "expr={}:descending={}:nulls_first={}",
+                    expr_signature(&expr.expr),
+                    expr.descending,
+                    expr.nulls_first
+                )
+            });
+            let functions = node.spec.functions.iter().map(|function| match function {
+                crate::plan::WindowFunction::Aggregate { function, expr, frame, .. } => {
+                    format!(
+                        "aggregate:function={}:expr={}:frame={frame:?}",
+                        aggregate_function_signature(*function),
+                        expr_signature(expr)
+                    )
+                },
+                crate::plan::WindowFunction::Rank { .. } => "rank".to_string(),
+            });
+            format!(
+                "window:partitions={}:orderings={}:functions={}",
+                join_signatures(partitions),
+                join_signatures(orderings),
+                join_signatures(functions)
+            )
+        },
         PlanNode::Sort(node) => {
             let expressions = node.spec.expressions.iter().map(|expr| {
                 format!(
@@ -360,6 +387,7 @@ fn node_signature(node: &PlanNode) -> String {
             node.spec.build_side,
             node.spec.output_projection.len()
         ),
+        PlanNode::Union(node) => format!("union:inputs={}", node.inputs.len()),
     }
 }
 
@@ -452,6 +480,14 @@ fn expr_signature(expr: &Expr) -> String {
         },
         Expr::Lower(expr) => format!("lower({})", expr_signature(expr)),
         Expr::Upper(expr) => format!("upper({})", expr_signature(expr)),
+        Expr::Concat(exprs) => format!("concat({})", join_signatures(exprs.iter().map(expr_signature))),
+        Expr::Abs(expr) => format!("abs({})", expr_signature(expr)),
+        Expr::Round { expr, decimal_places, output_type } => format!(
+            "round:expr={}:decimal_places={}:output={}",
+            expr_signature(expr),
+            decimal_places,
+            data_type_signature(output_type)
+        ),
         Expr::InList { expr, list, negated } => {
             let list = list.iter().map(expr_signature);
             format!("in_list:expr={}:list={}:negated={}", expr_signature(expr), join_signatures(list), negated)
@@ -478,6 +514,11 @@ fn binary_op_signature(op: BinaryOp) -> &'static str {
         BinaryOp::Multiply => "multiply",
         BinaryOp::Divide => "divide",
         BinaryOp::Modulo => "modulo",
+        BinaryOp::BitwiseAnd => "bitwise_and",
+        BinaryOp::BitwiseOr => "bitwise_or",
+        BinaryOp::BitwiseXor => "bitwise_xor",
+        BinaryOp::ShiftLeft => "shift_left",
+        BinaryOp::ShiftRight => "shift_right",
         BinaryOp::Eq => "eq",
         BinaryOp::NotEq => "not_eq",
         BinaryOp::Lt => "lt",

@@ -48,7 +48,7 @@ mod workload;
 
 pub use dataset::WorkloadDatasetMetadata;
 use diagnostics::{
-    candidate_shape_family, join_diagnostics, physical_plan_shape, post_native_execution_path,
+    candidate_shape_family, join_diagnostics, physical_plan_shape, post_native_plan_coverage,
     summarize_source_diagnostics, unsupported_category,
 };
 pub use metrics::{
@@ -57,9 +57,10 @@ pub use metrics::{
 };
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{
-    NativeDataFusionExecutionRow, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningRow,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome,
-    NativeFallbackPressureRow, NativeJoinDiagnosticSummary, NativeSourceDiagnosticSummary,
+    NativeDataFusionExecutionRow, NativeDataFusionPlanCoverage, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
+    NativeFallbackPressureOutcome, NativeFallbackPressureRow, NativeJoinDiagnosticSummary,
+    NativeSourceDiagnosticSummary,
 };
 use runtime_summary::NativeDataFusionRuntimeSummary;
 pub use schema::{
@@ -244,7 +245,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
         },
     };
     let post_native_plan_root = planned_plan.name().to_string();
-    let post_native_execution_path = post_native_execution_path(planned_plan.as_ref());
+    let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let join_diagnostics = join_diagnostics(planned_plan.as_ref());
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
@@ -281,7 +282,9 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path,
+                post_native_execution_path: post_native_coverage.execution_path,
+                native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
                 rejected_before_execution: false,
             },
             CandidateOutcome::Rejected { candidate, reason } => NativeDataFusionPlanningRow {
@@ -311,7 +314,9 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 join_diagnostics: join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path,
+                post_native_execution_path: post_native_coverage.execution_path,
+                native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
                 rejected_before_execution: true,
             },
         })
@@ -330,7 +335,7 @@ fn datafusion_execution_rows_for_item(
         },
     };
     let post_native_plan_root = planned_plan.name().to_string();
-    let post_native_execution_path = post_native_execution_path(planned_plan.as_ref());
+    let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
     let runtime_summary = NativeDataFusionRuntimeSummary::from_runtime(runtime);
@@ -365,7 +370,9 @@ fn datafusion_execution_rows_for_item(
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path,
+                post_native_execution_path: post_native_coverage.execution_path,
+                native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
                 rejected_before_execution: false,
                 native_runtime_started: runtime_summary.started,
                 runtime_outcome: runtime_summary.outcome,
@@ -400,7 +407,9 @@ fn datafusion_execution_rows_for_item(
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                post_native_execution_path,
+                post_native_execution_path: post_native_coverage.execution_path,
+                native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
                 rejected_before_execution: true,
                 native_runtime_started: false,
                 runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
@@ -435,6 +444,8 @@ fn datafusion_planning_row_for_planning_failure(
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        native_plan_fragment_count: 0,
+        host_datafusion_boundary_count: 0,
         rejected_before_execution: true,
     }
 }
@@ -458,6 +469,8 @@ fn datafusion_execution_row_for_planning_failure(
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
+        native_plan_fragment_count: 0,
+        host_datafusion_boundary_count: 0,
         rejected_before_execution: true,
         native_runtime_started: false,
         runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,

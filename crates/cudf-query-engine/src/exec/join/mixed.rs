@@ -26,7 +26,7 @@ pub(super) fn execute_mixed_join_indices(
                     &predicate,
                     options,
                 ),
-                JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::Cross => {
+                JoinType::Full | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
                     unreachable!("matched above")
                 },
             }
@@ -97,10 +97,10 @@ pub(super) fn execute_mixed_join_indices(
                 .map(JoinIndexResult::without_hash_table)
                 .map_err(|error| join_index_error(error, node))
         },
-        JoinType::Cross => Err(QueryError::new(
+        JoinType::Cross | JoinType::LeftMark => Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "cudf_query_engine.join.execute",
-            "cross joins are not mixed join-index operations",
+            "cross and left mark joins are not mixed join-index operations",
         )
         .with_fact("join_type", node.spec.join_type)),
     }

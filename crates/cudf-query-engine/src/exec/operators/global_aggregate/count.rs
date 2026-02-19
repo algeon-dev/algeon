@@ -24,7 +24,7 @@ fn global_count_series_impl(
     expr: &AggregateExpr,
     token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<cudf::Series> {
-    let count = if global_count_star_expr(&expr.expr) {
+    let count = if !expr.distinct && global_count_star_expr(&expr.expr) {
         frame.num_rows()
     } else {
         let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.global_aggregate.count_expr")?;
@@ -36,7 +36,23 @@ fn global_count_series_impl(
             )
             .with_fact("column", input_column.as_str())
         })?;
-        series.len().saturating_sub(series.null_count())
+        if expr.distinct {
+            match token.as_ref() {
+                Some((token, _metrics)) => series.nunique_in(&token.execution_overrides()),
+                None => series.nunique(),
+            }
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.global_aggregate.count_distinct",
+                    "failed to count native global distinct values",
+                    error,
+                )
+                .with_fact("alias", expr.alias.as_str())
+                .with_fact("column", input_column.as_str())
+            })?
+        } else {
+            series.len().saturating_sub(series.null_count())
+        }
     };
     let count = i64::try_from(count).map_err(|_| {
         QueryError::new(

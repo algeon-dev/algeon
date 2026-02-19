@@ -292,8 +292,8 @@ fn collect_scan_predicate_source_columns(
     let Some(predicate) = scan_predicate_without_dynamic_filter_hints(&predicate) else {
         return Ok(());
     };
-    collect_source_required_columns(&predicate, scan_projection, table_schema, required)
-        .or_else(|_| collect_required_columns(&predicate, table_schema, required))
+    collect_required_columns(&predicate, table_schema, required)
+        .or_else(|_| collect_source_required_columns(&predicate, scan_projection, table_schema, required))
 }
 
 fn collect_source_projection_indices(

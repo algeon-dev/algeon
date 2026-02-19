@@ -173,8 +173,11 @@ async fn run_native_query(
         );
     };
     let accepted = diagnostics.report.rewritten_count() > 0;
-    let planning_outcome =
-        NativeTpcdsParityNativePlanningOutcome::Planned { accepted, planned_plan: Arc::clone(&plan), diagnostics };
+    let planning_outcome = NativeTpcdsParityNativePlanningOutcome::Planned {
+        accepted,
+        planned_plan: Arc::clone(&plan),
+        diagnostics: Box::new(diagnostics),
+    };
     let runtime_outcome =
         if accepted { execute_native(plan).await } else { NativeTpcdsParityNativeRuntimeOutcome::NotStarted };
     (planning_outcome, runtime_outcome)

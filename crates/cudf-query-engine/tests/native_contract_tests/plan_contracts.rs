@@ -89,6 +89,36 @@ fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
 }
 
 #[test]
+fn native_plan_can_represent_ordered_union() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+
+    assert_eq!(plan.node_count(), 3);
+    assert_eq!(plan.output_schema().as_ref(), schema.as_ref());
+    assert_eq!(plan.root_id(), union);
+    assert_eq!(plan.node(union).unwrap().facts.schema_behavior, SchemaBehavior::Union);
+    assert!(matches!(plan.root_node().kind, PlanNode::Union(_)));
+    assert!(plan.to_string().contains("Union inputs=n0,n1 input_count=2"));
+}
+
+#[test]
+#[should_panic(expected = "query plan union node must have at least one input")]
+fn native_plan_builder_rejects_empty_union() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    builder.add_union(Vec::new(), schema);
+}
+
+#[test]
 fn native_plan_can_represent_gpu_resident_fragment_input() {
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

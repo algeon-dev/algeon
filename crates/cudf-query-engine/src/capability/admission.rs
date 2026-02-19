@@ -21,6 +21,30 @@ pub(super) fn analyze_root_join_admission(
     }
 }
 
+pub(super) fn analyze_union_pipeline_admission(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+) -> CapabilityDecision {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return decision,
+    };
+    if !reachable.iter().any(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Union(_)))) {
+        return CapabilityDecision::rejected(
+            "union_pipeline_requires_union_node",
+            [("sink_input", plan.sink().input().to_string())],
+        );
+    }
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return rejection;
+    }
+    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+        return rejection;
+    }
+    CapabilityDecision::Satisfied
+}
+
 pub(super) fn analyze_single_join_post_root_pipeline_admission(
     plan: &QueryPlan,
     nodes: &[NodeCapability],

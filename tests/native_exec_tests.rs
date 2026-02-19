@@ -157,7 +157,7 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-optimizer-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::BitwiseAnd);
+    let plan = unsupported_distinct_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
@@ -202,7 +202,7 @@ fn native_optimizer_rule_obeys_gpu_only_policy_for_rejected_plan() {
     let dir = unique_temp_dir("datafusion-cudf-native-exec-gpu-only-rejected");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
-    let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::BitwiseAnd);
+    let plan = unsupported_distinct_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly).with_native_execution_config(bounded_config());
     let rule = CudfNativePhysicalOptimizerRule::new(config);
 

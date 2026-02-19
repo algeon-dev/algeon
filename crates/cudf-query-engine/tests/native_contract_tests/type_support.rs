@@ -35,15 +35,21 @@ fn decimal128_cast_support_uses_type_support_policy() {
     let float64_target = DataType::Float64;
     let float64_source = DataType::Float64;
     let int32_source = DataType::Int32;
+    let int32_target = DataType::Int32;
+    let scale_zero_decimal = DataType::Decimal128(21, 0);
+    let fractional_decimal = DataType::Decimal128(21, 6);
     let invalid_decimal = DataType::Decimal128(39, 2);
 
     assert!(is_supported_arrow_cast(&valid_source, &valid_target));
     assert!(is_supported_arrow_cast(&valid_source, &float64_target));
     assert!(is_supported_arrow_cast(&float64_source, &valid_target));
     assert!(is_supported_arrow_cast(&int32_source, &valid_target));
+    assert!(is_supported_arrow_cast(&scale_zero_decimal, &int32_target));
     assert!(is_supported_arrow_implicit_cast(&valid_source, &valid_target));
     assert!(!is_supported_arrow_implicit_cast(&valid_source, &float64_target));
     assert!(!is_supported_arrow_implicit_cast(&float64_source, &valid_target));
+    assert!(!is_supported_arrow_implicit_cast(&scale_zero_decimal, &int32_target));
+    assert!(!is_supported_arrow_cast(&fractional_decimal, &int32_target));
     assert!(!is_supported_arrow_cast(&invalid_decimal, &invalid_decimal));
     assert!(!is_supported_arrow_cast(&invalid_decimal, &valid_target));
     assert!(!is_supported_arrow_cast(&invalid_decimal, &float64_target));

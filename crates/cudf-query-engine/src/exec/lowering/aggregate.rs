@@ -14,7 +14,7 @@ pub(in crate::exec) fn lower_aggregate_spec(spec: &AggregateSpec) -> Result<Lowe
         .iter()
         .map(|expr| {
             let input_column = lower_column_expr(&expr.expr, "cudf_query_engine.aggregate.lower_expr")?;
-            let function = lower_aggregate_function(expr.function);
+            let function = lower_aggregate_function(expr);
             Ok(CudfAggSpec::new(input_column, function).with_alias(expr.alias.as_str()))
         })
         .collect::<Result<Vec<_>>>()?;
@@ -44,8 +44,7 @@ pub(in crate::exec) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Res
             },
             _ => {
                 aggregations.push(
-                    CudfAggSpec::new(input_column, lower_aggregate_function(expr.function))
-                        .with_alias(expr.alias.as_str()),
+                    CudfAggSpec::new(input_column, lower_aggregate_function(expr)).with_alias(expr.alias.as_str()),
                 );
                 output_names.push(expr.alias.clone());
             },
@@ -87,8 +86,11 @@ pub(in crate::exec) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Resul
     })
 }
 
-pub(in crate::exec) fn lower_aggregate_function(function: AggregateFunction) -> GroupByAgg {
-    match function {
+pub(in crate::exec) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupByAgg {
+    if expr.distinct && expr.function == AggregateFunction::Count {
+        return GroupByAgg::NUnique;
+    }
+    match expr.function {
         AggregateFunction::Sum => GroupByAgg::Sum,
         AggregateFunction::Min => GroupByAgg::Min,
         AggregateFunction::Max => GroupByAgg::Max,
@@ -140,6 +142,10 @@ pub(in crate::exec) fn aggregate_spec_has_avg(spec: &AggregateSpec) -> bool {
 
 pub(in crate::exec) fn aggregate_spec_has_stddev_samp(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp)
+}
+
+pub(in crate::exec) fn aggregate_spec_has_distinct(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.distinct)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

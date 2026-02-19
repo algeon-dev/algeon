@@ -17,8 +17,8 @@ use datafusion::{
 
 use crate::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
+    NativeCudfExecutionConfig, NativeDataFusionExecutionWorkloadInput, NativeDataFusionExecutionWorkloadItem,
+    NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeFallbackPressureWorkloadItem,
 };
 
 mod dataset;
@@ -27,10 +27,10 @@ mod tiny;
 
 pub use dataset::{
     CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV,
-    CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_TABLES, TpcdsDatasetMetadata,
-    TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, describe_tpcds_dataset,
-    describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout, external_tpcds_dataset_metadata,
-    prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
+    CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR, DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_TABLES,
+    TpcdsDatasetMetadata, TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, default_tpcds_sf1_parquet_root,
+    describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint, discover_tpcds_table_layout,
+    external_tpcds_dataset_metadata, prepare_tpcds_report_dataset, tiny_tpcds_dataset_metadata,
 };
 pub use parity::{
     TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, tpcds_parity_workload_items,
@@ -123,7 +123,8 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 }
 
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
-    let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).unwrap_or(256 * 1024 * 1024);
+    let device_budget_bytes =
+        optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV).unwrap_or_else(default_tpcds_device_budget_bytes);
     let max_source_chunk_bytes =
         optional_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV).unwrap_or(64 * 1024 * 1024);
     let max_row_groups_per_chunk = optional_env_usize(CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV).unwrap_or(1);
@@ -138,6 +139,32 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
             min_retry_chunk_row_groups,
         ),
     )
+}
+
+/// Default device budget for the TPC-DS native optimizer when
+/// `CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES` is unset. Queries `nvidia-smi` for
+/// the primary GPU's total memory and reserves 500 MiB of headroom for
+/// libcudf/driver overhead. Falls back to 256 MiB if `nvidia-smi` is missing,
+/// fails, or returns an unexpected payload.
+fn default_tpcds_device_budget_bytes() -> u64 {
+    const FALLBACK_BYTES: u64 = 256 * 1024 * 1024;
+    const HEADROOM_BYTES: u64 = 500 * 1024 * 1024;
+    let output = match std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits", "--id=0"])
+        .output()
+    {
+        Ok(output) if output.status.success() => output.stdout,
+        _ => return FALLBACK_BYTES,
+    };
+    let total_mib: u64 = match std::str::from_utf8(&output).ok().and_then(|s| s.trim().lines().next()) {
+        Some(line) => match line.trim().parse() {
+            Ok(value) => value,
+            Err(_) => return FALLBACK_BYTES,
+        },
+        None => return FALLBACK_BYTES,
+    };
+    let total_bytes = total_mib.saturating_mul(1024 * 1024);
+    total_bytes.checked_sub(HEADROOM_BYTES).filter(|&v| v > 0).unwrap_or(FALLBACK_BYTES)
 }
 
 fn optional_env_u64(name: &'static str) -> Option<u64> {
@@ -261,6 +288,23 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     session_config: SessionConfig,
     optimizer_config: CudfOptimizerConfig,
 ) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
+    tpcds_datafusion_execution_workload_items_filtered(root, session_config, optimizer_config, None, None).await
+}
+
+/// Per-query lifecycle events emitted by the filtered TPC-DS execution loop.
+/// `query_index` is 1-based and counts only the queries selected for this run.
+pub enum TpcdsExecutionProgressEvent<'a> {
+    QueryStarted { query_index: usize, total: usize, query_id: &'a str },
+    QueryFinished { query_index: usize, total: usize, query_id: &'a str, elapsed_ms: u128, runtime_outcome: &'a str },
+}
+
+pub async fn tpcds_datafusion_execution_workload_items_filtered(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_ids: Option<&[&str]>,
+    mut progress: Option<&mut dyn FnMut(TpcdsExecutionProgressEvent<'_>)>,
+) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
@@ -269,8 +313,18 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
     let ctx = SessionContext::new_with_state(state);
     register_tpcds_tables(&ctx, root).await?;
 
-    let mut items = Vec::with_capacity(TPCDS_QUERIES.len());
-    for query in TPCDS_QUERIES {
+    let selected: Vec<&TpcdsQuery> = match query_ids {
+        Some(ids) => TPCDS_QUERIES.iter().filter(|q| ids.iter().any(|id| id == &q.id)).collect(),
+        None => TPCDS_QUERIES.iter().collect(),
+    };
+    let total = selected.len();
+    let mut items = Vec::with_capacity(total);
+    for (index, query) in selected.into_iter().enumerate() {
+        let query_index = index + 1;
+        if let Some(cb) = progress.as_deref_mut() {
+            cb(TpcdsExecutionProgressEvent::QueryStarted { query_index, total, query_id: query.id });
+        }
+        let started = std::time::Instant::now();
         let item = match ctx.sql(query.sql).await {
             Ok(df) => match df.create_physical_plan().await {
                 Ok(plan) => match native_rule.last_planning_diagnostics() {
@@ -303,6 +357,23 @@ pub async fn tpcds_datafusion_execution_workload_items_with_optimizer_config(
                 error.to_string(),
             ),
         };
+        if let Some(cb) = progress.as_deref_mut() {
+            let runtime_outcome = match &item.input {
+                NativeDataFusionExecutionWorkloadInput::PlanningFailure(_) => "planning_failure",
+                NativeDataFusionExecutionWorkloadInput::Planned { runtime, .. } => match runtime {
+                    NativeDataFusionRuntime::NotStarted => "not_started",
+                    NativeDataFusionRuntime::Succeeded { .. } => "succeeded",
+                    NativeDataFusionRuntime::Failed { .. } => "failed",
+                },
+            };
+            cb(TpcdsExecutionProgressEvent::QueryFinished {
+                query_index,
+                total,
+                query_id: query.id,
+                elapsed_ms: started.elapsed().as_millis(),
+                runtime_outcome,
+            });
+        }
         items.push(item);
     }
     Ok(items)

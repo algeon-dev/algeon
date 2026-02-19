@@ -426,7 +426,12 @@ pub(in crate::capability) fn projection_or_filter_wrapped_grouped_local_parquet_
                 validate_local_parquet_leaf_pipeline_for_capability(plan, aggregate.input)?;
                 return Ok((current, projection_id));
             },
-            PlanNode::Source(_) | PlanNode::Join(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
+            PlanNode::Source(_)
+            | PlanNode::Join(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_) => {
                 return Err(CapabilityDecision::rejected(
                     "resident_grouped_aggregate_topk_input_requires_grouped_aggregate",
                     [("node_id", current.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
@@ -460,8 +465,10 @@ pub(in crate::capability) fn peel_resident_unary_chain_for_capability(
             PlanNode::Source(_)
             | PlanNode::Join(_)
             | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
             | PlanNode::Sort(_)
-            | PlanNode::Limit(_) => {
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_) => {
                 return Some((current, chain));
             },
         }
@@ -527,10 +534,12 @@ pub(in crate::capability) fn validate_bounded_join_subtree_for_capability(
         PlanNode::Projection(projection) => {
             validate_bounded_join_subtree_for_capability(plan, projection.input, join_count)
         },
-        PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(CapabilityDecision::rejected(
-            "join_subtree_input_unsupported_node",
-            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-        )),
+        PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::Sort(_) | PlanNode::Limit(_) | PlanNode::Union(_) => {
+            Err(CapabilityDecision::rejected(
+                "join_subtree_input_unsupported_node",
+                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+            ))
+        },
     }
 }
 
@@ -552,12 +561,16 @@ pub(in crate::capability) fn validate_bounded_join_subtree_rooted_at_join_for_ca
         PlanNode::Projection(projection) => {
             validate_bounded_join_subtree_rooted_at_join_for_capability(plan, projection.input)
         },
-        PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
-            Err(CapabilityDecision::rejected(
-                "aggregate_over_join_topk_input_requires_join_subplan",
-                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-            ))
-        },
+        PlanNode::Source(_)
+        | PlanNode::Filter(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_) => Err(CapabilityDecision::rejected(
+            "aggregate_over_join_topk_input_requires_join_subplan",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
     }
 }
 
@@ -579,12 +592,15 @@ pub(in crate::capability) fn validate_local_parquet_leaf_pipeline_for_capability
         )),
         PlanNode::Filter(filter) => validate_local_parquet_leaf_pipeline_for_capability(plan, filter.input),
         PlanNode::Projection(projection) => validate_local_parquet_leaf_pipeline_for_capability(plan, projection.input),
-        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
-            Err(CapabilityDecision::rejected(
-                "resident_grouped_aggregate_input_requires_source_filter_projection_leaf",
-                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-            ))
-        },
+        PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_) => Err(CapabilityDecision::rejected(
+            "resident_grouped_aggregate_input_requires_source_filter_projection_leaf",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
     }
 }
 
@@ -610,12 +626,15 @@ pub(in crate::capability) fn validate_local_parquet_leaf_pipeline_for_keyed_hash
         PlanNode::Projection(projection) => {
             validate_local_parquet_leaf_pipeline_for_keyed_hash_resident_subplan(plan, projection.input)
         },
-        PlanNode::Join(_) | PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
-            Err(CapabilityDecision::rejected(
-                "keyed_hash_resident_subplan_leaf_requires_source_filter_projection",
-                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-            ))
-        },
+        PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_) => Err(CapabilityDecision::rejected(
+            "keyed_hash_resident_subplan_leaf_requires_source_filter_projection",
+            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+        )),
     }
 }
 
@@ -858,6 +877,21 @@ pub(in crate::capability) fn output_lineage(
             )?;
             output_lineage(plan, input_id, input_field)
         },
+        PlanNode::Window(window) => {
+            let input_field_count =
+                plan.node(window.input).map(|input| input.output_schema().fields().len()).ok_or_else(|| {
+                    CapabilityDecision::rejected(
+                        "output_lineage_window_missing_input",
+                        [("node_id", node_id.to_string()), ("input_id", window.input.to_string())],
+                    )
+                })?;
+            if field_index < input_field_count {
+                output_lineage(plan, window.input, field_index)
+            } else {
+                Ok(OutputLineage::Derived { node_id, field_index })
+            }
+        },
+        PlanNode::Union(_) => Ok(OutputLineage::Derived { node_id, field_index }),
     }
 }
 
@@ -968,10 +1002,12 @@ pub(in crate::capability) fn validate_closed_multi_join_subtree(
         PlanNode::Source(_) => Ok(()),
         PlanNode::Filter(filter) => validate_closed_multi_join_subtree(plan, filter.input, join_count),
         PlanNode::Projection(projection) => validate_closed_multi_join_subtree(plan, projection.input, join_count),
-        PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => Err(CapabilityDecision::rejected(
-            "closed_multi_join_subgraph_unsupported_node",
-            [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
-        )),
+        PlanNode::Aggregate(_) | PlanNode::Window(_) | PlanNode::Sort(_) | PlanNode::Limit(_) | PlanNode::Union(_) => {
+            Err(CapabilityDecision::rejected(
+                "closed_multi_join_subgraph_unsupported_node",
+                [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+            ))
+        },
     }
 }
 
@@ -996,8 +1032,15 @@ pub(in crate::capability) fn post_root_join_id(plan: &QueryPlan) -> Result<NodeI
             PlanNode::Filter(filter) => current = filter.input,
             PlanNode::Projection(projection) => current = projection.input,
             PlanNode::Aggregate(aggregate) => current = aggregate.input,
+            PlanNode::Window(window) => current = window.input,
             PlanNode::Sort(sort) => current = sort.input,
             PlanNode::Limit(limit) => current = limit.input,
+            PlanNode::Union(_) => {
+                return Err(CapabilityDecision::rejected(
+                    "closed_multi_join_subgraph_unsupported_node",
+                    [("node_id", current.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+                ));
+            },
             PlanNode::Source(_) => {
                 return Err(CapabilityDecision::rejected(
                     "closed_multi_join_subgraph_missing_root_join",

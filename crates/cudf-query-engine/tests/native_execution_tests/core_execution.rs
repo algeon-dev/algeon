@@ -108,6 +108,141 @@ fn native_execution_boundary_policy_reports_direct_source_and_explicit_host_mate
 }
 
 #[test]
+fn native_query_executes_union_over_gpu_resident_inputs() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let left_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(Int64Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![3])), Arc::new(Int64Array::from(vec![30]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("left", Arc::clone(&schema))));
+    let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
+    let union = builder.add_union(vec![left, right], Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(union);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "left".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &left_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+    gpu_inputs.insert(
+        "right".to_string(),
+        GpuResultHandle::new(
+            &context,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &right_batch).unwrap()),
+            Arc::clone(&schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[10, 20, 30]);
+}
+
+#[test]
+fn native_local_parquet_reader_predicate_coerces_integer_literal_to_decimal_column_type() {
+    let dir = unique_temp_dir("cudf-query-engine-native-reader-decimal-integer-predicate");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_join_left_decimal_parquet(&runtime, &path);
+
+    let predicate = Expr::binary(Expr::column("amount"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(200)));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["order_id".to_string(), "amount".to_string()],
+    )
+    .with_reader_predicate(predicate);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2]);
+    assert_eq!(decimal128_array(batch, 1).values().as_ref(), &[20_000]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
+    let dir = unique_temp_dir("cudf-query-engine-native-reader-null-logical-or");
+    let path = dir.join("input.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("dmail", DataType::Utf8, true),
+        Field::new("email", DataType::Utf8, true),
+        Field::new("tv", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+            Arc::new(StringArray::from(vec![Some("Y"), Some("N"), Some("N"), None, Some("N"), None])),
+            Arc::new(StringArray::from(vec![None, Some("Y"), None, Some("Y"), Some("N"), None])),
+            Arc::new(StringArray::from(vec![Some("N"), None, Some("N"), Some("N"), Some("N"), None])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(&runtime, &batch).unwrap().write_parquet(&path).unwrap();
+
+    let y = || Expr::literal(LiteralValue::Utf8("Y".to_string()));
+    let dmail_is_y = Expr::binary(Expr::column("dmail"), BinaryOp::Eq, y());
+    let email_is_y = Expr::binary(Expr::column("email"), BinaryOp::Eq, y());
+    let tv_is_y = Expr::binary(Expr::column("tv"), BinaryOp::Eq, y());
+    let predicate = Expr::binary(Expr::binary(dmail_is_y, BinaryOp::Or, email_is_y), BinaryOp::Or, tv_is_y);
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&schema),
+        vec!["key".to_string(), "dmail".to_string(), "email".to_string(), "tv".to_string()],
+    )
+    .with_column_roles(vec!["key".to_string()], vec!["dmail".to_string(), "email".to_string(), "tv".to_string()])
+    .with_reader_predicate(predicate);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 4]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
     let dir = unique_temp_dir("cudf-query-engine-native-source-scan-limit");
     let path = dir.join("input.parquet");

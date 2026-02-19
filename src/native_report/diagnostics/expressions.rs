@@ -265,6 +265,11 @@ fn binary_operator_is_supported(op: &Operator) -> bool {
             | Operator::Multiply
             | Operator::Divide
             | Operator::Modulo
+            | Operator::BitwiseAnd
+            | Operator::BitwiseOr
+            | Operator::BitwiseXor
+            | Operator::BitwiseShiftLeft
+            | Operator::BitwiseShiftRight
             | Operator::Eq
             | Operator::NotEq
             | Operator::Lt
@@ -283,6 +288,11 @@ fn binary_operator_identifier(op: &Operator) -> &'static str {
         Operator::Multiply => "multiply",
         Operator::Divide => "divide",
         Operator::Modulo => "modulo",
+        Operator::BitwiseAnd => "bitwise_and",
+        Operator::BitwiseOr => "bitwise_or",
+        Operator::BitwiseXor => "bitwise_xor",
+        Operator::BitwiseShiftLeft => "bitwise_shift_left",
+        Operator::BitwiseShiftRight => "bitwise_shift_right",
         Operator::Eq => "eq",
         Operator::NotEq => "not_eq",
         Operator::Lt => "lt",

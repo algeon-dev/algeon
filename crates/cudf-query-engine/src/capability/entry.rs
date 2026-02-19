@@ -48,6 +48,7 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         );
     let multi_join_resident_grouped_aggregate_subquery_filter_admission =
         analyze_multi_join_resident_grouped_aggregate_subquery_filter_admission(plan, &nodes, &edges, &invariants);
+    let union_pipeline_admission = analyze_union_pipeline_admission(plan, &nodes, &edges);
     CapabilityAnalysis {
         nodes,
         edges,
@@ -63,5 +64,6 @@ pub fn analyze_query_capabilities(plan: &QueryPlan) -> CapabilityAnalysis {
         keyless_conditional_join_input_subplan_admission,
         keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
         multi_join_resident_grouped_aggregate_subquery_filter_admission,
+        union_pipeline_admission,
     }
 }

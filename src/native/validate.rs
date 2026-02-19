@@ -22,7 +22,7 @@ use crate::policy::FallbackReason;
 
 mod expressions;
 
-pub(super) use expressions::validate_physical_expr;
+pub(super) use expressions::{bounded_nonnegative_integral_cast_is_supported, validate_physical_expr};
 use expressions::{literal_string, validate_literal_string, validate_substring_arguments_contract};
 
 pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
@@ -60,7 +60,10 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
         return Err(FallbackReason::UnsupportedOperator);
     }
     for aggregate_expr in aggregate.aggr_expr() {
-        if aggregate_expr.is_distinct() || !aggregate_expr.order_bys().is_empty() {
+        if aggregate_expr.is_distinct() && !aggregate_expr.fun().name().eq_ignore_ascii_case("count") {
+            return Err(FallbackReason::UnsupportedOperator);
+        }
+        if !aggregate_expr.order_bys().is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
         if !is_supported_native_aggregate_function(aggregate_expr.fun().name()) {
@@ -75,7 +78,19 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
     for (group_expr, _alias) in group_by.expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
     }
+    if group_by.has_grouping_set() {
+        for (null_expr, _alias) in group_by.null_expr() {
+            validate_physical_expr(null_expr, &aggregate.input().schema())?;
+        }
+    }
     Ok(())
+}
+
+pub(super) fn validate_aggregate_for_native_lowering(
+    aggregate: &AggregateExec,
+    allow_partial: bool,
+) -> Result<(), FallbackReason> {
+    validate_aggregate(aggregate, allow_partial)
 }
 
 fn validate_grouping_sets(
@@ -98,8 +113,8 @@ pub(super) fn validate_sort(sort: &SortExec) -> Result<(), FallbackReason> {
     if sort.expr().is_empty() {
         return Err(FallbackReason::UnsupportedExpression);
     }
-    if sort.expr().iter().any(|sort_expr| sort_expr.expr.as_any().downcast_ref::<Column>().is_none()) {
-        return Err(FallbackReason::UnsupportedExpression);
+    for sort_expr in sort.expr() {
+        validate_physical_expr(&sort_expr.expr, &sort.input().schema())?;
     }
     Ok(())
 }
@@ -258,7 +273,9 @@ fn resolved_column_name<'a>(column: &Column, input_schema: &'a SchemaRef) -> Res
     input_schema
         .fields()
         .get(column.index())
+        .filter(|field| field.name() == column.name())
         .map(|field| field.name().as_str())
         .or_else(|| input_schema.field_with_name(column.name()).ok().map(|field| field.name().as_str()))
+        .or_else(|| input_schema.fields().get(column.index()).map(|field| field.name().as_str()))
         .ok_or(FallbackReason::UnsupportedExpression)
 }

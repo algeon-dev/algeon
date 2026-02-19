@@ -261,6 +261,30 @@ fn keyed_inner_residual_or_selects_one_shot_post_filter_strategy() {
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 }
 
+#[test]
+fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
+    let plan = decimal_division_residual_join_strategy_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        !analysis.has_rejections(),
+        "keyed decimal-division residual join should be admitted through post-join filtering"
+    );
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("keyed decimal-division residual join should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
+    assert_eq!(
+        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:residual_requires_post_join_filter")
+    );
+    assert_eq!(
+        facts.get("partitioned_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:residual_requires_post_join_filter")
+    );
+    assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
+}
+
 fn assert_one_shot_output_preflight_gap(pipeline: &cudf_query_engine::CompiledPipeline, label: &str) {
     let gate = pipeline
         .gates()
@@ -505,6 +529,75 @@ fn large_keyed_residual_or_join_strategy_plan() -> cudf_query_engine::QueryPlan 
             JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
             JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn decimal_division_residual_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("sales_cnt_decimal", DataType::Decimal128(17, 2), false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("sales_cnt_decimal", DataType::Decimal128(17, 2), false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("sales_cnt_decimal", DataType::Decimal128(17, 2), false),
+        Field::new("right_sales_cnt_decimal", DataType::Decimal128(17, 2), false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/decimal-residual-left.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "sales_cnt_decimal".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/decimal-residual-right.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "sales_cnt_decimal".to_string()],
+    )));
+    let residual_ratio = Expr::binary_with_output_type(
+        Expr::input_column(0, "sales_cnt_decimal", "sales_cnt_decimal"),
+        BinaryOp::Divide,
+        Expr::input_column(1, "sales_cnt_decimal", "right_sales_cnt_decimal"),
+        DataType::Decimal128(23, 6),
+    );
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_id", "left_order_id"),
+                ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_residual_predicate(Expr::binary(
+            residual_ratio,
+            BinaryOp::Lt,
+            Expr::literal(LiteralValue::Decimal128 { raw: 900000000000, precision: 23, scale: 6 }),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales_cnt_decimal", "sales_cnt_decimal"), "sales_cnt_decimal"),
+            JoinOutputColumn::right(
+                ColumnRef::input(1, "sales_cnt_decimal", "right_sales_cnt_decimal"),
+                "right_sales_cnt_decimal",
+            ),
         ])
         .with_build_side(JoinSide::Right),
         output_schema,

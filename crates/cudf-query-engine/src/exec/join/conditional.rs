@@ -62,10 +62,10 @@ pub(super) fn execute_conditional_join_indices(
             )
             .map(EquiJoinIndices::LeftOnly)
             .map_err(|error| join_index_error(error, node)),
-        JoinType::Cross => Err(QueryError::new(
+        JoinType::Cross | JoinType::LeftMark => Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "cudf_query_engine.join.execute",
-            "cross joins are not conditional join-index operations",
+            "cross and left mark joins are not conditional join-index operations",
         )
         .with_fact("join_type", node.spec.join_type)),
     }

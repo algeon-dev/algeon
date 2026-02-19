@@ -269,8 +269,10 @@ fn validate_analysis_covers_plan(
 fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     match kind {
         PlanNode::Aggregate(_) => InputRole::AggregateInput,
+        PlanNode::Window(_) => InputRole::WindowInput,
         PlanNode::Sort(_) => InputRole::SortInput,
         PlanNode::Limit(_) => InputRole::LimitInput,
+        PlanNode::Union(_) => InputRole::UnionInput { input_index },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {
@@ -363,6 +365,17 @@ fn build_tasks(
                         .with_gates(gates),
                 );
             },
+            PlanNode::Window(_) => {
+                let task = single_task(task_ids, *node_id)?;
+                let gates = gate_builder
+                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
+                tasks.push(
+                    PipelineTask::for_plan_node(task, PipelineTaskKind::Window, *node_id)
+                        .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
+                        .with_output_resources(vec![output])
+                        .with_gates(gates),
+                );
+            },
             PlanNode::Sort(_) => {
                 let task = single_task(task_ids, *node_id)?;
                 let gates = gate_builder
@@ -380,6 +393,17 @@ fn build_tasks(
                     .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Limit, *node_id)
+                        .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
+                        .with_output_resources(vec![output])
+                        .with_gates(gates),
+                );
+            },
+            PlanNode::Union(_) => {
+                let task = single_task(task_ids, *node_id)?;
+                let gates = gate_builder
+                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
+                tasks.push(
+                    PipelineTask::for_plan_node(task, PipelineTaskKind::Union, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
                         .with_output_resources(vec![output])
                         .with_gates(gates),
@@ -652,7 +676,7 @@ fn build_barriers(
                         .with_downstream_tasks(downstream_tasks(*node_id, dependencies, task_ids)?),
                 );
             },
-            PlanNode::Aggregate(_) => {
+            PlanNode::Aggregate(_) | PlanNode::Window(_) => {
                 let barrier_id = PipelineBarrierId::new(barriers.len());
                 barriers.push(
                     PipelineBarrier::new(barrier_id, PipelineBarrierKind::AggregateBoundary)
@@ -708,7 +732,11 @@ fn build_barriers(
                         .with_gates(gates),
                 );
             },
-            PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Limit(_) => {},
+            PlanNode::Source(_)
+            | PlanNode::Filter(_)
+            | PlanNode::Projection(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_) => {},
         }
     }
     let sink_input = sink_task.unwrap_or_else(|| {
@@ -897,8 +925,10 @@ fn input_role_label(role: InputRole) -> &'static str {
     match role {
         InputRole::UnaryInput => "unary_input",
         InputRole::AggregateInput => "aggregate_input",
+        InputRole::WindowInput => "window_input",
         InputRole::SortInput => "sort_input",
         InputRole::LimitInput => "limit_input",
+        InputRole::UnionInput { .. } => "union_input",
         InputRole::JoinBuildInput { .. } => "join_build_input",
         InputRole::JoinProbeInput { .. } => "join_probe_input",
         InputRole::SinkInput => "sink_input",

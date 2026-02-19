@@ -19,6 +19,15 @@ pub(super) fn execute_compiled_prepared_join_materialize(
             reservations,
             metrics,
         ),
+        CompiledJoinExecutionStrategy::KeylessOuterCross => execute_compiled_keyless_outer_cross_join_materialize(
+            context,
+            node_id,
+            node,
+            state.left,
+            state.right,
+            reservations,
+            metrics,
+        ),
         CompiledJoinExecutionStrategy::ProjectedCross => execute_compiled_projected_cross_join_materialize(
             context,
             node_id,

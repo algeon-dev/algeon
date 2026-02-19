@@ -215,6 +215,20 @@ pub(super) fn d3_1_inventory_cases() -> Vec<D31InventoryCase> {
             ],
         },
         D31InventoryCase {
+            label: "rank-window branches feed sink-path union",
+            plan: union_of_ranked_join_branches_plan(),
+            admits: cudf_query_engine::capability::CapabilityAnalysis::admits_strict_bounded_join,
+            graph_support: CompiledBoundedPipelineSupport::Supported,
+            plan_support: CompiledBoundedPipelineSupport::Supported,
+            render_fragments: &[
+                "kind=window",
+                "kind=union",
+                "kind=aggregate",
+                "kind=sort_boundary",
+                "kind=aggregate_boundary",
+            ],
+        },
+        D31InventoryCase {
             label: "resident grouped aggregate subquery-filter TopK path",
             plan: resident_grouped_aggregate_subquery_filter_plan(),
             admits: cudf_query_engine::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline,

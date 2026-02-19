@@ -46,9 +46,13 @@ pub(super) fn edge_contract_kinds(
     if matches!(consumer_kind, PlanNode::Aggregate(_)) {
         kinds.push(EdgeContractKind::ResidentAggregateInput);
     }
+    if matches!(consumer_kind, PlanNode::Window(_)) {
+        kinds.push(EdgeContractKind::WindowInput);
+    }
     match input_role {
         InputRole::JoinBuildInput { side } => kinds.push(EdgeContractKind::JoinBuildInput { side }),
         InputRole::JoinProbeInput { side } => kinds.push(EdgeContractKind::JoinProbeInput { side }),
+        InputRole::UnionInput { input_index } => kinds.push(EdgeContractKind::UnionInput { input_index }),
         _ => {},
     }
     if matches!(consumer_kind, PlanNode::Sort(_)) {
@@ -113,17 +117,21 @@ pub(super) fn node_operator_fact(kind: &PlanNode) -> &'static str {
         PlanNode::Filter(_) => "filter",
         PlanNode::Projection(_) => "projection",
         PlanNode::Aggregate(_) => "aggregate",
+        PlanNode::Window(_) => "window",
         PlanNode::Sort(_) => "sort",
         PlanNode::Limit(_) => "limit",
         PlanNode::Join(_) => "join",
+        PlanNode::Union(_) => "union",
     }
 }
 
 pub(super) fn input_role(kind: &PlanNode, input_index: usize) -> InputRole {
     match kind {
         PlanNode::Aggregate(_) => InputRole::AggregateInput,
+        PlanNode::Window(_) => InputRole::WindowInput,
         PlanNode::Sort(_) => InputRole::SortInput,
         PlanNode::Limit(_) => InputRole::LimitInput,
+        PlanNode::Union(_) => InputRole::UnionInput { input_index },
         PlanNode::Join(join) => {
             let side = if input_index == 0 { JoinSide::Left } else { JoinSide::Right };
             if side == join.spec.build_side {

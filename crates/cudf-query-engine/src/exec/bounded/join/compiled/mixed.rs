@@ -42,7 +42,7 @@ pub(super) fn execute_compiled_mixed_join_materialize(
             .with_execution(&overrides)
             .mixed_left_anti_join_size_data(&right.frame, &predicate, options)
             .map(CompiledMixedSizeData::LeftOnly),
-        JoinType::Cross => unreachable!("validated above"),
+        JoinType::Cross | JoinType::LeftMark => unreachable!("validated above"),
     }
     .map_err(|error| join_index_error(error, node))?;
     let expected_output_rows = size_data.output_size() as u64;

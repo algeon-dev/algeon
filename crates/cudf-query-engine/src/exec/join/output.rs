@@ -7,15 +7,18 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order},
     plan::{JoinOutputColumn, JoinSide, JoinType},
+    runtime::ExecutionContext,
 };
 
 pub(super) fn materialize_join_output(
+    context: &ExecutionContext,
     left: &DataFrame,
     right: &DataFrame,
     indices: &EquiJoinIndices,
     overrides: &ExecutionOverrides<'_>,
     projection: &[JoinOutputColumn],
     join_type: JoinType,
+    mark_column_name: Option<&str>,
 ) -> Result<DataFrame> {
     match indices {
         EquiJoinIndices::Pair { left: left_indices, right: right_indices } => materialize_join_output_projection(
@@ -27,6 +30,10 @@ pub(super) fn materialize_join_output(
             projection,
             join_type,
         ),
+        EquiJoinIndices::LeftOnly(indices) if join_type == JoinType::LeftMark => {
+            let name = mark_column_name.unwrap_or("mark");
+            materialize_mark_join_output_projection(context, left, indices, projection, name)
+        },
         EquiJoinIndices::LeftOnly(indices) => {
             materialize_left_only_join_output_projection(left, indices, overrides, projection, join_type)
         },
@@ -205,6 +212,94 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
         QueryError::from_cudf(
             "cudf_query_engine.join.output_projection",
             "failed to construct native join output frame",
+            error,
+        )
+    })
+}
+
+/// Materializes a mark-join output: all left-side columns from the probe frame
+/// (not gathered, because every probe row appears) plus a Boolean mark column.
+///
+/// `matching_indices` are the left-semi indices returned by the filtered-join
+/// probe. They identify which *probe* rows have a match. The mark column is
+/// constructed by testing whether each probe row index appears in the matching
+/// set via `Series::isin` (hash-set membership, O(N + M)).
+pub(in crate::exec) fn materialize_mark_join_output_projection(
+    context: &ExecutionContext,
+    probe: &DataFrame,
+    matching_indices: &DataFrameJoinIndices,
+    projection: &[JoinOutputColumn],
+    mark_column_name: &str,
+) -> Result<DataFrame> {
+    let probe_rows = probe.num_rows();
+    let runtime = context.runtime();
+
+    // The probe frame may live on a separate Runtime bundle from
+    // `context.runtime()` because the bounded compiled pipeline allocates
+    // per-task bundles for the filtered-join probe state. Pre-relocate the
+    // probe onto the construction runtime so the resulting DataFrame is built
+    // from a single retained provenance. This is a no-op when the probe is
+    // already in the construction runtime's provenance.
+    let probe = probe.copy_into_runtime(runtime).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.join.mark_output",
+            "failed to relocate probe frame into mark-output runtime",
+            error,
+        )
+    })?;
+
+    // Build the Boolean mark column:
+    // 1. Create a sequential Int32 Series [0, 1, ..., probe_rows-1].
+    // 2. Test membership against matching_indices (hash-set, O(N+M)).
+    let mark_series = if matching_indices.is_empty() {
+        // No matches: mark column is all false.
+        let false_scalar = runtime.scalar(false).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.join.mark_output",
+                "failed to create false scalar for mark column",
+                error,
+            )
+        })?;
+        runtime.series_from_scalar(&false_scalar, probe_rows).map_err(|error| {
+            QueryError::from_cudf("cudf_query_engine.join.mark_output", "failed to create all-false mark series", error)
+        })?
+    } else {
+        let probe_indices = runtime.sequence(0i32, 1i32, probe_rows).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.join.mark_output",
+                "failed to create sequential probe index series for mark column",
+                error,
+            )
+        })?;
+        probe_indices.isin(matching_indices.indices()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.join.mark_output",
+                "failed to compute mark column via isin membership test",
+                error,
+            )
+        })?
+    };
+
+    // Build output: left-side projection columns (identity, no gather needed) + mark column.
+    let mut columns = Vec::with_capacity(projection.len() + 1);
+    for output in projection {
+        let series = probe.series(output.column.name()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.join.mark_output",
+                "failed to access probe column for mark join output",
+                error,
+            )
+            .with_fact("column", output.column.name())
+            .with_fact("output_name", output.output_name.as_str())
+        })?;
+        columns.push((output.output_name.clone(), series));
+    }
+    columns.push((mark_column_name.to_string(), mark_series));
+
+    DataFrame::from_series(columns).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.join.mark_output",
+            "failed to construct native mark join output frame",
             error,
         )
     })

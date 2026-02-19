@@ -95,7 +95,7 @@ fn lower_source_reader_ast_expr(
                 source_reader_binary_literal_target_types(source, parquet_path, left, *op, right)?;
             let left = lower_source_reader_ast_expr(context, source, parquet_path, left, left_literal_target_type)?;
             let right = lower_source_reader_ast_expr(context, source, parquet_path, right, right_literal_target_type)?;
-            let op = lower_source_reader_ast_operator(*op);
+            let op = lower_source_reader_ast_operator(*op)?;
             AstExpression::binary(op, left, right).map_err(|error| {
                 QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST binary expression", error)
             })
@@ -142,6 +142,9 @@ fn lower_source_reader_ast_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Round { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -308,21 +311,30 @@ fn parquet_reader_decimal_type_id(descriptor: &ColumnDescriptor, precision: i32)
     }
 }
 
-fn lower_source_reader_ast_operator(op: BinaryOp) -> AstOperator {
+fn lower_source_reader_ast_operator(op: BinaryOp) -> Result<AstOperator> {
     match op {
-        BinaryOp::Add => AstOperator::Add,
-        BinaryOp::Subtract => AstOperator::Sub,
-        BinaryOp::Multiply => AstOperator::Mul,
-        BinaryOp::Divide => AstOperator::Div,
-        BinaryOp::Modulo => AstOperator::Mod,
-        BinaryOp::Eq => AstOperator::Equal,
-        BinaryOp::NotEq => AstOperator::NotEqual,
-        BinaryOp::Lt => AstOperator::Less,
-        BinaryOp::LtEq => AstOperator::LessEqual,
-        BinaryOp::Gt => AstOperator::Greater,
-        BinaryOp::GtEq => AstOperator::GreaterEqual,
-        BinaryOp::And => AstOperator::LogicalAnd,
-        BinaryOp::Or => AstOperator::LogicalOr,
+        BinaryOp::Add => Ok(AstOperator::Add),
+        BinaryOp::Subtract => Ok(AstOperator::Sub),
+        BinaryOp::Multiply => Ok(AstOperator::Mul),
+        BinaryOp::Divide => Ok(AstOperator::Div),
+        BinaryOp::Modulo => Ok(AstOperator::Mod),
+        BinaryOp::BitwiseAnd => Ok(AstOperator::BitwiseAnd),
+        BinaryOp::BitwiseOr => Ok(AstOperator::BitwiseOr),
+        BinaryOp::BitwiseXor => Ok(AstOperator::BitwiseXor),
+        BinaryOp::Eq => Ok(AstOperator::Equal),
+        BinaryOp::NotEq => Ok(AstOperator::NotEqual),
+        BinaryOp::Lt => Ok(AstOperator::Less),
+        BinaryOp::LtEq => Ok(AstOperator::LessEqual),
+        BinaryOp::Gt => Ok(AstOperator::Greater),
+        BinaryOp::GtEq => Ok(AstOperator::GreaterEqual),
+        BinaryOp::And => Ok(AstOperator::NullLogicalAnd),
+        BinaryOp::Or => Ok(AstOperator::NullLogicalOr),
+        BinaryOp::ShiftLeft | BinaryOp::ShiftRight => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.local_parquet_source.reader_predicate",
+            "reader predicate does not support bit-shift operators",
+        )
+        .with_fact("operator", op.to_string())),
     }
 }
 
@@ -332,6 +344,19 @@ fn lower_source_reader_ast_literal(
     target_type: Option<CudfDataType>,
 ) -> Result<AstExpression> {
     let runtime = context.runtime();
+    if let Some(target_type) = target_type.filter(|target_type| target_type.id().is_decimal())
+        && let Some(raw) = integer_literal_as_decimal_raw(value, target_type.scale())?
+    {
+        return AstExpression::literal(runtime.decimal_raw_scalar(raw, target_type).map_err(|error| {
+            QueryError::from_cudf(
+                OP_READER_PREDICATE,
+                "failed to build cudf scalar for reader predicate AST literal",
+                error,
+            )
+            .with_fact("literal", value)
+        })?)
+        .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error));
+    }
     let scalar = match value {
         LiteralValue::Boolean(value) => runtime.scalar(*value),
         LiteralValue::Int8(value) => runtime.scalar(*value),
@@ -390,6 +415,52 @@ fn lower_source_reader_ast_literal(
     })?;
     AstExpression::literal(scalar)
         .map_err(|error| QueryError::from_cudf(OP_READER_PREDICATE, "failed to build cudf AST literal", error))
+}
+
+fn integer_literal_as_decimal_raw(value: &LiteralValue, target_scale: i32) -> Result<Option<i128>> {
+    let Some(raw) = integer_literal_raw(value) else {
+        return Ok(None);
+    };
+    decimal_raw_for_integer_value(raw, target_scale).map(Some)
+}
+
+fn integer_literal_raw(value: &LiteralValue) -> Option<i128> {
+    match value {
+        LiteralValue::Int8(value) => Some(i128::from(*value)),
+        LiteralValue::Int16(value) => Some(i128::from(*value)),
+        LiteralValue::Int32(value) => Some(i128::from(*value)),
+        LiteralValue::Int64(value) => Some(i128::from(*value)),
+        LiteralValue::UInt8(value) => Some(i128::from(*value)),
+        LiteralValue::UInt16(value) => Some(i128::from(*value)),
+        LiteralValue::UInt32(value) => Some(i128::from(*value)),
+        LiteralValue::UInt64(value) => Some(i128::from(*value)),
+        _ => None,
+    }
+}
+
+fn decimal_raw_for_integer_value(value: i128, target_scale: i32) -> Result<i128> {
+    if target_scale <= 0 {
+        let multiplier = checked_pow10(target_scale.unsigned_abs())?;
+        value.checked_mul(multiplier).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                OP_READER_PREDICATE,
+                "integer reader predicate literal raw value overflows target decimal scale",
+            )
+            .with_fact("target_scale", target_scale)
+        })
+    } else {
+        let divisor = checked_pow10(target_scale as u32)?;
+        if value % divisor != 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedExpression,
+                OP_READER_PREDICATE,
+                "integer reader predicate literal cannot be represented exactly at target decimal scale",
+            )
+            .with_fact("target_scale", target_scale));
+        }
+        Ok(value / divisor)
+    }
 }
 
 fn rescale_decimal_raw(raw: i128, source_scale: i32, target_scale: i32) -> Result<i128> {

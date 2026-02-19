@@ -67,7 +67,7 @@ fn prioritized_join_build_tasks(plan: &QueryPlan, pipeline: &CompiledPipeline) -
                 return None;
             };
             if join.spec.residual_predicate.is_none()
-                && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+                && matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark)
             {
                 Some(task.id())
             } else {

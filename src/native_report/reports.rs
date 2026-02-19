@@ -117,7 +117,7 @@ impl NativeDataFusionPlanningReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.physical_root,
                 row.physical_shape,
@@ -134,6 +134,8 @@ impl NativeDataFusionPlanningReport {
                 format_source_diagnostics(&row.source_diagnostics),
                 row.post_native_plan_root,
                 row.post_native_execution_path.as_str(),
+                row.native_plan_fragment_count,
+                row.host_datafusion_boundary_count,
                 row.rejected_before_execution,
             );
         }
@@ -190,6 +192,8 @@ impl NativeDataFusionExecutionReport {
                 format_adaptive_pipeline_rows(&row.adaptive_pipeline_rows),
                 row.post_native_plan_root.clone(),
                 row.post_native_execution_path.as_str().to_string(),
+                row.native_plan_fragment_count.to_string(),
+                row.host_datafusion_boundary_count.to_string(),
                 row.rejected_before_execution.to_string(),
                 row.native_runtime_started.to_string(),
                 row.runtime_outcome.as_str().to_string(),

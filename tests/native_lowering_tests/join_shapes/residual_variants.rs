@@ -418,6 +418,45 @@ fn right_anti_hash_join_lowers_to_swapped_native_left_anti_join_spec() {
 }
 
 #[test]
+fn right_semi_count_star_uses_native_preserved_side_for_hidden_row_presence() {
+    assert_right_semi_anti_count_star_hidden_row_presence(JoinType::RightSemi, NativeJoinType::LeftSemi);
+}
+
+#[test]
+fn right_anti_count_star_uses_native_preserved_side_for_hidden_row_presence() {
+    assert_right_semi_anti_count_star_hidden_row_presence(JoinType::RightAnti, NativeJoinType::LeftAnti);
+}
+
+fn assert_right_semi_anti_count_star_hidden_row_presence(
+    datafusion_join_type: JoinType,
+    expected_native_join_type: NativeJoinType,
+) {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-semi-anti-count-star");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = hash_join_count_star_plan(parquet_scan(&left_path), parquet_scan(&right_path), datafusion_join_type);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    let native_plan = &result.plans[0];
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, expected_native_join_type);
+    assert_eq!(join.spec.output_projection.len(), 1);
+    assert_join_output_projection(
+        &join.spec.output_projection,
+        &[(NativeJoinSide::Left, "input0.key", "__cudf_join_row_presence")],
+    );
+    assert!(
+        !native_plan.capability_analysis().has_rejections(),
+        "capability analysis should accept hidden preserved-side semi/anti output"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn phase5_nested_loop_join_filter_lowers_to_native_residual_predicate() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-nlj-filter");
     let left_path = dir.join("left.parquet");
@@ -513,6 +552,58 @@ fn phase5_inner_nested_loop_join_without_filter_lowers_to_native_cross_join() {
         })
         .expect("native plan should contain a join node");
     assert!(matches!(join.spec.join_type, cudf_query_engine::JoinType::Cross));
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn predicate_free_full_nested_loop_join_lowers_to_native_keyless_outer_cross_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-full-nlj-outer-cross");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = nested_loop_join_without_filter_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Full,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Full);
+    assert_eq!(join.spec.build_side, NativeJoinSide::Left);
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn predicate_free_right_nested_loop_join_lowers_to_swapped_native_keyless_outer_cross_join() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-right-nlj-outer-cross");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let plan = nested_loop_join_without_filter_aggregate_sort_limit_plan(
+        parquet_scan(&left_path),
+        parquet_scan(&right_path),
+        JoinType::Right,
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Left);
+    assert_eq!(join.spec.build_side, NativeJoinSide::Right);
     assert!(join.spec.keys.is_empty());
     assert!(join.spec.residual_predicate.is_none());
 

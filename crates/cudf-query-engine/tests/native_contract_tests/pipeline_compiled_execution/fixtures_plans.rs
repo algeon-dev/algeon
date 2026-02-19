@@ -42,10 +42,157 @@ pub(super) fn root_join_plan() -> QueryPlan {
     builder.finish_with_host_sink(join)
 }
 
+pub(super) fn union_of_ranked_join_branches_plan() -> QueryPlan {
+    let branch_input_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("item", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let dim_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("item", DataType::Int32, false),
+        Field::new("amount", DataType::Int64, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("item", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+    ]));
+    let ranked_schema = Arc::new(Schema::new(vec![
+        Field::new("item", DataType::Int32, false),
+        Field::new("amount_sum", DataType::Int64, true),
+        Field::new("amount_rank", DataType::UInt64, false),
+    ]));
+    let union_schema = Arc::new(Schema::new(vec![
+        Field::new("item", DataType::Int32, false),
+        Field::new("amount_rank", DataType::UInt64, false),
+    ]));
+    let final_schema = Arc::new(Schema::new(vec![
+        Field::new("item", DataType::Int32, false),
+        Field::new("best_rank", DataType::UInt64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let first = ranked_join_branch(
+        &mut builder,
+        "/tmp/compiled-union-window-branch-a.parquet",
+        "/tmp/compiled-union-window-dim-a.parquet",
+        Arc::clone(&branch_input_schema),
+        Arc::clone(&dim_schema),
+        Arc::clone(&join_schema),
+        Arc::clone(&aggregate_schema),
+        Arc::clone(&ranked_schema),
+        Arc::clone(&union_schema),
+    );
+    let second = ranked_join_branch(
+        &mut builder,
+        "/tmp/compiled-union-window-branch-b.parquet",
+        "/tmp/compiled-union-window-dim-b.parquet",
+        Arc::clone(&branch_input_schema),
+        Arc::clone(&dim_schema),
+        Arc::clone(&join_schema),
+        Arc::clone(&aggregate_schema),
+        Arc::clone(&ranked_schema),
+        Arc::clone(&union_schema),
+    );
+    let union = builder.add_union(vec![first, second], Arc::clone(&union_schema));
+    let aggregate = builder.add_aggregate(
+        union,
+        AggregateSpec::new(
+            vec![Expr::column("item")],
+            vec![AggregateExpr::new(AggregateFunction::Min, Expr::column("amount_rank"), "best_rank")],
+        ),
+        Arc::clone(&final_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("best_rank"), false, false)]),
+        Arc::clone(&final_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(10), Arc::clone(&final_schema));
+    builder.finish_with_host_sink(limit)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ranked_join_branch(
+    builder: &mut QueryPlanBuilder,
+    fact_path: &str,
+    dim_path: &str,
+    fact_schema: Arc<Schema>,
+    dim_schema: Arc<Schema>,
+    join_schema: Arc<Schema>,
+    aggregate_schema: Arc<Schema>,
+    ranked_schema: Arc<Schema>,
+    output_schema: Arc<Schema>,
+) -> NodeId {
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        fact_path,
+        fact_schema,
+        vec!["id".into(), "item".into(), "amount".into()],
+    )));
+    let dim =
+        builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(dim_path, dim_schema, vec!["id".into()])));
+    let join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "id", "id"), ColumnRef::input(1, "id", "id"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "item", "item"), "item"),
+            JoinOutputColumn::left(ColumnRef::input(0, "amount", "amount"), "amount"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("item")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("amount_sum"), false, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let window = builder.add_window(
+        sort,
+        WindowSpec::new(
+            vec![],
+            vec![SortExpr::new(Expr::column("amount_sum"), false, false)],
+            vec![WindowFunction::rank("amount_rank")],
+        ),
+        Arc::clone(&ranked_schema),
+    );
+    let filter = builder.add_filter(
+        window,
+        Expr::binary(Expr::column("amount_rank"), BinaryOp::LtEq, Expr::literal(LiteralValue::UInt64(10))),
+        Arc::clone(&ranked_schema),
+    );
+    let output_fields = output_schema.fields();
+    builder.add_projection(
+        filter,
+        vec![
+            ProjectionOutput::new(Expr::column("item"), output_fields[0].as_ref().clone()),
+            ProjectionOutput::new(Expr::column("amount_rank"), output_fields[1].as_ref().clone()),
+        ],
+    )
+}
+
 pub(super) fn keyless_root_join_plan() -> QueryPlan {
     keyless_root_join_data_plan(
         Path::new("/tmp/compiled-d1-keyless-left.parquet"),
         Path::new("/tmp/compiled-d1-keyless-right.parquet"),
+    )
+}
+
+pub(super) fn keyless_outer_cross_root_join_plan() -> QueryPlan {
+    keyless_outer_cross_root_join_data_plan(
+        Path::new("/tmp/compiled-d1-keyless-outer-cross-left.parquet"),
+        Path::new("/tmp/compiled-d1-keyless-outer-cross-right.parquet"),
     )
 }
 
@@ -83,6 +230,45 @@ pub(super) fn keyless_root_join_data_plan(left_path: &Path, right_path: &Path) -
                 BinaryOp::Lt,
                 Expr::input_column(1, "right_id", "right_id"),
             ))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
+                JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+            ])
+            .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+pub(super) fn keyless_outer_cross_root_join_data_plan(left_path: &Path, right_path: &Path) -> QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("left_value", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("right_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_id", DataType::Int32, false),
+        Field::new("right_value", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        left_path,
+        left_schema,
+        vec!["left_id".into(), "left_value".into()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        right_path,
+        right_schema,
+        vec!["right_id".into(), "right_value".into()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Left, vec![])
             .with_output_projection(vec![
                 JoinOutputColumn::left(ColumnRef::input(0, "left_id", "left_id"), "left_id"),
                 JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
@@ -160,13 +346,13 @@ pub(super) fn aggregate_join_build_input_data_plan(left_path: &Path, right_path:
     ]));
 
     let mut builder = QueryPlanBuilder::new();
-    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        left_path,
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(left_path).with_file_size_bytes(1024)],
         Arc::clone(&left_schema),
         vec!["id".into(), "amount".into()],
     )));
-    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-        right_path,
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(right_path).with_file_size_bytes(1024)],
         Arc::clone(&right_schema),
         vec!["id".into()],
     )));

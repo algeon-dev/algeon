@@ -528,9 +528,7 @@ fn optimize_native_children_for_host_arrow_boundary(
             new_children.push(Arc::clone(child));
             continue;
         }
-        if subtree_contains_outer_join(child.as_ref())
-            || (mode == HostArrowChildReplacementMode::OuterJoinBoundary && subtree_contains_join(child.as_ref()))
-        {
+        if subtree_contains_outer_join(child.as_ref()) {
             if let Some(rewritten_child) = optimize_native_children_for_host_arrow_boundary(
                 Arc::clone(child),
                 native_execution_config,
@@ -670,13 +668,6 @@ fn subtree_contains_outer_join(plan: &dyn ExecutionPlan) -> bool {
         return true;
     }
     plan.children().iter().any(|child| subtree_contains_outer_join(child.as_ref()))
-}
-
-fn subtree_contains_join(plan: &dyn ExecutionPlan) -> bool {
-    plan.as_any().downcast_ref::<HashJoinExec>().is_some()
-        || plan.as_any().downcast_ref::<CrossJoinExec>().is_some()
-        || plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some()
-        || plan.children().iter().any(|child| subtree_contains_join(child.as_ref()))
 }
 
 fn join_residual_contains_nullable_scalar_or(expr: &Arc<dyn PhysicalExpr>, schema: &Schema) -> bool {

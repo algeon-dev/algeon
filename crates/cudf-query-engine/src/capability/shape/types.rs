@@ -143,6 +143,7 @@ pub(in crate::capability) enum PostRootStage {
     Filter(NodeId),
     Projection(NodeId),
     Aggregate(NodeId),
+    Window(NodeId),
     Sort(NodeId),
     Limit(NodeId),
 }

@@ -74,11 +74,21 @@ impl CanonicalJoin {
         }
     }
 
+    pub(super) fn datafusion_side_for_native_left(self) -> DataFusionJoinSide {
+        if self.swap_inputs { DataFusionJoinSide::Right } else { DataFusionJoinSide::Left }
+    }
+
+    pub(super) const fn native_join_type(self) -> NativeJoinType {
+        self.join_type
+    }
+
     const fn build_side(self) -> NativeJoinSide {
         // Use right-build orientation whenever join semantics allow it so
         // left-deep joined streams can remain on the probe side.
         match self.join_type {
-            NativeJoinType::Left | NativeJoinType::LeftSemi | NativeJoinType::LeftAnti => NativeJoinSide::Right,
+            NativeJoinType::Left | NativeJoinType::LeftSemi | NativeJoinType::LeftAnti | NativeJoinType::LeftMark => {
+                NativeJoinSide::Right
+            },
             NativeJoinType::Inner => NativeJoinSide::Right,
             NativeJoinType::Full => NativeJoinSide::Left,
             NativeJoinType::Cross => NativeJoinSide::Left,
@@ -368,6 +378,11 @@ pub(super) fn lower_hash_join_input(
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
+    if canonical.join_type == NativeJoinType::LeftMark
+        && let Some(mark_name) = output_columns.mark_column_name.as_deref()
+    {
+        spec = spec.with_mark_column_name(mark_name);
+    }
     let node = builder.add_join(native_left.node, native_right.node, spec, Arc::clone(&output_columns.schema));
     Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
 }
@@ -477,7 +492,7 @@ fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residu
     // emitting build-side rows.
     if key_count == 0
         && has_residual
-        && matches!(canonical.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti)
+        && matches!(canonical.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti | NativeJoinType::LeftMark)
     {
         NativeJoinSide::Left
     } else {
@@ -530,7 +545,9 @@ fn nested_loop_join_residual(
         let residual = lower_join_filter(filter, &join.left().schema(), &join.right().schema(), canonical, None)?;
         return Ok(Some(residual));
     }
-    if matches!(join.join_type(), JoinType::Inner) || matches!(canonical.join_type, NativeJoinType::Cross) {
+    if matches!(join.join_type(), JoinType::Inner)
+        || matches!(canonical.join_type, NativeJoinType::Cross | NativeJoinType::Left | NativeJoinType::Full)
+    {
         return Ok(None);
     }
     Err(FallbackReason::UnsupportedOperator)
@@ -541,12 +558,16 @@ fn normalized_input_is_scalar_single_row(input: &crate::native::normalize::Norma
 
     match input {
         NormalizedNativeInput::Projection(projection) => normalized_input_is_scalar_single_row(&projection.input),
+        NormalizedNativeInput::Limit(limit) => normalized_input_is_scalar_single_row(&limit.input),
         NormalizedNativeInput::Aggregate(aggregate) => aggregate.aggregate.group_expr().expr().is_empty(),
         NormalizedNativeInput::Source(_)
         | NormalizedNativeInput::Filter(_)
+        | NormalizedNativeInput::Sort(_)
+        | NormalizedNativeInput::Window(_)
         | NormalizedNativeInput::HashJoin(_)
         | NormalizedNativeInput::CrossJoin(_)
-        | NormalizedNativeInput::NestedLoopJoin(_) => false,
+        | NormalizedNativeInput::NestedLoopJoin(_)
+        | NormalizedNativeInput::Union(_) => false,
     }
 }
 
@@ -561,8 +582,12 @@ fn nested_loop_join_required_outputs_are_right_only(
             Some(projection) => *projection.get(output_index).ok_or(FallbackReason::UnsupportedExpression)?,
             None => output_index,
         };
-        let (datafusion_side, _) =
-            datafusion_join_output_side(join.join.join_type(), join_schema_index, &join.join.left().schema())?;
+        let (datafusion_side, _) = datafusion_join_output_side(
+            join.join.join_type(),
+            join_schema_index,
+            &join.join.left().schema(),
+            &join.join.right().schema(),
+        )?;
         if datafusion_side != DataFusionJoinSide::Right {
             return Ok(false);
         }
@@ -583,7 +608,8 @@ fn canonical_join(join_type: &JoinType) -> Result<CanonicalJoin, FallbackReason>
         JoinType::RightSemi => Ok(CanonicalJoin::new(NativeJoinType::LeftSemi, true)),
         JoinType::LeftAnti => Ok(CanonicalJoin::new(NativeJoinType::LeftAnti, false)),
         JoinType::RightAnti => Ok(CanonicalJoin::new(NativeJoinType::LeftAnti, true)),
-        _ => Err(FallbackReason::UnsupportedOperator),
+        JoinType::LeftMark => Ok(CanonicalJoin::new(NativeJoinType::LeftMark, false)),
+        JoinType::RightMark => Ok(CanonicalJoin::new(NativeJoinType::LeftMark, true)),
     }
 }
 

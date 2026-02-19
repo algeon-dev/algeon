@@ -129,7 +129,7 @@ pub(super) fn local_parquet_files(
     Ok(native_files)
 }
 
-fn attach_row_group_byte_metadata(
+pub(super) fn attach_row_group_byte_metadata(
     mut native_file: NativeLocalParquetFile,
     column_requirements: &NativeParquetColumnRequirements,
 ) -> NativeLocalParquetFile {

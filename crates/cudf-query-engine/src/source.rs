@@ -1,4 +1,8 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
@@ -20,6 +24,72 @@ pub use diagnostics::{
 /// A zero-column count source reads no physical columns and produces row counts
 /// from file or row-group metadata instead of projecting normal source columns.
 pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
+
+/// Explicit location/read-capability model for native Parquet sources.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ParquetSourceLocation {
+    LocalPath(PathBuf),
+    ObjectStoreUri { scheme: String, uri: String },
+}
+
+impl ParquetSourceLocation {
+    pub fn local_path(path: impl Into<PathBuf>) -> Self {
+        Self::LocalPath(path.into())
+    }
+
+    pub fn object_store_uri(uri: impl Into<String>) -> Result<Self, String> {
+        let uri = uri.into();
+        let Some((scheme, _)) = uri.split_once("://") else {
+            return Err("missing_uri_scheme".to_string());
+        };
+        if scheme.is_empty() {
+            return Err("empty_uri_scheme".to_string());
+        }
+        let scheme = scheme.to_ascii_lowercase();
+        if scheme != "s3" {
+            return Err(format!("unsupported_uri_scheme:{scheme}"));
+        }
+        Ok(Self::ObjectStoreUri { scheme, uri })
+    }
+
+    pub fn reader_path(&self) -> String {
+        match self {
+            Self::LocalPath(path) => path.display().to_string(),
+            Self::ObjectStoreUri { uri, .. } => uri.clone(),
+        }
+    }
+
+    pub fn read_capability(&self) -> String {
+        match self {
+            Self::LocalPath(_) => "local_file_system".to_string(),
+            Self::ObjectStoreUri { scheme, .. } => format!("object_store:{scheme}"),
+        }
+    }
+
+    pub fn is_local_path(&self) -> bool {
+        matches!(self, Self::LocalPath(_))
+    }
+
+    pub fn as_local_path(&self) -> Option<&Path> {
+        match self {
+            Self::LocalPath(path) => Some(path.as_path()),
+            Self::ObjectStoreUri { .. } => None,
+        }
+    }
+
+    pub fn display(&self) -> impl fmt::Display + '_ {
+        self
+    }
+}
+
+impl fmt::Display for ParquetSourceLocation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LocalPath(path) => write!(f, "{}", path.display()),
+            Self::ObjectStoreUri { uri, .. } => f.write_str(uri),
+        }
+    }
+}
 
 /// Native query-engine source description.
 ///
@@ -459,6 +529,27 @@ impl LocalParquetSource {
     }
 }
 
+fn object_store_reader_path(uri: &str) -> String {
+    if let Some(path) = s3_https_reader_path(uri) {
+        return path;
+    }
+    uri.to_string()
+}
+
+fn s3_https_reader_path(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("s3://")?;
+    let (bucket, key) = rest.split_once('/')?;
+    if bucket.is_empty() || key.is_empty() {
+        return None;
+    }
+    let region = std::env::var("AWS_REGION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok().filter(|value| !value.is_empty()))
+        .unwrap_or_else(|| "us-east-1".to_string());
+    Some(format!("https://{bucket}.s3.{region}.amazonaws.com/{key}"))
+}
+
 fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
     match expr {
         Expr::Column(column) => {
@@ -480,8 +571,10 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
             matches!(target_type, DataType::Int64 | DataType::UInt64 | DataType::Float64)
                 && reader_predicate_expr_is_supported(source, expr)
         },
-        Expr::Binary { left, right, .. } => {
-            reader_predicate_expr_is_supported(source, left) && reader_predicate_expr_is_supported(source, right)
+        Expr::Binary { left, op, right, .. } => {
+            reader_predicate_binary_operator_is_supported(*op)
+                && reader_predicate_expr_is_supported(source, left)
+                && reader_predicate_expr_is_supported(source, right)
         },
         Expr::InList { expr, list, .. } => {
             !list.is_empty()
@@ -494,9 +587,35 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::Concat(_)
+        | Expr::Abs(_)
+        | Expr::Round { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. } => false,
     }
+}
+
+fn reader_predicate_binary_operator_is_supported(op: crate::expr::BinaryOp) -> bool {
+    use crate::expr::BinaryOp;
+    matches!(
+        op,
+        BinaryOp::Add
+            | BinaryOp::Subtract
+            | BinaryOp::Multiply
+            | BinaryOp::Divide
+            | BinaryOp::Modulo
+            | BinaryOp::BitwiseAnd
+            | BinaryOp::BitwiseOr
+            | BinaryOp::BitwiseXor
+            | BinaryOp::Eq
+            | BinaryOp::NotEq
+            | BinaryOp::Lt
+            | BinaryOp::LtEq
+            | BinaryOp::Gt
+            | BinaryOp::GtEq
+            | BinaryOp::And
+            | BinaryOp::Or
+    )
 }
 
 fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
@@ -509,7 +628,11 @@ fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetFile {
-    /// Local filesystem path to the Parquet file.
+    /// Explicit source location for the Parquet file.
+    pub location: ParquetSourceLocation,
+    /// Path-shaped reader string retained for existing diagnostics and cuDF
+    /// reader APIs. Object-store URIs are represented as path-shaped strings
+    /// but must be created through `object_store_uri`.
     pub path: PathBuf,
     /// Stable identifier for diagnostics, pruning, and executor bookkeeping.
     ///
@@ -550,6 +673,7 @@ impl LocalParquetFile {
         let path = path.into();
         let stable_id = path.display().to_string();
         Self {
+            location: ParquetSourceLocation::local_path(path.clone()),
             path,
             stable_id,
             file_size_bytes: None,
@@ -562,6 +686,28 @@ impl LocalParquetFile {
             row_group_rows: None,
             partition_values: Vec::new(),
         }
+    }
+
+    /// Creates an explicit object-store file descriptor.
+    pub fn object_store_uri(uri: impl Into<String>) -> Result<Self, String> {
+        let uri = uri.into();
+        let location = ParquetSourceLocation::object_store_uri(uri.clone())?;
+        let stable_id = uri.clone();
+        let reader_path = object_store_reader_path(&uri);
+        Ok(Self {
+            location,
+            path: PathBuf::from(reader_path),
+            stable_id,
+            file_size_bytes: None,
+            row_groups: None,
+            row_group_bytes: None,
+            projected_row_group_compressed_bytes: None,
+            projected_row_group_uncompressed_bytes: None,
+            pure_filter_row_group_compressed_bytes: None,
+            pure_filter_row_group_uncompressed_bytes: None,
+            row_group_rows: None,
+            partition_values: Vec::new(),
+        })
     }
 
     /// Sets the stable file identifier used by native diagnostics/execution.

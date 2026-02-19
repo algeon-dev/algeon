@@ -363,9 +363,11 @@ impl<'a> SemijoinLineageAnalyzer<'a> {
                 prepend_mappings(&mut analysis.key_mappings, local_mappings);
                 Ok(analysis)
             },
-            PlanNode::Aggregate(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => {
-                Err(SemijoinReductionRejectedReason::UnsupportedLeftShape)
-            },
+            PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_) => Err(SemijoinReductionRejectedReason::UnsupportedLeftShape),
         }
     }
 
@@ -453,6 +455,11 @@ impl<'a> SemijoinReductionRewriter<'a> {
                 aggregate.input = self.rewrite_subtree(aggregate.input);
                 PlanNode::Aggregate(aggregate)
             },
+            PlanNode::Window(window) => {
+                let mut window = window.clone();
+                window.input = self.rewrite_subtree(window.input);
+                PlanNode::Window(window)
+            },
             PlanNode::Sort(sort) => {
                 let mut sort = sort.clone();
                 sort.input = self.rewrite_subtree(sort.input);
@@ -467,6 +474,11 @@ impl<'a> SemijoinReductionRewriter<'a> {
                 let mut join = join.clone();
                 join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
                 PlanNode::Join(join)
+            },
+            PlanNode::Union(union) => {
+                let mut union = union.clone();
+                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
+                PlanNode::Union(union)
             },
         }
     }
@@ -792,7 +804,12 @@ fn is_aggregate_keyset_shape(plan: &QueryPlan, node_id: NodeId) -> bool {
         PlanNode::Aggregate(aggregate) => {
             !aggregate.spec.group_exprs.is_empty() && is_source_derived_keyset_input(plan, aggregate.input)
         },
-        PlanNode::Source(_) | PlanNode::Join(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => false,
+        PlanNode::Source(_)
+        | PlanNode::Join(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_) => false,
     }
 }
 
@@ -804,7 +821,12 @@ fn is_source_derived_keyset_input(plan: &QueryPlan, node_id: NodeId) -> bool {
         PlanNode::Source(_) => true,
         PlanNode::Filter(filter) => is_source_derived_keyset_input(plan, filter.input),
         PlanNode::Projection(projection) => is_source_derived_keyset_input(plan, projection.input),
-        PlanNode::Aggregate(_) | PlanNode::Join(_) | PlanNode::Sort(_) | PlanNode::Limit(_) => false,
+        PlanNode::Aggregate(_)
+        | PlanNode::Join(_)
+        | PlanNode::Window(_)
+        | PlanNode::Sort(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_) => false,
     }
 }
 

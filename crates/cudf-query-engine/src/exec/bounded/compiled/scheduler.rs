@@ -260,6 +260,8 @@ impl<'a> CompiledPipelineScheduler<'a> {
             PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => 3,
             PipelineTaskKind::JoinMaterialize
             | PipelineTaskKind::Aggregate
+            | PipelineTaskKind::Window
+            | PipelineTaskKind::Union
             | PipelineTaskKind::FinalSort
             | PipelineTaskKind::Limit => 2,
             PipelineTaskKind::Unary
@@ -343,8 +345,11 @@ fn operator_class_rank(kind: PipelineTaskKind) -> u8 {
     match kind {
         PipelineTaskKind::SinkMaterialize => 0,
         PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => 1,
-        PipelineTaskKind::Unary | PipelineTaskKind::Limit => 2,
-        PipelineTaskKind::Aggregate | PipelineTaskKind::JoinMaterialize | PipelineTaskKind::FinalSort => 3,
+        PipelineTaskKind::Unary | PipelineTaskKind::Window | PipelineTaskKind::Limit => 2,
+        PipelineTaskKind::Aggregate
+        | PipelineTaskKind::Union
+        | PipelineTaskKind::JoinMaterialize
+        | PipelineTaskKind::FinalSort => 3,
         PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => 4,
     }
 }

@@ -40,7 +40,9 @@ pub(super) fn global_aggregate_candidate_for_input(
     has_pre_projection: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
-    if let NormalizedNativeInput::Source(source) = input {
+    if let NormalizedNativeInput::Source(source) = input
+        && matches!(source.scan, NormalizedNativeScan::LocalParquet(_))
+    {
         return global_aggregate_candidate(
             output_schema_fields,
             has_post_projection,
@@ -73,7 +75,9 @@ pub(super) fn native_stack_candidate_for_input(
     has_pre_aggregate_projection: bool,
     has_distributed_aggregate: bool,
 ) -> GpuCandidate {
-    if let NormalizedNativeInput::Source(source) = input {
+    if let NormalizedNativeInput::Source(source) = input
+        && matches!(source.scan, NormalizedNativeScan::LocalParquet(_))
+    {
         return native_stack_candidate(
             root,
             output_schema_fields,

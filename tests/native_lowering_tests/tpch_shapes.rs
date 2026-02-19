@@ -607,9 +607,14 @@ fn assert_q16_join_leaf_subtree_has_no_aggregate_sort_or_limit(plan: &QueryPlan,
         let node = plan.node(node_id).expect("q16 native join subtree node should exist");
         match &node.kind {
             PlanNode::Aggregate(_) => panic!("q16 join leaf subtree must not contain aggregate nodes below joins"),
+            PlanNode::Window(_) => panic!("q16 join leaf subtree must not contain window nodes below joins"),
             PlanNode::Sort(_) => panic!("q16 join leaf subtree must not contain sort nodes below joins"),
             PlanNode::Limit(_) => panic!("q16 join leaf subtree must not contain limit nodes below joins"),
-            PlanNode::Source(_) | PlanNode::Filter(_) | PlanNode::Projection(_) | PlanNode::Join(_) => {
+            PlanNode::Source(_)
+            | PlanNode::Filter(_)
+            | PlanNode::Projection(_)
+            | PlanNode::Join(_)
+            | PlanNode::Union(_) => {
                 stack.extend(node.input_ids().iter().copied());
             },
         }
@@ -658,9 +663,11 @@ fn source_tables_below(plan: &QueryPlan, root: NodeId) -> BTreeSet<String> {
             PlanNode::Filter(_)
             | PlanNode::Projection(_)
             | PlanNode::Aggregate(_)
+            | PlanNode::Window(_)
             | PlanNode::Sort(_)
             | PlanNode::Limit(_)
-            | PlanNode::Join(_) => stack.extend(node.input_ids().iter().copied()),
+            | PlanNode::Join(_)
+            | PlanNode::Union(_) => stack.extend(node.input_ids().iter().copied()),
         }
     }
     tables

@@ -13,15 +13,15 @@ use arrow::{
 use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};
 
 use super::{
-    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
-    NativePlanningFailure, WorkloadDatasetMetadata,
-    diagnostics::unsupported_category,
+    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath,
+    NativeDataFusionRuntimeOutcome, NativePlanningFailure, WorkloadDatasetMetadata,
+    diagnostics::{post_native_plan_coverage, unsupported_category},
     tsv::{stable_tsv_field, write_workload_dataset_metadata},
 };
 use crate::planner::NativePlanningDiagnostics;
 
-pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 2;
-pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\texternal-engine_output_status\texternal-engine_cpu_parity_status\texternal-engine_cpu_parity_detail\texternal-engine_output_rows\texternal-engine_output_batches\texternal-engine_output_fingerprint\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
+pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 3;
+pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\texternal-engine_output_status\texternal-engine_cpu_parity_status\texternal-engine_cpu_parity_detail\texternal-engine_output_rows\texternal-engine_output_batches\texternal-engine_output_fingerprint\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityStatus {
@@ -110,6 +110,9 @@ pub struct NativeTpcdsParityRow {
     pub native_planning_outcome: NativeTpcdsParityPlanningOutcome,
     pub native_reason_code: Option<String>,
     pub native_unsupported_category: Option<String>,
+    pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    pub native_plan_fragment_count: usize,
+    pub host_datafusion_boundary_count: usize,
     pub native_runtime_started: bool,
     pub native_runtime_outcome: NativeDataFusionRuntimeOutcome,
     pub parity_status: ParityStatus,
@@ -256,13 +259,16 @@ impl NativeTpcdsParityReport {
         for row in &self.rows {
             let _ = writeln!(
                 output,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 row.query_id,
                 row.cpu_planning_status.as_str(),
                 row.cpu_runtime_status.as_str(),
                 row.native_planning_outcome.as_str(),
                 row.native_reason_code.as_deref().unwrap_or("none"),
                 row.native_unsupported_category.as_deref().unwrap_or("none"),
+                row.post_native_execution_path.as_str(),
+                row.native_plan_fragment_count,
+                row.host_datafusion_boundary_count,
                 row.native_runtime_started,
                 row.native_runtime_outcome.as_str(),
                 row.parity_status.as_str(),
@@ -330,7 +336,7 @@ pub enum NativeTpcdsParityCpuOutcome {
 
 #[derive(Debug, Clone)]
 pub enum NativeTpcdsParityNativePlanningOutcome {
-    Planned { accepted: bool, planned_plan: Arc<dyn ExecutionPlan>, diagnostics: NativePlanningDiagnostics },
+    Planned { accepted: bool, planned_plan: Arc<dyn ExecutionPlan>, diagnostics: Box<NativePlanningDiagnostics> },
     PlanningFailed(NativePlanningFailure),
 }
 
@@ -367,25 +373,44 @@ fn parity_row_for_item(
         },
     };
 
-    let (native_planning_outcome, native_reason_code, native_unsupported_category, native_planning_failure_message) =
-        match &item.native_planning {
-            NativeTpcdsParityNativePlanningOutcome::Planned { accepted, planned_plan, diagnostics } => {
-                let (reason_code, unsupported_category) =
-                    if *accepted { (None, None) } else { rejected_diagnostics(planned_plan.as_ref(), diagnostics) };
-                let outcome = if *accepted {
-                    NativeTpcdsParityPlanningOutcome::AcceptedReplaced
-                } else {
-                    NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution
-                };
-                (outcome, reason_code, unsupported_category, None)
-            },
-            NativeTpcdsParityNativePlanningOutcome::PlanningFailed(failure) => (
-                NativeTpcdsParityPlanningOutcome::PlanningFailed,
-                Some(failure.reason_code.clone()),
-                Some("planning".to_string()),
-                Some(failure.message.clone()),
-            ),
-        };
+    let (
+        native_planning_outcome,
+        native_reason_code,
+        native_unsupported_category,
+        post_native_execution_path,
+        native_plan_fragment_count,
+        host_datafusion_boundary_count,
+        native_planning_failure_message,
+    ) = match &item.native_planning {
+        NativeTpcdsParityNativePlanningOutcome::Planned { accepted, planned_plan, diagnostics } => {
+            let (reason_code, unsupported_category) =
+                if *accepted { (None, None) } else { rejected_diagnostics(planned_plan.as_ref(), diagnostics) };
+            let outcome = if *accepted {
+                NativeTpcdsParityPlanningOutcome::AcceptedReplaced
+            } else {
+                NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution
+            };
+            let coverage = post_native_plan_coverage(planned_plan.as_ref());
+            (
+                outcome,
+                reason_code,
+                unsupported_category,
+                coverage.execution_path,
+                coverage.native_fragment_count,
+                coverage.host_datafusion_boundary_count,
+                None,
+            )
+        },
+        NativeTpcdsParityNativePlanningOutcome::PlanningFailed(failure) => (
+            NativeTpcdsParityPlanningOutcome::PlanningFailed,
+            Some(failure.reason_code.clone()),
+            Some("planning".to_string()),
+            NativeDataFusionPostNativeExecutionPath::Cpu,
+            0,
+            0,
+            Some(failure.message.clone()),
+        ),
+    };
 
     let (native_runtime_started, native_runtime_outcome, native_batches, native_schema, native_metrics, native_failure) =
         match item.native_runtime {
@@ -443,6 +468,9 @@ fn parity_row_for_item(
         native_planning_outcome,
         native_reason_code,
         native_unsupported_category,
+        post_native_execution_path,
+        native_plan_fragment_count,
+        host_datafusion_boundary_count,
         native_runtime_started,
         native_runtime_outcome,
         parity_status,
