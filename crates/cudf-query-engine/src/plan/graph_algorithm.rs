@@ -123,16 +123,13 @@ pub struct EdgeNormalizeSpec {
 
 impl EdgeNormalizeSpec {
     pub fn python_cugraph(edge_columns: GraphEdgeColumnBindings, graph_options: &GraphConstructionOptions) -> Self {
-        Self {
-            edge_columns: edge_columns.clone(),
-            add_reverse: !graph_options.directed,
-            dedup: EdgeDedupStrategy::KeepFirst,
-            weight_combiner: if edge_columns.weight.is_some() {
-                EdgeWeightCombiner::MinWeight
-            } else {
-                EdgeWeightCombiner::None
-            },
-        }
+        let has_weight = edge_columns.weight.is_some();
+        let (dedup, weight_combiner) = match (graph_options.directed, has_weight) {
+            (_, false) => (EdgeDedupStrategy::KeepLast, EdgeWeightCombiner::None),
+            (true, true) => (EdgeDedupStrategy::KeepLast, EdgeWeightCombiner::KeepLastInputOrder),
+            (false, true) => (EdgeDedupStrategy::KeepFirst, EdgeWeightCombiner::MinWeight),
+        };
+        Self { edge_columns: edge_columns.clone(), add_reverse: !graph_options.directed, dedup, weight_combiner }
     }
 }
 
@@ -140,6 +137,7 @@ impl EdgeNormalizeSpec {
 pub enum EdgeDedupStrategy {
     None,
     KeepFirst,
+    KeepLast,
 }
 
 impl EdgeDedupStrategy {
@@ -147,6 +145,7 @@ impl EdgeDedupStrategy {
         match self {
             Self::None => "none",
             Self::KeepFirst => "keep_first",
+            Self::KeepLast => "keep_last",
         }
     }
 }
@@ -161,6 +160,7 @@ impl fmt::Display for EdgeDedupStrategy {
 pub enum EdgeWeightCombiner {
     None,
     MinWeight,
+    KeepLastInputOrder,
 }
 
 impl EdgeWeightCombiner {
@@ -168,6 +168,7 @@ impl EdgeWeightCombiner {
         match self {
             Self::None => "none",
             Self::MinWeight => "min_weight",
+            Self::KeepLastInputOrder => "keep_last_input_order",
         }
     }
 }

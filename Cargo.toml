@@ -67,6 +67,11 @@ name = "native_iceberg_tpch_benchmark"
 path = "src/bin/native_iceberg_tpch_benchmark.rs"
 required-features = ["iceberg"]
 
+[[bin]]
+name = "cugraph_sql_construction_report"
+path = "src/bin/cugraph_sql_construction_report.rs"
+required-features = ["cugraph"]
+
 [[test]]
 name = "table_format_iceberg_planner_tests"
 path = "tests/table_format_iceberg_planner_tests.rs"

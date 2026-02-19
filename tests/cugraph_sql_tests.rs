@@ -360,6 +360,123 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
 }
 
 #[tokio::test]
+async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_views() {
+    let dir = unique_temp_dir("datafusion-cudf-cugraph-normalized-planning");
+    let directed_path = dir.join("tiny_directed_edges.parquet");
+    let undirected_path = dir.join("tiny_communities.parquet");
+    write_tiny_directed_edges(&directed_path);
+    write_tiny_communities(&undirected_path);
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("tiny_directed_edges", directed_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    ctx.register_parquet("tiny_communities", undirected_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    ctx.sql(
+        "CREATE VIEW canonical_directed_edges AS \
+         SELECT src, dst \
+         FROM tiny_directed_edges \
+         WHERE active \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    ctx.sql(
+        "CREATE VIEW canonical_undirected_edges AS \
+         SELECT src, dst \
+         FROM ( \
+           SELECT src, dst FROM tiny_communities \
+           UNION ALL \
+           SELECT dst AS src, src AS dst FROM tiny_communities \
+         ) e \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    ctx.sql(
+        "CREATE VIEW weighted_min_edges AS \
+         SELECT src, dst, MIN(weight) AS weight \
+         FROM tiny_directed_edges \
+         WHERE active \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let directed_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank('canonical_directed_edges', 'src', 'dst') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let directed_plan = directed_df.create_physical_plan().await.unwrap();
+    let directed_display = displayable(directed_plan.as_ref()).indent(false).to_string();
+    assert!(
+        directed_display.contains("construction_policy=python_cugraph"),
+        "default policy label should stay visible for pre-canonical directed view:\n{directed_display}"
+    );
+    assert!(
+        directed_display.contains("edge_normalize_inserted=false"),
+        "directed unweighted GROUP BY src,dst should prove edge dedup provenance:\n{directed_display}"
+    );
+
+    let undirected_df = ctx
+        .sql(
+            "SELECT vertex, partition \
+             FROM cugraph_louvain('canonical_undirected_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let undirected_plan = undirected_df.create_physical_plan().await.unwrap();
+    let undirected_display = displayable(undirected_plan.as_ref()).indent(false).to_string();
+    assert!(
+        undirected_display.contains("construction_policy=python_cugraph"),
+        "default policy label should stay visible for pre-canonical undirected view:\n{undirected_display}"
+    );
+    assert!(
+        undirected_display.contains("edge_normalize_inserted=false"),
+        "undirected unweighted UNION ALL reverse expansion + GROUP BY src,dst should prove full provenance:\n{undirected_display}"
+    );
+
+    let weighted_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank('weighted_min_edges', 'src', 'dst', 'weight') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let weighted_plan = weighted_df.create_physical_plan().await.unwrap();
+    let weighted_display = displayable(weighted_plan.as_ref()).indent(false).to_string();
+    assert!(
+        weighted_display.contains("edge_normalize_inserted=true"),
+        "weighted MIN(weight) aggregate must not prove Python cuGraph keep-last duplicate semantics:\n{weighted_display}"
+    );
+
+    fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
 #[ignore = "requires CUDA plus Python cudf/cugraph for the official oracle"]
 async fn cugraph_sql_gpu_pagerank_matches_python_cugraph_oracle() {
     let dir = unique_temp_dir("datafusion-cudf-cugraph-pagerank");
@@ -396,32 +513,48 @@ async fn cugraph_sql_gpu_pagerank_matches_python_cugraph_oracle() {
     .collect()
     .await
     .unwrap();
+    ctx.sql(
+        "CREATE VIEW keep_last_directed_edges AS \
+         SELECT src, dst, weight \
+         FROM tiny_directed_edges \
+         WHERE active AND NOT (src = 0 AND dst = 1 AND weight = 1.0)",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
 
-    let batches = ctx
-        .sql(
-            "SELECT vertex, value \
-             FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight') \
-             ORDER BY vertex",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let actual = pagerank_rows(&batches);
-
-    assert_eq!(actual.len(), oracle.rows.len());
-    for (actual, expected) in actual.iter().zip(&oracle.rows) {
-        assert_eq!(actual.vertex, expected.vertex);
-        let delta = (actual.value - expected.value).abs();
-        assert!(
-            delta <= 1.0e-6,
-            "vertex {} PageRank mismatch: actual={} expected={} delta={}",
-            actual.vertex,
-            actual.value,
-            expected.value,
-            delta
-        );
+    for variant in [
+        CugraphOracleVariant {
+            label: "default insertion",
+            sql: "SELECT vertex, value \
+                  FROM cugraph_pagerank('graph_edges', 'src', 'dst', 'weight') \
+                  ORDER BY vertex",
+            construction_policy: "python_cugraph",
+            edge_normalize_inserted: true,
+        },
+        CugraphOracleVariant {
+            label: "pre-deduped default",
+            sql: "SELECT vertex, value \
+                  FROM cugraph_pagerank('keep_last_directed_edges', 'src', 'dst', 'weight') \
+                  ORDER BY vertex",
+            construction_policy: "python_cugraph",
+            edge_normalize_inserted: true,
+        },
+        CugraphOracleVariant {
+            label: "explicit raw over keep-last input",
+            sql: "SELECT vertex, value \
+                  FROM cugraph_pagerank('keep_last_directed_edges', 'src', 'dst', 'weight', \
+                                        '{\"construction_policy\":\"raw_libcugraph\"}') \
+                  ORDER BY vertex",
+            construction_policy: "raw_libcugraph",
+            edge_normalize_inserted: false,
+        },
+    ] {
+        let batches = collect_cugraph_oracle_variant(&ctx, variant).await;
+        let actual = pagerank_rows(&batches);
+        assert_pagerank_rows_match(variant.label, &actual, &oracle.rows);
     }
     fs::remove_dir_all(dir).ok();
 }
@@ -463,21 +596,50 @@ async fn cugraph_sql_gpu_bfs_matches_python_cugraph_oracle() {
     .collect()
     .await
     .unwrap();
+    ctx.sql(
+        "CREATE VIEW canonical_directed_edges AS \
+         SELECT src, dst \
+         FROM tiny_directed_edges \
+         WHERE active \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
 
-    let batches = ctx
-        .sql(
-            "SELECT vertex, distance, predecessor \
-             FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', 'weight') \
-             ORDER BY vertex",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let actual = bfs_rows(&batches);
-
-    assert_eq!(actual, oracle.rows);
+    for variant in [
+        CugraphOracleVariant {
+            label: "default insertion",
+            sql: "SELECT vertex, distance, predecessor \
+                  FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', 'weight') \
+                  ORDER BY vertex",
+            construction_policy: "python_cugraph",
+            edge_normalize_inserted: true,
+        },
+        CugraphOracleVariant {
+            label: "pre-normalized unweighted default",
+            sql: "SELECT vertex, distance, predecessor \
+                  FROM cugraph_bfs('canonical_directed_edges', 0, 'src', 'dst') \
+                  ORDER BY vertex",
+            construction_policy: "python_cugraph",
+            edge_normalize_inserted: false,
+        },
+        CugraphOracleVariant {
+            label: "explicit raw over pre-normalized unweighted input",
+            sql: "SELECT vertex, distance, predecessor \
+                  FROM cugraph_bfs('canonical_directed_edges', 0, 'src', 'dst', NULL, \
+                                   '{\"construction_policy\":\"raw_libcugraph\"}') \
+                  ORDER BY vertex",
+            construction_policy: "raw_libcugraph",
+            edge_normalize_inserted: false,
+        },
+    ] {
+        let batches = collect_cugraph_oracle_variant(&ctx, variant).await;
+        let actual = bfs_rows(&batches);
+        assert_eq!(actual, oracle.rows, "{} BFS rows diverged from Python cuGraph oracle", variant.label);
+    }
     fs::remove_dir_all(dir).ok();
 }
 
@@ -509,21 +671,52 @@ async fn cugraph_sql_gpu_louvain_matches_python_cugraph_oracle() {
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("tiny_communities", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
-
-    let batches = ctx
-        .sql(
-            "SELECT vertex, partition \
-             FROM cugraph_louvain('tiny_communities', 'src', 'dst', 'weight', '{\"directed\":false,\"resolution\":1.0}') \
-             ORDER BY vertex",
-        )
-        .await
-        .unwrap()
-        .collect()
-        .await
-        .unwrap();
-    let actual = louvain_rows(&batches);
-
-    assert_eq!(actual, oracle.rows);
+    ctx.sql(
+        "CREATE VIEW min_weight_undirected_edges AS \
+         SELECT src, dst, weight FROM ( \
+           SELECT src, dst, weight FROM tiny_communities WHERE NOT (src = 2 AND dst = 3 AND weight = 4.0) \
+           UNION ALL \
+           SELECT dst AS src, src AS dst, weight FROM tiny_communities WHERE NOT (src = 2 AND dst = 3 AND weight = 4.0) \
+         ) e",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    for variant in [
+        CugraphOracleVariant {
+            label: "default insertion",
+            sql: "SELECT vertex, partition \
+                  FROM cugraph_louvain('tiny_communities', 'src', 'dst', 'weight', \
+                                       '{\"directed\":false,\"resolution\":1.0}') \
+                  ORDER BY vertex",
+            construction_policy: "python_cugraph",
+            edge_normalize_inserted: true,
+        },
+        CugraphOracleVariant {
+            label: "pre-deduped default",
+            sql: "SELECT vertex, partition \
+                  FROM cugraph_louvain('min_weight_undirected_edges', 'src', 'dst', 'weight', \
+                                       '{\"directed\":false,\"resolution\":1.0}') \
+                  ORDER BY vertex",
+            construction_policy: "python_cugraph",
+            edge_normalize_inserted: true,
+        },
+        CugraphOracleVariant {
+            label: "explicit raw over min-weight expanded input",
+            sql: "SELECT vertex, partition \
+                  FROM cugraph_louvain('min_weight_undirected_edges', 'src', 'dst', 'weight', \
+                                       '{\"directed\":false,\"resolution\":1.0,\"construction_policy\":\"raw_libcugraph\"}') \
+                  ORDER BY vertex",
+            construction_policy: "raw_libcugraph",
+            edge_normalize_inserted: false,
+        },
+    ] {
+        let batches = collect_cugraph_oracle_variant(&ctx, variant).await;
+        let actual = louvain_rows(&batches);
+        assert_eq!(actual, oracle.rows, "{} Louvain rows diverged from Python cuGraph oracle", variant.label);
+    }
     fs::remove_dir_all(dir).ok();
 }
 
@@ -671,6 +864,49 @@ struct PythonLouvainOracle {
     rows: Vec<LouvainRow>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CugraphOracleVariant {
+    label: &'static str,
+    sql: &'static str,
+    construction_policy: &'static str,
+    edge_normalize_inserted: bool,
+}
+
+async fn collect_cugraph_oracle_variant(ctx: &SessionContext, variant: CugraphOracleVariant) -> Vec<RecordBatch> {
+    let df = ctx.sql(variant.sql).await.unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let plan_display = displayable(plan.as_ref()).indent(false).to_string();
+    let policy_marker = format!("construction_policy={}", variant.construction_policy);
+    let normalize_marker = format!("edge_normalize_inserted={}", variant.edge_normalize_inserted);
+    assert!(
+        plan_display.contains(&policy_marker),
+        "{} cuGraph SQL plan should contain {policy_marker}:\n{plan_display}",
+        variant.label
+    );
+    assert!(
+        plan_display.contains(&normalize_marker),
+        "{} cuGraph SQL plan should contain {normalize_marker}:\n{plan_display}",
+        variant.label
+    );
+    datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap()
+}
+
+fn assert_pagerank_rows_match(label: &str, actual: &[PageRankRow], expected: &[PageRankRow]) {
+    assert_eq!(actual.len(), expected.len(), "{label} PageRank row count diverged from Python cuGraph oracle");
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert_eq!(actual.vertex, expected.vertex, "{label} PageRank vertex ordering diverged");
+        let delta = (actual.value - expected.value).abs();
+        assert!(
+            delta <= 1.0e-6,
+            "{label} PageRank mismatch for vertex {}: actual={} expected={} delta={}",
+            actual.vertex,
+            actual.value,
+            expected.value,
+            delta
+        );
+    }
+}
+
 fn pagerank_rows(batches: &[RecordBatch]) -> Vec<PageRankRow> {
     let mut rows = Vec::new();
     for batch in batches {
@@ -746,12 +982,12 @@ print(json.dumps({
     let output = match Command::new("python3").arg("-c").arg(script).arg(path).output() {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("Python cuGraph oracle unavailable: {error}");
+            handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
             return None;
         },
     };
     if output.status.code() == Some(77) {
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
         return None;
     }
     assert!(
@@ -807,12 +1043,12 @@ print(json.dumps({
     let output = match Command::new("python3").arg("-c").arg(script).arg(path).output() {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("Python cuGraph oracle unavailable: {error}");
+            handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
             return None;
         },
     };
     if output.status.code() == Some(77) {
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
         return None;
     }
     assert!(
@@ -871,12 +1107,12 @@ print(json.dumps({
     let output = match Command::new("python3").arg("-c").arg(script).arg(path).output() {
         Ok(output) => output,
         Err(error) => {
-            eprintln!("Python cuGraph oracle unavailable: {error}");
+            handle_python_oracle_unavailable(format!("Python cuGraph oracle unavailable: {error}"));
             return None;
         },
     };
     if output.status.code() == Some(77) {
-        eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        handle_python_oracle_unavailable(String::from_utf8_lossy(&output.stderr));
         return None;
     }
     assert!(
@@ -899,6 +1135,20 @@ print(json.dumps({
     Some(PythonLouvainOracle { versions, rows })
 }
 
+fn handle_python_oracle_unavailable(message: impl AsRef<str>) {
+    if python_oracle_required() {
+        panic!("{}", message.as_ref().trim());
+    }
+    eprintln!("{}", message.as_ref().trim());
+}
+
+fn python_oracle_required() -> bool {
+    matches!(
+        std::env::var("CUDF_CUGRAPH_ORACLE_REQUIRED").as_deref(),
+        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "required" | "REQUIRED")
+    )
+}
+
 fn write_tiny_directed_edges(path: &Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -909,10 +1159,10 @@ fn write_tiny_directed_edges(path: &Path) {
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
-            Arc::new(Int64Array::from(vec![0, 0, 1, 2, 3, 4])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1, 2, 3, 3, 4, 5])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0])) as ArrayRef,
-            Arc::new(BooleanArray::from(vec![true, true, true, true, true, false])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0, 0, 1, 2, 3, 0, 4])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 2, 3, 3, 4, 1, 5])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0, 1.0, 1.0, 5.0, 1.0])) as ArrayRef,
+            Arc::new(BooleanArray::from(vec![true, true, true, true, true, true, false])) as ArrayRef,
         ],
     )
     .unwrap();
@@ -932,9 +1182,9 @@ fn write_tiny_communities(path: &Path) {
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![
-            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5, 2])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![1, 2, 0, 4, 5, 3, 3])) as ArrayRef,
-            Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4, 5, 2, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1, 2, 0, 4, 5, 3, 3, 3])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 4.0])) as ArrayRef,
         ],
     )
     .unwrap();
