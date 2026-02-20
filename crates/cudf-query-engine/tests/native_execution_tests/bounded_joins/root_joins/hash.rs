@@ -633,6 +633,182 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
 }
 
 #[test]
+fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-prefetch-reconcile");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_with_payload_parquet(&left_path);
+    let right_schema = write_row_grouped_join_right_parquet(&right_path);
+    let left_row_groups = 4;
+    let left_rows_per_row_group = 256;
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left_row_group_bytes = vec![1; left_row_groups];
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&left_path)
+                .with_file_size_bytes(fs::metadata(&left_path).unwrap().len())
+                .with_row_group_bytes(left_row_group_bytes.clone())
+                .with_projected_row_group_bytes(left_row_group_bytes.clone(), left_row_group_bytes)
+                .with_row_group_rows(vec![left_rows_per_row_group as u64; left_row_groups]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string(), "payload".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 7);
+    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_read_prefetches_started, metrics.source_read_prefetches_completed);
+    assert!(metrics.source_read_prefetches_completed > 0);
+    assert_eq!(metrics.source_read_prefetches_abandoned, 0);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert_eq!(metrics.retry_resource_exhausted_count, 0);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.reservation_kind == ReservationKind::SourceRead
+            && event.memory_boundary == "join_source_read_prefetch"
+    }));
+    let first_join_prefetch_reserve = metrics
+        .reservation_events
+        .iter()
+        .position(|event| {
+            event.outcome.as_str() == "granted"
+                && event.action == MemoryReservationEventAction::Reserve
+                && event.reservation_kind == ReservationKind::SourceRead
+                && event.memory_boundary == "join_source_read_prefetch"
+        })
+        .expect("join probe prefetch should reserve its initial estimate");
+    assert!(metrics.reservation_events[first_join_prefetch_reserve..].iter().any(|event| {
+        event.outcome.as_str() == "granted"
+            && event.action == MemoryReservationEventAction::Grow
+            && event.reservation_kind == ReservationKind::SourceRead
+            && event.memory_boundary == "join_source_read"
+            && event.source_read_contract_quality.as_deref() == Some("observed_grow_shrink")
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), left_rows_per_row_group * 3);
+    assert_eq!(batch.num_columns(), 3);
+    assert!(int32_array(batch, 0).values().iter().all(|order_id| matches!(*order_id, 2..=4)));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decode_headroom() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-prefetch-no-headroom");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_row_grouped_join_left_parquet(&left_path);
+    let right_schema = write_row_grouped_join_right_parquet(&right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["order_id", "category"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let minimum_decode_budget = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
+    assert!(minimum_decode_budget > 1);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: minimum_decode_budget - 1,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 7);
+    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_read_prefetches_started, 0);
+    assert_eq!(metrics.source_read_prefetches_completed, 0);
+    assert!(metrics.source_read_prefetches_skipped > 0);
+    assert_eq!(metrics.source_read_prefetches_abandoned, 0);
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert!(
+        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_read_prefetch"),
+        "optional join source prefetch should not reserve when its minimum decode reservation cannot be admitted"
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_probe() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-streamed-source-unary");
     let left_path = dir.join("lineitem.parquet");
@@ -750,6 +926,109 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 2, 3]);
     assert_eq!(string_array(batch, 1).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_executes_q19_shaped_join_source_filter_predicate() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-q19-source-filter");
+    let left_path = dir.join("lineitem_part.parquet");
+    let right_path = dir.join("part_category.parquet");
+    let left_schema = write_q19_shaped_join_source_left_parquet(&left_path);
+    let right_schema = write_q19_shaped_join_source_right_parquet(&right_path);
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("partkey", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(
+        join_left_source(
+            &left_path,
+            &left_schema,
+            &["partkey", "brand", "container", "quantity", "size", "shipmode", "shipinstruct"],
+        )
+        .with_column_roles(
+            vec!["partkey".to_string()],
+            vec![
+                "brand".to_string(),
+                "container".to_string(),
+                "quantity".to_string(),
+                "size".to_string(),
+                "shipmode".to_string(),
+                "shipinstruct".to_string(),
+            ],
+        ),
+    ));
+    let filtered_left = builder.add_filter(left, q19_shaped_predicate(), Arc::clone(&left_schema));
+    let projected_left = builder.add_projection(
+        filtered_left,
+        vec![ProjectionOutput::new(Expr::column("partkey"), Field::new("partkey", DataType::Int32, false))],
+    );
+    let right = builder.add_source(SourceNode::LocalParquet(join_right_source(
+        &right_path,
+        &right_schema,
+        &["partkey", "category"],
+    )));
+    let join = builder.add_join(
+        projected_left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                cudf_query_engine::ColumnRef::input(0, "partkey", "left_partkey"),
+                cudf_query_engine::ColumnRef::input(1, "partkey", "right_partkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "partkey", "partkey"), "partkey"),
+            JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    assert!(
+        plan.capability_analysis().admits_strict_bounded_join(),
+        "Q19-shaped source-adjacent filter should stay capability-admitted:\n{plan}"
+    );
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(2))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.reservation_denied_count, 0);
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
+            event.outcome.as_str() == "applied"
+                && event.action == MemoryReservationEventAction::Transfer
+                && event.reservation_kind == ReservationKind::OperatorOutput
+                && event.memory_boundary == "join_source_filter_output"
+        }),
+        "Q19-shaped filter must execute on the join_source_filter reservation boundary"
+    );
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 3);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 3]);
+    assert_eq!(
+        string_array(batch, 1).iter().collect::<Vec<_>>(),
+        vec![Some("brand12"), Some("brand23"), Some("brand34")]
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1512,6 +1791,132 @@ fn join_source_with_projected_row_group_estimates(
         Arc::clone(schema),
         columns.iter().map(|column| (*column).to_string()).collect(),
     )
+}
+
+fn write_row_grouped_join_left_with_payload_parquet(path: &Path) -> Arc<Schema> {
+    let row_groups = 4;
+    let rows_per_row_group = 256;
+    let total_rows = row_groups * rows_per_row_group;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("payload", DataType::Utf8, false),
+    ]));
+    let mut order_ids = Vec::with_capacity(total_rows);
+    let mut quantities = Vec::with_capacity(total_rows);
+    for row_group in 0..row_groups {
+        let order_id = i32::try_from(row_group + 1).unwrap();
+        order_ids.extend(std::iter::repeat(order_id).take(rows_per_row_group));
+        quantities.extend((0..rows_per_row_group).map(|row| order_id * 1000 + i32::try_from(row).unwrap()));
+    }
+    let payload = "x".repeat(8192);
+    let payloads = vec![payload.as_str(); total_rows];
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(order_ids)),
+            Arc::new(Int32Array::from(quantities)),
+            Arc::new(StringArray::from(payloads)),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, rows_per_row_group);
+    schema
+}
+
+fn write_q19_shaped_join_source_left_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("partkey", DataType::Int32, false),
+        Field::new("brand", DataType::Utf8, false),
+        Field::new("container", DataType::Utf8, false),
+        Field::new("quantity", DataType::Float64, false),
+        Field::new("size", DataType::Int32, false),
+        Field::new("shipmode", DataType::Utf8, false),
+        Field::new("shipinstruct", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+            Arc::new(StringArray::from(vec![
+                "Brand#12", "Brand#23", "Brand#34", "Brand#12", "Brand#12", "Brand#23", "Brand#34", "Brand#34",
+            ])),
+            Arc::new(StringArray::from(vec![
+                "SM CASE", "MED BOX", "LG PACK", "SM CASE", "WRAP", "MED BOX", "LG PACK", "LG PACK",
+            ])),
+            Arc::new(Float64Array::from(vec![5.0, 15.0, 25.0, 12.0, 5.0, 9.0, 25.0, 25.0])),
+            Arc::new(Int32Array::from(vec![3, 8, 12, 3, 3, 8, 12, 12])),
+            Arc::new(StringArray::from(vec!["AIR", "AIR REG", "AIR", "AIR", "AIR", "AIR", "SHIP", "AIR"])),
+            Arc::new(StringArray::from(vec![
+                "DELIVER IN PERSON",
+                "DELIVER IN PERSON",
+                "DELIVER IN PERSON",
+                "DELIVER IN PERSON",
+                "DELIVER IN PERSON",
+                "DELIVER IN PERSON",
+                "DELIVER IN PERSON",
+                "TAKE BACK RETURN",
+            ])),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 2);
+    schema
+}
+
+fn write_q19_shaped_join_source_right_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("partkey", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8])),
+            Arc::new(StringArray::from(vec![
+                "brand12",
+                "brand23",
+                "brand34",
+                "qty_high",
+                "container",
+                "qty_low",
+                "mode",
+                "instruction",
+            ])),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 8);
+    schema
+}
+
+fn q19_shaped_predicate() -> Expr {
+    let branch_1 = q19_brand_branch("Brand#12", &["SM CASE", "SM BOX", "SM PACK", "SM PKG"], 1.0, 11.0, 5);
+    let branch_2 = q19_brand_branch("Brand#23", &["MED BAG", "MED BOX", "MED PKG", "MED PACK"], 10.0, 20.0, 10);
+    let branch_3 = q19_brand_branch("Brand#34", &["LG CASE", "LG BOX", "LG PACK", "LG PKG"], 20.0, 30.0, 15);
+    Expr::binary(Expr::binary(branch_1, BinaryOp::Or, branch_2), BinaryOp::Or, branch_3)
+}
+
+fn q19_brand_branch(brand: &str, containers: &[&str], quantity_min: f64, quantity_max: f64, size_max: i32) -> Expr {
+    and_all(vec![
+        Expr::binary(Expr::column("brand"), BinaryOp::Eq, utf8_lit(brand)),
+        Expr::in_list(Expr::column("container"), containers.iter().map(|container| utf8_lit(container)).collect()),
+        Expr::binary(Expr::column("quantity"), BinaryOp::GtEq, Expr::literal(LiteralValue::Float64(quantity_min))),
+        Expr::binary(Expr::column("quantity"), BinaryOp::LtEq, Expr::literal(LiteralValue::Float64(quantity_max))),
+        Expr::binary(Expr::column("size"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(1))),
+        Expr::binary(Expr::column("size"), BinaryOp::LtEq, Expr::literal(LiteralValue::Int32(size_max))),
+        Expr::in_list(Expr::column("shipmode"), vec![utf8_lit("AIR"), utf8_lit("AIR REG")]),
+        Expr::binary(Expr::column("shipinstruct"), BinaryOp::Eq, utf8_lit("DELIVER IN PERSON")),
+    ])
+}
+
+fn and_all(mut predicates: Vec<Expr>) -> Expr {
+    let first = predicates.remove(0);
+    predicates.into_iter().fold(first, |left, right| Expr::binary(left, BinaryOp::And, right))
+}
+
+fn utf8_lit(value: &str) -> Expr {
+    Expr::literal(LiteralValue::Utf8(value.to_string()))
 }
 
 #[test]

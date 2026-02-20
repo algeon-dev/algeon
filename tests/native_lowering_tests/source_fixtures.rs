@@ -405,6 +405,39 @@ pub(super) fn parquet_scan_with_pushed_down_decimal_in_list_predicate(
     DataSourceExec::from_data_source(file_scan)
 }
 
+pub(super) fn parquet_scan_with_pushed_down_case_decimal_divide_predicate(
+    path: &std::path::Path,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let table_schema = scan.schema();
+    let vehicle_count = col("hd_vehicle_count", &table_schema).unwrap();
+    let dep_count = col("hd_dep_count", &table_schema).unwrap();
+    let zero = lit(ScalarValue::Int32(Some(0)));
+    let vehicle_positive = binary(Arc::clone(&vehicle_count), Operator::Gt, zero, &table_schema).unwrap();
+    let dep_decimal: Arc<dyn PhysicalExpr> = Arc::new(CastExpr::new(dep_count, DataType::Decimal128(18, 3), None));
+    let vehicle_decimal: Arc<dyn PhysicalExpr> =
+        Arc::new(CastExpr::new(vehicle_count, DataType::Decimal128(18, 0), None));
+    let ratio = binary(dep_decimal, Operator::Divide, vehicle_decimal, &table_schema).unwrap();
+    let case_ratio: Arc<dyn PhysicalExpr> =
+        Arc::new(CaseExpr::try_new(None, vec![(vehicle_positive, ratio)], None).unwrap());
+    let ratio_type = case_ratio.data_type(table_schema.as_ref()).unwrap();
+    let DataType::Decimal128(precision, scale) = ratio_type else {
+        panic!("CASE decimal divide should declare Decimal128 output, got {ratio_type:?}");
+    };
+    let threshold = lit(ScalarValue::Decimal128(Some(10_i128.pow(u32::try_from(scale).unwrap())), precision, scale));
+    let predicate = binary(case_ratio, Operator::Gt, threshold, &table_schema).unwrap();
+    let parquet_source = parquet_source.with_predicate(predicate).with_pushdown_filters(true);
+    let file_scan = FileScanConfigBuilder::from(file_scan.clone())
+        .with_projection_indices(Some(vec![0, 2, 4]))
+        .unwrap()
+        .with_source(Arc::new(parquet_source))
+        .build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_projection_and_pushed_label_predicate(
     path: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {

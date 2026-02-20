@@ -3,11 +3,11 @@ use std::sync::Arc;
 use arrow::datatypes::{DataType, Field, Schema};
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, Expr, GpuResidentSource,
-    JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetSource, NodeId, PipelineBarrier,
-    PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
-    PipelineTaskId, PipelineTaskKind, PlanNode, QueryError, QueryPlan, QueryPlanBuilder, ReservationGate,
+    JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LocalParquetFile, LocalParquetSource, NodeId,
+    PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind,
+    PipelineTask, PipelineTaskId, PipelineTaskKind, PlanNode, QueryError, QueryPlan, QueryPlanBuilder, ReservationGate,
     ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource, ResidentResourceId,
-    SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
+    SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode, StrictBoundedContractReport,
     capability::{
         CapabilityAnalysis, CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirement,
         ReservationRequirementScope, SubgraphInvariantKind,
@@ -745,6 +745,63 @@ fn compile_pipeline_rejects_local_capability_rejection_before_building_graph() {
     assert_eq!(error.fact_value("capability_scope"), Some("node"));
     assert_eq!(error.fact_value("capability_reason"), Some("unsupported_gpu_resident_source_capability"));
     assert_eq!(error.fact_value("node_id"), Some("n0"));
+}
+
+#[test]
+fn compile_pipeline_reports_exact_source_read_preflight_when_lower_layer_covers_source() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/exact-source-preflight.parquet").with_row_group_rows(vec![10])],
+        Arc::clone(&schema),
+        vec!["payload".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("exact source preflight plan should compile");
+
+    let source_gate = pipeline
+        .gates()
+        .iter()
+        .find(|gate| gate.reservation_kind() == ReservationKind::SourceRead)
+        .expect("compiled pipeline should carry a source-read gate");
+    assert_eq!(source_gate.required_contract(), "parquet_source_read_exact_preflight");
+    assert_eq!(source_gate.quality(), ContractQuality::ExactPreflight);
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        .expect("exact source preflight should be valid strict contract evidence");
+    let source_row = report
+        .gate_rows()
+        .iter()
+        .find(|row| row.reservation_kind == ReservationKind::SourceRead)
+        .expect("strict report should contain source-read row");
+    assert_eq!(source_row.required_contract, "parquet_source_read_exact_preflight");
+    assert_eq!(source_row.contract_quality, ContractQuality::ExactPreflight);
+    assert_eq!(source_row.unresolved_preflight_gap, None);
+}
+
+#[test]
+fn compile_pipeline_keeps_source_read_fallback_contract_for_uncovered_source() {
+    let schema = Arc::new(Schema::new(vec![Field::new("payload", DataType::Utf8, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/fallback-source-preflight.parquet").with_row_group_rows(vec![10])],
+        Arc::clone(&schema),
+        vec!["payload".to_string()],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("fallback source preflight plan should compile");
+
+    let source_gate = pipeline
+        .gates()
+        .iter()
+        .find(|gate| gate.reservation_kind() == ReservationKind::SourceRead)
+        .expect("compiled pipeline should carry a source-read gate");
+    assert_eq!(source_gate.required_contract(), "source_contract");
+    assert_eq!(source_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
 }
 
 #[test]

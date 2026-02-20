@@ -368,7 +368,10 @@ fn is_ordered_reservation_trace_event(event: &MemoryReservationEvent) -> bool {
     is_granted_admission_event(event)
         || (event.outcome.as_str() == "applied" && event.action == MemoryReservationEventAction::Transfer)
         || (event.outcome.as_str() == "applied"
-            && event.action == MemoryReservationEventAction::AliasAcquire
+            && matches!(
+                event.action,
+                MemoryReservationEventAction::AliasAcquire | MemoryReservationEventAction::AliasRelabel
+            )
             && matches!(event.reservation_kind, ReservationKind::BuildSide | ReservationKind::ProbeSide))
 }
 

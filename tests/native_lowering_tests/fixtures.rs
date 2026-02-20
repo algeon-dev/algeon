@@ -50,6 +50,28 @@ pub(super) fn write_decimal_filter_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+pub(super) fn write_household_demographics_like_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("hd_dep_count", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+        Field::new("hd_vehicle_count", DataType::Int32, false),
+        Field::new("m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(Int32Array::from(vec![4, 0, 3])),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+            Arc::new(Int32Array::from(vec![2, 0, 1])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
 pub(super) fn write_join_left_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

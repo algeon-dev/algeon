@@ -51,7 +51,7 @@ pub(super) fn execute_filter(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let predicate = lower_expr(&node.predicate)?;
+    let predicate = lower_filter_predicate_expr(&node.predicate)?;
     let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
@@ -69,7 +69,7 @@ pub(super) fn execute_filter_with_budget(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    let predicate = lower_expr(&node.predicate)?;
+    let predicate = lower_filter_predicate_expr(&node.predicate)?;
     let frame = input.into_frame();
     let overrides = token.execution_overrides();
     let timer = Instant::now();

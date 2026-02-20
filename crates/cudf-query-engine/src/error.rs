@@ -385,6 +385,20 @@ impl QueryError {
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }
+
+    /// Typed cuDF budget-exhaustion counters preserved from the source chain.
+    pub fn cudf_budget_exhaustion(&self) -> Option<&cudf::BudgetExhaustionDetail> {
+        let mut current = self.source_error();
+        while let Some(error) = current {
+            if let Some(cudf_error) = error.downcast_ref::<cudf::Error>()
+                && let Some(detail) = cudf_error.budget_exhaustion()
+            {
+                return Some(detail);
+            }
+            current = error.source();
+        }
+        None
+    }
 }
 
 impl fmt::Display for QueryError {

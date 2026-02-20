@@ -11,12 +11,12 @@ use datafusion::{
 };
 use datafusion_cudf::{
     CudfOptimizerConfig, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION,
-    NativeCudfExecutionConfig, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
-    NativeDataFusionRuntimeOutcome, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
-    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
-    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
-    ParityFloatTolerance, ParityStageStatus, ParityStatus, TPCDS_QUERIES, TPCDS_TABLES, compare_record_batches,
-    discover_tpcds_table_layout, lower_physical_plan_to_native, sql_has_top_level_order_by,
+    NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativeTpcdsParityCpuOutcome,
+    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativeRuntimeOutcome,
+    NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem,
+    ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus, TPCDS_QUERIES, TPCDS_TABLES,
+    compare_record_batches, discover_tpcds_table_layout, lower_physical_plan_to_native, sql_has_top_level_order_by,
     tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_parity_workload_items,
     tpcds_report_session_config,
 };
@@ -447,9 +447,24 @@ async fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
         .filter(|row| row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::PartialNative)
         .map(|row| row.query_id.as_str())
         .collect();
+    let cpu_only: BTreeSet<&str> = report
+        .rows
+        .iter()
+        .filter(|row| row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Cpu)
+        .map(|row| row.query_id.as_str())
+        .collect();
     let expected: BTreeSet<&str> = BTreeSet::new();
 
     assert_eq!(partial_native, expected);
+    assert_eq!(cpu_only, expected);
+    for query_id in ["q34", "q73"] {
+        let row =
+            report.rows.iter().find(|row| row.query_id == query_id).unwrap_or_else(|| panic!("{query_id} is missing"));
+        assert_eq!(row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced, "{query_id}");
+        assert_eq!(row.post_native_plan_root, "NativeCudfExec", "{query_id}");
+        assert_eq!(row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native, "{query_id}");
+        assert_eq!(row.native_plan_fragment_count, 1, "{query_id}");
+    }
     for query_id in expected {
         let rows: Vec<_> = report.rows.iter().filter(|row| row.query_id == query_id).collect();
         assert!(!rows.is_empty(), "{query_id} should have planning rows");
