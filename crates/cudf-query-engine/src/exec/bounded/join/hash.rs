@@ -547,15 +547,60 @@ fn materialize_bounded_root_hash_join_probe_chunk(
     };
     let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
     let right_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Right);
-    let left_output_bytes =
-        join_side_output_reservation_bytes(&left.frame, &left_indices, &left_projection, &overrides, JoinSide::Left)?;
-    let right_output_bytes = join_side_output_reservation_bytes(
+    super::common::trace_preflight_entry(
+        "execute_bounded_root_hash_join_materialize",
+        "root_hash_join",
+        node_id,
+        reservations,
+        0,
+        indices.build().len() as u64,
+        left.rows,
+        left.bytes,
+        right.rows,
+        right.bytes,
+    );
+    let left_output_bytes = match join_side_output_reservation_bytes(
+        &left.frame,
+        &left_indices,
+        &left_projection,
+        &overrides,
+        JoinSide::Left,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            super::common::trace_preflight_failed(
+                "execute_bounded_root_hash_join_materialize:left",
+                node_id,
+                reservations,
+                &error,
+            );
+            return Err(error);
+        },
+    };
+    let right_output_bytes = match join_side_output_reservation_bytes(
         &right.frame,
         &right_indices,
         &right_projection,
         &overrides,
         JoinSide::Right,
-    )?;
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            super::common::trace_preflight_failed(
+                "execute_bounded_root_hash_join_materialize:right",
+                node_id,
+                reservations,
+                &error,
+            );
+            return Err(error);
+        },
+    };
+    super::common::trace_preflight_success(
+        "execute_bounded_root_hash_join_materialize",
+        node_id,
+        reservations,
+        left_output_bytes.saturating_add(right_output_bytes),
+    );
     let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
     let output_reservation = reservations.try_reserve(
         bounded_join_request(

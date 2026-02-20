@@ -228,14 +228,40 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     let output_rows = pair_indices.len() as u64;
     let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
     drop(pair_indices);
+    super::super::common::trace_preflight_entry(
+        "materialize_compiled_one_shot_equi_join_probe_chunk",
+        "streamed_one_shot",
+        node_id,
+        reservations,
+        index_bytes,
+        output_rows,
+        left.rows,
+        left.bytes,
+        right.rows,
+        right.bytes,
+    );
     let output_reservation_bytes = match indices.output_reservation_size_bytes(
         &left.frame,
         &right.frame,
         &overrides,
         &node.spec.output_projection,
     ) {
-        Ok(bytes) => bytes,
+        Ok(bytes) => {
+            super::super::common::trace_preflight_success(
+                "materialize_compiled_one_shot_equi_join_probe_chunk",
+                node_id,
+                reservations,
+                bytes,
+            );
+            bytes
+        },
         Err(error) => {
+            super::super::common::trace_preflight_failed(
+                "materialize_compiled_one_shot_equi_join_probe_chunk",
+                node_id,
+                reservations,
+                &error,
+            );
             drop(indices);
             reservations.release(gather_map_reservation, metrics);
             drop(probe);

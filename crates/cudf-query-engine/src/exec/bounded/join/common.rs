@@ -227,6 +227,87 @@ pub(super) fn bounded_join_request(
         .with_attempt(1, 1)
 }
 
+// Diagnostic trace surface for the bounded-join output-materialize preflight.
+// Gated by `CUDF_BOUNDED_JOIN_MATERIALIZE_TRACE=1`. Emits per-call entry /
+// success / failure events on stderr with the reservation-tracker snapshot
+// (budget, reserved, remaining) at the moment the libcudf preflight runs.
+// Used to localize unreserved-allocation hazards in the join-materialize
+// chokepoint without changing TSV report schemas.
+pub(in crate::exec::bounded) fn trace_preflight_enabled() -> bool {
+    std::env::var("CUDF_BOUNDED_JOIN_MATERIALIZE_TRACE").map(|v| v == "1").unwrap_or(false)
+}
+
+pub(in crate::exec::bounded) fn trace_preflight_entry(
+    caller: &'static str,
+    execution_strategy: &str,
+    node_id: NodeId,
+    reservations: &ReservationTracker,
+    gather_map_bytes: u64,
+    expected_output_rows: u64,
+    left_rows: u64,
+    left_bytes: u64,
+    right_rows: u64,
+    right_bytes: u64,
+) {
+    if !trace_preflight_enabled() {
+        return;
+    }
+    eprintln!(
+        "[bounded-join-materialize-trace] phase=preflight_entry caller={} execution_strategy={} node_id={} budget_bytes={} reserved_bytes={} remaining_bytes={} gather_map_bytes={} expected_output_rows={} left_rows={} left_bytes={} right_rows={} right_bytes={}",
+        caller,
+        execution_strategy,
+        node_id,
+        reservations.budget(),
+        reservations.reserved_bytes(),
+        reservations.remaining_bytes(),
+        gather_map_bytes,
+        expected_output_rows,
+        left_rows,
+        left_bytes,
+        right_rows,
+        right_bytes,
+    );
+}
+
+pub(in crate::exec::bounded) fn trace_preflight_success(
+    caller: &'static str,
+    node_id: NodeId,
+    reservations: &ReservationTracker,
+    output_reservation_bytes: u64,
+) {
+    if !trace_preflight_enabled() {
+        return;
+    }
+    eprintln!(
+        "[bounded-join-materialize-trace] phase=preflight_success caller={} node_id={} output_reservation_bytes={} reserved_bytes_now={} remaining_bytes_now={}",
+        caller,
+        node_id,
+        output_reservation_bytes,
+        reservations.reserved_bytes(),
+        reservations.remaining_bytes(),
+    );
+}
+
+pub(in crate::exec::bounded) fn trace_preflight_failed(
+    caller: &'static str,
+    node_id: NodeId,
+    reservations: &ReservationTracker,
+    error: &QueryError,
+) {
+    if !trace_preflight_enabled() {
+        return;
+    }
+    eprintln!(
+        "[bounded-join-materialize-trace] phase=preflight_failed caller={} node_id={} reserved_bytes_at_failure={} remaining_bytes_at_failure={} budget_bytes={} error_code={:?}",
+        caller,
+        node_id,
+        reservations.reserved_bytes(),
+        reservations.remaining_bytes(),
+        reservations.budget(),
+        error.code(),
+    );
+}
+
 pub(super) fn join_side_output_reservation_bytes(
     frame: &DataFrame,
     indices: &cudf::DataFrameJoinIndices,

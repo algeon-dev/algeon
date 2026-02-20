@@ -1203,8 +1203,33 @@ fn materialize_compiled_indices_output(
 ) -> Result<ResidentGpuFrame> {
     let overrides = execution_overrides(context);
     let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
-    let output_reservation_bytes =
-        indices.output_reservation_size_bytes(&left.frame, &right.frame, &overrides, &node.spec.output_projection)?;
+    super::common::trace_preflight_entry(
+        "materialize_compiled_indices_output",
+        execution_strategy,
+        node_id,
+        reservations,
+        gather_map_bytes,
+        expected_output_rows,
+        left.rows,
+        left.bytes,
+        right.rows,
+        right.bytes,
+    );
+    let output_reservation_bytes = match indices.output_reservation_size_bytes(
+        &left.frame,
+        &right.frame,
+        &overrides,
+        &node.spec.output_projection,
+    ) {
+        Ok(bytes) => {
+            super::common::trace_preflight_success("materialize_compiled_indices_output", node_id, reservations, bytes);
+            bytes
+        },
+        Err(error) => {
+            super::common::trace_preflight_failed("materialize_compiled_indices_output", node_id, reservations, &error);
+            return Err(error);
+        },
+    };
     if let Some(index_bytes) = one_shot_index_bytes {
         metrics.record_one_shot_join();
         metrics.record_one_shot_join_index_bytes(index_bytes);

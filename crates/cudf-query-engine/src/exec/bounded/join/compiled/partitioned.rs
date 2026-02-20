@@ -695,14 +695,30 @@ pub(super) fn materialize_partitioned_hash_equi_join_partition(
     let output_rows = pair_indices.len() as u64;
     let indices = CompiledJoinIndices::Pair { left: pair_indices.left().clone(), right: pair_indices.right().clone() };
     drop(pair_indices);
+    super::super::common::trace_preflight_entry(
+        "partitioned_keyed_partition",
+        "partitioned_keyed",
+        node_id,
+        reservations,
+        0,
+        output_rows,
+        left.rows,
+        left.bytes,
+        right.rows,
+        right.bytes,
+    );
     let output_reservation_bytes = match indices.output_reservation_size_bytes(
         &left.frame,
         &right.frame,
         &overrides,
         &node.spec.output_projection,
     ) {
-        Ok(bytes) => bytes,
+        Ok(bytes) => {
+            super::super::common::trace_preflight_success("partitioned_keyed_partition", node_id, reservations, bytes);
+            bytes
+        },
         Err(error) => {
+            super::super::common::trace_preflight_failed("partitioned_keyed_partition", node_id, reservations, &error);
             drop(indices);
             reservations.release(gather_map_reservation, metrics);
             drop(left);
@@ -887,14 +903,30 @@ pub(super) fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
+    super::super::common::trace_preflight_entry(
+        "partitioned_mixed_partition",
+        "partitioned_mixed",
+        node_id,
+        reservations,
+        index_bytes,
+        output_rows,
+        left.rows,
+        left.bytes,
+        right.rows,
+        right.bytes,
+    );
     let output_reservation_bytes = match indices.output_reservation_size_bytes(
         &left.frame,
         &right.frame,
         &overrides,
         &node.spec.output_projection,
     ) {
-        Ok(bytes) => bytes,
+        Ok(bytes) => {
+            super::super::common::trace_preflight_success("partitioned_mixed_partition", node_id, reservations, bytes);
+            bytes
+        },
         Err(error) => {
+            super::super::common::trace_preflight_failed("partitioned_mixed_partition", node_id, reservations, &error);
             drop(indices);
             reservations.release(gather_map_reservation, metrics);
             drop(left);
