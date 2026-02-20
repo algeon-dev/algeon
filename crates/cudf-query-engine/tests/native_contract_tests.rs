@@ -56,6 +56,8 @@ mod expr_contracts;
 mod graph_algorithm;
 #[path = "native_contract_tests/optimizer_contracts.rs"]
 mod optimizer_contracts;
+#[path = "native_contract_tests/partial_aggregate_sizing.rs"]
+mod partial_aggregate_sizing;
 #[path = "native_contract_tests/phase_e_module_boundaries.rs"]
 mod phase_e_module_boundaries;
 #[path = "native_contract_tests/pipeline_compiled_execution.rs"]

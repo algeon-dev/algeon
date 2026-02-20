@@ -55,7 +55,7 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
 }
 
 #[test]
-fn bounded_native_query_caps_projected_source_read_admission_and_shrinks_to_observed() {
+fn bounded_native_query_uses_exact_source_read_admission_and_shrinks_to_observed() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-source-read-sizing-contract");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -104,14 +104,15 @@ fn bounded_native_query_caps_projected_source_read_admission_and_shrinks_to_obse
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.reservation_denied_count, 0);
+    let exact_source_read_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
     assert!(metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
             && event.action == MemoryReservationEventAction::Reserve
             && event.reservation_kind == ReservationKind::SourceRead
             && event.memory_boundary == "source_chunk_read"
-            && event.requested_bytes == max_source_chunk_bytes
-            && event.source_read_contract_quality.as_deref() == Some("projected_uncompressed_estimate")
-            && event.source_read_planning_bytes == Some(2_000_001)
+            && event.requested_bytes == exact_source_read_bytes
+            && event.source_read_contract_quality.as_deref() == Some("exact_lower_level_contract")
+            && event.source_read_planning_bytes == Some(exact_source_read_bytes)
             && event.source_read_estimated_bytes == Some(2_000_001)
     }));
     assert!(metrics.reservation_events.iter().any(|event| {
@@ -183,7 +184,7 @@ fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
 }
 
 #[test]
-fn bounded_native_query_reports_source_chunk_hard_budget_failure_after_reservation_admission() {
+fn bounded_native_query_reports_exact_source_preflight_reservation_failure_before_decode() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-source-hard-budget-failure");
     let path = dir.join("input.parquet");
     let input_schema = write_single_i32_row_grouped_parquet(&path, 4);
@@ -224,27 +225,17 @@ fn bounded_native_query_reports_source_chunk_hard_budget_failure_after_reservati
         .unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("hard cudf source read budget should fail"),
+        Ok(_) => panic!("exact source-read preflight reservation should fail"),
         Err(error) => error,
     };
-    let admitted_budget = admitted_budget.to_string();
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
-    assert_eq!(error.fact_value("budget_boundary"), Some("source_chunk_read"));
-    assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
-    assert_eq!(error.fact_value("budget_status"), Some("exceeded_or_lower_layer_rejected"));
-    assert!(error.fact_value("budget_peak_bytes").is_some());
-    assert!(error.fact_value("budget_current_bytes").is_some());
-    assert!(error.fact_value("budget_failed_allocation_count").is_some());
-    assert!(error.fact_value("budget_largest_failed_allocation_bytes").is_some());
-    let budget = error.cudf_budget_exhaustion().expect("source-read OOM should preserve typed budget detail");
-    assert_eq!(budget.boundary(), "source_chunk_read");
-    assert_eq!(budget.operation(), "dataframe::read_parquet_source_chunk_with_budget");
-    assert_eq!(budget.hard_budget_bytes(), admitted_budget.parse::<usize>().unwrap());
-    assert!(budget.failed_allocation_count() > 0);
-    assert!(budget.largest_failed_allocation_bytes() > 0);
+    let exact_source_read_bytes =
+        u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap().to_string();
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
     assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
     assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("source_read_contract_quality"), Some("exact_lower_level_contract"));
+    assert_eq!(error.fact_value("source_read_planning_bytes"), Some(exact_source_read_bytes.as_str()));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));
     assert_eq!(error.fact_value("row_groups"), Some("0"));
@@ -295,8 +286,16 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
         .unwrap();
     let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
     let mut source_budget = 0_u64;
+    let mut source_observed_bytes = None;
     let mut operator_budget = None;
     for event in &baseline.metrics().reservation_events {
+        if source_observed_bytes.is_none()
+            && event.reservation_kind == ReservationKind::SourceRead
+            && event.memory_boundary == "source_chunk_read"
+            && event.action == MemoryReservationEventAction::Shrink
+        {
+            source_observed_bytes = Some(event.current_reserved_bytes);
+        }
         if event.outcome.as_str() != "granted" {
             continue;
         }
@@ -312,6 +311,7 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
         }
     }
     let operator_budget = operator_budget.expect("baseline should reserve chunk operator work");
+    let source_observed_bytes = source_observed_bytes.expect("baseline should shrink source read to observed bytes");
     assert!(source_budget > 0);
     assert!(operator_budget > 0);
 
@@ -332,7 +332,8 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
         Ok(_) => panic!("hard cudf chunk operator budget should fail"),
         Err(error) => error,
     };
-    let operator_budget = operator_token_budget.to_string();
+    let operator_budget =
+        source_budget.saturating_add(operator_token_budget).saturating_sub(source_observed_bytes).to_string();
     assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
     assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
     assert_eq!(error.fact_value("budget_bytes"), Some(operator_budget.as_str()));
@@ -396,7 +397,7 @@ fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.source_read_prefetches_started, 1);
+    assert_eq!(metrics.source_read_prefetches_started, 2);
     let first_required_observation = metrics
         .reservation_events
         .iter()
@@ -435,7 +436,7 @@ fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_
 }
 
 #[test]
-fn bounded_native_query_reports_global_count_scalar_output_hard_budget_failure() {
+fn bounded_native_query_reports_global_count_exact_source_preflight_reservation_failure() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("count_rows_0", DataType::Int64, false),
@@ -481,17 +482,14 @@ fn bounded_native_query_reports_global_count_scalar_output_hard_budget_failure()
         .unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("bounded scalar-to-series output should fail the hard operator budget"),
+        Ok(_) => panic!("exact count-source preflight reservation should fail before operator execution"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
-    assert_eq!(error.operation(), "cudf_query_engine.global_aggregate.count_output");
-    assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
-    assert_eq!(error.fact_value("budget_bytes"), Some("1016"));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
-    assert_eq!(error.fact_value("budget_operation"), Some("runtime::series_from_value_with_budget"));
-    assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
-    assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
+    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
+    assert_eq!(error.fact_value("source_read_contract_quality"), Some("exact_lower_level_contract"));
 }
 
 #[test]

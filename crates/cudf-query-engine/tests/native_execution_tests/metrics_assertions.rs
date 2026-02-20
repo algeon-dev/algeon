@@ -46,7 +46,13 @@ pub(super) fn assert_source_budget_event_context(
     read_columns: &str,
     projected_columns: &str,
 ) {
-    assert_eq!(event.unresolved_contract.as_deref(), Some("libcudf_parquet_decoded_output_preflight_unavailable"));
+    if event.context_facts.get("source_read_preflight_contract").map(String::as_str)
+        == Some("exact_retained_output_upper_bound")
+    {
+        assert_eq!(event.unresolved_contract.as_deref(), None);
+    } else {
+        assert_eq!(event.unresolved_contract.as_deref(), Some("libcudf_parquet_decoded_output_preflight_unavailable"));
+    }
     assert_eq!(event.context_facts.get("source_kind").map(String::as_str), Some("data"));
     assert_eq!(event.context_facts.get("source_read_mode").map(String::as_str), Some("execution_frame"));
     assert_eq!(event.context_facts.get("read_columns").map(String::as_str), Some(read_columns));

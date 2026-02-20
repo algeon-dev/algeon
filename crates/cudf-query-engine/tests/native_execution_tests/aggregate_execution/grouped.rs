@@ -200,12 +200,13 @@ fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it()
     assert_eq!(metrics.source_chunks_retried, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.partial_aggregate_count, 1);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .all(|event| { !(event.memory_boundary == "source_chunk_read" && event.requested_bytes > 1600) })
-    );
+    let exact_source_read_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.memory_boundary == "source_chunk_read"
+            && event.action == MemoryReservationEventAction::Reserve
+            && event.source_read_contract_quality.as_deref() == Some("exact_lower_level_contract")
+            && event.requested_bytes == exact_source_read_bytes
+    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

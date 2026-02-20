@@ -48,12 +48,12 @@ pub use error::{Facts, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorSta
 pub use exec::{
     AdaptivePipelineAdmission, GpuDataFrame, GpuHashJoinBuildCache, GpuHashJoinBuildHandle, GpuLocalParquetSourceCache,
     GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap, GpuResultHandle,
-    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, QueryExecutionResult, QueryOutput,
-    QueryOutputMode, STRING_OFFSET_BYTES_CONSERVATIVE, StrictBoundedPipelineAdmission,
+    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape, QueryExecutionResult,
+    QueryOutput, QueryOutputMode, STRING_OFFSET_BYTES_CONSERVATIVE, StrictBoundedPipelineAdmission,
     adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history, execute_query_plan,
     execute_query_plan_with_gpu_inputs, join_output_upper_bound_bytes, materialize_gpu_result_to_host,
-    read_gpu_resident_source, read_local_parquet_source, strict_bounded_pipeline_admission,
-    validate_local_parquet_source,
+    partial_aggregate_upper_bound_bytes, read_gpu_resident_source, read_local_parquet_source,
+    strict_bounded_pipeline_admission, validate_local_parquet_source,
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,
