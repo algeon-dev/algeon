@@ -707,11 +707,15 @@ pub(super) fn materialize_partitioned_hash_equi_join_partition(
         right.rows,
         right.bytes,
     );
-    let output_reservation_bytes = match indices.output_reservation_size_bytes(
+    let output_reservation_bytes = match indices.output_upper_bound_size_bytes(
+        context,
+        node_id,
         &left.frame,
         &right.frame,
-        &overrides,
+        output_rows,
         &node.spec.output_projection,
+        reservations,
+        metrics,
     ) {
         Ok(bytes) => {
             super::super::common::trace_preflight_success("partitioned_keyed_partition", node_id, reservations, bytes);
@@ -775,21 +779,16 @@ pub(super) fn materialize_partitioned_hash_equi_join_partition(
             return Err(error);
         },
     };
-    if output_bytes > output_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(output_reservation.bytes());
-        reservations.try_grow(
-            &mut output_reservation,
-            bounded_join_request(
-                ReservationKind::JoinOutput,
-                "join_partition_output",
-                delta,
-                reservations.budget(),
-                node_id,
-            ),
-            metrics,
-        )?;
-    } else {
-        reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
+    {
+        drop(output);
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        reservations.release(output_reservation, metrics);
+        drop(left);
+        drop(right);
+        return Err(error);
     }
     drop(indices);
     reservations.release(gather_map_reservation, metrics);
