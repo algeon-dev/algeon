@@ -198,7 +198,13 @@ impl YieldedFrameCounterTestGuard {
 }
 
 pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
-    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>>;
+    fn next_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>>;
+
+    fn release(&mut self, _reservations: &mut ReservationTracker, _metrics: &mut QueryMetrics) {}
 }
 
 struct ResidentFrameStreamProducer {
@@ -211,12 +217,19 @@ impl ResidentFrameStreamProducer {
         Self { producer_reservations, inner: Some(inner) }
     }
 
-    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>> {
-        self.inner.as_mut()?.next_frame()
+    fn next_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
+        self.inner.as_mut()?.next_frame(reservations, metrics)
     }
 
     fn release(mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
-        drop(self.inner.take());
+        if let Some(mut inner) = self.inner.take() {
+            inner.release(reservations, metrics);
+            drop(inner);
+        }
         for reservation in self.producer_reservations.drain(..).rev() {
             reservations.release(reservation, metrics);
         }
@@ -319,13 +332,17 @@ impl ResidentFrameStreamPayload {
         self.frames.into_iter()
     }
 
-    pub(in crate::exec::bounded) fn next_yielded_frame(&mut self) -> Option<Result<YieldedFrame>> {
+    pub(in crate::exec::bounded) fn next_yielded_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<YieldedFrame>> {
         if !self.frames.is_empty() {
             let frame = self.frames.remove(0);
             return Some(Ok(YieldedFrame::from_existing_payload_frame(frame, Rc::clone(&self.live_reservation_bytes))));
         }
         let producer = self.producer.as_mut()?;
-        producer.next_frame().map(|result| {
+        producer.next_frame(reservations, metrics).map(|result| {
             result.map(|frame| YieldedFrame::yield_from_producer(frame, Rc::clone(&self.live_reservation_bytes)))
         })
     }
@@ -337,7 +354,7 @@ impl ResidentFrameStreamPayload {
     ) -> Result<Vec<ResidentGpuFrame>> {
         let mut accumulated = Vec::new();
         loop {
-            match self.next_yielded_frame() {
+            match self.next_yielded_frame(reservations, metrics) {
                 Some(Ok(mut yielded)) => accumulated.push(yielded.take_for_release()),
                 Some(Err(error)) => {
                     while let Some(frame) = accumulated.pop() {
@@ -383,7 +400,11 @@ impl ResidentFrameStreamPayload {
 struct EmptyResidentFrameStreamSource;
 
 impl ResidentFrameStreamSource for EmptyResidentFrameStreamSource {
-    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>> {
+    fn next_frame(
+        &mut self,
+        _reservations: &mut ReservationTracker,
+        _metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
         None
     }
 }
@@ -393,7 +414,11 @@ struct ErrorResidentFrameStreamSource {
 }
 
 impl ResidentFrameStreamSource for ErrorResidentFrameStreamSource {
-    fn next_frame(&mut self) -> Option<Result<ResidentGpuFrame>> {
+    fn next_frame(
+        &mut self,
+        _reservations: &mut ReservationTracker,
+        _metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
         if self.emitted {
             return None;
         }
@@ -492,6 +517,10 @@ impl CompiledGpuResource {
 
     pub(in crate::exec::bounded) fn frame_stream(frames: Vec<ResidentGpuFrame>) -> Self {
         Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(ResidentFrameStreamPayload::new(frames)) }
+    }
+
+    pub(in crate::exec::bounded) fn frame_stream_payload(stream: ResidentFrameStreamPayload) -> Self {
+        Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(stream) }
     }
 
     pub fn num_rows(&self) -> usize {
@@ -1243,6 +1272,9 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             {
                 BoundedCompiledJoinMaterializeOutput::Frame(frame) => CompiledGpuResource::new(*frame),
                 BoundedCompiledJoinMaterializeOutput::Stream(frames) => CompiledGpuResource::frame_stream(frames),
+                BoundedCompiledJoinMaterializeOutput::LazyStream(stream) => {
+                    CompiledGpuResource::frame_stream_payload(stream)
+                },
             }
         } else {
             let frame = execute_bounded_compiled_join_materialize(

@@ -249,6 +249,75 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
 }
 
 #[test]
+fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-partitioned-mixed-stream-aggregate");
+    let left_path = dir.join("lineitem.parquet");
+    let right_path = dir.join("orders.parquet");
+    let left_schema = write_join_left_parquet(&runtime, &left_path);
+    let right_schema = write_join_right_parquet(&runtime, &right_path);
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("category", DataType::Utf8, false),
+        Field::new("line_count", DataType::Int64, false),
+    ]));
+
+    let mut right_source = join_right_source(&right_path, &right_schema, &["order_id", "category"]);
+    right_source.files[0].row_group_rows = Some(vec![100_000_000]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let left =
+        builder.add_source(SourceNode::LocalParquet(join_left_source(&left_path, &left_schema, &["order_id", "qty"])));
+    let right = builder.add_source(SourceNode::LocalParquet(right_source));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_residual_predicate(qty_gt_right_order_id_times_ten())
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+                JoinOutputColumn::right(cudf_query_engine::ColumnRef::input(1, "category", "category"), "category"),
+            ])
+            .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("category")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("qty"), "line_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = bounded_join_execution_context(&runtime);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let join_metrics =
+        metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
+    assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_mixed_keyed_residual_join");
+    assert_eq!(join_metrics.output_rows, 1);
+    assert!(metrics.partial_aggregate_count > 0);
+    assert!(metrics.reservation_events.iter().any(|event| {
+        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data_forecast"
+    }));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(string_array(batch, 0).iter().collect::<Vec<_>>(), vec![Some("two")]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_executes_keyed_inner_case_residual_as_one_shot_post_filter() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-keyed-inner-case-residual-one-shot");
