@@ -322,6 +322,12 @@ fn limit_node_executable_decision(_plan: &QueryPlan, node_id: NodeId, limit: &Li
 }
 
 fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
+    let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
+        return CapabilityDecision::rejected(
+            "unsupported_join_node_capability",
+            [("node_id", node_id.to_string()), ("reason", "missing_join_node".to_string())],
+        );
+    };
     let Some(capability) = join_node_execution_capability(join) else {
         return CapabilityDecision::rejected(
             "unsupported_join_node_capability",
@@ -334,6 +340,19 @@ fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinN
             ],
         );
     };
+    for (field_index, field) in output_schema.fields().iter().enumerate() {
+        if !crate::datatypes::is_supported_arrow_type(field.data_type()) {
+            return CapabilityDecision::rejected(
+                "unsupported_join_output_dtype",
+                [
+                    ("node_id", node_id.to_string()),
+                    ("field_index", field_index.to_string()),
+                    ("field_name", field.name().to_string()),
+                    ("dtype", field.data_type().to_string()),
+                ],
+            );
+        }
+    }
     if let Some(predicate) = &join.spec.residual_predicate {
         let residual_capability = validate_join_residual_expr_capability(predicate).or_else(|rejection| {
             if one_shot_equi_join_supported(join) && join_residual_requires_post_join_filter(join) {

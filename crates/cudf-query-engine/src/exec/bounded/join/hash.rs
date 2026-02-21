@@ -1,8 +1,8 @@
 use super::{
     common::{
-        BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
+        BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
         prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-        release_bounded_join_side_frame,
+        reconcile_join_output_upper_bound, release_bounded_join_side_frame,
     },
     *,
 };
@@ -559,12 +559,16 @@ fn materialize_bounded_root_hash_join_probe_chunk(
         right.rows,
         right.bytes,
     );
-    let left_output_bytes = match join_side_output_reservation_bytes(
+    let expected_output_rows = indices.build().len() as u64;
+    let left_output_bytes = match join_side_output_upper_bound_bytes(
+        context,
+        node_id,
         &left.frame,
-        &left_indices,
+        expected_output_rows,
         &left_projection,
-        &overrides,
         JoinSide::Left,
+        reservations,
+        metrics,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -577,12 +581,15 @@ fn materialize_bounded_root_hash_join_probe_chunk(
             return Err(error);
         },
     };
-    let right_output_bytes = match join_side_output_reservation_bytes(
+    let right_output_bytes = match join_side_output_upper_bound_bytes(
+        context,
+        node_id,
         &right.frame,
-        &right_indices,
+        expected_output_rows,
         &right_projection,
-        &overrides,
         JoinSide::Right,
+        reservations,
+        metrics,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -602,7 +609,7 @@ fn materialize_bounded_root_hash_join_probe_chunk(
         left_output_bytes.saturating_add(right_output_bytes),
     );
     let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
-    let output_reservation = reservations.try_reserve(
+    let mut output_reservation = reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_output",
@@ -625,6 +632,17 @@ fn materialize_bounded_root_hash_join_probe_chunk(
 
     let output_rows = output.num_rows() as u64;
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
+    {
+        drop(output);
+        drop(left_indices);
+        drop(right_indices);
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        drop(probe);
+        return Err(error);
+    }
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {

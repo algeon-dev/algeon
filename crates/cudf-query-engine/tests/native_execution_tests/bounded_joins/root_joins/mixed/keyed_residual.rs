@@ -196,6 +196,7 @@ fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::MixedSizeData, "join_mixed_size_data"),
             (ReservationKind::GatherMap, "join_gather_map"),
+            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
             (ReservationKind::JoinOutput, "join_output"),
             (ReservationKind::Materialization, "host_materialization"),
         ],

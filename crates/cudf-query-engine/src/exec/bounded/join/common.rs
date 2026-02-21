@@ -1,3 +1,5 @@
+use arrow::datatypes::DataType as ArrowDataType;
+
 use super::*;
 
 pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
@@ -332,4 +334,235 @@ pub(super) fn join_side_output_reservation_bytes(
             )
             .with_fact("side", side)
         })
+}
+
+pub(super) fn join_side_output_upper_bound_bytes(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    frame: &DataFrame,
+    expected_output_rows: u64,
+    columns: &[String],
+    side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<u64> {
+    let mut columns = columns.to_vec();
+    join_side_projection_with_order(frame, &mut columns);
+    if columns.is_empty() {
+        return Ok(0);
+    }
+
+    let mut upper_bound_columns = Vec::with_capacity(columns.len());
+    for column in columns {
+        upper_bound_columns.push(join_output_upper_bound_column_for_frame_column(
+            context,
+            node_id,
+            frame,
+            column.as_str(),
+            side,
+            reservations,
+            metrics,
+        )?);
+    }
+    join_output_upper_bound_bytes(expected_output_rows, &upper_bound_columns).map_err(|error| {
+        error
+            .with_fact_if_absent("node_id", node_id)
+            .with_fact_if_absent("side", side)
+            .with_fact_if_absent("expected_output_rows", expected_output_rows)
+    })
+}
+
+fn join_output_upper_bound_column_for_frame_column(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    frame: &DataFrame,
+    column: &str,
+    side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<JoinOutputColumnUpperBoundInput> {
+    let series = frame.series(column).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.output_upper_bound",
+            "failed to access join output source column for closed-form sizing",
+            error,
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("side", side)
+        .with_fact("column", column)
+    })?;
+    let cudf_dtype = series.dtype().map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.output_upper_bound",
+            "failed to inspect join output source column dtype for closed-form sizing",
+            error,
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("side", side)
+        .with_fact("column", column)
+    })?;
+    let data_type = cudf::interop::arrow_host::arrow_type_from_cudf_dtype(cudf_dtype).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.bounded.join.output_upper_bound",
+            "failed to convert join output source column dtype for closed-form sizing",
+            error,
+        )
+        .with_fact("node_id", node_id)
+        .with_fact("side", side)
+        .with_fact("column", column)
+        .with_fact("cudf_dtype", format!("{cudf_dtype:?}"))
+    })?;
+    let input_max_string_length_bytes = if join_output_dtype_needs_string_max(&data_type) {
+        Some(max_string_byte_length_for_join_output_sizing(
+            context,
+            node_id,
+            frame,
+            column,
+            side,
+            reservations,
+            metrics,
+        )?)
+    } else {
+        None
+    };
+    Ok(JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes })
+}
+
+fn max_string_byte_length_for_join_output_sizing(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    frame: &DataFrame,
+    column: &str,
+    side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<u64> {
+    if frame.num_rows() == 0 {
+        return Ok(0);
+    }
+    let byte_count_bound = join_output_upper_bound_bytes(
+        frame.num_rows() as u64,
+        &[JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Int32, input_max_string_length_bytes: None }],
+    )?;
+    let mut reservation = reservations.try_reserve_work(
+        MemoryReservationRequest::new(ReservationKind::ChunkOperator, byte_count_bound, reservations.budget())
+            .with_memory_boundary("join_output_string_length_sizing")
+            .with_node_id(node_id)
+            .with_stage("join_output_string_length_sizing"),
+        metrics,
+    )?;
+    let token = match execution_budget_token_for_boundary(
+        context,
+        reservations.available_bytes_including(&reservation),
+        "join_output_string_length_sizing",
+        "cudf_query_engine.bounded.join.output_string_length_sizing.budget_token",
+        "failed to create bounded native join output string-length sizing budget token",
+    ) {
+        Ok(token) => token,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            return Err(error.with_fact("node_id", node_id).with_fact("side", side).with_fact("column", column));
+        },
+    };
+
+    let series = match frame.series(column) {
+        Ok(series) => series,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.output_string_length_sizing",
+                "failed to access string join output source column for sizing",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("side", side)
+            .with_fact("column", column));
+        },
+    };
+    let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
+        Ok(byte_counts) => byte_counts,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.output_string_length_sizing",
+                "failed to compute string byte counts for join output sizing",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("side", side)
+            .with_fact("column", column));
+        },
+    };
+    let observed = match byte_counts.device_allocated_size_bytes() {
+        Ok(bytes) => bytes as u64,
+        Err(error) => {
+            drop(byte_counts);
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.output_string_length_sizing",
+                "failed to observe string byte-count sizing memory",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("side", side)
+            .with_fact("column", column));
+        },
+    };
+    if observed > reservation.bytes() {
+        let error = join_output_upper_bound_violation_error(node_id, reservation.bytes(), observed)
+            .with_fact("stage", "join_output_string_length_sizing")
+            .with_fact("side", side)
+            .with_fact("column", column);
+        drop(byte_counts);
+        reservations.release(reservation, metrics);
+        return Err(error);
+    }
+    reservations.shrink_to_observed(&mut reservation, observed, metrics);
+    let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
+        Ok(max_len) => max_len,
+        Err(error) => {
+            drop(byte_counts);
+            reservations.release(reservation, metrics);
+            return Err(QueryError::from_cudf(
+                "cudf_query_engine.bounded.join.output_string_length_sizing",
+                "failed to reduce string byte-count sizing column",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("side", side)
+            .with_fact("column", column));
+        },
+    };
+    drop(byte_counts);
+    reservations.release(reservation, metrics);
+    Ok(max_len.unwrap_or(0).max(0) as u64)
+}
+
+fn join_output_dtype_needs_string_max(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+pub(super) fn reconcile_join_output_upper_bound(
+    node_id: NodeId,
+    output_reservation: &mut ActiveReservation,
+    output_bytes: u64,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<()> {
+    if output_bytes > output_reservation.bytes() {
+        return Err(join_output_upper_bound_violation_error(node_id, output_reservation.bytes(), output_bytes));
+    }
+    reservations.shrink_to_observed(output_reservation, output_bytes, metrics);
+    Ok(())
+}
+
+fn join_output_upper_bound_violation_error(node_id: NodeId, upper_bound_bytes: u64, observed_bytes: u64) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::Internal,
+        "cudf_query_engine.bounded.join.output_upper_bound",
+        "join output materialization exceeded its closed-form upper bound",
+    )
+    .with_fact("node_id", node_id)
+    .with_fact("upper_bound_bytes", upper_bound_bytes)
+    .with_fact("observed_bytes", observed_bytes)
 }

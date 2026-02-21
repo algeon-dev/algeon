@@ -29,11 +29,15 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         right.rows,
         right.bytes,
     );
-    let candidate_reservation_bytes = match indices.output_reservation_size_bytes(
+    let candidate_reservation_bytes = match indices.output_upper_bound_size_bytes(
+        context,
+        node_id,
         &left.frame,
         &right.frame,
-        &overrides,
+        candidate_rows,
         &residual_candidate.projection,
+        reservations,
+        metrics,
     ) {
         Ok(bytes) => {
             super::super::common::trace_preflight_success(
@@ -57,7 +61,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     metrics.record_one_shot_join();
     metrics.record_one_shot_join_index_bytes(index_bytes);
     metrics.record_one_shot_join_materialization_bytes(candidate_reservation_bytes);
-    let candidate_reservation = reservations.try_reserve(
+    let mut candidate_reservation = reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_residual_candidate_output",
@@ -76,6 +80,14 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     )?;
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
+    let candidate_output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), metrics)?;
+    reconcile_join_output_upper_bound(
+        node_id,
+        &mut candidate_reservation,
+        candidate_output_bytes,
+        reservations,
+        metrics,
+    )?;
     drop(indices);
     reservations.release(gather_map_reservation, metrics);
 
@@ -148,23 +160,14 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let output_rows = output.num_rows() as u64;
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
     metrics.record_one_shot_join_output_bytes(output_bytes);
-    if output_bytes > filtered_reservation.bytes() {
-        let grow_request = bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_residual_filter_output",
-            output_bytes.saturating_sub(filtered_reservation.bytes()),
-            reservations.budget(),
-            node_id,
-        );
-        if let Err(error) = reservations.try_grow(&mut filtered_reservation, grow_request, metrics) {
-            drop(output);
-            reservations.release(filtered_reservation, metrics);
-            drop(left);
-            drop(right);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed(&mut filtered_reservation, output_bytes, metrics);
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut filtered_reservation, output_bytes, reservations, metrics)
+    {
+        drop(output);
+        reservations.release(filtered_reservation, metrics);
+        drop(left);
+        drop(right);
+        return Err(error);
     }
     let final_output_reservation_bytes = filtered_reservation.bytes();
     let build_side = node.spec.build_side;

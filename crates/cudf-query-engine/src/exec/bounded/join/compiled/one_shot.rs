@@ -240,11 +240,15 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         right.rows,
         right.bytes,
     );
-    let output_reservation_bytes = match indices.output_reservation_size_bytes(
+    let output_reservation_bytes = match indices.output_upper_bound_size_bytes(
+        context,
+        node_id,
         &left.frame,
         &right.frame,
-        &overrides,
+        output_rows,
         &node.spec.output_projection,
+        reservations,
+        metrics,
     ) {
         Ok(bytes) => {
             super::super::common::trace_preflight_success(
@@ -314,24 +318,15 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
             return Err(error);
         },
     };
-    if output_bytes > output_reservation.bytes() {
-        let grow_request = bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_output",
-            output_bytes.saturating_sub(output_reservation.bytes()),
-            reservations.budget(),
-            node_id,
-        );
-        if let Err(error) = reservations.try_grow(&mut output_reservation, grow_request, metrics) {
-            drop(output);
-            drop(indices);
-            reservations.release(gather_map_reservation, metrics);
-            reservations.release(output_reservation, metrics);
-            drop(probe);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed(&mut output_reservation, output_bytes, metrics);
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
+    {
+        drop(output);
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        reservations.release(output_reservation, metrics);
+        drop(probe);
+        return Err(error);
     }
     drop(indices);
     reservations.release(gather_map_reservation, metrics);

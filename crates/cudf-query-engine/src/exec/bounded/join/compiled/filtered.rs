@@ -423,9 +423,17 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     } else {
         let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
-        let output_reservation_bytes =
-            join_side_output_reservation_bytes(&probe.frame, &indices, &left_projection, &overrides, JoinSide::Left)?;
-        let output_reservation = reservations.try_reserve(
+        let output_reservation_bytes = join_side_output_upper_bound_bytes(
+            context,
+            node_id,
+            &probe.frame,
+            indices.len() as u64,
+            &left_projection,
+            JoinSide::Left,
+            reservations,
+            metrics,
+        )?;
+        let mut output_reservation = reservations.try_reserve(
             bounded_join_request(
                 ReservationKind::JoinOutput,
                 "join_output",
@@ -444,6 +452,7 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         )?;
         let output_rows = output.num_rows() as u64;
         let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)?;
         metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
             node_id,
             crate::metrics::JoinOperatorMetrics {
@@ -570,9 +579,17 @@ pub(super) fn execute_compiled_filtered_join_materialize(
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     } else {
         let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
-        let output_reservation_bytes =
-            join_side_output_reservation_bytes(&probe.frame, &indices, &left_projection, &overrides, JoinSide::Left)?;
-        let output_reservation = reservations.try_reserve(
+        let output_reservation_bytes = join_side_output_upper_bound_bytes(
+            context,
+            node_id,
+            &probe.frame,
+            indices.len() as u64,
+            &left_projection,
+            JoinSide::Left,
+            reservations,
+            metrics,
+        )?;
+        let mut output_reservation = reservations.try_reserve(
             bounded_join_request(
                 ReservationKind::JoinOutput,
                 "join_output",
@@ -592,6 +609,7 @@ pub(super) fn execute_compiled_filtered_join_materialize(
         metrics.operator_time += build.timer.elapsed();
         let output_rows = output.num_rows() as u64;
         let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)?;
         metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
             node_id,
             crate::metrics::JoinOperatorMetrics {

@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_reservation_bytes,
-        prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
+        join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
+        prepare_bounded_join_side_input_from_shared_frame, reconcile_join_output_upper_bound,
         release_bounded_join_side_frame,
     },
     *,
@@ -1156,6 +1157,59 @@ impl CompiledJoinIndices {
         }
     }
 
+    fn output_upper_bound_size_bytes(
+        &self,
+        context: &ExecutionContext,
+        node_id: NodeId,
+        left: &DataFrame,
+        right: &DataFrame,
+        expected_output_rows: u64,
+        projection: &[JoinOutputColumn],
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<u64> {
+        match self {
+            Self::Pair { .. } => {
+                let left_projection = projected_output_columns(projection, JoinSide::Left);
+                let right_projection = projected_output_columns(projection, JoinSide::Right);
+                let left_bytes = join_side_output_upper_bound_bytes(
+                    context,
+                    node_id,
+                    left,
+                    expected_output_rows,
+                    &left_projection,
+                    JoinSide::Left,
+                    reservations,
+                    metrics,
+                )?;
+                let right_bytes = join_side_output_upper_bound_bytes(
+                    context,
+                    node_id,
+                    right,
+                    expected_output_rows,
+                    &right_projection,
+                    JoinSide::Right,
+                    reservations,
+                    metrics,
+                )?;
+                Ok(left_bytes.saturating_add(right_bytes))
+            },
+            Self::LeftOnly(_) => {
+                let left_projection = projected_output_columns(projection, JoinSide::Left);
+                join_side_output_upper_bound_bytes(
+                    context,
+                    node_id,
+                    left,
+                    expected_output_rows,
+                    &left_projection,
+                    JoinSide::Left,
+                    reservations,
+                    metrics,
+                )
+            },
+        }
+    }
+
     fn materialize_output(
         &self,
         left: &DataFrame,
@@ -1215,11 +1269,15 @@ fn materialize_compiled_indices_output(
         right.rows,
         right.bytes,
     );
-    let output_reservation_bytes = match indices.output_reservation_size_bytes(
+    let output_reservation_bytes = match indices.output_upper_bound_size_bytes(
+        context,
+        node_id,
         &left.frame,
         &right.frame,
-        &overrides,
+        expected_output_rows,
         &node.spec.output_projection,
+        reservations,
+        metrics,
     ) {
         Ok(bytes) => {
             super::common::trace_preflight_success("materialize_compiled_indices_output", node_id, reservations, bytes);
@@ -1235,7 +1293,7 @@ fn materialize_compiled_indices_output(
         metrics.record_one_shot_join_index_bytes(index_bytes);
         metrics.record_one_shot_join_materialization_bytes(output_reservation_bytes);
     }
-    let output_reservation = reservations.try_reserve(
+    let mut output_reservation = reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_output",
@@ -1258,6 +1316,16 @@ fn materialize_compiled_indices_output(
     let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
     if one_shot_index_bytes.is_some() {
         metrics.record_one_shot_join_output_bytes(output_bytes);
+    }
+    if let Err(error) =
+        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
+    {
+        drop(output);
+        drop(indices);
+        reservations.release(gather_map_reservation, metrics);
+        drop(left);
+        drop(right);
+        return Err(error);
     }
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
