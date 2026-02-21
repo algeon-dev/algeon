@@ -862,9 +862,7 @@ fn reader_predicate_references_decimal_column(source: &LocalParquetSource, expr:
 
 fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
     match expr {
-        Expr::Binary { left, op, right, .. }
-            if matches!(op, crate::expr::BinaryOp::And | crate::expr::BinaryOp::Or) =>
-        {
+        Expr::Binary { left, op: crate::expr::BinaryOp::And | crate::expr::BinaryOp::Or, right, .. } => {
             reader_predicate_source_contract_shape_is_supported(source, left)
                 && reader_predicate_source_contract_shape_is_supported(source, right)
         },
