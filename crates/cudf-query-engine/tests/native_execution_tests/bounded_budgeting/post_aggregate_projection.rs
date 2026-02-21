@@ -64,12 +64,14 @@ fn bounded_native_query_executes_post_aggregate_projection_before_final_sort() {
             && event.reservation_kind == ReservationKind::FinalMerge
             && event.memory_boundary == "post_aggregate_projection_output"
     }));
-    assert_budgeted_success_event_with_contract(
-        metrics,
-        "cudf_query_engine.projection.execute",
-        3,
-        "post_aggregate_projection",
-        Some("libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable"),
+    assert!(
+        metrics.budgeted_execution_events.iter().all(|event| event.operation != "cudf_query_engine.projection.execute"),
+        "schema-only post-aggregate projection should use the column-select fast path instead of expression workspace: {:?}",
+        metrics
+            .budgeted_execution_events
+            .iter()
+            .filter(|event| event.operation == "cudf_query_engine.projection.execute")
+            .collect::<Vec<_>>()
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
