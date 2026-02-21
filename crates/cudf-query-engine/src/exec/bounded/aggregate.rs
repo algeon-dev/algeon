@@ -609,6 +609,10 @@ fn partial_aggregate_work_reservation_upper_bound_bytes(
 ) -> Result<u64> {
     let shape = if aggregate.spec.group_exprs.is_empty() {
         PartialAggregateShape::Global
+    } else if let Some(grouping_sets) = &aggregate.spec.grouping_sets {
+        PartialAggregateShape::Grouped {
+            input_rows: (input.num_rows() as u64).saturating_mul(grouping_sets.groups.len() as u64),
+        }
     } else {
         PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 }
     };

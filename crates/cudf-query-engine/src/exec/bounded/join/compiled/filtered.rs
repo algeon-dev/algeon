@@ -422,7 +422,8 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         drop(probe);
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     } else {
-        let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+        let left_projection =
+            projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
         let output_reservation_bytes = join_side_output_upper_bound_bytes(
             context,
             node_id,
@@ -578,7 +579,8 @@ pub(super) fn execute_compiled_filtered_join_materialize(
         drop(build.build);
         ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: output_reservation }
     } else {
-        let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
+        let left_projection =
+            projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
         let output_reservation_bytes = join_side_output_upper_bound_bytes(
             context,
             node_id,

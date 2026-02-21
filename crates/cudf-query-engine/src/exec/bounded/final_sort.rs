@@ -1,6 +1,6 @@
 use cudf::{ExecutionBudgetReport, ExecutionBudgetRequest};
 
-use super::*;
+use super::{compiled::ResidentFrameStreamPayload, *};
 
 mod full_sort;
 mod hierarchical_topk;
@@ -139,6 +139,27 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
             Err(error)
         },
     }
+}
+
+pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    sort: &SortNode,
+    limit: &LimitNode,
+    mut input_stream: ResidentFrameStreamPayload,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = context.memory_control_policy() else {
+        unreachable!("execute_final_sort_node_from_stream_with_retry is called only for bounded policies");
+    };
+    let max_attempts = max_retry_attempts.max(1);
+    let timer = Instant::now();
+    let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let result = final_sort.hierarchical_topk_stream(limit, &mut input_stream, 1);
+    input_stream.release_producer_reservations(final_sort.reservations, final_sort.metrics);
+    final_sort.metrics.final_sort_time += timer.elapsed();
+    result
 }
 
 struct FinalSortExecutor<'a> {

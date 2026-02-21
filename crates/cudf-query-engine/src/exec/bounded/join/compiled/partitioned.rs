@@ -1149,8 +1149,8 @@ fn partitioned_mixed_join_output_upper_bound_bytes(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<u64> {
-    let left_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Left);
-    let right_projection = projected_output_columns(&node.spec.output_projection, JoinSide::Right);
+    let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
     let left_bytes = join_side_output_upper_bound_bytes(
         context,
         node_id,
@@ -1772,7 +1772,7 @@ pub(super) fn partitioned_hash_equi_join_frame_stream_probe_to_payload(
     node: &JoinNode,
     probe: PartitionedHashEquiJoinFrameStreamProbeState,
 ) -> ResidentFrameStreamPayload {
-    let max_per_frame_reservation_bytes = probe.inputs.max_per_frame_reservation_bytes();
+    let max_per_frame_reservation_bytes = probe.partition_target_bytes;
     let aggregate_reservation_bytes = probe.inputs.aggregate_reservation_bytes();
     let aggregate_num_rows = probe.inputs.num_rows();
     let num_columns = node.spec.output_projection.len();
