@@ -591,11 +591,14 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
         | Expr::Round { .. }
         | Expr::Case { .. }
-        | Expr::Extract { .. } => false,
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => false,
     }
 }
 
@@ -689,6 +692,9 @@ fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Optio
         Expr::Binary { output_type: Some(output_type), .. } => Some(output_type.clone()),
         Expr::Binary { op, .. } if reader_predicate_operator_outputs_boolean(*op) => Some(DataType::Boolean),
         Expr::Lower(_) | Expr::Upper(_) | Expr::Concat(_) => Some(DataType::Utf8),
+        Expr::StringLength { output_type, .. } => Some(output_type.clone()),
+        Expr::RegexpReplace { output_type, .. } => Some(output_type.clone()),
+        Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
         Expr::Substring { .. }
         | Expr::Like { .. }
         | Expr::Abs(_)
@@ -847,9 +853,12 @@ fn reader_predicate_references_decimal_column(source: &LocalParquetSource, expr:
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
         | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. } => reader_predicate_references_decimal_column(source, expr),
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. } => reader_predicate_references_decimal_column(source, expr),
         Expr::Concat(exprs) => exprs.iter().any(|expr| reader_predicate_references_decimal_column(source, expr)),
         Expr::Case { branches, else_expr } => {
             branches.iter().any(|branch| {
@@ -887,11 +896,14 @@ fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSour
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
         | Expr::Round { .. }
         | Expr::Case { .. }
-        | Expr::Extract { .. } => false,
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => false,
     }
 }
 

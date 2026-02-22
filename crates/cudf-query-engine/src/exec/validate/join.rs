@@ -7,12 +7,13 @@ use super::{
     types::{
         is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_string,
+        require_timestamp_second,
     },
     *,
 };
 use crate::{
     datatypes::is_supported_arrow_cast,
-    expr::{BinaryOp, ColumnQualifier, ColumnRef, LiteralValue},
+    expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
 };
 
@@ -408,14 +409,19 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
             }
             collect_join_residual_sides(else_expr, left, right)
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Lower(_) | Expr::Upper(_) | Expr::Extract { .. } => {
-            Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                "cudf_query_engine.join.validate_residual",
-                "native join residual predicates do not yet support this expression family",
-            )
-            .with_fact("expression", expr))
-        },
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.validate_residual",
+            "native join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
     }
 }
 
@@ -552,11 +558,14 @@ fn validate_join_residual_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
         | Expr::Round { .. }
         | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.validate_residual",
             "native join residual predicates do not yet support this expression family",
@@ -604,6 +613,37 @@ fn validate_post_join_residual_expr(
                 validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
             require_string(&data_type, "post-join residual string case input")?;
             Ok(data_type)
+        },
+        Expr::StringLength { expr, output_type } => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_string(&data_type, "post-join residual string length input")?;
+            require_integral_type(output_type, "post-join residual string length output")?;
+            Ok(output_type.clone())
+        },
+        Expr::RegexpReplace { expr, output_type, .. } => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_string(&data_type, "post-join residual REGEXP_REPLACE input")?;
+            require_string(output_type, "post-join residual REGEXP_REPLACE output")?;
+            Ok(output_type.clone())
+        },
+        Expr::DateTrunc { field, expr, output_type } => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            match field {
+                DatePart::Minute => {
+                    require_timestamp_second(&data_type, "post-join residual DATE_TRUNC minute input")?;
+                    require_timestamp_second(output_type, "post-join residual DATE_TRUNC minute output")?;
+                    Ok(output_type.clone())
+                },
+                DatePart::Year | DatePart::Month | DatePart::Day => Err(QueryError::new(
+                    QueryErrorCode::UnsupportedExpression,
+                    "cudf_query_engine.join.validate_residual",
+                    "post-join residual DATE_TRUNC does not support this field",
+                )
+                .with_fact("field", field.to_string())),
+            }
         },
         Expr::Extract { expr, .. } => {
             let data_type =
@@ -788,7 +828,10 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         | Expr::Cast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. } => residual_expr_requires_post_filter(expr),

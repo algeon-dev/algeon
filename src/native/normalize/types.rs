@@ -1,4 +1,5 @@
 use arrow::datatypes::SchemaRef;
+use cudf_query_engine::LimitSpec;
 
 use super::*;
 
@@ -11,7 +12,7 @@ pub(in crate::native) struct NormalizedNativePlan<'a> {
     pub(in crate::native) candidate: GpuCandidate,
     pub(in crate::native) root: NormalizedNativeRoot<'a>,
     pub(in crate::native) sort: Option<&'a SortExec>,
-    pub(in crate::native) limit_fetch: Option<usize>,
+    pub(in crate::native) limit: Option<LimitSpec>,
 }
 
 impl<'a> NormalizedNativePlan<'a> {
@@ -253,7 +254,7 @@ impl NormalizedNativeProjection<'_> {
 /// Global limit inside a recursive native input tree.
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeLimit<'a> {
-    pub(in crate::native) fetch: usize,
+    pub(in crate::native) spec: LimitSpec,
     pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
 }
 

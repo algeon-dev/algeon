@@ -492,6 +492,12 @@ fn expr_signature(expr: &Expr) -> String {
         },
         Expr::Lower(expr) => format!("lower({})", expr_signature(expr)),
         Expr::Upper(expr) => format!("upper({})", expr_signature(expr)),
+        Expr::StringLength { expr, output_type } => {
+            format!("string_length:expr={}:output={}", expr_signature(expr), data_type_signature(output_type))
+        },
+        Expr::RegexpReplace { expr, output_type, .. } => {
+            format!("regexp_replace:expr={}:output={}", expr_signature(expr), data_type_signature(output_type))
+        },
         Expr::Concat(exprs) => format!("concat({})", join_signatures(exprs.iter().map(expr_signature))),
         Expr::Abs(expr) => format!("abs({})", expr_signature(expr)),
         Expr::Round { expr, decimal_places, output_type } => format!(
@@ -511,6 +517,11 @@ fn expr_signature(expr: &Expr) -> String {
             format!("case:branches={}:else={}", join_signatures(branches), expr_signature(else_expr))
         },
         Expr::Extract { field, expr } => format!("extract:field={field}:expr={}", expr_signature(expr)),
+        Expr::DateTrunc { field, expr, output_type } => format!(
+            "date_trunc:field={field}:expr={}:output={}",
+            expr_signature(expr),
+            data_type_signature(output_type)
+        ),
         Expr::Alias { expr, .. } => format!("alias({})", expr_signature(expr)),
     }
 }

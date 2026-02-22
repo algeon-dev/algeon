@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -15,7 +15,7 @@ use datafusion::{
 
 use super::{is_supported_native_cast, is_supported_native_type};
 use crate::{
-    native::literal::{NativeLiteralContext, validate_native_literal},
+    native::literal::{NativeLiteralContext, parse_yyyy_mm_dd_date32, validate_native_literal},
     policy::FallbackReason,
 };
 
@@ -46,6 +46,7 @@ pub(in crate::native) fn validate_physical_expr(
             cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
         if !is_supported_native_cast(&source_type, cast.cast_type())
             && !bounded_nonnegative_integral_cast_is_supported(cast.expr(), &source_type, cast.cast_type())
+            && !literal_string_date32_cast_is_supported(cast.expr(), cast.cast_type())
         {
             return Err(FallbackReason::UnsupportedType);
         }
@@ -71,6 +72,20 @@ pub(in crate::native) fn validate_physical_expr(
         return Err(FallbackReason::UnsupportedExpression);
     }
     Err(FallbackReason::UnsupportedExpression)
+}
+
+fn literal_string_date32_cast_is_supported(expr: &Arc<dyn PhysicalExpr>, target_type: &DataType) -> bool {
+    matches!(target_type, DataType::Date32)
+        && expr
+            .as_any()
+            .downcast_ref::<Literal>()
+            .and_then(|literal| match literal.value() {
+                ScalarValue::Utf8(Some(value))
+                | ScalarValue::LargeUtf8(Some(value))
+                | ScalarValue::Utf8View(Some(value)) => parse_yyyy_mm_dd_date32(value),
+                _ => None,
+            })
+            .is_some()
 }
 
 fn validate_like_expr(like: &LikeExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
@@ -144,7 +159,11 @@ fn validate_scalar_function_expr(
     match function.name().to_ascii_lowercase().as_str() {
         "substring" | "substr" => validate_substring_function(function, input_schema),
         "date_part" | "extract" => validate_extract_function(function, input_schema),
+        "date_trunc" => validate_date_trunc_function(function, input_schema),
+        "to_timestamp_seconds" => validate_to_timestamp_seconds_function(function, input_schema),
         "lower" | "upper" => validate_string_case_function(function, input_schema),
+        "character_length" | "length" => validate_string_length_function(function, input_schema),
+        "regexp_replace" => validate_regexp_replace_function(function, input_schema),
         "concat" => validate_concat_function(function, input_schema),
         "abs" => validate_abs_function(function, input_schema),
         "round" => validate_round_function(function, input_schema),
@@ -165,10 +184,53 @@ fn validate_extract_function(function: &ScalarFunctionExpr, input_schema: &Schem
     };
     match literal_string(field)?.to_ascii_lowercase().as_str() {
         "year" | "month" | "day" => {},
+        "minute" => {
+            validate_physical_expr(expr, input_schema)?;
+            return validate_timestamp_second_expr(expr, input_schema);
+        },
         _ => return Err(FallbackReason::UnsupportedExpression),
     }
     validate_physical_expr(expr, input_schema)?;
     validate_date_or_timestamp_expr(expr, input_schema)
+}
+
+fn validate_date_trunc_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    let [field, expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    match literal_string(field)?.to_ascii_lowercase().as_str() {
+        "minute" => {},
+        _ => return Err(FallbackReason::UnsupportedExpression),
+    }
+    validate_physical_expr(expr, input_schema)?;
+    validate_timestamp_second_expr(expr, input_schema)?;
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if matches!(output_type, DataType::Timestamp(TimeUnit::Second, None)) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn validate_to_timestamp_seconds_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_physical_expr(expr, input_schema)?;
+    let source_type = physical_expr_data_type(expr, input_schema)?;
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if matches!(output_type, DataType::Timestamp(TimeUnit::Second, None))
+        && is_supported_native_cast(&source_type, &output_type)
+    {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
 }
 
 fn validate_string_case_function(
@@ -180,6 +242,46 @@ fn validate_string_case_function(
     };
     validate_physical_expr(expr, input_schema)?;
     validate_string_expr(expr, input_schema)
+}
+
+fn validate_string_length_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let [expr] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_physical_expr(expr, input_schema)?;
+    validate_string_expr(expr, input_schema)?;
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_supported_native_type(&output_type) && is_integral_type(&output_type) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn validate_regexp_replace_function(
+    function: &ScalarFunctionExpr,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let [expr, pattern, replacement] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_physical_expr(expr, input_schema)?;
+    validate_string_expr(expr, input_schema)?;
+    validate_literal_string(pattern)?;
+    validate_literal_string(replacement)?;
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_supported_native_type(&output_type)
+        && matches!(output_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+    {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
 }
 
 fn validate_concat_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
@@ -433,6 +535,18 @@ fn validate_date_or_timestamp_expr(
 ) -> Result<(), FallbackReason> {
     let data_type = physical_expr_data_type(expr, input_schema)?;
     if matches!(data_type, DataType::Date32 | DataType::Timestamp(_, None)) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
+}
+
+fn validate_timestamp_second_expr(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: &SchemaRef,
+) -> Result<(), FallbackReason> {
+    let data_type = physical_expr_data_type(expr, input_schema)?;
+    if matches!(data_type, DataType::Timestamp(TimeUnit::Second, None)) {
         Ok(())
     } else {
         Err(FallbackReason::UnsupportedType)

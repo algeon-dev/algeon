@@ -134,14 +134,19 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
             }
             collect_join_expr_columns(else_expr, left, right)
         },
-        Expr::Like { .. } | Expr::Substring { .. } | Expr::Lower(_) | Expr::Upper(_) | Expr::Extract { .. } => {
-            Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                "cudf_query_engine.join.residual_columns",
-                "native join residual predicates do not yet support this expression family",
-            )
-            .with_fact("expression", expr))
-        },
+        Expr::Like { .. }
+        | Expr::Substring { .. }
+        | Expr::Lower(_)
+        | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.join.residual_columns",
+            "native join residual predicates do not yet support this expression family",
+        )
+        .with_fact("expression", expr)),
     }
 }
 
@@ -376,11 +381,14 @@ fn lower_join_ast_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
         | Expr::Round { .. }
         | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.lower_residual",
             "native join residual predicates do not yet support this expression family",
@@ -563,7 +571,10 @@ fn expr_contains_interval_literal(expr: &Expr) -> bool {
         | Expr::Cast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }

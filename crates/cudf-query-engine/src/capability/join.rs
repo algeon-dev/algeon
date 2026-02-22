@@ -347,7 +347,10 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::Cast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }

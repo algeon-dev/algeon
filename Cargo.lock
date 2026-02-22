@@ -3949,6 +3949,7 @@ dependencies = [
  "num-traits",
  "object_store",
  "paste",
+ "ring",
  "seq-macro",
  "simdutf8",
  "snap",

@@ -61,10 +61,16 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
     input: &LoweredNativeInput,
 ) -> Result<Option<SyntheticAggregateInputProjection>, FallbackReason> {
     let frontend_schema = aggregate.input().schema();
-    let needs_projection = aggregate.aggr_expr().iter().any(|aggregate_expr| {
+    let needs_group_projection = aggregate
+        .group_expr()
+        .expr()
+        .iter()
+        .any(|(group_expr, _alias)| group_expr.as_any().downcast_ref::<Column>().is_none());
+    let needs_aggregate_arg_projection = aggregate.aggr_expr().iter().any(|aggregate_expr| {
         let expressions = aggregate_expr.expressions();
         !matches!(expressions.as_slice(), [arg] if arg.as_any().downcast_ref::<Column>().is_some())
     });
+    let needs_projection = needs_group_projection || needs_aggregate_arg_projection;
     if !needs_projection {
         return Ok(None);
     }
@@ -73,19 +79,38 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
         input.schema.fields().iter().map(|field| NativeExpr::column(field.name())).collect::<Vec<_>>();
     let mut fields = input.schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
 
-    let mut aggregate_arg_aliases = Vec::with_capacity(aggregate.aggr_expr().len());
-    for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
-        let expressions_for_aggregate = aggregate_expr.expressions();
-        let [arg] = expressions_for_aggregate.as_slice() else {
-            return Err(FallbackReason::UnsupportedExpression);
-        };
-        let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &fields);
-        expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&input.bindings))?,
-            alias.as_str(),
-        ));
-        fields.push(physical_expr_field(arg, &frontend_schema, alias.as_str())?);
-        aggregate_arg_aliases.push(alias);
+    let group_expr_aliases = if needs_group_projection {
+        let mut aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
+        for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
+            let executable_alias = unique_synthetic_aggregate_group_alias(index, alias, &fields);
+            expressions.push(alias_if_needed(
+                lower_physical_expr_with_bindings(group_expr, &frontend_schema, Some(&input.bindings))?,
+                executable_alias.as_str(),
+            ));
+            fields.push(physical_expr_field(group_expr, &frontend_schema, executable_alias.as_str())?);
+            aliases.push(executable_alias);
+        }
+        Some(aliases)
+    } else {
+        None
+    };
+
+    let mut aggregate_arg_aliases = Vec::new();
+    if needs_aggregate_arg_projection {
+        aggregate_arg_aliases = Vec::with_capacity(aggregate.aggr_expr().len());
+        for (index, aggregate_expr) in aggregate.aggr_expr().iter().enumerate() {
+            let expressions_for_aggregate = aggregate_expr.expressions();
+            let [arg] = expressions_for_aggregate.as_slice() else {
+                return Err(FallbackReason::UnsupportedExpression);
+            };
+            let alias = unique_synthetic_aggregate_arg_alias(index, &input.schema, &fields);
+            expressions.push(alias_if_needed(
+                lower_physical_expr_with_bindings(arg, &frontend_schema, Some(&input.bindings))?,
+                alias.as_str(),
+            ));
+            fields.push(physical_expr_field(arg, &frontend_schema, alias.as_str())?);
+            aggregate_arg_aliases.push(alias);
+        }
     }
     let mut bindings = input.bindings.clone();
     bindings.extend(aggregate_arg_aliases.iter().enumerate().map(|(index, alias)| FieldBinding {
@@ -98,7 +123,7 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
         expressions,
         schema: Arc::new(Schema::new(fields)),
         bindings,
-        group_expr_aliases: None,
+        group_expr_aliases,
         aggregate_arg_aliases,
     }))
 }

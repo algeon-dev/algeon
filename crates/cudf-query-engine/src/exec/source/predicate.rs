@@ -162,11 +162,14 @@ fn lower_source_reader_ast_expr(
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
+        | Expr::StringLength { .. }
+        | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
         | Expr::Round { .. }
         | Expr::Case { .. }
-        | Expr::Extract { .. } => Err(QueryError::new(
+        | Expr::Extract { .. }
+        | Expr::DateTrunc { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             OP_READER_PREDICATE,
             "reader predicate does not support this expression family",
@@ -457,9 +460,12 @@ fn source_reader_predicate_references_decimal_column(source: &LocalParquetSource
         | Expr::Substring { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
+        | Expr::StringLength { expr, .. }
+        | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
         | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. } => source_reader_predicate_references_decimal_column(source, expr),
+        | Expr::Extract { expr, .. }
+        | Expr::DateTrunc { expr, .. } => source_reader_predicate_references_decimal_column(source, expr),
         Expr::Concat(exprs) => exprs.iter().any(|expr| source_reader_predicate_references_decimal_column(source, expr)),
         Expr::Case { branches, else_expr } => {
             branches.iter().any(|branch| {
