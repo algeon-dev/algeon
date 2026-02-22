@@ -5,11 +5,15 @@ use cudf_query_engine::{
 };
 
 fn fixed_column(data_type: ArrowDataType) -> JoinOutputColumnUpperBoundInput {
-    JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes: None }
+    JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes: None, input_total_string_bytes: None }
 }
 
 fn string_column(max_len: u64) -> JoinOutputColumnUpperBoundInput {
-    JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Utf8, input_max_string_length_bytes: Some(max_len) }
+    JoinOutputColumnUpperBoundInput {
+        data_type: ArrowDataType::Utf8,
+        input_max_string_length_bytes: Some(max_len),
+        input_total_string_bytes: None,
+    }
 }
 
 #[test]

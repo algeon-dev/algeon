@@ -37,11 +37,8 @@ pub(super) fn execute_graph_algorithm(
     let input_columns = input.num_columns() as u64;
     let boundary_before = metrics.boundary.clone();
     let timer = Instant::now();
-    let result = match node.spec.algorithm {
-        crate::plan::GraphAlgorithm::PageRank => execute_pagerank(context, &node.spec, input)?,
-        crate::plan::GraphAlgorithm::Bfs => execute_bfs(context, &node.spec, input)?,
-        crate::plan::GraphAlgorithm::Louvain => execute_louvain(context, &node.spec, input)?,
-    };
+    let executor = graph_algorithm_executor(node.spec.algorithm);
+    let result = executor(context, &node.spec, input)?;
     let elapsed = timer.elapsed();
     metrics.operator_time += elapsed;
 
@@ -79,6 +76,46 @@ pub(super) fn execute_graph_algorithm(
 struct GraphAlgorithmExecutionResult {
     frame: DataFrame,
     algorithm_metadata: String,
+}
+
+#[cfg(feature = "cugraph")]
+type GraphAlgorithmExecutor =
+    fn(&ExecutionContext, &crate::plan::GraphAlgorithmSpec, GpuDataFrame) -> Result<GraphAlgorithmExecutionResult>;
+
+#[cfg(feature = "cugraph")]
+const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmExecutor)] = &[
+    (crate::plan::GraphAlgorithm::PageRank, execute_pagerank),
+    (crate::plan::GraphAlgorithm::Bfs, execute_bfs),
+    (crate::plan::GraphAlgorithm::Louvain, execute_louvain),
+    (crate::plan::GraphAlgorithm::EigenvectorCentrality, execute_eigenvector_centrality),
+    (crate::plan::GraphAlgorithm::KatzCentrality, execute_katz_centrality),
+    (crate::plan::GraphAlgorithm::Hits, execute_hits),
+    (crate::plan::GraphAlgorithm::Sssp, execute_sssp),
+    (crate::plan::GraphAlgorithm::DegreesAll, execute_degrees_all),
+    (crate::plan::GraphAlgorithm::InDegreesAll, execute_in_degrees_all),
+    (crate::plan::GraphAlgorithm::OutDegreesAll, execute_out_degrees_all),
+    (crate::plan::GraphAlgorithm::WeaklyConnectedComponents, execute_weakly_connected_components),
+    (crate::plan::GraphAlgorithm::StronglyConnectedComponents, execute_strongly_connected_components),
+    (crate::plan::GraphAlgorithm::TriangleCountAll, execute_triangle_count_all),
+    (crate::plan::GraphAlgorithm::CoreNumber, execute_core_number),
+    (crate::plan::GraphAlgorithm::KCore, execute_k_core),
+    (crate::plan::GraphAlgorithm::MinimumSpanningTree, execute_minimum_spanning_tree),
+    (crate::plan::GraphAlgorithm::PageRankStrict, execute_pagerank_strict),
+    (crate::plan::GraphAlgorithm::Leiden, execute_leiden),
+    (crate::plan::GraphAlgorithm::Ecg, execute_ecg),
+    (crate::plan::GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
+    (crate::plan::GraphAlgorithm::BalancedCutClustering, execute_balanced_cut_clustering),
+];
+
+#[cfg(feature = "cugraph")]
+fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> GraphAlgorithmExecutor {
+    GRAPH_ALGORITHM_EXECUTORS
+        .iter()
+        .find(|(registered, _)| *registered == algorithm)
+        .map(|(_, executor)| *executor)
+        .unwrap_or_else(|| {
+            panic!("graph algorithm executor table is missing variant {}", algorithm.as_str());
+        })
 }
 
 #[cfg(feature = "cugraph")]
@@ -304,6 +341,1134 @@ fn execute_louvain(
 }
 
 #[cfg(feature = "cugraph")]
+fn execute_eigenvector_centrality(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::EigenvectorCentrality(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.eigenvector_centrality",
+            "EigenvectorCentrality graph algorithm node carried non-EigenvectorCentrality parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_eigenvector_centrality").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Transposed>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result =
+        graph.eigenvector_centrality(&entered, &eigenvector_centrality_params(params)?).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.eigenvector_centrality",
+            "cuGraph eigenvector centrality failed",
+        ))?;
+    let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
+    let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.eigenvector_centrality_result",
+        "failed to convert cuGraph eigenvector centrality result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_hits(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::Hits(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.hits",
+            "HITS graph algorithm node carried non-HITS parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_hits").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Transposed>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result = graph
+        .hits(&entered, &hits_params(params)?)
+        .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.hits", "cuGraph HITS failed"))?;
+    let algorithm_metadata = format!(
+        "iterations={},hub_score_differences={}",
+        result.number_of_iterations(),
+        result.hub_score_differences(),
+    );
+    // Upstream HITS emits `vertex` / `hub` / `authority`; the stable
+    // SQL schema renames the score columns to `hub_score` /
+    // `authority_score` so the meaning is unambiguous at query time.
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.hits_result",
+        "failed to convert cuGraph HITS result to cudf DataFrame",
+    ))?;
+    let frame = frame.rename_columns([("hub", "hub_score"), ("authority", "authority_score")]).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.graph_algorithm.hits_result",
+            "failed to rename HITS score columns to the stable SQL schema",
+            error,
+        )
+    })?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_katz_centrality(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::KatzCentrality(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.katz_centrality",
+            "KatzCentrality graph algorithm node carried non-KatzCentrality parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_katz_centrality").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Transposed>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result = graph.katz_centrality(&entered, &katz_centrality_params(params)?).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.katz_centrality",
+        "cuGraph Katz centrality failed",
+    ))?;
+    let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
+    let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.katz_centrality_result",
+        "failed to convert cuGraph Katz centrality result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_sssp(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::Sssp(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.sssp",
+            "SSSP graph algorithm node carried non-SSSP parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_sssp").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let sssp_params = sssp_params(params)?;
+    let frame = match vertex_type {
+        cudf::TypeId::Int32 => {
+            let source = i32::try_from(params.source_vertex).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.graph_algorithm.sssp_source",
+                    "SSSP source vertex does not fit the Int32 graph vertex dtype",
+                )
+                .with_fact("source_vertex", params.source_vertex)
+                .with_fact("vertex_dtype", "Int32")
+            })?;
+            let result = graph
+                .sssp(&entered, source, &sssp_params)
+                .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.sssp", "cuGraph SSSP failed"))?;
+            result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.sssp_result",
+                "failed to convert cuGraph SSSP result to cudf DataFrame",
+            ))?
+        },
+        cudf::TypeId::Int64 => {
+            let result = graph
+                .sssp(&entered, params.source_vertex, &sssp_params)
+                .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.sssp", "cuGraph SSSP failed"))?;
+            result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.sssp_result",
+                "failed to convert cuGraph SSSP result to cudf DataFrame",
+            ))?
+        },
+        _ => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "cudf_query_engine.graph_algorithm.sssp_source",
+                "SSSP graph vertex dtype is unsupported",
+            )
+            .with_fact("vertex_dtype", format!("{vertex_type:?}")));
+        },
+    };
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: format!(
+            "source_vertex={},cutoff={}",
+            params.source_vertex,
+            params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        ),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_degrees_all(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::DegreesAll(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.degrees_all",
+            "DegreesAll graph algorithm node carried non-DegreesAll parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_degrees_all").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Transposed>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result = graph
+        .degrees_all(&entered)
+        .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.degrees_all", "cuGraph degrees_all failed"))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.degrees_all_result",
+        "failed to convert cuGraph degrees result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_in_degrees_all(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::InDegreesAll(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.in_degrees_all",
+            "InDegreesAll graph algorithm node carried non-InDegreesAll parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_in_degrees_all").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Transposed>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result = graph.in_degrees_all(&entered).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.in_degrees_all",
+        "cuGraph in_degrees_all failed",
+    ))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.in_degrees_all_result",
+        "failed to convert cuGraph in-degrees result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_out_degrees_all(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::OutDegreesAll(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.out_degrees_all",
+            "OutDegreesAll graph algorithm node carried non-OutDegreesAll parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_out_degrees_all").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    // out_degrees_all is layout-agnostic in cugraph-rs; build Forward for
+    // consistency with other Any-layout algorithms in this adapter.
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result = graph.out_degrees_all(&entered).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.out_degrees_all",
+        "cuGraph out_degrees_all failed",
+    ))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.out_degrees_all_result",
+        "failed to convert cuGraph out-degrees result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_weakly_connected_components(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::WeaklyConnectedComponents(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.weakly_connected_components",
+            "WeaklyConnectedComponents graph algorithm node carried wrong parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_weakly_connected_components").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let wcc_params = cugraph::labeling::ConnectedComponentsParams::default();
+    let result = graph.weakly_connected_components(&entered, &wcc_params).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.weakly_connected_components",
+        "cuGraph weakly_connected_components failed",
+    ))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.weakly_connected_components_result",
+        "failed to convert cuGraph WCC result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_strongly_connected_components(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::StronglyConnectedComponents(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.strongly_connected_components",
+            "StronglyConnectedComponents graph algorithm node carried wrong parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_strongly_connected_components").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let scc_params = cugraph::labeling::ConnectedComponentsParams::default();
+    let result = graph.strongly_connected_components(&entered, &scc_params).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.strongly_connected_components",
+        "cuGraph strongly_connected_components failed",
+    ))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.strongly_connected_components_result",
+        "failed to convert cuGraph SCC result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_triangle_count_all(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::TriangleCountAll(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.triangle_count_all",
+            "TriangleCountAll graph algorithm node carried wrong parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_triangle_count_all").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let tc_params = cugraph::community::TriangleCountParams::default();
+    let result = graph.triangle_count_all(&entered, &tc_params).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.triangle_count_all",
+        "cuGraph triangle_count_all failed",
+    ))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.triangle_count_all_result",
+        "failed to convert cuGraph triangle-count result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_core_number(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::CoreNumber(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.core_number",
+            "CoreNumber graph algorithm node carried non-CoreNumber parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_core_number").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let cn_params = cugraph::structure::CoreNumberParams {
+        degree_type: degree_type_to_cugraph(params.degree_type),
+        do_expensive_check: false,
+    };
+    let result = graph
+        .core_number(&entered, &cn_params)
+        .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.core_number", "cuGraph core_number failed"))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.core_number_result",
+        "failed to convert cuGraph core-number result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: format!("degree_type={}", params.degree_type.as_str()),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_k_core(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::KCore(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.k_core",
+            "KCore graph algorithm node carried non-KCore parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_k_core").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let kc_params = k_core_params(params)?;
+    let result = graph
+        .k_core(&entered, &kc_params)
+        .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.k_core", "cuGraph k_core failed"))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.k_core_result",
+        "failed to convert cuGraph k-core result to cudf DataFrame",
+    ))?;
+    // cudf_interop produces "source" / "destination"; stable schema uses "src" / "dst".
+    let frame = frame.rename_columns([("source", "src"), ("destination", "dst")]).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.graph_algorithm.k_core_result",
+            "failed to rename k-core edge columns to the stable SQL schema",
+            error,
+        )
+    })?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: format!("k={},degree_type={}", params.k, params.degree_type.as_str()),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_minimum_spanning_tree(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::MinimumSpanningTree(_) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.minimum_spanning_tree",
+            "MinimumSpanningTree graph algorithm node carried wrong parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_minimum_spanning_tree").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let mst_params = cugraph::tree::MinimumSpanningTreeParams::default();
+    let result = graph.minimum_spanning_tree(&entered, &mst_params).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.minimum_spanning_tree",
+        "cuGraph minimum_spanning_tree failed",
+    ))?;
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.minimum_spanning_tree_result",
+        "failed to convert cuGraph MST result to cudf DataFrame",
+    ))?;
+    // cudf_interop produces "source" / "destination"; stable schema uses "src" / "dst".
+    let frame = frame.rename_columns([("source", "src"), ("destination", "dst")]).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.graph_algorithm.minimum_spanning_tree_result",
+            "failed to rename MST edge columns to the stable SQL schema",
+            error,
+        )
+    })?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata: String::new(),
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_pagerank_strict(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::PageRankStrict(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.pagerank_strict",
+            "PageRankStrict graph algorithm node carried non-PageRankStrict parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_pagerank_strict").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Transposed>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let result = graph.pagerank_strict(&entered, &pagerank_params(params)?).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.pagerank_strict",
+        "cuGraph PageRank strict failed",
+    ))?;
+    let converged = result.converged().map_or_else(|_| "unknown".to_string(), |value| value.to_string());
+    let algorithm_metadata = format!("converged={},iterations={}", converged, result.num_iterations());
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.pagerank_strict_result",
+        "failed to convert cuGraph PageRank strict result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_leiden(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::Leiden(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.leiden",
+            "Leiden graph algorithm node carried non-Leiden parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_leiden").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+    let mut rng_state = cugraph::random::RngState::new(&entered, params.seed).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.leiden_rng",
+        "failed to create cuGraph RNG state for Leiden",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let leiden_p = leiden_params(params)?;
+    let result = graph
+        .leiden(&entered, &mut rng_state, &leiden_p)
+        .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.leiden", "cuGraph Leiden failed"))?;
+    let algorithm_metadata = format!("modularity={},seed={}", result.modularity(), params.seed);
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.leiden_result",
+        "failed to convert cuGraph Leiden result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_ecg(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::Ecg(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.ecg",
+            "ECG graph algorithm node carried non-ECG parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_ecg").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+    let mut rng_state = cugraph::random::RngState::new(&entered, params.seed).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.ecg_rng",
+        "failed to create cuGraph RNG state for ECG",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let ecg_p = ecg_params(params)?;
+    let result = graph
+        .ecg(&entered, &mut rng_state, &ecg_p)
+        .map_err(map_cugraph_error("cudf_query_engine.graph_algorithm.ecg", "cuGraph ECG failed"))?;
+    let algorithm_metadata = format!("modularity={},seed={}", result.modularity(), params.seed);
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.ecg_result",
+        "failed to convert cuGraph ECG result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_spectral_modularity_maximization(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::SpectralModularityMaximization(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.spectral_modularity_maximization",
+            "SpectralModularityMaximization graph algorithm node carried wrong parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_spectral_modularity_maximization").map_err(
+        map_cugraph_error("cudf_query_engine.graph_algorithm.enter", "failed to enter cuGraph execution context"),
+    )?;
+    let mut rng_state = cugraph::random::RngState::new(&entered, params.seed).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.spectral_modularity_maximization_rng",
+        "failed to create cuGraph RNG state for SpectralModularityMaximization",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let spectral_p = spectral_clustering_params(params)?;
+    let result =
+        graph.spectral_modularity_maximization(&entered, &mut rng_state, &spectral_p).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.spectral_modularity_maximization",
+            "cuGraph spectral_modularity_maximization failed",
+        ))?;
+    let algorithm_metadata = format!("n_clusters={},seed={}", params.n_clusters, params.seed);
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.spectral_modularity_maximization_result",
+        "failed to convert cuGraph SpectralModularityMaximization result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+#[allow(deprecated)]
+fn execute_balanced_cut_clustering(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    input: GpuDataFrame,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let crate::plan::GraphAlgorithmParams::BalancedCutClustering(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.balanced_cut_clustering",
+            "BalancedCutClustering graph algorithm node carried wrong parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, _) = project_edge_list(&input, spec)?;
+
+    let export = edges.try_prepare_device_table_export().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "cudf_query_engine.graph_algorithm.prepare_table_export",
+            "failed to prepare cuGraph edge-list table export",
+        )
+        .with_source(error)
+    })?;
+    let handle = cugraph::ResourceHandle::for_runtime(context.shared_runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the native cudf runtime",
+    ))?;
+    let entered = handle.enter("datafusion_cudf_cugraph_balanced_cut_clustering").map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.enter",
+        "failed to enter cuGraph execution context",
+    ))?;
+    let mut rng_state = cugraph::random::RngState::new(&entered, params.seed).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.balanced_cut_clustering_rng",
+        "failed to create cuGraph RNG state for BalancedCutClustering",
+    ))?;
+
+    let options = table_graph_options(spec);
+    let mut graph =
+        cugraph::cudf_interop::graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options)
+            .map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.build_graph",
+                "failed to build cuGraph graph from edge-list table",
+            ))?;
+
+    let spectral_p = spectral_clustering_params(params)?;
+    let result = graph.balanced_cut_clustering(&entered, &mut rng_state, &spectral_p).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.balanced_cut_clustering",
+        "cuGraph balanced_cut_clustering failed",
+    ))?;
+    let algorithm_metadata = format!("n_clusters={},seed={}", params.n_clusters, params.seed);
+    let frame = result.to_dataframe(context.runtime()).map_err(map_cugraph_error(
+        "cudf_query_engine.graph_algorithm.balanced_cut_clustering_result",
+        "failed to convert cuGraph BalancedCutClustering result to cudf DataFrame",
+    ))?;
+    Ok(GraphAlgorithmExecutionResult {
+        frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+        algorithm_metadata,
+    })
+}
+
+#[cfg(feature = "cugraph")]
 #[derive(Debug, Clone, Copy)]
 enum EdgeColumnRole {
     Vertex,
@@ -441,6 +1606,68 @@ fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> Str
             params.depth_limit.map_or_else(|| "none".to_string(), |value| value.to_string())
         ),
         crate::plan::GraphAlgorithmParams::Louvain(params) => format!("resolution={}", params.resolution),
+        crate::plan::GraphAlgorithmParams::EigenvectorCentrality(params) => {
+            format!("epsilon={},max_iterations={}", params.epsilon, params.max_iterations)
+        },
+        crate::plan::GraphAlgorithmParams::KatzCentrality(params) => format!(
+            "alpha={},beta={},epsilon={},max_iterations={}",
+            params.alpha, params.beta, params.epsilon, params.max_iterations,
+        ),
+        crate::plan::GraphAlgorithmParams::Hits(params) => format!(
+            "epsilon={},max_iterations={},normalize={}",
+            params.epsilon, params.max_iterations, params.normalize,
+        ),
+        crate::plan::GraphAlgorithmParams::Sssp(params) => format!(
+            "source_vertex={},cutoff={}",
+            params.source_vertex,
+            params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        ),
+        crate::plan::GraphAlgorithmParams::DegreesAll(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::InDegreesAll(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::OutDegreesAll(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::WeaklyConnectedComponents(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::StronglyConnectedComponents(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::TriangleCountAll(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::CoreNumber(params) => {
+            format!("degree_type={}", params.degree_type.as_str())
+        },
+        crate::plan::GraphAlgorithmParams::KCore(params) => {
+            format!("k={},degree_type={}", params.k, params.degree_type.as_str())
+        },
+        crate::plan::GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
+        crate::plan::GraphAlgorithmParams::PageRankStrict(params) => {
+            format!("alpha={},epsilon={},max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
+        },
+        crate::plan::GraphAlgorithmParams::Leiden(params) => format!(
+            "max_level={},resolution={},theta={},seed={}",
+            params.max_level, params.resolution, params.theta, params.seed,
+        ),
+        crate::plan::GraphAlgorithmParams::Ecg(params) => format!(
+            "min_weight={},ensemble_size={},max_level={},threshold={},resolution={},seed={}",
+            params.min_weight, params.ensemble_size, params.max_level, params.threshold, params.resolution, params.seed,
+        ),
+        crate::plan::GraphAlgorithmParams::SpectralModularityMaximization(params) => format!(
+            "n_clusters={},n_eigenvectors={},evs_tolerance={},evs_max_iterations={},\
+             k_means_tolerance={},k_means_max_iterations={},seed={}",
+            params.n_clusters,
+            params.n_eigenvectors,
+            params.evs_tolerance,
+            params.evs_max_iterations,
+            params.k_means_tolerance,
+            params.k_means_max_iterations,
+            params.seed,
+        ),
+        crate::plan::GraphAlgorithmParams::BalancedCutClustering(params) => format!(
+            "n_clusters={},n_eigenvectors={},evs_tolerance={},evs_max_iterations={},\
+             k_means_tolerance={},k_means_max_iterations={},seed={}",
+            params.n_clusters,
+            params.n_eigenvectors,
+            params.evs_tolerance,
+            params.evs_max_iterations,
+            params.k_means_tolerance,
+            params.k_means_max_iterations,
+            params.seed,
+        ),
     }
 }
 
@@ -474,6 +1701,64 @@ fn boundary_delta(
             .device_to_device_copied_bytes
             .saturating_sub(before.device_to_device_copied_bytes),
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn hits_params(params: &crate::plan::GraphHitsParams) -> Result<cugraph::centrality::HitsParams> {
+    Ok(cugraph::centrality::HitsParams {
+        epsilon: cugraph::params::NonNegativeF64::new(params.epsilon).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.hits_params",
+            "invalid cuGraph HITS epsilon",
+        ))?,
+        max_iterations: cugraph::params::IterationCount::new(params.max_iterations).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.hits_params",
+            "invalid cuGraph HITS max_iterations",
+        ))?,
+        normalize: params.normalize,
+        do_expensive_check: false,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn katz_centrality_params(
+    params: &crate::plan::GraphKatzCentralityParams,
+) -> Result<cugraph::centrality::KatzCentralityParams> {
+    Ok(cugraph::centrality::KatzCentralityParams {
+        alpha: cugraph::params::NonNegativeF64::new(params.alpha).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.katz_centrality_params",
+            "invalid cuGraph Katz centrality alpha",
+        ))?,
+        beta: cugraph::params::NonNegativeF64::new(params.beta).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.katz_centrality_params",
+            "invalid cuGraph Katz centrality beta",
+        ))?,
+        epsilon: cugraph::params::NonNegativeF64::new(params.epsilon).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.katz_centrality_params",
+            "invalid cuGraph Katz centrality epsilon",
+        ))?,
+        max_iterations: cugraph::params::IterationCount::new(params.max_iterations).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.katz_centrality_params",
+            "invalid cuGraph Katz centrality max_iterations",
+        ))?,
+        do_expensive_check: false,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn eigenvector_centrality_params(
+    params: &crate::plan::GraphEigenvectorCentralityParams,
+) -> Result<cugraph::centrality::EigenvectorCentralityParams> {
+    Ok(cugraph::centrality::EigenvectorCentralityParams {
+        epsilon: cugraph::params::NonNegativeF64::new(params.epsilon).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.eigenvector_centrality_params",
+            "invalid cuGraph eigenvector centrality epsilon",
+        ))?,
+        max_iterations: cugraph::params::IterationCount::new(params.max_iterations).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.eigenvector_centrality_params",
+            "invalid cuGraph eigenvector centrality max_iterations",
+        ))?,
+        do_expensive_check: false,
+    })
 }
 
 #[cfg(feature = "cugraph")]
@@ -533,6 +1818,145 @@ fn louvain_params(params: &crate::plan::GraphLouvainParams) -> Result<cugraph::c
         "invalid cuGraph Louvain resolution",
     ))?;
     Ok(cugraph_params)
+}
+
+#[cfg(feature = "cugraph")]
+fn leiden_params(params: &crate::plan::GraphLeidenParams) -> Result<cugraph::community::LeidenParams> {
+    Ok(cugraph::community::LeidenParams {
+        max_level: cugraph::params::IterationCount::new(params.max_level).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.leiden_params",
+            "invalid cuGraph Leiden max_level",
+        ))?,
+        resolution: cugraph::params::PositiveF64::new(params.resolution).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.leiden_params",
+            "invalid cuGraph Leiden resolution",
+        ))?,
+        theta: cugraph::params::PositiveF64::new(params.theta).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.leiden_params",
+            "invalid cuGraph Leiden theta",
+        ))?,
+        do_expensive_check: false,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn ecg_params(params: &crate::plan::GraphEcgParams) -> Result<cugraph::community::EcgParams> {
+    Ok(cugraph::community::EcgParams {
+        min_weight: cugraph::params::NonNegativeF64::new(params.min_weight).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.ecg_params",
+            "invalid cuGraph ECG min_weight",
+        ))?,
+        ensemble_size: cugraph::params::IterationCount::new(params.ensemble_size).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.ecg_params",
+            "invalid cuGraph ECG ensemble_size",
+        ))?,
+        max_level: cugraph::params::IterationCount::new(params.max_level).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.ecg_params",
+            "invalid cuGraph ECG max_level",
+        ))?,
+        threshold: cugraph::params::NonNegativeF64::new(params.threshold).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.ecg_params",
+            "invalid cuGraph ECG threshold",
+        ))?,
+        resolution: cugraph::params::PositiveF64::new(params.resolution).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.ecg_params",
+            "invalid cuGraph ECG resolution",
+        ))?,
+        do_expensive_check: false,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn spectral_clustering_params(
+    params: &crate::plan::GraphSpectralClusteringParams,
+) -> Result<cugraph::community::SpectralClusteringParams> {
+    let n_clusters = std::num::NonZeroUsize::new(params.n_clusters as usize).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.spectral_clustering_params",
+            "spectral clustering n_clusters must be at least 1",
+        )
+        .with_fact("n_clusters", params.n_clusters)
+    })?;
+    let n_eigenvectors = std::num::NonZeroUsize::new(params.n_eigenvectors as usize).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.spectral_clustering_params",
+            "spectral clustering n_eigenvectors must be at least 1",
+        )
+        .with_fact("n_eigenvectors", params.n_eigenvectors)
+    })?;
+    Ok(cugraph::community::SpectralClusteringParams {
+        n_clusters,
+        n_eigenvectors,
+        evs_tolerance: cugraph::params::NonNegativeF64::new(params.evs_tolerance).map_err(map_cugraph_error(
+            "cudf_query_engine.graph_algorithm.spectral_clustering_params",
+            "invalid cuGraph spectral clustering evs_tolerance",
+        ))?,
+        evs_max_iterations: cugraph::params::IterationCount::new(params.evs_max_iterations).map_err(
+            map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.spectral_clustering_params",
+                "invalid cuGraph spectral clustering evs_max_iterations",
+            ),
+        )?,
+        k_means_tolerance: cugraph::params::NonNegativeF64::new(params.k_means_tolerance).map_err(
+            map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.spectral_clustering_params",
+                "invalid cuGraph spectral clustering k_means_tolerance",
+            ),
+        )?,
+        k_means_max_iterations: cugraph::params::IterationCount::new(params.k_means_max_iterations).map_err(
+            map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.spectral_clustering_params",
+                "invalid cuGraph spectral clustering k_means_max_iterations",
+            ),
+        )?,
+        do_expensive_check: false,
+    })
+}
+
+#[cfg(feature = "cugraph")]
+fn sssp_params(params: &crate::plan::GraphSsspParams) -> Result<cugraph::traversal::SsspParams> {
+    let cutoff = params
+        .cutoff
+        .map(|value| {
+            cugraph::params::NonNegativeF64::new(value).map_err(map_cugraph_error(
+                "cudf_query_engine.graph_algorithm.sssp_params",
+                "invalid cuGraph SSSP cutoff",
+            ))
+        })
+        .transpose()?;
+    let mut p = cugraph::traversal::SsspParams::default().with_predecessors();
+    if let Some(cutoff) = cutoff {
+        p = p.with_cutoff(cutoff);
+    }
+    Ok(p)
+}
+
+#[cfg(feature = "cugraph")]
+fn degree_type_to_cugraph(degree_type: crate::plan::GraphKCoreDegreeType) -> cugraph::structure::KCoreDegreeType {
+    match degree_type {
+        crate::plan::GraphKCoreDegreeType::In => cugraph::structure::KCoreDegreeType::In,
+        crate::plan::GraphKCoreDegreeType::Out => cugraph::structure::KCoreDegreeType::Out,
+        crate::plan::GraphKCoreDegreeType::InOut => cugraph::structure::KCoreDegreeType::InOut,
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn k_core_params(params: &crate::plan::GraphKCoreParams) -> Result<cugraph::structure::KCoreParams> {
+    let k = std::num::NonZeroUsize::new(params.k as usize).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.graph_algorithm.k_core_params",
+            "KCore k must be at least 1",
+        )
+        .with_fact("k", params.k)
+    })?;
+    Ok(cugraph::structure::KCoreParams {
+        k,
+        degree_type: degree_type_to_cugraph(params.degree_type),
+        do_expensive_check: false,
+    })
 }
 
 #[cfg(feature = "cugraph")]

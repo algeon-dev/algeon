@@ -1,11 +1,30 @@
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use cudf_query_engine::GraphAlgorithm as NativeGraphAlgorithm;
 use datafusion::common::{DataFusionError, Result};
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 pub const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
 pub const CUGRAPH_LOUVAIN_FUNCTION: &str = "cugraph_louvain";
+pub const CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION: &str = "cugraph_eigenvector_centrality";
+pub const CUGRAPH_KATZ_CENTRALITY_FUNCTION: &str = "cugraph_katz_centrality";
+pub const CUGRAPH_HITS_FUNCTION: &str = "cugraph_hits";
+pub const CUGRAPH_SSSP_FUNCTION: &str = "cugraph_sssp";
+pub const CUGRAPH_DEGREES_ALL_FUNCTION: &str = "cugraph_degrees_all";
+pub const CUGRAPH_IN_DEGREES_ALL_FUNCTION: &str = "cugraph_in_degrees_all";
+pub const CUGRAPH_OUT_DEGREES_ALL_FUNCTION: &str = "cugraph_out_degrees_all";
+pub const CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION: &str = "cugraph_weakly_connected_components";
+pub const CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION: &str = "cugraph_strongly_connected_components";
+pub const CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION: &str = "cugraph_triangle_count_all";
+pub const CUGRAPH_CORE_NUMBER_FUNCTION: &str = "cugraph_core_number";
+pub const CUGRAPH_K_CORE_FUNCTION: &str = "cugraph_k_core";
+pub const CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION: &str = "cugraph_minimum_spanning_tree";
+pub const CUGRAPH_PAGERANK_STRICT_FUNCTION: &str = "cugraph_pagerank_strict";
+pub const CUGRAPH_LEIDEN_FUNCTION: &str = "cugraph_leiden";
+pub const CUGRAPH_ECG_FUNCTION: &str = "cugraph_ecg";
+pub const CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION: &str = "cugraph_spectral_modularity_maximization";
+pub const CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION: &str = "cugraph_balanced_cut_clustering";
 
 #[derive(Debug, Clone)]
 pub struct CugraphSqlConfig {
@@ -40,21 +59,173 @@ pub enum CugraphAlgorithm {
     PageRank,
     Bfs,
     Louvain,
+    EigenvectorCentrality,
+    KatzCentrality,
+    Hits,
+    Sssp,
+    DegreesAll,
+    InDegreesAll,
+    OutDegreesAll,
+    WeaklyConnectedComponents,
+    StronglyConnectedComponents,
+    TriangleCountAll,
+    CoreNumber,
+    KCore,
+    MinimumSpanningTree,
+    PageRankStrict,
+    Leiden,
+    Ecg,
+    SpectralModularityMaximization,
+    BalancedCutClustering,
 }
 
 impl CugraphAlgorithm {
-    pub fn all() -> [Self; 3] {
-        [Self::PageRank, Self::Bfs, Self::Louvain]
+    /// All algorithms exposed by the SQL surface, in registry order.
+    pub fn all() -> impl ExactSizeIterator<Item = Self> + Clone {
+        CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.algorithm)
     }
 
     pub fn function_name(self) -> &'static str {
-        match self {
-            Self::PageRank => CUGRAPH_PAGERANK_FUNCTION,
-            Self::Bfs => CUGRAPH_BFS_FUNCTION,
-            Self::Louvain => CUGRAPH_LOUVAIN_FUNCTION,
-        }
+        self.definition().sql_function_name
+    }
+
+    /// Look up the SQL-side registry definition for this algorithm.
+    pub fn definition(self) -> &'static CugraphOperationDefinition {
+        CUGRAPH_OPERATION_REGISTRY
+            .iter()
+            .find(|entry| entry.algorithm == self)
+            .expect("cuGraph SQL operation registry is missing an algorithm variant")
+    }
+
+    pub fn native_algorithm(self) -> NativeGraphAlgorithm {
+        self.definition().native_algorithm
     }
 }
+
+/// Registry-level metadata for a SQL-visible cuGraph operation.
+///
+/// One entry per [`CugraphAlgorithm`] variant. Mirrors
+/// [`cudf_query_engine::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
+/// the same native algorithm advertised by the engine, and the SQL function
+/// name follows the `cugraph_<native_name>` convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CugraphOperationDefinition {
+    pub algorithm: CugraphAlgorithm,
+    pub native_algorithm: NativeGraphAlgorithm,
+    pub sql_function_name: &'static str,
+}
+
+/// Source-of-truth list of SQL-visible cuGraph algorithms.
+///
+/// Order is preserved by [`CugraphAlgorithm::all`] and is the order in which
+/// [`cugraph_table_functions`](crate::cugraph_table_functions) registers UDTFs.
+pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::PageRank,
+        native_algorithm: NativeGraphAlgorithm::PageRank,
+        sql_function_name: CUGRAPH_PAGERANK_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Bfs,
+        native_algorithm: NativeGraphAlgorithm::Bfs,
+        sql_function_name: CUGRAPH_BFS_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Louvain,
+        native_algorithm: NativeGraphAlgorithm::Louvain,
+        sql_function_name: CUGRAPH_LOUVAIN_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::EigenvectorCentrality,
+        native_algorithm: NativeGraphAlgorithm::EigenvectorCentrality,
+        sql_function_name: CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::KatzCentrality,
+        native_algorithm: NativeGraphAlgorithm::KatzCentrality,
+        sql_function_name: CUGRAPH_KATZ_CENTRALITY_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Hits,
+        native_algorithm: NativeGraphAlgorithm::Hits,
+        sql_function_name: CUGRAPH_HITS_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Sssp,
+        native_algorithm: NativeGraphAlgorithm::Sssp,
+        sql_function_name: CUGRAPH_SSSP_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::DegreesAll,
+        native_algorithm: NativeGraphAlgorithm::DegreesAll,
+        sql_function_name: CUGRAPH_DEGREES_ALL_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::InDegreesAll,
+        native_algorithm: NativeGraphAlgorithm::InDegreesAll,
+        sql_function_name: CUGRAPH_IN_DEGREES_ALL_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::OutDegreesAll,
+        native_algorithm: NativeGraphAlgorithm::OutDegreesAll,
+        sql_function_name: CUGRAPH_OUT_DEGREES_ALL_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::WeaklyConnectedComponents,
+        native_algorithm: NativeGraphAlgorithm::WeaklyConnectedComponents,
+        sql_function_name: CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::StronglyConnectedComponents,
+        native_algorithm: NativeGraphAlgorithm::StronglyConnectedComponents,
+        sql_function_name: CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::TriangleCountAll,
+        native_algorithm: NativeGraphAlgorithm::TriangleCountAll,
+        sql_function_name: CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::CoreNumber,
+        native_algorithm: NativeGraphAlgorithm::CoreNumber,
+        sql_function_name: CUGRAPH_CORE_NUMBER_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::KCore,
+        native_algorithm: NativeGraphAlgorithm::KCore,
+        sql_function_name: CUGRAPH_K_CORE_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::MinimumSpanningTree,
+        native_algorithm: NativeGraphAlgorithm::MinimumSpanningTree,
+        sql_function_name: CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::PageRankStrict,
+        native_algorithm: NativeGraphAlgorithm::PageRankStrict,
+        sql_function_name: CUGRAPH_PAGERANK_STRICT_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Leiden,
+        native_algorithm: NativeGraphAlgorithm::Leiden,
+        sql_function_name: CUGRAPH_LEIDEN_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::Ecg,
+        native_algorithm: NativeGraphAlgorithm::Ecg,
+        sql_function_name: CUGRAPH_ECG_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::SpectralModularityMaximization,
+        native_algorithm: NativeGraphAlgorithm::SpectralModularityMaximization,
+        sql_function_name: CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION,
+    },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::BalancedCutClustering,
+        native_algorithm: NativeGraphAlgorithm::BalancedCutClustering,
+        sql_function_name: CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION,
+    },
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct CugraphAlgorithmSpec {
@@ -149,6 +320,24 @@ pub enum CugraphAlgorithmParams {
     PageRank(CugraphPageRankParams),
     Bfs(CugraphBfsParams),
     Louvain(CugraphLouvainParams),
+    EigenvectorCentrality(CugraphEigenvectorCentralityParams),
+    KatzCentrality(CugraphKatzCentralityParams),
+    Hits(CugraphHitsParams),
+    Sssp(CugraphSsspParams),
+    DegreesAll(CugraphDegreesAllParams),
+    InDegreesAll(CugraphInDegreesAllParams),
+    OutDegreesAll(CugraphOutDegreesAllParams),
+    WeaklyConnectedComponents(CugraphWccParams),
+    StronglyConnectedComponents(CugraphSccParams),
+    TriangleCountAll(CugraphTriangleCountAllParams),
+    CoreNumber(CugraphCoreNumberParams),
+    KCore(CugraphKCoreParams),
+    MinimumSpanningTree(CugraphMstParams),
+    PageRankStrict(CugraphPageRankParams),
+    Leiden(CugraphLeidenParams),
+    Ecg(CugraphEcgParams),
+    SpectralModularityMaximization(CugraphSpectralClusteringParams),
+    BalancedCutClustering(CugraphSpectralClusteringParams),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,9 +370,203 @@ impl Default for CugraphLouvainParams {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphEigenvectorCentralityParams {
+    pub epsilon: f64,
+    pub max_iterations: u32,
+}
+
+impl Default for CugraphEigenvectorCentralityParams {
+    fn default() -> Self {
+        // Mirrors `cudf_query_engine::GraphEigenvectorCentralityParams::default`.
+        Self { epsilon: 1.0e-6, max_iterations: 500 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphKatzCentralityParams {
+    pub alpha: f64,
+    pub beta: f64,
+    pub epsilon: f64,
+    pub max_iterations: u32,
+}
+
+impl Default for CugraphKatzCentralityParams {
+    fn default() -> Self {
+        // Mirrors `cudf_query_engine::GraphKatzCentralityParams::default`.
+        Self { alpha: 0.01, beta: 1.0, epsilon: 1.0e-6, max_iterations: 1000 }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphHitsParams {
+    pub epsilon: f64,
+    pub max_iterations: u32,
+    pub normalize: bool,
+}
+
+impl Default for CugraphHitsParams {
+    fn default() -> Self {
+        // Mirrors `cudf_query_engine::GraphHitsParams::default`.
+        Self { epsilon: 1.0e-5, max_iterations: 100, normalize: false }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphSsspParams {
+    pub source_vertex: i64,
+    /// Maximum edge-weight sum to consider. `None` means no cutoff; must be >= 0 when set.
+    pub cutoff: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphDegreesAllParams;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphInDegreesAllParams;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphOutDegreesAllParams;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphWccParams;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphSccParams;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphTriangleCountAllParams;
+
+/// Degree direction for core-number and k-core SQL parameters.
+///
+/// Mirrors `cudf_query_engine::GraphKCoreDegreeType`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CugraphKCoreDegreeType {
+    In,
+    Out,
+    #[default]
+    InOut,
+}
+
+impl CugraphKCoreDegreeType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::In => "in",
+            Self::Out => "out",
+            Self::InOut => "in_out",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CugraphCoreNumberParams {
+    pub degree_type: CugraphKCoreDegreeType,
+}
+
+impl Default for CugraphCoreNumberParams {
+    fn default() -> Self {
+        Self { degree_type: CugraphKCoreDegreeType::InOut }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CugraphKCoreParams {
+    pub k: u32,
+    pub degree_type: CugraphKCoreDegreeType,
+}
+
+impl Default for CugraphKCoreParams {
+    fn default() -> Self {
+        // Mirrors `cudf_query_engine::GraphKCoreParams::default`.
+        Self { k: 2, degree_type: CugraphKCoreDegreeType::InOut }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphMstParams;
+
+/// Parameters for Leiden community detection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphLeidenParams {
+    /// Maximum hierarchy depth / iteration count. Must be >= 1.
+    pub max_level: u32,
+    /// Resolution parameter (`gamma`) in the modularity formula. Must be > 0.
+    pub resolution: f64,
+    /// Modularity-gain scaling for the refinement phase. Must be > 0.
+    pub theta: f64,
+    /// RNG seed. Default 0 gives a deterministic run.
+    pub seed: u64,
+}
+
+impl Default for CugraphLeidenParams {
+    fn default() -> Self {
+        // Matches cudf_query_engine::GraphLeidenParams::default().
+        Self { max_level: 100, resolution: 1.0, theta: 1.0, seed: 0 }
+    }
+}
+
+/// Parameters for ECG community detection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphEcgParams {
+    /// Minimum edge weight in the final Louvain graph. Must be >= 0.
+    pub min_weight: f64,
+    /// Number of ensemble Louvain iterations. Must be >= 1.
+    pub ensemble_size: u32,
+    /// Maximum hierarchy depth for final Louvain. Must be >= 1.
+    pub max_level: u32,
+    /// Convergence threshold for final Louvain. Must be >= 0.
+    pub threshold: f64,
+    /// Resolution parameter in the modularity formula. Must be > 0.
+    pub resolution: f64,
+    /// RNG seed. Default 0 gives a deterministic run.
+    pub seed: u64,
+}
+
+impl Default for CugraphEcgParams {
+    fn default() -> Self {
+        // Matches cudf_query_engine::GraphEcgParams::default().
+        Self { min_weight: 0.001, ensemble_size: 10, max_level: 100, threshold: 1.0e-7, resolution: 1.0, seed: 0 }
+    }
+}
+
+/// Parameters for spectral modularity maximization and balanced-cut clustering.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphSpectralClusteringParams {
+    /// Desired number of clusters. Must be >= 1.
+    pub n_clusters: u32,
+    /// Number of eigenvectors to use. Must be >= 1.
+    pub n_eigenvectors: u32,
+    /// Eigenvalue-solver tolerance. Must be >= 0.
+    pub evs_tolerance: f64,
+    /// Eigenvalue-solver maximum iteration count. Must be >= 1.
+    pub evs_max_iterations: u32,
+    /// k-means tolerance. Must be >= 0.
+    pub k_means_tolerance: f64,
+    /// k-means maximum iteration count. Must be >= 1.
+    pub k_means_max_iterations: u32,
+    /// RNG seed. Default 0 gives a deterministic run.
+    pub seed: u64,
+}
+
+impl Default for CugraphSpectralClusteringParams {
+    fn default() -> Self {
+        // Matches cudf_query_engine::GraphSpectralClusteringParams::default().
+        Self {
+            n_clusters: 2,
+            n_eigenvectors: 2,
+            evs_tolerance: 0.01,
+            evs_max_iterations: 500,
+            k_means_tolerance: 0.001,
+            k_means_max_iterations: 100,
+            seed: 0,
+        }
+    }
+}
+
 pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
     let fields = match algorithm {
-        CugraphAlgorithm::PageRank => {
+        CugraphAlgorithm::PageRank | CugraphAlgorithm::EigenvectorCentrality | CugraphAlgorithm::KatzCentrality => {
+            // Centrality-style algorithms expose one score per vertex.
             vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)]
         },
         CugraphAlgorithm::Bfs => vec![
@@ -192,6 +575,48 @@ pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
             Field::new("predecessor", DataType::Int64, true),
         ],
         CugraphAlgorithm::Louvain => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::Hits => vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("hub_score", DataType::Float64, false),
+            Field::new("authority_score", DataType::Float64, false),
+        ],
+        CugraphAlgorithm::Sssp => vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("distance", DataType::Float64, false),
+            Field::new("predecessor", DataType::Int64, true),
+        ],
+        CugraphAlgorithm::DegreesAll => vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("in_degree", DataType::Int64, false),
+            Field::new("out_degree", DataType::Int64, false),
+        ],
+        CugraphAlgorithm::InDegreesAll => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("in_degree", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::OutDegreesAll => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("out_degree", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::WeaklyConnectedComponents | CugraphAlgorithm::StronglyConnectedComponents => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("label", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::TriangleCountAll => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("triangle_count", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::CoreNumber => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("core_number", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::KCore | CugraphAlgorithm::MinimumSpanningTree => {
+            vec![Field::new("src", DataType::Int64, false), Field::new("dst", DataType::Int64, false)]
+        },
+        CugraphAlgorithm::PageRankStrict => {
+            vec![Field::new("vertex", DataType::Int64, false), Field::new("value", DataType::Float64, false)]
+        },
+        CugraphAlgorithm::Leiden
+        | CugraphAlgorithm::Ecg
+        | CugraphAlgorithm::SpectralModularityMaximization
+        | CugraphAlgorithm::BalancedCutClustering => {
             vec![Field::new("vertex", DataType::Int64, false), Field::new("partition", DataType::Int64, false)]
         },
     };

@@ -416,7 +416,7 @@ fn join_output_upper_bound_column_for_frame_column(
     } else {
         None
     };
-    Ok(JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes })
+    Ok(JoinOutputColumnUpperBoundInput { data_type, input_max_string_length_bytes, input_total_string_bytes: None })
 }
 
 fn max_string_byte_length_for_join_output_sizing(
@@ -433,7 +433,11 @@ fn max_string_byte_length_for_join_output_sizing(
     }
     let byte_count_bound = join_output_upper_bound_bytes(
         frame.num_rows() as u64,
-        &[JoinOutputColumnUpperBoundInput { data_type: ArrowDataType::Int32, input_max_string_length_bytes: None }],
+        &[JoinOutputColumnUpperBoundInput {
+            data_type: ArrowDataType::Int32,
+            input_max_string_length_bytes: None,
+            input_total_string_bytes: None,
+        }],
     )?;
     let mut reservation = reservations.try_reserve_work(
         MemoryReservationRequest::new(ReservationKind::ChunkOperator, byte_count_bound, reservations.budget())

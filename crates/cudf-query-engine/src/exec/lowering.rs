@@ -26,6 +26,12 @@ pub(super) fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
         Expr::IsNull(expr) => Ok(lower_expr(expr)?.is_null()),
         Expr::IsNotNull(expr) => Ok(lower_expr(expr)?.is_not_null()),
         Expr::Cast { expr, target_type } => {
+            if expr_has_declared_type(expr, target_type) {
+                return lower_expr_with_expected_type(expr, Some(target_type));
+            }
+            if let Some(cast) = lower_integer_temporal_cast(expr, target_type)? {
+                return Ok(cast);
+            }
             let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::UnsupportedType,
@@ -86,6 +92,12 @@ pub(super) fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<
 fn lower_expr_with_expected_type(expr: &Expr, expected_type: Option<&ArrowDataType>) -> Result<cudf::Expr> {
     match expr {
         Expr::Cast { expr, target_type } => {
+            if expr_has_declared_type(expr, target_type) {
+                return lower_expr_with_expected_type(expr, Some(target_type));
+            }
+            if let Some(cast) = lower_integer_temporal_cast(expr, target_type)? {
+                return Ok(cast);
+            }
             let target_dtype = cudf_dtype_from_arrow_type(target_type).ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::UnsupportedType,
@@ -196,6 +208,14 @@ fn lower_binary_expr_with_expected_type(
     output_type: Option<&ArrowDataType>,
     expected_type: Option<&ArrowDataType>,
 ) -> Result<cudf::Expr> {
+    if let Some((left, right)) = date32_integral_cast_comparison_operands(left, right, op) {
+        return lower_binary_with_expected_type(
+            lower_expr(left)?,
+            op,
+            lower_expr(&right)?,
+            output_type.or(expected_type),
+        );
+    }
     let declared_type = output_type.or(expected_type);
     if let Some((months, days, nanoseconds)) = interval_month_day_nano(right) {
         return match op {
@@ -213,6 +233,78 @@ fn lower_binary_expr_with_expected_type(
         return lower_datetime_interval_offset(right, months, days, nanoseconds);
     }
     lower_binary_with_expected_type(lower_expr(left)?, op, lower_expr(right)?, declared_type)
+}
+
+fn expr_has_declared_type(expr: &Expr, target_type: &ArrowDataType) -> bool {
+    expr_declared_type(expr).is_some_and(|data_type| {
+        data_type == *target_type || (is_string_type(&data_type) && is_string_type(target_type))
+    })
+}
+
+fn expr_declared_type(expr: &Expr) -> Option<ArrowDataType> {
+    match expr {
+        Expr::Literal(value) => Some(value.data_type()),
+        Expr::Cast { target_type, .. } => Some(target_type.clone()),
+        Expr::Binary { output_type, .. } => output_type.clone(),
+        Expr::Substring { .. } => Some(ArrowDataType::Utf8),
+        Expr::StringLength { output_type, .. }
+        | Expr::RegexpReplace { output_type, .. }
+        | Expr::Round { output_type, .. }
+        | Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
+        Expr::Extract { .. } => Some(ArrowDataType::Int32),
+        Expr::Alias { expr, .. } => expr_declared_type(expr),
+        _ => None,
+    }
+}
+
+fn is_string_type(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn lower_integer_temporal_cast(expr: &Expr, target_type: &ArrowDataType) -> Result<Option<cudf::Expr>> {
+    if expr_declared_type(expr)
+        .is_some_and(|source_type| matches!(source_type, ArrowDataType::Date32 | ArrowDataType::Timestamp(_, None)))
+    {
+        return Ok(None);
+    }
+    let Some((timestamp_resolution, duration_resolution)) = temporal_cast_resolutions(target_type) else {
+        return Ok(None);
+    };
+    let duration = lower_expr(expr)?.cast(cudf::DataType::new(duration_resolution.duration_type_id()));
+    Ok(Some(duration.cast(cudf::DataType::new(timestamp_resolution.type_id()))))
+}
+
+fn temporal_cast_resolutions(
+    target_type: &ArrowDataType,
+) -> Option<(cudf::TimestampResolution, cudf::TimestampResolution)> {
+    match target_type {
+        ArrowDataType::Date32 => Some((cudf::TimestampResolution::Days, cudf::TimestampResolution::Days)),
+        ArrowDataType::Timestamp(unit, None) => {
+            let resolution = timestamp_unit_to_cudf_resolution(unit);
+            Some((resolution, resolution))
+        },
+        _ => None,
+    }
+}
+
+fn date32_integral_cast_comparison_operands<'a>(
+    left: &'a Expr,
+    right: &'a Expr,
+    op: BinaryOp,
+) -> Option<(&'a Expr, Expr)> {
+    if !matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq) {
+        return None;
+    }
+    let Expr::Cast { expr, target_type } = left else {
+        return None;
+    };
+    if !matches!(target_type, ArrowDataType::Date32) {
+        return None;
+    }
+    let Expr::Literal(LiteralValue::Date32(value)) = right else {
+        return None;
+    };
+    Some((expr, Expr::Literal(LiteralValue::Int32(*value))))
 }
 
 fn lower_datetime_interval_offset(expr: &Expr, months: i32, days: i32, nanoseconds: i64) -> Result<cudf::Expr> {
@@ -388,6 +480,9 @@ fn lower_regexp_replace(
     output_type: &ArrowDataType,
 ) -> Result<cudf::Expr> {
     let replaced = lower_expr(expr)?.str().replace_with_backrefs(pattern, replacement);
+    if is_string_type(output_type) {
+        return Ok(replaced);
+    }
     let target = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -559,9 +654,18 @@ fn lower_date_trunc(field: DatePart, expr: &Expr, output_type: &ArrowDataType) -
         .with_fact("output_type", format!("{output_type:?}"))
     })?;
     if let Ok(raw_seconds) = lower_timestamp_second_integer_cast_raw(expr) {
-        return Ok((raw_seconds.floor_div(lit(60_i64)) * lit(60_i64)).cast(target));
+        return Ok(cast_integer_expr_to_temporal(raw_seconds.floor_div(lit(60_i64)) * lit(60_i64), output_type)?
+            .unwrap_or_else(|| unreachable!("validated DATE_TRUNC output is temporal")));
     }
     Ok(lower_expr(expr)?.dt().floor(cudf::ops::datetime::DatetimeRoundingFrequency::Minute).cast(target))
+}
+
+fn cast_integer_expr_to_temporal(expr: cudf::Expr, target_type: &ArrowDataType) -> Result<Option<cudf::Expr>> {
+    let Some((timestamp_resolution, duration_resolution)) = temporal_cast_resolutions(target_type) else {
+        return Ok(None);
+    };
+    let duration = expr.cast(cudf::DataType::new(duration_resolution.duration_type_id()));
+    Ok(Some(duration.cast(cudf::DataType::new(timestamp_resolution.type_id()))))
 }
 
 fn lower_timestamp_second_integer_cast_raw(expr: &Expr) -> Result<cudf::Expr> {

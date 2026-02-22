@@ -22,8 +22,13 @@ rustc-ice-*.txt
 cufile.log
 log
 
-# Large generated benchmark/test datasets
-/tests/data/
+# Large generated benchmark/test datasets. Everything under tests/data/
+# is gitignored by default; specific sub-trees that *are* meant to be
+# committed are re-included individually below.
+/tests/data/*
+# Vendored cuGraph parity fixtures are small (a few hundred KB total) and
+# checked in so the parity harness has a stable byte-identical baseline.
+!/tests/data/cugraph/
 
 __pycache__/
 *.pyc
