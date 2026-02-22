@@ -402,17 +402,12 @@ impl fmt::Display for EdgeWeightCombiner {
 /// Mirrors `cugraph::structure::KCoreDegreeType` without depending on the
 /// cugraph feature so the native IR can be constructed without the cuGraph
 /// feature.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum GraphKCoreDegreeType {
     In,
     Out,
+    #[default]
     InOut,
-}
-
-impl Default for GraphKCoreDegreeType {
-    fn default() -> Self {
-        Self::InOut
-    }
 }
 
 impl GraphKCoreDegreeType {
