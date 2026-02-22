@@ -127,6 +127,11 @@ path = "tests/iceberg_public_api_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
+name = "iceberg_catalog_provider_tests"
+path = "tests/iceberg_catalog_provider_tests.rs"
+required-features = ["iceberg"]
+
+[[test]]
 name = "cugraph_sql_tests"
 path = "tests/cugraph_sql_tests.rs"
 required-features = ["cugraph"]

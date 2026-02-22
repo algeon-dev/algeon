@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use datafusion::{
-    catalog::{MemoryCatalogProvider, MemorySchemaProvider},
     execution::SessionStateBuilder,
     prelude::{SessionConfig, SessionContext},
 };
@@ -20,28 +19,48 @@ pub async fn build_session_context(config: &ServerConfig) -> super::error::Resul
     let ctx = SessionContext::new_with_state(state);
 
     #[cfg(feature = "iceberg")]
-    register_iceberg_tables(&ctx, config).await?;
+    register_iceberg_catalog(&ctx, config).await?;
 
     Ok(ctx)
 }
 
 #[cfg(feature = "iceberg")]
-async fn register_iceberg_tables(ctx: &SessionContext, config: &ServerConfig) -> super::error::Result<()> {
+async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -> super::error::Result<()> {
     let Some(iceberg) = &config.iceberg else {
         return Ok(());
     };
 
-    // Ensure the named catalog and namespace/schema exist in DataFusion's
-    // catalog list before registering any tables.  This is required so that
-    // three-part addressing (catalog.namespace.table) resolves correctly.
-    ensure_catalog_namespace(ctx, &iceberg.catalog_name, &iceberg.namespace)
-        .map_err(|error| ServerError::session("failed to create Iceberg catalog/namespace in DataFusion", error))?;
+    // Build the Glue catalog backend once; it holds a connected catalog handle
+    // that is reused for all namespace/table listing and lazy table loading.
+    let catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
+        iceberg.glue_catalog_handle.clone(),
+        iceberg.warehouse.clone(),
+        iceberg.region.clone(),
+    );
+    let catalog_config = match &iceberg.catalog_id {
+        Some(id) => catalog_config.with_catalog_id(id.clone()),
+        None => catalog_config,
+    };
+    let catalog_config = match &iceberg.profile {
+        Some(p) => catalog_config.with_profile(p.clone()),
+        None => catalog_config,
+    };
 
+    let backend: Arc<dyn crate::iceberg::catalog::IcebergCatalogBackend> = Arc::new(
+        crate::iceberg::catalog::GlueIcebergCatalogBackend::from_config_env(catalog_config)
+            .await
+            .map_err(|error| ServerError::session("failed to connect to Glue Iceberg catalog backend", error))?,
+    );
+
+    // Discover all namespaces and their table names at startup.  Individual
+    // tables are loaded lazily on first SQL access through the backend.
+    let catalog_provider = crate::iceberg::catalog::build_catalog_provider_from_backend(backend, "glue")
+        .await
+        .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from Glue backend", error))?;
+
+    // Seed pre-declared alias mappings before registering the catalog.
+    // This makes catalog.namespace.alias resolve in addition to the real name.
     for table in &iceberg.tables {
-        // glue_catalog_handle is the internal iceberg-rust catalog identifier.
-        // It is distinct from iceberg.catalog_name (the DataFusion connector
-        // name) so users can configure `DATAFUSION_CUDF_ICEBERG_CATALOG_NAME=iceberg`
-        // for Trino-style SQL without changing the Glue catalog handle.
         let mut glue = crate::iceberg::GlueIcebergTableConfig::new(
             iceberg.glue_catalog_handle.clone(),
             iceberg.namespace.clone(),
@@ -58,7 +77,7 @@ async fn register_iceberg_tables(ctx: &SessionContext, config: &ServerConfig) ->
 
         let loaded = crate::iceberg::load_glue_table(glue)
             .await
-            .map_err(|error| ServerError::session("failed to load Glue Iceberg table", error))?;
+            .map_err(|error| ServerError::session("failed to load Glue Iceberg table for alias seeding", error))?;
         let diagnostics = loaded.diagnostics.clone();
         let provider: Arc<dyn datafusion::datasource::TableProvider> = Arc::new(
             crate::iceberg::table_provider(loaded.table)
@@ -66,24 +85,38 @@ async fn register_iceberg_tables(ctx: &SessionContext, config: &ServerConfig) ->
                 .with_catalog_type("glue"),
         );
 
-        // Three-part registration: catalog.namespace.real_table_name
-        register_full(ctx, &iceberg.catalog_name, &iceberg.namespace, &table.table, Arc::clone(&provider))
-            .map_err(|error| ServerError::session("failed to register Iceberg table under three-part name", error))?;
-
-        // catalog.namespace.alias — only when alias differs from real table name
-        if table.alias != table.table {
-            register_full(ctx, &iceberg.catalog_name, &iceberg.namespace, &table.alias, Arc::clone(&provider))
-                .map_err(|error| {
-                    ServerError::session("failed to register Iceberg table under three-part alias", error)
-                })?;
+        // Seed the pre-loaded provider into the dynamic schema provider so that:
+        //  - catalog.namespace.real_table_name reuses this load (skips a
+        //    redundant backend round-trip on first query)
+        //  - catalog.namespace.alias also resolves when alias differs from the
+        //    real name
+        // The seed happens before catalog registration so there is no window
+        // where a concurrent query races against the seeding.
+        match catalog_provider.schema_concrete(&iceberg.namespace) {
+            Some(schema) => {
+                schema.seed_table(table.table.clone(), Arc::clone(&provider)).await;
+                if table.alias != table.table {
+                    schema.seed_table(table.alias.clone(), Arc::clone(&provider)).await;
+                }
+            },
+            None => {
+                tracing::warn!(
+                    df_catalog_name = iceberg.catalog_name,
+                    namespace = iceberg.namespace,
+                    table = table.table,
+                    alias = table.alias,
+                    "pre-declared Iceberg table namespace was not returned by list_namespaces; \
+                     three-part alias addressing will not resolve (bare alias still registered)"
+                );
+            },
         }
 
-        // Legacy bare alias for backward compatibility.
-        if let Some(replaced) =
-            ctx.register_table(table.alias.as_str(), Arc::clone(&provider))
-                .map_err(|error| ServerError::session("failed to register Iceberg table as bare alias", error))?
+        // Legacy bare alias in the default DataFusion catalog.
+        if ctx
+            .register_table(table.alias.as_str(), Arc::clone(&provider))
+            .map_err(|error| ServerError::session("failed to register Iceberg table as bare alias", error))?
+            .is_some()
         {
-            let _ = replaced;
             tracing::warn!(
                 catalog_name = iceberg.catalog_name,
                 namespace = iceberg.namespace,
@@ -102,48 +135,21 @@ async fn register_iceberg_tables(ctx: &SessionContext, config: &ServerConfig) ->
             alias = table.alias,
             region = diagnostics.region,
             credential_source = %diagnostics.credential_source,
-            "registered Iceberg table"
+            "registered Iceberg table alias"
         );
     }
 
-    Ok(())
-}
+    // Register the dynamic catalog — from this point three-part addressing
+    // (catalog_name.namespace.real_table_name) resolves through the backend.
+    ctx.register_catalog(&iceberg.catalog_name, Arc::new(catalog_provider));
 
-#[cfg(feature = "iceberg")]
-fn ensure_catalog_namespace(
-    ctx: &SessionContext,
-    catalog_name: &str,
-    namespace: &str,
-) -> datafusion::common::Result<()> {
-    if ctx.catalog(catalog_name).is_none() {
-        let catalog = Arc::new(MemoryCatalogProvider::new());
-        ctx.register_catalog(catalog_name, catalog);
-    }
-    let catalog = ctx.catalog(catalog_name).expect("catalog was just registered");
-    if catalog.schema(namespace).is_none() {
-        let schema = Arc::new(MemorySchemaProvider::new());
-        catalog.register_schema(namespace, schema)?;
-    }
-    Ok(())
-}
+    tracing::info!(
+        df_catalog_name = iceberg.catalog_name,
+        glue_catalog_handle = iceberg.glue_catalog_handle,
+        namespace = iceberg.namespace,
+        pre_declared_aliases = iceberg.tables.len(),
+        "registered dynamic Iceberg catalog provider"
+    );
 
-#[cfg(feature = "iceberg")]
-fn register_full(
-    ctx: &SessionContext,
-    catalog: &str,
-    namespace: &str,
-    table: &str,
-    provider: Arc<dyn datafusion::datasource::TableProvider>,
-) -> datafusion::common::Result<()> {
-    use datafusion::common::TableReference;
-    if let Some(replaced) = ctx.register_table(TableReference::full(catalog, namespace, table), provider)? {
-        let _ = replaced;
-        tracing::warn!(
-            %catalog,
-            %namespace,
-            %table,
-            "three-part table registration replaced an existing provider; check for duplicate table/alias entries"
-        );
-    }
     Ok(())
 }

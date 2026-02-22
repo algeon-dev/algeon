@@ -174,22 +174,22 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
 
     // Backend-neutral DATAFUSION_CUDF_ICEBERG_TABLES takes precedence; fall
     // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_TABLES alias.
+    // When neither is set the dynamic catalog serves all tables and aliases
+    // are not required (empty vec is valid in Phase 2).
     let raw_tables = values
         .string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV)
-        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV))
-        .ok_or_else(|| {
-            ServerError::invalid_config(
-                DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
-                "is required (also accepted as DATAFUSION_CUDF_ICEBERG_GLUE_TABLES)",
-            )
-        })?;
-    // Determine which env var was actually used for error reporting.
-    let tables_env_name = if values.string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV).is_some() {
-        DATAFUSION_CUDF_ICEBERG_TABLES_ENV
-    } else {
-        DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV
+        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV));
+    let tables = match raw_tables {
+        Some(ref raw) => {
+            let tables_env_name = if values.string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV).is_some() {
+                DATAFUSION_CUDF_ICEBERG_TABLES_ENV
+            } else {
+                DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV
+            };
+            parse_iceberg_tables(tables_env_name, raw)?
+        },
+        None => vec![],
     };
-    let tables = parse_iceberg_tables(tables_env_name, &raw_tables)?;
 
     // Backend-neutral DATAFUSION_CUDF_ICEBERG_CATALOG_NAME takes precedence;
     // fall back to the Glue-specific alias, then to the compiled-in default.
@@ -202,8 +202,9 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
     // GlueCatalogBuilder; it is independent of the DataFusion catalog_name so
     // users can choose a different connector name without changing the Glue
     // catalog identifier.  Controlled only by the Glue-specific env var.
-    let glue_catalog_handle =
-        values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV).unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
+    let glue_catalog_handle = values
+        .string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV)
+        .unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
 
     Ok(Some(IcebergServerConfig {
         catalog_name,

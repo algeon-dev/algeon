@@ -3,6 +3,8 @@
 //! This module is available with the `iceberg` Cargo feature. Lower-level,
 //! format-neutral scan facts remain under [`crate::table_format`].
 
+pub mod catalog;
+
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use datafusion::{
@@ -317,7 +319,7 @@ fn glue_error(
         .with_source(source)
 }
 
-fn non_empty(value: Option<String>) -> Option<String> {
+pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
         let trimmed = value.trim();
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
