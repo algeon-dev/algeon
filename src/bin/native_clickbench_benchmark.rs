@@ -1,6 +1,8 @@
 use std::{
     fmt::Write as _,
+    fs::{self, File},
     io::{self, Write as _},
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
     time::Instant,
@@ -22,35 +24,82 @@ use datafusion_cudf::{
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// Queries whose result *set* — not just row order — is engine-defined,
-/// typically because they use `LIMIT` without a deterministic `ORDER BY`
-/// tiebreaker. For these queries CPU and native may legally pick different
-/// groups, so the benchmark compares row counts only and emits
-/// `parity_status=row_count_matched_nondeterministic` instead of running the
-/// content fingerprint check. The iteration-consistency check is also
-/// disabled for these queries (the engine itself may return different rows
-/// across runs).
+/// Queries where byte-for-byte content fingerprint parity is waived for the
+/// ClickBench benchmark, with the reason kept explicit. The benchmark compares
+/// row counts only for these queries and emits
+/// `parity_status=row_count_matched_nondeterministic` when both engines
+/// succeed with the same row count. The measured-iteration consistency check is
+/// also disabled because several of these queries can return engine-defined
+/// rows across runs.
 ///
-/// This list is curated. Add a query here when it satisfies BOTH:
-/// 1. The SQL has `LIMIT` without a deterministic total ordering at the
-///    boundary (no `ORDER BY`, or `ORDER BY` columns that admit ties), AND
-/// 2. The fixture in practice exhibits ties at the LIMIT boundary.
+/// Reason categories:
+/// - `float_accumulation_variance`: deterministic result set, but different
+///   valid Float64 accumulation orders produce last-bit AVG differences.
+///   q04 is `AVG("UserID")` over large-magnitude int64 values; q10 is
+///   `AVG("ResolutionWidth")` in a grouped query whose rank-10/rank-11
+///   `COUNT(*)` boundary is not tied.
+/// - `result_set_nondeterministic`: selected rows are engine-defined because
+///   the SQL has `LIMIT`/`OFFSET` without a deterministic total ordering and
+///   the ClickBench fixture has ties at the boundary.
 ///
-/// Current entries:
-/// - q04: `SELECT AVG("UserID") FROM hits` — UInt64 values near 10^18 are not
-///   exactly representable in Float64; different summation orders (batch-sequential
-///   on CPU vs chunk-parallel on GPU) yield different last-bit results.
-/// - q10: `GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 10` — tied COUNT(*) at
-///   the 10th-row boundary; different groups are selected by each engine.
-/// - q18: `GROUP BY ... LIMIT 10` with no `ORDER BY`.
-/// - q23: `GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 10` — tied COUNT(*) at
-///   the 10th-row boundary.
-/// - q25: `ORDER BY EventTime LIMIT 10` — timestamp ties at the boundary.
-/// - q26: `ORDER BY SearchPhrase LIMIT 10` — many duplicate phrases at the
-///   boundary even with `WHERE SearchPhrase <> ''`.
-/// - q31, q32, q33: `GROUP BY ... ORDER BY COUNT(*) DESC LIMIT 10` — tied
-///   COUNT(*) at the 10th-row boundary.
-const NONDETERMINISTIC_QUERIES: &[&str] = &["q04", "q10", "q18", "q23", "q25", "q26", "q31", "q32", "q33"];
+/// q23 is intentionally excluded: raw CPU/native dumps show the same
+/// `SearchPhrase` groups and string MIN values, but native over-counted
+/// `COUNT(DISTINCT "UserID")` for several groups when the source spanned
+/// multiple chunks. That correctness bug has been fixed; q23 now uses
+/// full-data concat before a single groupby and must report `matched`.
+/// q10 was previously waived under `float_accumulation_variance`, but the
+/// variance was entirely in `COUNT(DISTINCT "UserID")` (a correctness bug),
+/// not in AVG. After the fix, q10 must also report `matched`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParityWaiverReason {
+    FloatAccumulationVariance,
+    ResultSetNondeterministic,
+}
+
+impl ParityWaiverReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FloatAccumulationVariance => "float_accumulation_variance",
+            Self::ResultSetNondeterministic => "result_set_nondeterministic",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ParityWaiver {
+    query_id: &'static str,
+    reason: ParityWaiverReason,
+}
+
+const PARITY_WAIVERS: &[ParityWaiver] = &[
+    ParityWaiver { query_id: "q04", reason: ParityWaiverReason::FloatAccumulationVariance },
+    ParityWaiver { query_id: "q18", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q25", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q26", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q31", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q32", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q33", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q39", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q40", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q41", reason: ParityWaiverReason::ResultSetNondeterministic },
+    ParityWaiver { query_id: "q42", reason: ParityWaiverReason::ResultSetNondeterministic },
+];
+
+fn parity_waiver_reason(query_id: &str) -> Option<ParityWaiverReason> {
+    PARITY_WAIVERS.iter().find(|waiver| waiver.query_id == query_id).map(|waiver| waiver.reason)
+}
+
+fn parity_waived_query_ids_label() -> String {
+    PARITY_WAIVERS.iter().map(|waiver| waiver.query_id).collect::<Vec<_>>().join(",")
+}
+
+fn parity_waiver_reasons_label() -> String {
+    PARITY_WAIVERS
+        .iter()
+        .map(|waiver| format!("{}={}", waiver.query_id, waiver.reason.as_str()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
 
 const QUERY_IDS_ENV: &str = "CUDF_CLICKBENCH_BENCH_QUERY_IDS";
 const WARMUPS_ENV: &str = "CUDF_CLICKBENCH_BENCH_WARMUPS";
@@ -60,6 +109,7 @@ const SKIP_NATIVE_ENV: &str = "CUDF_CLICKBENCH_BENCH_SKIP_NATIVE";
 const CPU_PROFILE_ENV: &str = "CUDF_CLICKBENCH_BENCH_CPU_PROFILE";
 const PIPELINE_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXECUTION_MODE";
 const PROGRESS_ENV: &str = "CUDF_CLICKBENCH_BENCH_PROGRESS";
+const DUMP_ROWS_DIR_ENV: &str = "CUDF_CLICKBENCH_BENCH_DUMP_ROWS_DIR";
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -97,6 +147,7 @@ struct BenchmarkConfig {
     cpu_profile: CpuProfile,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     progress: bool,
+    dump_rows_dir: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -160,6 +211,7 @@ impl BenchmarkConfig {
             cpu_profile,
             native_pipeline_execution_mode,
             progress: env_truthy(PROGRESS_ENV),
+            dump_rows_dir: env_path(DUMP_ROWS_DIR_ENV),
         })
     }
 
@@ -177,6 +229,14 @@ async fn run_benchmark(
     metadata: &ClickbenchDatasetMetadata,
     layout: &ClickbenchLayout,
 ) -> ClickbenchWorkloadResult<BenchmarkReport> {
+    if let Some(dir) = &config.dump_rows_dir {
+        fs::create_dir_all(dir).map_err(|error| {
+            ClickbenchWorkloadError::InvalidDataset(format!(
+                "failed to create {DUMP_ROWS_DIR_ENV} {}: {error}",
+                dir.display()
+            ))
+        })?;
+    }
     let queries = config.selected_queries();
     let cpu_ctx = if config.skip_cpu { None } else { Some(build_cpu_ctx(config, layout).await?) };
     let native_setup = if config.skip_native { None } else { Some(build_native_ctx(config, layout).await?) };
@@ -236,7 +296,7 @@ async fn measure_query(
     stderr: &mut io::StderrLock<'_>,
 ) -> EngineMeasurement {
     for w in 0..config.warmup_iterations {
-        let res = run_once(ctx, query, native_rule).await;
+        let res = run_once(ctx, query, native_rule, None).await;
         if config.progress {
             let _ = writeln!(
                 stderr,
@@ -253,7 +313,13 @@ async fn measure_query(
     let mut samples_ms: Vec<u128> = Vec::with_capacity(config.iterations);
     let mut runs: Vec<RunResult> = Vec::with_capacity(config.iterations);
     for it in 0..config.iterations {
-        let res = run_once(ctx, query, native_rule).await;
+        let dump = config.dump_rows_dir.as_deref().map(|dir| DumpRowsSpec {
+            dir,
+            engine,
+            query_id: query.id,
+            iteration: it + 1,
+        });
+        let res = run_once(ctx, query, native_rule, dump).await;
         if config.progress {
             let _ = writeln!(
                 stderr,
@@ -269,7 +335,7 @@ async fn measure_query(
         samples_ms.push(res.elapsed_ms);
         runs.push(res);
     }
-    let check_iteration_consistency = !NONDETERMINISTIC_QUERIES.contains(&query.id);
+    let check_iteration_consistency = parity_waiver_reason(query.id).is_none();
     aggregate_measurement(runs, samples_ms, check_iteration_consistency)
 }
 
@@ -391,6 +457,7 @@ async fn run_once(
     ctx: &SessionContext,
     query: &ClickbenchQuery,
     native_rule: Option<&CudfNativePhysicalOptimizerRule>,
+    dump: Option<DumpRowsSpec<'_>>,
 ) -> RunResult {
     let started = Instant::now();
     let (result, native_rewritten) = match ctx.sql(query.sql).await {
@@ -398,7 +465,7 @@ async fn run_once(
             Ok(plan) => {
                 let rewritten = native_rule
                     .map(|rule| rule.last_planning_diagnostics().is_some_and(|diag| diag.report.rewritten_count() > 0));
-                (execute_plan(plan, ctx).await, rewritten)
+                (execute_plan(plan, ctx, dump).await, rewritten)
             },
             Err(error) => (Err(format!("physical_plan: {error}")), None),
         },
@@ -436,12 +503,64 @@ struct PlanSuccess {
     fingerprint: String,
 }
 
-async fn execute_plan(plan: Arc<dyn ExecutionPlan>, ctx: &SessionContext) -> Result<PlanSuccess, String> {
+async fn execute_plan(
+    plan: Arc<dyn ExecutionPlan>,
+    ctx: &SessionContext,
+    dump: Option<DumpRowsSpec<'_>>,
+) -> Result<PlanSuccess, String> {
     let batches = collect(plan, ctx.task_ctx()).await.map_err(|error| format!("collect: {error}"))?;
+    if let Some(dump) = dump {
+        dump_record_batches_to_tsv(&batches, dump.path()).map_err(|error| format!("dump_rows: {error}"))?;
+    }
     let rows = batches.iter().map(RecordBatch::num_rows).sum();
     let bytes = batches.iter().map(get_record_batch_memory_size).sum();
     let fingerprint = fingerprint_batches(&batches).map_err(|error| format!("fingerprint: {error}"))?;
     Ok(PlanSuccess { batches: batches.len(), rows, bytes, fingerprint })
+}
+
+#[derive(Clone, Copy)]
+struct DumpRowsSpec<'a> {
+    dir: &'a Path,
+    engine: &'a str,
+    query_id: &'a str,
+    iteration: usize,
+}
+
+impl DumpRowsSpec<'_> {
+    fn path(&self) -> PathBuf {
+        self.dir.join(format!("{}_{}_iter{}.tsv", self.query_id, self.engine, self.iteration))
+    }
+}
+
+fn dump_record_batches_to_tsv(batches: &[RecordBatch], path: PathBuf) -> Result<(), String> {
+    let mut file = File::create(&path).map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+    let Some(first) = batches.first() else {
+        return Ok(());
+    };
+    let schema = first.schema();
+    let header = schema.fields().iter().map(|field| sanitize_tsv_field(field.name())).collect::<Vec<_>>().join("\t");
+    writeln!(file, "{header}").map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+    for batch in batches {
+        for row_idx in 0..batch.num_rows() {
+            for col_idx in 0..batch.num_columns() {
+                if col_idx > 0 {
+                    write!(file, "\t").map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+                }
+                let column = batch.column(col_idx);
+                if column.is_null(row_idx) {
+                    write!(file, "NULL").map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+                } else {
+                    let value = array_value_to_string(column, row_idx).map_err(|error| {
+                        format!("failed to format {} row {row_idx} column {col_idx}: {error}", path.display())
+                    })?;
+                    write!(file, "{}", sanitize_tsv_field(&value))
+                        .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+                }
+            }
+            writeln!(file).map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Order-insensitive row fingerprint: serialize each row to a `\u{1f}`-joined
@@ -544,9 +663,8 @@ impl EngineMeasurement {
 enum ParityStatus {
     /// Both engines succeeded and produced byte-equal canonicalized outputs.
     Matched,
-    /// Query is in [`NONDETERMINISTIC_QUERIES`] (engine-defined result set
-    /// because of `LIMIT` without `ORDER BY`). Row counts agree; content is
-    /// not compared.
+    /// Query is covered by a reason-coded ClickBench parity waiver. Row counts
+    /// agree; content is not compared.
     RowCountMatchedNondeterministic,
     /// CPU vs native disagree on row count.
     RowCountMismatch,
@@ -595,7 +713,7 @@ fn compute_parity(query_id: &str, cpu: Option<&EngineMeasurement>, native: Optio
             match (cpu.output_rows, native.output_rows) {
                 (Some(cr), Some(nr)) if cr != nr => ParityStatus::RowCountMismatch,
                 _ => {
-                    if NONDETERMINISTIC_QUERIES.contains(&query_id) {
+                    if parity_waiver_reason(query_id).is_some() {
                         return ParityStatus::RowCountMatchedNondeterministic;
                     }
                     match (cpu.output_fingerprint.as_deref(), native.output_fingerprint.as_deref()) {
@@ -677,8 +795,12 @@ impl BenchmarkReport {
         )
         .unwrap();
         writeln!(output, "# clickbench_benchmark_parity_fingerprint=order_insensitive").unwrap();
-        writeln!(output, "# clickbench_benchmark_nondeterministic_queries={}", NONDETERMINISTIC_QUERIES.join(","))
+        writeln!(output, "# clickbench_benchmark_nondeterministic_queries={}", parity_waived_query_ids_label())
             .unwrap();
+        writeln!(output, "# clickbench_benchmark_parity_waivers={}", parity_waiver_reasons_label()).unwrap();
+        if let Some(dir) = &self.config.dump_rows_dir {
+            writeln!(output, "# clickbench_benchmark_dump_rows_dir={}", dir.display()).unwrap();
+        }
         writeln!(output, "# clickbench_benchmark_iteration_failure_policy=any_failed_iteration_fails_row").unwrap();
         writeln!(
             output,
@@ -753,11 +875,19 @@ fn sanitize(s: String) -> String {
     s.replace(['\t', '\n'], " ")
 }
 
+fn sanitize_tsv_field(s: &str) -> String {
+    s.replace(['\t', '\r', '\n'], " ")
+}
+
 fn env_usize(name: &str, default: usize) -> ClickbenchWorkloadResult<usize> {
     match std::env::var(name) {
         Ok(value) => value.parse().map_err(|_| invalid_env(format!("{name}={value} is not a non-negative integer"))),
         Err(_) => Ok(default),
     }
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 fn env_truthy(name: &str) -> bool {
@@ -786,4 +916,134 @@ fn query_ids_from_env(name: &str) -> ClickbenchWorkloadResult<Vec<String>> {
 
 fn invalid_env(message: String) -> ClickbenchWorkloadError {
     ClickbenchWorkloadError::InvalidDataset(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parity_waiver_surface_is_reason_coded_and_ordered() {
+        let ids = PARITY_WAIVERS.iter().map(|waiver| waiver.query_id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["q04", "q18", "q25", "q26", "q31", "q32", "q33", "q39", "q40", "q41", "q42"]);
+
+        assert_eq!(parity_waiver_reason("q04"), Some(ParityWaiverReason::FloatAccumulationVariance));
+        assert_eq!(parity_waiver_reason("q10"), None);
+        assert_eq!(parity_waiver_reason("q23"), None);
+        for query_id in ["q18", "q25", "q26", "q31", "q32", "q33", "q39", "q40", "q41", "q42"] {
+            assert_eq!(parity_waiver_reason(query_id), Some(ParityWaiverReason::ResultSetNondeterministic));
+        }
+
+        for query_id in ids {
+            assert!(CLICKBENCH_QUERIES.iter().any(|query| query.id == query_id), "unknown ClickBench query {query_id}");
+        }
+    }
+
+    #[test]
+    fn parity_waivers_compare_row_counts_only_for_all_reason_categories() {
+        for query_id in ["q04", "q39", "q40", "q41", "q42"] {
+            let cpu = succeeded_measurement(10, "cpu-fingerprint", None);
+            let native = succeeded_measurement(10, "native-fingerprint", Some(true));
+            assert_eq!(
+                compute_parity(query_id, Some(&cpu), Some(&native)),
+                ParityStatus::RowCountMatchedNondeterministic,
+                "{query_id}"
+            );
+        }
+
+        let cpu = succeeded_measurement(10, "cpu-fingerprint", None);
+        let native = succeeded_measurement(10, "native-fingerprint", Some(true));
+        assert_eq!(compute_parity("q23", Some(&cpu), Some(&native)), ParityStatus::ContentMismatch);
+        let cpu = succeeded_measurement(10, "cpu-fingerprint", None);
+        let native = succeeded_measurement(10, "native-fingerprint", Some(true));
+        assert_eq!(compute_parity("q43", Some(&cpu), Some(&native)), ParityStatus::ContentMismatch);
+    }
+
+    #[test]
+    fn tsv_header_exposes_backward_compatible_list_and_reason_metadata() {
+        let report = BenchmarkReport { config: test_config(), metadata: test_metadata(), rows: Vec::new() };
+        let tsv = report.to_tsv();
+        assert!(
+            tsv.contains(
+                "# clickbench_benchmark_nondeterministic_queries=q04,q18,q25,q26,q31,q32,q33,q39,q40,q41,q42\n"
+            )
+        );
+        assert!(tsv.contains("q04=float_accumulation_variance"));
+        assert!(!tsv.contains("q10="));
+        assert!(!tsv.contains("q23="));
+        assert!(tsv.contains("q39=result_set_nondeterministic"));
+        assert!(tsv.contains("q42=result_set_nondeterministic"));
+    }
+
+    #[test]
+    fn nondeterministic_iterations_are_not_failed_for_waived_queries() {
+        let runs = vec![run_result(10, "first"), run_result(10, "second")];
+        let measurement = aggregate_measurement(runs, vec![1, 2], parity_waiver_reason("q40").is_none());
+        assert_eq!(measurement.outcome, RunOutcome::Succeeded);
+        assert_eq!(measurement.output_fingerprint.as_deref(), Some("second"));
+
+        let runs = vec![run_result(10, "first"), run_result(10, "second")];
+        let measurement = aggregate_measurement(runs, vec![1, 2], parity_waiver_reason("q43").is_none());
+        assert_eq!(measurement.outcome, RunOutcome::Failed);
+        assert!(measurement.failure.as_deref().unwrap_or_default().contains("inconsistent_iterations"));
+    }
+
+    fn succeeded_measurement(rows: usize, fingerprint: &str, native_rewritten: Option<bool>) -> EngineMeasurement {
+        EngineMeasurement {
+            outcome: RunOutcome::Succeeded,
+            failure: None,
+            output_batches: Some(1),
+            output_rows: Some(rows),
+            output_bytes: Some(128),
+            output_fingerprint: Some(fingerprint.to_string()),
+            native_rewritten,
+            samples_ms: vec![10],
+            iteration_failure_count: 0,
+        }
+    }
+
+    fn run_result(rows: usize, fingerprint: &str) -> RunResult {
+        RunResult {
+            elapsed_ms: 1,
+            outcome: RunOutcome::Succeeded,
+            failure: None,
+            output_batches: Some(1),
+            output_rows: Some(rows),
+            output_bytes: Some(128),
+            output_fingerprint: Some(fingerprint.to_string()),
+            native_rewritten: Some(true),
+        }
+    }
+
+    fn test_config() -> BenchmarkConfig {
+        BenchmarkConfig {
+            query_ids: Vec::new(),
+            warmup_iterations: 0,
+            iterations: 1,
+            skip_cpu: false,
+            skip_native: false,
+            cpu_profile: CpuProfile::Tuned,
+            native_pipeline_execution_mode: NativePipelineExecutionMode::StrictBounded,
+            progress: false,
+            dump_rows_dir: None,
+        }
+    }
+
+    fn test_metadata() -> ClickbenchDatasetMetadata {
+        ClickbenchDatasetMetadata {
+            root: PathBuf::from("/tmp/clickbench"),
+            layout: ClickbenchLayout::Single { file: PathBuf::from("/tmp/clickbench/hits.parquet") },
+            provenance: "test".to_string(),
+            generation_command: "test".to_string(),
+            file_count: 1,
+            total_rows: 0,
+            total_bytes: 0,
+            schema: "schema".to_string(),
+            row_group_count: 0,
+            row_group_rows: Vec::new(),
+            row_group_bytes: Vec::new(),
+            metadata_fingerprint: "metadata-fnv1a64:test".to_string(),
+            content_fingerprint: None,
+        }
+    }
 }

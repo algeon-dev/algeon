@@ -42,6 +42,17 @@ fn cast_count_output_columns_impl(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
+        let actual_type = frame.series(expr.alias.as_str()).and_then(|series| series.dtype()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.cast_count",
+                "failed to inspect native count aggregate output column type",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        if actual_type == target_type {
+            continue;
+        }
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
@@ -114,6 +125,17 @@ fn cast_reduction_output_columns_impl(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
+        let actual_type = frame.series(expr.alias.as_str()).and_then(|series| series.dtype()).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.aggregate.cast_reduction",
+                "failed to inspect native reduction output column type",
+                error,
+            )
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        if actual_type == target_type {
+            continue;
+        }
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {

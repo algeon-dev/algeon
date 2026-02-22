@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use arrow::datatypes::{DataType, SchemaRef};
+use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
 use cudf_query_engine::{is_supported_arrow_cast, is_supported_arrow_type};
 use datafusion::{
     physical_expr::{
@@ -39,7 +39,32 @@ pub(super) fn is_supported_native_type(data_type: &DataType) -> bool {
 }
 
 pub(super) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
+    if is_integer_to_timestamp_cast(source_type, target_type) {
+        return false;
+    }
     is_supported_arrow_cast(source_type, target_type)
+}
+
+pub(super) fn is_supported_to_timestamp_seconds_cast(source_type: &DataType, target_type: &DataType) -> bool {
+    matches!(target_type, DataType::Timestamp(TimeUnit::Second, None))
+        && is_integer_to_timestamp_cast(source_type, target_type)
+        && is_supported_arrow_cast(source_type, target_type)
+}
+
+fn is_integer_to_timestamp_cast(source_type: &DataType, target_type: &DataType) -> bool {
+    matches!(
+        (source_type, target_type),
+        (
+            DataType::Int8
+                | DataType::Int16
+                | DataType::Int32
+                | DataType::Int64
+                | DataType::UInt8
+                | DataType::UInt16
+                | DataType::UInt32,
+            DataType::Timestamp(_, None),
+        )
+    )
 }
 
 pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool) -> Result<(), FallbackReason> {

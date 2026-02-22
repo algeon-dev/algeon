@@ -850,6 +850,34 @@ fn retry_after_chunk_error(
     Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
 }
 
+/// Reads a source chunk with its pre-aggregate filter and projection stages
+/// applied, without running a partial aggregate. Returns the raw filtered and
+/// projected data as a [`CommittedPartial`].
+///
+/// Used by the distinct aggregate path where all raw source data must be
+/// concatenated before a single groupby can produce a correct COUNT(DISTINCT).
+pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunk: &SourceChunk,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<CommittedPartial> {
+    let source = read_bounded_chunk_source(
+        context,
+        bounded.source,
+        chunk,
+        reservations,
+        metrics,
+        1,
+        1,
+        !bounded.has_source_adjacent_stages(),
+    )
+    .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, metrics))?;
+    let input = CommittedPartial { frame: source.frame, reservation: source.reservation };
+    execute_source_adjacent_chunk_stages(context, bounded, chunk, input, reservations, metrics, 1, 1)
+}
+
 pub(super) fn execute_bounded_chunk_attempt(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,

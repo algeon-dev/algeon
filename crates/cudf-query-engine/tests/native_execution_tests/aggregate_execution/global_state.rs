@@ -55,7 +55,6 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert_budgeted_success_event_with_rows(metrics, "cudf_query_engine.aggregate.cast_reduction", 1);
     assert_budgeted_success_event_with_contract(
         metrics,
         "cudf_query_engine.global_aggregate.count_output",

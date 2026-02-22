@@ -13,7 +13,7 @@ use datafusion::{
     },
 };
 
-use super::{is_supported_native_cast, is_supported_native_type};
+use super::{is_supported_native_cast, is_supported_native_type, is_supported_to_timestamp_seconds_cast};
 use crate::{
     native::literal::{NativeLiteralContext, parse_yyyy_mm_dd_date32, validate_native_literal},
     policy::FallbackReason,
@@ -224,9 +224,7 @@ fn validate_to_timestamp_seconds_function(
     let source_type = physical_expr_data_type(expr, input_schema)?;
     let output_type =
         function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-    if matches!(output_type, DataType::Timestamp(TimeUnit::Second, None))
-        && is_supported_native_cast(&source_type, &output_type)
-    {
+    if is_supported_to_timestamp_seconds_cast(&source_type, &output_type) {
         Ok(())
     } else {
         Err(FallbackReason::UnsupportedType)
