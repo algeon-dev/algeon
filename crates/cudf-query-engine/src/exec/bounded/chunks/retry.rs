@@ -1,0 +1,196 @@
+use super::*;
+
+pub(in crate::exec::bounded) fn is_retryable_chunk_error(error: &QueryError) -> bool {
+    matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted)
+}
+
+pub(in crate::exec::bounded::chunks) fn is_prefetch_chunk_error(error: &QueryError) -> bool {
+    error.fact_value("budget_boundary") == Some("source_chunk_prefetch")
+        || error.fact_value("memory_boundary") == Some("source_chunk_prefetch")
+}
+
+pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+    match error.code() {
+        QueryErrorCode::MemoryReservationFailed => metrics.record_retry_reservation_failure(),
+        QueryErrorCode::CudfResourceExhausted => metrics.record_retry_resource_exhausted(),
+        _ => {},
+    }
+}
+
+pub(in crate::exec::bounded) fn split_retryable_chunk(
+    chunk: &SourceChunk,
+    min_retry_chunk_row_groups: usize,
+) -> Option<(SourceChunk, SourceChunk)> {
+    if chunk.reads_all_row_groups || chunk.row_group_indexes.len() <= min_retry_chunk_row_groups {
+        return None;
+    }
+
+    let split_at = chunk.row_group_indexes.len() / 2;
+    if split_at == 0 || split_at == chunk.row_group_indexes.len() {
+        return None;
+    }
+
+    let left_row_groups = chunk.row_group_indexes[..split_at].to_vec();
+    let right_row_groups = chunk.row_group_indexes[split_at..].to_vec();
+    let mut left = retry_child_chunk(chunk, left_row_groups);
+    let mut right = retry_child_chunk(chunk, right_row_groups);
+    apply_parent_scan_limit_to_retry_children(chunk, &mut left, &mut right);
+    Some((left, right))
+}
+
+fn apply_parent_scan_limit_to_retry_children(parent: &SourceChunk, left: &mut SourceChunk, right: &mut SourceChunk) {
+    let Some(parent_limit) = parent.scan_limit_rows else {
+        return;
+    };
+    let Ok(mut remaining) = u64::try_from(parent_limit) else {
+        return;
+    };
+    apply_retry_child_scan_limit(left, &mut remaining);
+    apply_retry_child_scan_limit(right, &mut remaining);
+}
+
+fn apply_retry_child_scan_limit(child: &mut SourceChunk, remaining: &mut u64) {
+    let Some(row_count) = child.known_row_count else {
+        child.scan_limit_rows = usize::try_from(*remaining).ok();
+        return;
+    };
+    if *remaining == 0 {
+        child.scan_limit_rows = Some(0);
+        child.known_row_count = Some(0);
+        return;
+    }
+    if row_count <= *remaining {
+        *remaining = remaining.saturating_sub(row_count);
+        return;
+    }
+    if let Ok(keep_rows) = usize::try_from(*remaining) {
+        child.scan_limit_rows = Some(keep_rows);
+        child.known_row_count = Some(*remaining);
+    }
+    *remaining = 0;
+}
+
+pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_group_indexes: Vec<usize>) -> SourceChunk {
+    let parent_row_group_count = parent.row_group_indexes.len();
+    let known_row_group_bytes =
+        checked_row_group_sum(parent.source_file_row_group_bytes.as_deref(), &row_group_indexes).or_else(|| {
+            proportional_bytes(parent.known_row_group_bytes, row_group_indexes.len(), parent_row_group_count)
+        });
+    let known_projected_compressed_bytes = checked_row_group_sum(
+        parent.source_file_projected_compressed_bytes.as_deref(),
+        &row_group_indexes,
+    )
+    .or_else(|| {
+        proportional_bytes(parent.known_projected_compressed_bytes, row_group_indexes.len(), parent_row_group_count)
+    });
+    let known_projected_uncompressed_bytes = checked_row_group_sum(
+        parent.source_file_projected_uncompressed_bytes.as_deref(),
+        &row_group_indexes,
+    )
+    .or_else(|| {
+        proportional_bytes(parent.known_projected_uncompressed_bytes, row_group_indexes.len(), parent_row_group_count)
+    });
+    let known_pure_filter_compressed_bytes = checked_row_group_sum(
+        parent.source_file_pure_filter_compressed_bytes.as_deref(),
+        &row_group_indexes,
+    )
+    .or_else(|| {
+        proportional_bytes(parent.known_pure_filter_compressed_bytes, row_group_indexes.len(), parent_row_group_count)
+    });
+    let known_pure_filter_uncompressed_bytes =
+        checked_row_group_sum(parent.source_file_pure_filter_uncompressed_bytes.as_deref(), &row_group_indexes)
+            .or_else(|| {
+                proportional_bytes(
+                    parent.known_pure_filter_uncompressed_bytes,
+                    row_group_indexes.len(),
+                    parent_row_group_count,
+                )
+            });
+    let known_file_bytes = if parent.known_row_group_bytes.is_some() {
+        parent.known_file_bytes
+    } else {
+        proportional_bytes(parent.known_file_bytes, row_group_indexes.len(), parent_row_group_count)
+    };
+    let estimated_chunk_bytes = proportional_bytes(
+        parent.estimated_chunk_bytes.or(parent.known_row_group_bytes).or(parent.known_file_bytes),
+        row_group_indexes.len(),
+        parent_row_group_count,
+    );
+    let estimated_source_read_bytes = proportional_bytes(
+        parent
+            .estimated_source_read_bytes
+            .or(parent.known_row_group_bytes)
+            .or(parent.estimated_chunk_bytes)
+            .or(parent.known_file_bytes),
+        row_group_indexes.len(),
+        parent_row_group_count,
+    );
+    let known_row_count = checked_row_group_sum(parent.source_file_row_group_rows.as_deref(), &row_group_indexes)
+        .or_else(|| proportional_bytes(parent.known_row_count, row_group_indexes.len(), parent_row_group_count));
+
+    SourceChunk {
+        source_node_id: parent.source_node_id,
+        chunk_index: parent.chunk_index,
+        file_index: parent.file_index,
+        location: parent.location.clone(),
+        path: parent.path.clone(),
+        stable_id: parent.stable_id.clone(),
+        row_group_indexes,
+        reads_all_row_groups: false,
+        known_file_bytes,
+        known_row_group_bytes,
+        known_projected_compressed_bytes,
+        known_projected_uncompressed_bytes,
+        known_pure_filter_compressed_bytes,
+        known_pure_filter_uncompressed_bytes,
+        estimated_chunk_bytes,
+        estimated_source_read_bytes,
+        exact_source_read_preflight_bytes: None,
+        source_file_row_groups: parent.source_file_row_groups.clone(),
+        source_file_row_group_bytes: parent.source_file_row_group_bytes.clone(),
+        source_file_projected_compressed_bytes: parent.source_file_projected_compressed_bytes.clone(),
+        source_file_projected_uncompressed_bytes: parent.source_file_projected_uncompressed_bytes.clone(),
+        source_file_pure_filter_compressed_bytes: parent.source_file_pure_filter_compressed_bytes.clone(),
+        source_file_pure_filter_uncompressed_bytes: parent.source_file_pure_filter_uncompressed_bytes.clone(),
+        source_file_row_group_rows: parent.source_file_row_group_rows.clone(),
+        read_columns: parent.read_columns.clone(),
+        partition_values: parent.partition_values.clone(),
+        zero_column_count: parent.zero_column_count,
+        known_row_count,
+        scan_limit_rows: None,
+        size_estimate_based: true,
+    }
+}
+
+fn checked_row_group_sum(values: Option<&[u64]>, row_group_indexes: &[usize]) -> Option<u64> {
+    row_group_indexes.iter().try_fold(0u64, |total, row_group| total.checked_add(*values?.get(*row_group)?))
+}
+
+pub(in crate::exec::bounded) fn proportional_bytes(
+    total_bytes: Option<u64>,
+    child_row_groups: usize,
+    parent_row_groups: usize,
+) -> Option<u64> {
+    let total_bytes = total_bytes?;
+    if parent_row_groups == 0 {
+        return Some(total_bytes);
+    }
+
+    let numerator = u128::from(total_bytes) * child_row_groups as u128;
+    let denominator = parent_row_groups as u128;
+    Some(numerator.div_ceil(denominator).min(u128::from(u64::MAX)) as u64)
+}
+
+pub(in crate::exec::bounded) fn chunk_retry_facts(chunk: &SourceChunk, metrics: &QueryMetrics) -> RetryFacts {
+    let retry_action = if chunk.reads_all_row_groups || chunk.row_group_indexes.len() <= 1 {
+        "fail_min_chunk"
+    } else {
+        "retry_attempts_exhausted"
+    };
+
+    RetryFacts::new()
+        .with_retry_action(retry_action)
+        .with_resume_boundary("source_chunk")
+        .with_committed_chunks(metrics.source_chunks_committed as usize)
+        .with_committed_partials(metrics.partial_aggregate_count as usize)
+}
