@@ -29,7 +29,7 @@ fn bounded_global_count_distinct_counts_cross_chunk_duplicates_once() {
 
     let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().source_chunks_planned, 1);
+    assert_eq!(result.metrics().source_chunks_planned, 3);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -69,6 +69,7 @@ fn bounded_global_nunique_casts_to_declared_count_dtype() {
 
     let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
+    assert_eq!(result.metrics().source_chunks_planned, 3);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -114,7 +115,7 @@ fn bounded_grouped_count_distinct_ignores_null_values_and_keeps_null_groups() {
 
     let context = distinct_count_context(runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().source_chunks_planned, 1);
+    assert_eq!(result.metrics().source_chunks_planned, 3);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

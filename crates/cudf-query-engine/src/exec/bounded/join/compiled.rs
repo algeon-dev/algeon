@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::{
     common::{
@@ -250,6 +250,7 @@ fn root_hash_join_frame_stream_probe_to_payload(
         node: node.clone(),
         build: Some(probe.build),
         inputs: Some(probe.inputs),
+        pending_outputs: VecDeque::new(),
     };
     ResidentFrameStreamPayload::from_producer(
         max_per_frame_reservation_bytes,
@@ -267,6 +268,7 @@ struct RootHashJoinProbeStreamSource {
     node: JoinNode,
     build: Option<BoundedRootHashJoinBuildState>,
     inputs: Option<ResidentFrameStreamPayload>,
+    pending_outputs: VecDeque<ResidentGpuFrame>,
 }
 
 impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
@@ -275,29 +277,42 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
         reservations: &mut ReservationTracker,
         metrics: &mut QueryMetrics,
     ) -> Option<Result<ResidentGpuFrame>> {
-        let inputs = self.inputs.as_mut()?;
-        let mut input = match inputs.next_yielded_frame(reservations, metrics) {
-            Some(Ok(input)) => input,
-            Some(Err(error)) => return Some(Err(error)),
-            None => {
-                self.release(reservations, metrics);
-                return None;
-            },
-        };
-        let input = input.take_for_release();
-        let build = self.build.as_ref().expect("root hash join build state released before stream end");
-        Some(execute_bounded_root_hash_join_probe_chunk_from_resident_frame(
-            &self.context,
-            self.node_id,
-            &self.node,
-            build,
-            input,
-            reservations,
-            metrics,
-        ))
+        loop {
+            if let Some(output) = self.pending_outputs.pop_front() {
+                return Some(Ok(output));
+            }
+            let inputs = self.inputs.as_mut()?;
+            let mut input = match inputs.next_yielded_frame(reservations, metrics) {
+                Some(Ok(input)) => input,
+                Some(Err(error)) => return Some(Err(error)),
+                None => {
+                    self.release(reservations, metrics);
+                    return None;
+                },
+            };
+            let input = input.take_for_release();
+            let build = self.build.as_ref().expect("root hash join build state released before stream end");
+            let outputs = match execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame(
+                &self.context,
+                self.node_id,
+                &self.node,
+                build,
+                input,
+                reservations,
+                metrics,
+            ) {
+                Ok(outputs) => outputs,
+                Err(error) => return Some(Err(error)),
+            };
+            self.pending_outputs.extend(outputs);
+        }
     }
 
     fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        while let Some(output) = self.pending_outputs.pop_front() {
+            reservations.release(output.reservation, metrics);
+            drop(output.frame);
+        }
         if let Some(input) = self.inputs.take() {
             input.release_all(reservations, metrics);
         }
@@ -539,7 +554,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
                 reservations,
                 metrics,
                 |input, reservations, metrics| {
-                    let output = execute_bounded_root_hash_join_probe_chunk_from_resident_frame(
+                    let chunk_outputs = execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame(
                         context,
                         node_id,
                         node,
@@ -548,7 +563,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
                         reservations,
                         metrics,
                     )?;
-                    outputs.push(output);
+                    outputs.extend(chunk_outputs);
                     Ok(())
                 },
             );
@@ -805,6 +820,16 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             release_bounded_root_hash_join_build_state(build, reservations, metrics);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
+        BoundedCompiledJoinProbeState::Hash(probe) => Ok(BoundedCompiledJoinMaterializeOutput::Stream(
+            execute_bounded_root_hash_join_materialize_preserving_stream(
+                context,
+                node_id,
+                node,
+                probe,
+                reservations,
+                metrics,
+            )?,
+        )),
         BoundedCompiledJoinProbeState::HashLazyStream(probe) => Ok(BoundedCompiledJoinMaterializeOutput::LazyStream(
             root_hash_join_frame_stream_probe_to_payload(context, node_id, node, probe),
         )),

@@ -1,38 +1,39 @@
 use super::*;
 
 #[test]
-fn bounded_native_query_retries_final_merge_with_reduced_fan_in() {
+fn bounded_native_query_executes_wide_global_final_merge_without_partitioned_path() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-final-merge-retry");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_final_merge_retry_input_parquet(&path, 1024);
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_m00", DataType::Int64, true),
-    ]));
+    let repeated_sums = 256;
+    let aggregated_schema = Arc::new(Schema::new(
+        (0..repeated_sums)
+            .map(|index| Field::new(format!("sum_m00_{index}"), DataType::Int64, true))
+            .collect::<Vec<_>>(),
+    ));
 
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
         Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
+        vec!["m00".to_string()],
     );
     let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+        Vec::new(),
+        (0..repeated_sums)
+            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), format!("sum_m00_{index}")))
+            .collect::<Vec<_>>(),
     );
-    let sort = SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]);
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
-    let limit = builder.add_limit(sort, LimitSpec::fetch(5), aggregated_schema);
-    let plan = builder.finish_with_host_sink(limit);
+    let plan = builder.finish_with_host_sink(aggregate);
 
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 140_000,
+            device_budget_bytes: 300_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
             max_retry_attempts: 3,
@@ -45,19 +46,21 @@ fn bounded_native_query_retries_final_merge_with_reduced_fan_in() {
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.final_merge_attempts, 3);
-    assert_eq!(metrics.final_merge_levels, 2);
-    assert_eq!(metrics.retry_count, 1);
-    assert_eq!(metrics.retry_resource_exhausted_count, 1);
+    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.final_merge_levels, 1);
+    assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.retry_resource_exhausted_count, 0);
     assert_eq!(metrics.retry_reservation_failure_count, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
-    assert_eq!(batch.num_rows(), 5);
-    assert_eq!(int32_array(batch, 0).values().as_ref(), &[0, 1, 2, 3, 4]);
-    assert_eq!(int64_array(batch, 1).values().as_ref(), &[3, 3, 3, 3, 3]);
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(batch.num_columns(), repeated_sums);
+    for index in 0..repeated_sums {
+        assert_eq!(int64_array(batch, index).value(0), 3072);
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -68,7 +71,7 @@ fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_final_merge_retry_input_parquet(&path, 1024);
-    let repeated_sums = 1024;
+    let repeated_sums = 256;
     let mut fields = (0..repeated_sums)
         .map(|index| Field::new(format!("sum_m00_{index}"), DataType::Int64, true))
         .collect::<Vec<_>>();
@@ -140,21 +143,30 @@ fn bounded_native_query_executes_global_final_merge_with_consistent_state_schema
 fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-final-merge-retry-exhausted");
     let path = dir.join("input.parquet");
+    let second_path = dir.join("input2.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let input_schema = write_final_merge_retry_input_parquet(&path, 1024);
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_m00", DataType::Int64, true),
-    ]));
+    write_final_merge_retry_input_parquet(&second_path, 1024);
+    let repeated_sums = 128;
+    let aggregated_schema = Arc::new(Schema::new(
+        (0..repeated_sums)
+            .map(|index| Field::new(format!("sum_m00_{index}"), DataType::Int64, true))
+            .collect::<Vec<_>>(),
+    ));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len()),
+            LocalParquetFile::new(&second_path).with_file_size_bytes(fs::metadata(&second_path).unwrap().len()),
+        ],
         Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
+        vec!["m00".to_string()],
     );
     let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
+        Vec::new(),
+        (0..repeated_sums)
+            .map(|index| AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), format!("sum_m00_{index}")))
+            .collect::<Vec<_>>(),
     );
 
     let mut builder = QueryPlanBuilder::new();
@@ -165,10 +177,10 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
     let context = ExecutionContext::builder()
         .with_shared_runtime(Arc::clone(&runtime))
         .with_memory_control_policy(MemoryControlPolicy::Bounded {
-            device_budget_bytes: 95_000,
+            device_budget_bytes: 140_000,
             max_source_chunk_bytes: 1024 * 1024,
             max_row_groups_per_chunk: 1,
-            max_retry_attempts: 3,
+            max_retry_attempts: 1,
             min_retry_chunk_row_groups: 1,
         })
         .build()
@@ -182,14 +194,14 @@ fn bounded_native_query_reports_retry_facts_when_final_merge_retry_exhausts() {
     assert!(matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted));
     assert_eq!(error.fact_value("memory_boundary"), Some("final_aggregate_merge"));
     assert_eq!(error.fact_value("stage"), Some("final_merge"));
-    assert_eq!(error.fact_value("attempt"), Some("2"));
-    assert_eq!(error.fact_value("max_attempts"), Some("3"));
-    assert_eq!(error.fact_value("retry_action"), Some("fail_min_merge_fan_in"));
+    assert_eq!(error.fact_value("attempt"), Some("1"));
+    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+    assert_eq!(error.fact_value("retry_action"), Some("retry_attempts_exhausted"));
     assert_eq!(error.fact_value("resume_boundary"), Some("final_merge"));
-    assert_eq!(error.fact_value("committed_chunks"), Some("3"));
-    assert_eq!(error.fact_value("committed_partials"), Some("3"));
+    assert_eq!(error.fact_value("committed_chunks"), Some("6"));
+    assert_eq!(error.fact_value("committed_partials"), Some("6"));
     assert_eq!(error.fact_value("merge_level"), Some("1"));
-    assert_eq!(error.fact_value("merge_fan_in"), Some("2"));
+    assert_eq!(error.fact_value("merge_fan_in"), Some("6"));
     if error.code() == QueryErrorCode::MemoryReservationFailed {
         assert_eq!(error.fact_value("reservation_kind"), Some("final_merge"));
     } else {

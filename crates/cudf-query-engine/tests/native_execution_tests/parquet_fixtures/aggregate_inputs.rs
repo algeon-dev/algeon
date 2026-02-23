@@ -97,6 +97,45 @@ pub(crate) fn write_row_grouped_input_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
+pub(crate) fn write_nullable_string_grouped_aggregate_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Utf8, true),
+        Field::new("value", DataType::Int64, true),
+    ]));
+    let chunk_patterns = [
+        [
+            (Some("segment-alpha-long"), Some(10i64), 10usize),
+            (Some("segment-beta-long"), Some(1i64), 20usize),
+            (None, Some(5i64), 10usize),
+        ],
+        [
+            (Some("segment-beta-long"), Some(1i64), 20usize),
+            (None, Some(5i64), 10usize),
+            (Some("segment-alpha-long"), Some(10i64), 10usize),
+        ],
+        [
+            (None, Some(5i64), 10usize),
+            (Some("segment-alpha-long"), Some(10i64), 10usize),
+            (Some("segment-beta-long"), Some(1i64), 20usize),
+        ],
+    ];
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
+    for chunk in chunk_patterns {
+        for (key, value, rows) in chunk {
+            keys.extend(std::iter::repeat_n(key, rows));
+            values.extend(std::iter::repeat_n(value, rows));
+        }
+    }
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(keys)), Arc::new(Int64Array::from(values))],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 40);
+    schema
+}
+
 pub(crate) fn write_uneven_avg_input_parquet(path: &Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

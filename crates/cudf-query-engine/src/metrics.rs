@@ -227,6 +227,8 @@ pub struct QueryMetrics {
     pub graph_algorithm_runtime_rows: Vec<GraphAlgorithmRuntimeMetrics>,
     /// Join-strategy diagnostics captured during planning/execution.
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
+    /// Aggregate-strategy diagnostics captured during planning/execution.
+    pub aggregate_strategy_decisions: Vec<AggregateStrategyDecisionMetrics>,
     /// Memory policy used by the native phase-C/bounded executor.
     pub phase_c_memory_control_policy: MemoryControlPolicy,
     /// Boundary policy used for host/device materialization.
@@ -407,6 +409,18 @@ impl QueryMetrics {
     /// Records join-strategy diagnostics for a node.
     pub fn record_join_strategy_decision(&mut self, node_id: impl ToString, facts: &BTreeMap<&'static str, String>) {
         self.join_strategy_decisions.push(JoinStrategyDecisionMetrics {
+            node_id: node_id.to_string(),
+            facts: facts.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect(),
+        });
+    }
+
+    /// Records aggregate-strategy diagnostics for a node or execution stage.
+    pub fn record_aggregate_strategy_decision(
+        &mut self,
+        node_id: impl ToString,
+        facts: &BTreeMap<&'static str, String>,
+    ) {
+        self.aggregate_strategy_decisions.push(AggregateStrategyDecisionMetrics {
             node_id: node_id.to_string(),
             facts: facts.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect(),
         });
@@ -912,6 +926,7 @@ impl QueryMetrics {
         self.operators.extend(other.operators);
         self.graph_algorithm_runtime_rows.extend(other.graph_algorithm_runtime_rows);
         self.join_strategy_decisions.extend(other.join_strategy_decisions);
+        self.aggregate_strategy_decisions.extend(other.aggregate_strategy_decisions);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
         self.peak_device_memory_bytes = max_optional(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
@@ -1072,6 +1087,15 @@ fn legacy_bounded_operator_kind_from_task_id(task_id: &str) -> Option<&str> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct JoinStrategyDecisionMetrics {
     /// Native join node id.
+    pub node_id: String,
+    /// Stable decision fact keys and values.
+    pub facts: BTreeMap<String, String>,
+}
+
+/// Aggregate-strategy decision facts captured for diagnostics.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AggregateStrategyDecisionMetrics {
+    /// Native aggregate node id, or a stage-local fallback label when unavailable.
     pub node_id: String,
     /// Stable decision fact keys and values.
     pub facts: BTreeMap<String, String>,

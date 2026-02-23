@@ -175,6 +175,21 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
 }
 
 #[test]
+fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
+    let plan = unknown_probe_small_left_build_join_strategy_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections(), "unknown probe reusable join with small build should be admitted");
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("small-build reusable join should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
+    assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
+    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:1024"));
+    assert_eq!(facts.get("probe_side_bytes"), None);
+}
+
+#[test]
 fn string_keyed_join_selects_non_reusable_strategy_before_runtime() {
     let plan = string_keyed_join_strategy_plan();
     let analysis = plan.capability_analysis();
@@ -212,6 +227,43 @@ fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:probe_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
+}
+
+#[test]
+fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
+    let plan = medium_single_use_keyed_build_join_strategy_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections(), "single-use non-small build should remain admitted");
+    let join = analysis
+        .nodes
+        .iter()
+        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
+        .expect("plan should contain a join capability row");
+    assert!(
+        join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
+        "single-use non-small keyed joins should not require a reusable hash-table gate"
+    );
+
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("single-use non-small build should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
+    assert_eq!(
+        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:single_use_build_not_small")
+    );
+    assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:2000000"));
+    assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
+    assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1048576"));
+
+    let pipeline = cudf_query_engine::compile_pipeline(&plan, &analysis)
+        .expect("single-use non-small partitioned join should compile");
+    assert!(
+        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
+        "compiled single-use non-small partitioned join must not carry a reusable hash-table gate"
+    );
+    assert_one_shot_output_preflight_gap(&pipeline, "single-use non-small keyed join");
 }
 
 #[test]
@@ -432,6 +484,109 @@ fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> cu
             JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
         ])
         .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn medium_single_use_keyed_build_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category", DataType::Utf8, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/medium-single-use-join-left.parquet")
+                .with_row_group_rows(vec![4096])
+                .with_row_group_bytes(vec![1024 * 1024]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/medium-single-use-join-right.parquet")
+                .with_row_group_rows(vec![2_000_000])
+                .with_row_group_bytes(vec![128 * 1024 * 1024]),
+        ],
+        Arc::clone(&right_schema),
+        vec!["order_id".to_string(), "category".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_id", "left_order_id"),
+                ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn unknown_probe_small_left_build_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let right_source_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("category_count", DataType::Int64, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("category_count", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/unknown-probe-small-build-left.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let right =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("unknown_probe", right_source_schema)));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_id", "left_order_id"),
+                ColumnRef::input(1, "order_id", "right_order_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "category_count", "category_count"), "category_count"),
+        ])
+        .with_build_side(JoinSide::Left),
         output_schema,
     );
     builder.finish_with_host_sink(join)

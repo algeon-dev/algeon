@@ -362,14 +362,29 @@ fn execute_bounded_chunk_operator_from_source(
     }
 
     let partial_input_rows = frame.num_rows() as u64;
+    let input_evidence = PartialAggregateInputEvidence {
+        source_adjacent_partial: bounded.has_source_adjacent_stages(),
+        source_chunk_row_group_count: chunk.row_group_count() as u64,
+        source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,
+        source_chunk_known_row_count: chunk.known_row_count,
+        source_chunk_estimated_source_read_bytes: chunk.estimated_source_read_bytes,
+        source_chunk_size_estimate_based: chunk.size_estimate_based,
+        source_adjacent_partition_strategy: "none",
+        source_adjacent_partition_count: None,
+        source_adjacent_non_empty_partition_count: None,
+        source_adjacent_partition_key_count: None,
+        source_adjacent_max_partition_fan_in: None,
+    };
     let chunk_operator_timer = Instant::now();
     let chunk_output = execute_partial_aggregate_with_budget(
         context,
+        Some(bounded.aggregate_id),
         bounded.aggregate.0,
         bounded.aggregate_input_schema,
         bounded.aggregate.1,
         frame,
         &operator_token,
+        Some(input_evidence),
         metrics,
     );
     metrics.chunk_operator_time += chunk_operator_timer.elapsed();

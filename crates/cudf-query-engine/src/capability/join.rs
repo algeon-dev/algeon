@@ -247,7 +247,10 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     let small_build = input.observed_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
         || input.estimated_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
         || input.build_side_bytes.is_some_and(|bytes| bytes <= SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD);
+    let build_size_known =
+        input.observed_build_rows.is_some() || input.estimated_build_rows.is_some() || input.build_side_bytes.is_some();
     let large_probe = input.probe_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD);
+    let single_use_without_artifact = join.spec.build_artifact_id.is_none() && input.probe_reuse_count <= 1;
     let reusable_rejected_reason = if !input.reusable_prebuild_supported {
         Some("build_key_prebuild_reservation_unsupported")
     } else if large_build {
@@ -257,14 +260,18 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     } else if input.probe_side_bytes.is_none()
         && input.build_side_bytes.is_some()
         && join.spec.build_side == JoinSide::Left
+        && !small_build
     {
         Some("probe_side_unestimated")
+    } else if single_use_without_artifact && build_size_known && !small_build {
+        Some("single_use_build_not_small")
     } else {
         None
     };
 
-    let prefer_reusable =
-        join.spec.build_artifact_id.is_some() || input.probe_reuse_count > 1 || reusable_rejected_reason.is_none();
+    let prefer_reusable = join.spec.build_artifact_id.is_some()
+        || input.probe_reuse_count > 1
+        || (reusable_rejected_reason.is_none() && (!build_size_known || small_build));
     if prefer_reusable {
         return KeyedHashJoinStrategyDecision::Selected {
             strategy: KeyedHashJoinStrategy::ReusableHashEqui,
