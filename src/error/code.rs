@@ -9,6 +9,8 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
+    /// Query execution was cancelled by the caller.
+    Cancelled,
     /// SQL text could not be parsed.
     SqlParse,
     /// DataFusion rejected the query during logical or physical planning.
@@ -64,6 +66,7 @@ impl ErrorCode {
     /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::SqlParse => "sql_parse",
             Self::DataFusionPlanning => "datafusion_planning",
             Self::ObjectNotFound => "object_not_found",
@@ -106,6 +109,8 @@ impl fmt::Display for ErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
+    /// Caller-requested cancellation stopped execution.
+    Cancelled,
     /// Requested catalog, schema, table, column, or similar named object was not found.
     NotFound,
     /// Planning, validation, or physical-plan construction failure.
@@ -130,6 +135,7 @@ impl ErrorKind {
     /// Stable snake-case category label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::NotFound => "not_found",
             Self::Planning => "planning",
             Self::InvalidInput => "invalid_input",
@@ -188,6 +194,7 @@ impl fmt::Display for ErrorStatus {
 /// failures without depending on every code variant.
 pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
     match code {
+        ErrorCode::Cancelled => ErrorKind::Cancelled,
         ErrorCode::SqlParse => ErrorKind::InvalidInput,
         ErrorCode::DataFusionPlanning | ErrorCode::NativeCandidateRejected | ErrorCode::InvalidExecutionPlan => {
             ErrorKind::Planning
@@ -216,6 +223,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
 /// `Permanent`.
 pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
     match code {
+        ErrorCode::Cancelled => ErrorStatus::Permanent,
         ErrorCode::CudfResourceExhausted | ErrorCode::CudfTemporaryFailure | ErrorCode::MemoryReservationFailed => {
             ErrorStatus::Temporary
         },

@@ -43,6 +43,7 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::IcebergRowSelectionUnsupported, "iceberg_row_selection_unsupported"),
         (FallbackReason::IcebergObjectStoreReadUnsupported, "iceberg_object_store_read_unsupported"),
         (FallbackReason::IcebergSnapshotUnsupported, "iceberg_snapshot_unsupported"),
+        (FallbackReason::TableFormatGpuOnlyLeafNotRewritten, "table_format_gpu_only_leaf_not_rewritten"),
     ];
 
     for (reason, expected) in codes {

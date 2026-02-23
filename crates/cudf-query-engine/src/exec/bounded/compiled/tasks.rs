@@ -2083,6 +2083,7 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
+        self.context.check_cancellation("cudf_query_engine.exec.bounded.compiled.task")?;
         validate_task_runtime_gates(self.pipeline, task)?;
         self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
         self.metrics.set_current_compiled_task(task.id());

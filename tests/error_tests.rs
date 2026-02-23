@@ -3,6 +3,10 @@ use datafusion_cudf::{Error, ErrorCode, ErrorKind, ErrorStatus};
 
 #[test]
 fn error_code_projections_are_stable_policy_contracts() {
+    assert_eq!(ErrorCode::Cancelled.as_str(), "cancelled");
+    assert_eq!(ErrorCode::Cancelled.kind(), ErrorKind::Cancelled);
+    assert_eq!(ErrorCode::Cancelled.status(), ErrorStatus::Permanent);
+
     assert_eq!(ErrorCode::SqlParse.as_str(), "sql_parse");
     assert_eq!(ErrorCode::SqlParse.kind(), ErrorKind::InvalidInput);
     assert_eq!(ErrorCode::SqlParse.status(), ErrorStatus::Permanent);
@@ -69,6 +73,23 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
     assert_eq!(adapter_error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(adapter_error.kind(), ErrorKind::Planning);
     assert_eq!(adapter_error.fact_value("plan_node"), Some("EmptyExec"));
+}
+
+#[test]
+fn native_cancelled_error_preserves_adapter_classification_and_facts() {
+    let native_error = cudf_query_engine::ExecutionCancellation::new();
+    native_error.cancel();
+    let adapter_error = Error::from_native(
+        "datafusion_cudf.native_exec.execute",
+        "native cudf query execution failed",
+        native_error.check("cudf_query_engine.exec.execute_query_plan").unwrap_err(),
+    );
+
+    assert_eq!(adapter_error.code(), ErrorCode::Cancelled);
+    assert_eq!(adapter_error.kind(), ErrorKind::Cancelled);
+    assert_eq!(adapter_error.status(), ErrorStatus::Permanent);
+    assert_eq!(adapter_error.fact_value("native_code"), Some("cancelled"));
+    assert_eq!(adapter_error.fact_value("cancellation_requested"), Some("true"));
 }
 
 #[test]

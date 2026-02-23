@@ -121,9 +121,10 @@ pub use plan::{
 };
 pub use runtime::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
-    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionContext, ExecutionContextBuilder,
-    MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, MemorySpaceId, ProbeExecutionBoundary,
-    ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary, SourceSchedulerPolicy,
+    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext,
+    ExecutionContextBuilder, MemoryControlPolicy, MemoryReservationRequest, MemoryResourcePolicy, MemorySpaceId,
+    ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, RetryFacts, SourceReadBoundary,
+    SourceSchedulerPolicy,
 };
 pub use source::{
     ByteRangeDisposition, GpuResidentSource, LocalParquetFile, LocalParquetSource, MissingColumn,

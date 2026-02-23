@@ -413,6 +413,7 @@ fn read_join_leaf_source_chunk_attempt(
     max_attempts: usize,
     grow_source_to_observed: bool,
 ) -> Result<(GpuDataFrame, ActiveReservation)> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_chunk")?;
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
@@ -520,6 +521,7 @@ fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<Option<GpuDataFrame>> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_budget_retry")?;
     if attempt >= max_attempts {
         return Ok(None);
     }
@@ -557,6 +559,7 @@ fn read_join_leaf_source_chunks_with_scheduler(
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
+    context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_scheduler")?;
     start_next_required_join_leaf_read(
         context,
         source,
@@ -571,6 +574,11 @@ fn read_join_leaf_source_chunks_with_scheduler(
 
     let mut chunks = Vec::with_capacity(source_chunks.len());
     for (index, chunk) in source_chunks.iter().enumerate() {
+        if let Err(error) = context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_scheduler") {
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            release_join_source_chunks_reverse(reservations, chunks, metrics);
+            return Err(error);
+        }
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
@@ -695,6 +703,7 @@ where
 {
     let grow_source_to_observed = stream.stages.is_empty();
     for chunk in chunks {
+        context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_stream")?;
         let outputs = read_join_leaf_source_chunk_with_retry(
             context,
             &stream.source,
@@ -729,6 +738,7 @@ where
     let grow_source_to_observed = stream.stages.is_empty();
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
+    context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
     start_next_required_join_leaf_read(
         context,
         &stream.source,
@@ -742,6 +752,12 @@ where
     )?;
 
     for (index, chunk) in stream.chunks.iter().enumerate() {
+        if let Err(error) =
+            context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_stream_scheduler")
+        {
+            abandon_join_leaf_reads(pending, reservations, metrics);
+            return Err(error);
+        }
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
@@ -956,6 +972,7 @@ fn start_join_leaf_scheduled_source_read(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetRead> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         return Ok(ScheduledLocalParquetRead::ready(output, memory_boundary, prefetch));

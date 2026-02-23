@@ -20,9 +20,11 @@ pub use config::{
     DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, DATAFUSION_CUDF_ICEBERG_TABLES_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
     DATAFUSION_CUDF_SERVER_LOG_ENV, DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV,
     DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, ServerConfig,
+    DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV,
+    DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig, ServerSessionProfile,
 };
 pub use error::{Result, ServerError};
+pub use session::{apply_session_profile, build_session_config};
 
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
 ///
@@ -39,7 +41,12 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     let addr = config.bind_addr;
     log_server_config_snapshot(&config);
     let ctx = Arc::new(session::build_session_context(&config).await?);
-    let service = flight::DatafusionCudfFlightSqlService::new(ctx, config.max_in_flight);
+    let service = flight::DatafusionCudfFlightSqlService::new(
+        ctx,
+        config.native_optimizer_config.clone(),
+        config.max_in_flight,
+        config.statement_ticket_ttl,
+    );
     let admission = Arc::clone(service.admission());
     let cancellations = Arc::clone(service.cancellations());
     let shutdown_token = service.shutdown_token().clone();
@@ -96,7 +103,9 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         Some(iceberg) => tracing::info!(
             bind_addr = %config.bind_addr,
             max_in_flight = config.max_in_flight,
+            statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
             log_filter = %config.log_filter,
+            session_profile = %config.session_profile,
             native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
             native_memory_control_policy = %native_execution.memory_control_policy(),
             native_device_budget_bytes = %native_memory.device_budget_bytes,
@@ -120,7 +129,9 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         None => tracing::info!(
             bind_addr = %config.bind_addr,
             max_in_flight = config.max_in_flight,
+            statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
             log_filter = %config.log_filter,
+            session_profile = %config.session_profile,
             native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
             native_memory_control_policy = %native_execution.memory_control_policy(),
             native_device_budget_bytes = %native_memory.device_budget_bytes,
@@ -144,7 +155,9 @@ fn log_server_config_snapshot(config: &ServerConfig) {
     tracing::info!(
         bind_addr = %config.bind_addr,
         max_in_flight = config.max_in_flight,
+        statement_ticket_ttl_secs = config.statement_ticket_ttl.as_secs(),
         log_filter = %config.log_filter,
+        session_profile = %config.session_profile,
         native_pipeline_execution_mode = %native_execution.native_pipeline_execution_mode(),
         native_memory_control_policy = %native_execution.memory_control_policy(),
         native_device_budget_bytes = %native_memory.device_budget_bytes,

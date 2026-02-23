@@ -194,6 +194,7 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<Option<GpuDataFrame>> {
+    context.check_cancellation("cudf_query_engine.source_scheduler.budget_retry")?;
     if attempt >= max_attempts {
         return Ok(None);
     }

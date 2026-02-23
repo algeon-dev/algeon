@@ -14,15 +14,16 @@ use cudf::{DataType as CudfDataType, TypeId};
 use cudf_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundaryMetrics, BoundedJoinReservationContract,
     BoundedJoinReservationStatus, BuildMaterializationBoundary, ByteRangeDisposition, ColumnRef, DataPlacement,
-    ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuResidentSource, JoinKey, JoinNullEquality, JoinOperatorMetrics,
-    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, MissingColumn, OperatorMetrics, PartitionColumn,
-    PartitionColumnDisposition, PlanNode, PredicateDisposition, ProbeExecutionBoundary, ProjectionOutput, QueryError,
-    QueryErrorCode, QueryErrorKind, QueryErrorStatus, QueryMetrics, QueryPlanBuilder, RejectedSourceFeature,
-    ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
-    SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
-    SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,
-    StrictBoundedExecutionMode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, Expr, GpuResidentSource, JoinKey,
+    JoinNullEquality, JoinOperatorMetrics, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralValue,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, MissingColumn,
+    OperatorMetrics, PartitionColumn, PartitionColumnDisposition, PlanNode, PredicateDisposition,
+    ProbeExecutionBoundary, ProjectionOutput, QueryError, QueryErrorCode, QueryErrorKind, QueryErrorStatus,
+    QueryMetrics, QueryPlanBuilder, RejectedSourceFeature, ReservationKind, ResultMaterializationBoundary, ResultSink,
+    RetryFacts, ScanLimitDisposition, SchemaBehavior, SchemaMappingDisposition, SortExpr, SortSpec,
+    SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache, SourceNode, SourceReadBoundary,
+    SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner, StrictBoundedExecutionMode,
+    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, EdgeConsumer, EdgeContractKind, InputRole, NodeOperator,
         OrderingRequirement, RequiredProperty, ReservationRequirementScope, ResidualRequirement, ResultSinkKind,
@@ -44,6 +45,63 @@ fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<Projec
         .zip(schema.fields().iter())
         .map(|(expr, field)| ProjectionOutput::new(expr, field.as_ref().clone()))
         .collect()
+}
+
+#[test]
+fn execution_cancellation_reports_stable_error_contract() {
+    let cancellation = ExecutionCancellation::new();
+    assert!(!cancellation.is_cancelled());
+    cancellation.cancel();
+
+    let error = cancellation.check("cudf_query_engine.test.cancel").unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.kind(), QueryErrorKind::Cancelled);
+    assert_eq!(error.status(), QueryErrorStatus::Permanent);
+    assert_eq!(error.operation(), "cudf_query_engine.test.cancel");
+    assert_eq!(error.fact_value("cancellation_requested"), Some("true"));
+}
+
+#[test]
+fn execution_cancellation_clones_share_state_across_threads() {
+    // The Flight SQL `do_action_cancel_query` handler flips the cancellation
+    // flag from a tokio worker thread while synchronous native execution
+    // observes the flag from the executor thread. Both sides hold cloned
+    // `ExecutionCancellation` handles; cancellation only short-circuits
+    // native execution if the underlying `Arc<AtomicBool>` is shared. This
+    // test pins that contract so a future refactor cannot quietly drop the
+    // Arc and reintroduce the cooperative-cancellation regression Bug 9
+    // describes.
+    let cancellation = ExecutionCancellation::new();
+    let observer = cancellation.clone();
+    assert!(!observer.is_cancelled());
+
+    let writer = cancellation.clone();
+    let handle = std::thread::spawn(move || {
+        writer.cancel();
+    });
+    handle.join().expect("cancellation writer thread completed");
+
+    assert!(cancellation.is_cancelled(), "original handle must observe a clone's cancel()");
+    assert!(observer.is_cancelled(), "independent clone must observe a sibling clone's cancel()");
+
+    let error = observer.check("cudf_query_engine.test.cross_thread_cancel").unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    assert_eq!(error.operation(), "cudf_query_engine.test.cross_thread_cancel");
+}
+
+#[test]
+fn execution_cancellation_default_is_independent_of_other_instances() {
+    // `ExecutionContext::new` / `NativeCudfExecutionConfig::new` construct a
+    // fresh `ExecutionCancellation` by default. Two independently-constructed
+    // contexts must not share a flag — otherwise cancelling one query would
+    // poison every other in-flight query in the server.
+    let one = ExecutionCancellation::default();
+    let two = ExecutionCancellation::default();
+    one.cancel();
+
+    assert!(one.is_cancelled());
+    assert!(!two.is_cancelled(), "default-constructed instances must not share state");
+    two.check("cudf_query_engine.test.independent_default").expect("uncancelled instance check passes");
 }
 
 #[path = "native_contract_tests/bounded_join_admission.rs"]

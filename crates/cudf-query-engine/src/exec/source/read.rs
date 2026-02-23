@@ -7,6 +7,7 @@ pub(super) fn read_local_parquet_file(
     predicate: Option<Arc<cudf::ops::ast::AstExpression>>,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
+    context.check_cancellation("cudf_query_engine.local_parquet_source.read")?;
     let row_groups = cudf_row_groups(file)?;
     let read_timer = Instant::now();
     let options = match (&row_groups, predicate) {

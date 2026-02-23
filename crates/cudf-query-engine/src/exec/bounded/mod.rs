@@ -59,6 +59,7 @@ pub(super) fn execute_bounded_query_plan(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.execute_query_plan")?;
     match bounded_pipeline_execution_mode(context) {
         NativePipelineExecutionMode::StrictBounded => {
             if let Some(output) = try_execute_strict_bounded_pipeline(context, plan, gpu_inputs, metrics)? {
@@ -152,6 +153,7 @@ fn execute_bounded_aggregate_to_frame(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.aggregate")?;
     validate_local_parquet_source(bounded.source)?;
     bounded.validate_capabilities()?;
 
@@ -220,6 +222,7 @@ fn execute_bounded_generic_query_plan(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<QueryOutput> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.generic_query_plan")?;
     if plan.contains_join() {
         reject_bounded_join_plan(context, plan)?;
     }
@@ -268,6 +271,7 @@ fn execute_bounded_generic_node(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.generic_node")?;
     let node = plan
         .node(id)
         .ok_or_else(|| invalid_node_reference(id, "bounded generic query plan references a missing node"))?;

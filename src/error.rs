@@ -279,6 +279,7 @@ fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
 // available in the `native_code` fact attached by `Error::from_native`.
 fn code_for_native_error(error: &cudf_query_engine::QueryError) -> ErrorCode {
     match error.code() {
+        cudf_query_engine::QueryErrorCode::Cancelled => ErrorCode::Cancelled,
         cudf_query_engine::QueryErrorCode::UnsupportedPlanShape => ErrorCode::UnsupportedOperator,
         cudf_query_engine::QueryErrorCode::UnsupportedOperator => ErrorCode::UnsupportedOperator,
         cudf_query_engine::QueryErrorCode::UnsupportedExpression => ErrorCode::UnsupportedExpression,

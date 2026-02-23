@@ -22,6 +22,8 @@ pub type Result<T> = std::result::Result<T, QueryError>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum QueryErrorCode {
+    /// Query execution was cancelled by the caller.
+    Cancelled,
     /// The requested IR shape is not implemented by the native executor.
     ///
     /// This is a capability rejection rather than a malformed-plan error.
@@ -71,6 +73,7 @@ impl QueryErrorCode {
     /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::UnsupportedPlanShape => "unsupported_plan_shape",
             Self::UnsupportedOperator => "unsupported_operator",
             Self::UnsupportedExpression => "unsupported_expression",
@@ -109,6 +112,8 @@ impl fmt::Display for QueryErrorCode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum QueryErrorKind {
+    /// Caller-requested cancellation stopped execution.
+    Cancelled,
     /// Planning, validation, or IR construction failure.
     Planning,
     /// Caller-provided input is invalid for the requested operation.
@@ -129,6 +134,7 @@ impl QueryErrorKind {
     /// Stable snake-case category label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Cancelled => "cancelled",
             Self::Planning => "planning",
             Self::InvalidInput => "invalid_input",
             Self::Unsupported => "unsupported",
@@ -185,6 +191,7 @@ impl fmt::Display for QueryErrorStatus {
 /// group failures without depending on every code variant.
 pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
     match code {
+        QueryErrorCode::Cancelled => QueryErrorKind::Cancelled,
         QueryErrorCode::UnsupportedPlanShape
         | QueryErrorCode::UnsupportedOperator
         | QueryErrorCode::UnsupportedExpression
@@ -211,6 +218,7 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
 /// `Permanent`.
 pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
     match code {
+        QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
         QueryErrorCode::CudfResourceExhausted
         | QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::MemoryReservationFailed => QueryErrorStatus::Temporary,

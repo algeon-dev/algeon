@@ -102,6 +102,9 @@ pub enum FallbackReason {
     IcebergObjectStoreReadUnsupported,
     /// Iceberg snapshot selection or loading is unsupported.
     IcebergSnapshotUnsupported,
+    /// A GPU-only table-format scan leaf survived native optimization, so the
+    /// remaining plan cannot fall back to DataFusion CPU execution.
+    TableFormatGpuOnlyLeafNotRewritten,
 }
 
 impl FallbackReason {
@@ -143,6 +146,7 @@ impl FallbackReason {
             Self::IcebergRowSelectionUnsupported => "iceberg_row_selection_unsupported",
             Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
             Self::IcebergSnapshotUnsupported => "iceberg_snapshot_unsupported",
+            Self::TableFormatGpuOnlyLeafNotRewritten => "table_format_gpu_only_leaf_not_rewritten",
         }
     }
 }
