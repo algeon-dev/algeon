@@ -1,3 +1,13 @@
+//! Capability-first admission for native query plans.
+//!
+//! `analyze_query_capabilities` walks a `QueryPlan` and returns a
+//! `CapabilityAnalysis` that classifies every node, expression, edge, and
+//! subgraph invariant. Rejections are local and structured (missing operator,
+//! expression, Arrow type, edge contract, invariant, or reservation
+//! contract); they never use legacy named "execution family" report keys.
+
+#![deny(missing_docs)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{

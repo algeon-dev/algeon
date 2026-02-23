@@ -52,8 +52,8 @@ pub struct IcebergServerConfig {
     /// for Trino-style addressing without changing the Glue catalog identifier.
     /// Defaults to "glue"; controlled only by `DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME`.
     pub glue_catalog_handle: String,
-    /// Iceberg namespace / Glue database name (e.g. "demo_db").  Exposed as
-    /// the second part of three-part addressing.
+    /// Iceberg namespace / Glue database name (e.g. "demo_db"). This is the
+    /// dynamic catalog visibility scope and the second part of three-part addressing.
     pub namespace: String,
     pub warehouse: String,
     pub catalog_id: Option<String>,

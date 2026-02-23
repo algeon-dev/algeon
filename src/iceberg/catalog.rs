@@ -3,8 +3,9 @@
 //! This module provides a backend-neutral [`IcebergCatalogBackend`] trait and
 //! the DataFusion [`CatalogProvider`] / [`SchemaProvider`] implementations that
 //! sit on top of it.  Namespace and table lists are populated asynchronously at
-//! startup via [`build_catalog_provider_from_backend`]; individual tables are
-//! loaded lazily on first access.
+//! startup via [`build_catalog_provider_from_backend`] or
+//! [`build_scoped_catalog_provider_from_backend`]; individual tables are loaded
+//! lazily on first access.
 //!
 //! # Backend implementations
 //!
@@ -46,8 +47,10 @@ const CATALOG_BACKEND_OP: &str = "datafusion_cudf.iceberg.catalog_backend";
 ///
 /// All methods are `async` because catalog operations require network calls.
 /// DataFusion's synchronous [`CatalogProvider`] and [`SchemaProvider`] methods
-/// read from a startup cache populated by [`build_catalog_provider_from_backend`];
-/// [`SchemaProvider::table`] (which *is* async) loads tables lazily.
+/// read from a startup cache populated by
+/// [`build_catalog_provider_from_backend`] or
+/// [`build_scoped_catalog_provider_from_backend`]; [`SchemaProvider::table`]
+/// (which *is* async) loads tables lazily.
 ///
 /// Implementations should avoid leaking credentials in errors. `load_table`
 /// must accept identifiers previously returned by `list_tables`.
@@ -70,7 +73,8 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
 /// DataFusion [`CatalogProvider`] backed by a startup-cached Iceberg namespace
 /// list.
 ///
-/// Built by [`build_catalog_provider_from_backend`].  Each schema maps to one
+/// Built by [`build_catalog_provider_from_backend`] or
+/// [`build_scoped_catalog_provider_from_backend`]. Each schema maps to one
 /// Iceberg namespace; individual tables are loaded lazily through the backend
 /// when first queried via [`SchemaProvider::table`].
 #[derive(Debug)]
@@ -233,6 +237,31 @@ pub async fn build_catalog_provider_from_backend(
 ) -> Result<CudfIcebergCatalogProvider> {
     let catalog_type = catalog_type.into();
     let namespaces = backend.list_namespaces().await?;
+    build_catalog_provider_for_namespaces(backend, catalog_type, namespaces).await
+}
+
+/// Builds a [`CudfIcebergCatalogProvider`] scoped to one configured namespace.
+///
+/// Unlike [`build_catalog_provider_from_backend`], this does not enumerate all
+/// namespaces the backend can see. It lists tables only for `namespace`, so the
+/// resulting DataFusion catalog exposes a single schema and information-schema
+/// queries cannot fan out into unrelated namespaces.
+///
+/// Dotted namespace strings are interpreted as multi-level Iceberg namespaces.
+pub async fn build_scoped_catalog_provider_from_backend(
+    backend: Arc<dyn IcebergCatalogBackend>,
+    catalog_type: impl Into<String>,
+    namespace: &str,
+) -> Result<CudfIcebergCatalogProvider> {
+    let namespace = namespace_ident_from_flat_name(namespace)?;
+    build_catalog_provider_for_namespaces(backend, catalog_type.into(), vec![namespace]).await
+}
+
+async fn build_catalog_provider_for_namespaces(
+    backend: Arc<dyn IcebergCatalogBackend>,
+    catalog_type: String,
+    namespaces: Vec<NamespaceIdent>,
+) -> Result<CudfIcebergCatalogProvider> {
     let mut schemas: BTreeMap<String, Arc<CudfIcebergSchemaProvider>> = BTreeMap::new();
 
     for namespace in namespaces {
@@ -248,6 +277,22 @@ pub async fn build_catalog_provider_from_backend(
     }
 
     Ok(CudfIcebergCatalogProvider::new(schemas))
+}
+
+fn namespace_ident_from_flat_name(namespace: &str) -> Result<NamespaceIdent> {
+    let parts = namespace.split('.').collect::<Vec<_>>();
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+        return Err(Error::new(
+            ErrorCode::CudfInvalidInput,
+            CATALOG_BACKEND_OP,
+            "Iceberg namespace scope must not be empty",
+        ));
+    }
+    NamespaceIdent::from_strs(parts).map_err(|error| {
+        Error::new(ErrorCode::CudfInvalidInput, CATALOG_BACKEND_OP, "invalid Iceberg namespace scope")
+            .with_fact("namespace", namespace)
+            .with_source(error)
+    })
 }
 
 // ---------------------------------------------------------------------------

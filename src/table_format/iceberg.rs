@@ -38,17 +38,15 @@ use crate::{
 
 const PLAN_SCAN_OPERATION: &str = "datafusion_cudf.table_format.iceberg.plan_scan";
 const TASK_CONVERSION_OPERATION: &str = "datafusion_cudf.table_format.iceberg.convert_file_scan_tasks";
-const PROVIDER_SCAN_OPERATION: &str = "datafusion_cudf.table_format.iceberg_provider.scan";
-
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 
 /// DataFusion table provider that plans Iceberg metadata into adapter-owned
 /// scan facts instead of delegating to the upstream Arrow reader path.
 ///
-/// The provider supports projection-only scans. Pushed-down DataFusion filters
-/// are rejected at this boundary because Iceberg residual and row-selection
-/// semantics must be represented as structured table-format facts before
-/// native lowering can admit them.
+/// The provider treats DataFusion filters as inexact pushdown: DataFusion keeps
+/// a parent filter for correctness, while native lowering can still see the
+/// filter context and the scan can retain DataFusion's source-level limit
+/// bound.
 #[derive(Clone)]
 pub struct CudfIcebergTableProvider {
     schema: SchemaRef,
@@ -108,25 +106,13 @@ impl TableProvider for CudfIcebergTableProvider {
         &self,
         _state: &dyn Session,
         projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        _limit: Option<usize>,
+        _filters: &[Expr],
+        limit: Option<usize>,
     ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
-        if !filters.is_empty() {
-            return Err(DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    PROVIDER_SCAN_OPERATION,
-                    "CudfIcebergTableProvider does not accept pushed-down DataFusion filters in Phase C",
-                )
-                .with_fact("table_format", TableFormat::Iceberg.code())
-                .with_fact("pushed_down_filter_count", filters.len()),
-            ));
-        }
-
         let projected_schema = project_schema(&self.schema, projection)?;
         let projected_column_names = projection
             .map(|indices| indices.iter().map(|index| self.schema.field(*index).name().clone()).collect::<Vec<_>>());
-        let mut request = TableFormatScanRequest::default().with_case_sensitive(true);
+        let mut request = TableFormatScanRequest::default().with_case_sensitive(true).with_scan_limit(limit);
         request.projected_column_names = projected_column_names;
         if let Some(catalog_type) = self.catalog_type.as_ref() {
             request.catalog_type = Some(catalog_type.clone());
@@ -139,7 +125,7 @@ impl TableProvider for CudfIcebergTableProvider {
         &self,
         filters: &[&Expr],
     ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![TableProviderFilterPushDown::Unsupported; filters.len()])
+        Ok(vec![TableProviderFilterPushDown::Inexact; filters.len()])
     }
 }
 
@@ -219,7 +205,8 @@ impl IcebergTableFormatPlanner {
         let catalog_type = request.catalog_type.or_else(|| self.catalog_type.clone());
         let snapshot_id =
             request.snapshot_id.or_else(|| self.table.metadata().current_snapshot_id().map(|id| id.to_string()));
-        let mut plan = iceberg_file_scan_tasks_to_table_format_scan_plan(snapshot_id, catalog_type, tasks)?;
+        let mut plan = iceberg_file_scan_tasks_to_table_format_scan_plan(snapshot_id, catalog_type, tasks)?
+            .with_scan_limit(request.scan_limit);
         if row_selection_enabled {
             plan.unsupported_features.push(TableFormatUnsupportedFeature::new(
                 TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported,

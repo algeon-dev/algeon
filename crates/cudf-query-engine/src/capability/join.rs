@@ -1,3 +1,12 @@
+//! Join-strategy capability analysis.
+//!
+//! Classifies each [`JoinNode`] into a [`KeyedHashJoinStrategyDecision`] using
+//! the byte/row thresholds defined as crate-level constants. Decisions are
+//! consumed by capability admission, the bounded executor's strategy
+//! selection, and the join-strategy metric rows.
+
+#![deny(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType;

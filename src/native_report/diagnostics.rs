@@ -1,3 +1,11 @@
+//! Planner-side plan inspection helpers for native report rows.
+//!
+//! Walks DataFusion physical plans to derive native fragment coverage, join
+//! and source diagnostics summaries, and stable unsupported-category labels
+//! used by the planning/execution/fallback-pressure surfaces.
+
+#![deny(missing_docs)]
+
 use super::*;
 
 mod expressions;

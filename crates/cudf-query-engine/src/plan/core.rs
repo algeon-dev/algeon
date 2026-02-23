@@ -1,3 +1,10 @@
+//! Core query-plan IR types: [`QueryPlan`], [`QueryNode`], [`NodeId`], and
+//! [`PlanNode`]. The DAG is append-only and ends at an explicit
+//! [`ResultSink`]; native execution is GPU-resident until the sink chooses
+//! otherwise.
+
+#![deny(missing_docs)]
+
 use super::*;
 
 /// DataFusion-free query plan consumed by the native cuDF execution engine.

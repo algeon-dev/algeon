@@ -1,3 +1,12 @@
+//! CPU/GPU fallback policy and stable fallback-reason codes.
+//!
+//! `FallbackReason::code()` produces the snake-case strings that planning,
+//! execution, and fallback-pressure reports emit verbatim. Changing a code is
+//! a TSV schema break and requires bumping the consuming report's schema
+//! version.
+
+#![deny(missing_docs)]
+
 /// Policy controlling whether DataFusion may fall back to CPU execution.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum GpuFallbackPolicy {

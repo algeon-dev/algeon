@@ -24,8 +24,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sha2::{Digest, Sha256};
-
 use crate::CugraphAlgorithm;
 
 /// Manifest JSON resident next to the vendored datasets.
@@ -491,8 +489,6 @@ pub enum ParityManifestError {
     MissingManifest { path: PathBuf, source: std::io::Error },
     InvalidManifest { path: PathBuf, source: serde_json::Error },
     UnsupportedSchema { path: PathBuf, version: u32 },
-    DatasetSha256Mismatch { id: String, expected: String, actual: String, path: PathBuf },
-    DatasetMissing { id: String, path: PathBuf, source: std::io::Error },
 }
 
 impl std::fmt::Display for ParityManifestError {
@@ -509,14 +505,6 @@ impl std::fmt::Display for ParityManifestError {
                 "cuGraph manifest at {} has unexpected schema_version={version}; harness understands version 1",
                 path.display()
             ),
-            Self::DatasetSha256Mismatch { id, expected, actual, path } => write!(
-                f,
-                "cuGraph dataset '{id}' SHA-256 mismatch: expected {expected}, got {actual} at {}",
-                path.display()
-            ),
-            Self::DatasetMissing { id, path, source } => {
-                write!(f, "cuGraph dataset '{id}' missing at {}: {source}", path.display())
-            },
         }
     }
 }
@@ -524,9 +512,9 @@ impl std::fmt::Display for ParityManifestError {
 impl std::error::Error for ParityManifestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::MissingManifest { source, .. } | Self::DatasetMissing { source, .. } => Some(source),
+            Self::MissingManifest { source, .. } => Some(source),
             Self::InvalidManifest { source, .. } => Some(source),
-            Self::UnsupportedSchema { .. } | Self::DatasetSha256Mismatch { .. } => None,
+            Self::UnsupportedSchema { .. } => None,
         }
     }
 }
@@ -578,38 +566,6 @@ pub fn load_manifest(data_root: &Path) -> Result<ParityManifest, ParityManifestE
         datasets,
         references,
     })
-}
-
-/// Verify each manifest entry's SHA-256 against the on-disk file.
-pub fn verify_dataset_checksums(data_root: &Path, manifest: &ParityManifest) -> Result<(), ParityManifestError> {
-    for dataset in &manifest.datasets {
-        verify_one_checksum(data_root, &dataset.id, &dataset.path, &dataset.sha256)?;
-    }
-    for reference in &manifest.references {
-        verify_one_checksum(data_root, &reference.id, &reference.path, &reference.sha256)?;
-    }
-    Ok(())
-}
-
-fn verify_one_checksum(data_root: &Path, id: &str, relpath: &str, expected: &str) -> Result<(), ParityManifestError> {
-    let path = data_root.join(relpath);
-    let bytes = fs::read(&path).map_err(|source| ParityManifestError::DatasetMissing {
-        id: id.to_string(),
-        path: path.clone(),
-        source,
-    })?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let actual = format!("{:x}", hasher.finalize());
-    if actual != expected {
-        return Err(ParityManifestError::DatasetSha256Mismatch {
-            id: id.to_string(),
-            expected: expected.to_string(),
-            actual,
-            path,
-        });
-    }
-    Ok(())
 }
 
 fn parity_dataset_from_json(v: &serde_json::Value) -> ParityDataset {

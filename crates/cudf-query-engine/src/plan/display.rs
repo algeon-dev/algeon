@@ -1,3 +1,11 @@
+//! `Display` formatting for [`QueryPlan`] and its nodes.
+//!
+//! The format is human-oriented diagnostic text used by triage tools, not a
+//! stable parser surface. Bump the relevant report TSV schema instead of
+//! parsing display output.
+
+#![deny(missing_docs)]
+
 use std::fmt;
 
 use super::{HashJoinBuildArtifactId, JoinOutputColumn, PlanNode, QueryNode, QueryPlan, ResultSink, SortExpr};

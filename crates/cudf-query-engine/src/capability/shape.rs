@@ -1,3 +1,11 @@
+//! Plan-shape catalogues used by strict bounded admission.
+//!
+//! Each submodule recognises one named shape family (root join, mixed
+//! residual, keyless conditional, etc.) and exposes its recognisers to
+//! [`super::admission`].
+
+#![deny(missing_docs)]
+
 use super::{edge::*, expr::*, graph::*, invariant::expr_references_input, model::*, *};
 
 mod access;

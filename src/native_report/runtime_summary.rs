@@ -1,3 +1,8 @@
+//! Internal flattening of [`NativeDataFusionRuntime`] enum variants into the
+//! flat `(outcome, failure, output_*, metrics)` shape that report rows store.
+
+#![deny(missing_docs)]
+
 use super::{
     NativeDataFusionExecutionMetrics, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, tsv::stable_tsv_field,
 };

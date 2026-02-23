@@ -1,3 +1,12 @@
+//! Plan-shape admission for strict bounded capability analysis.
+//!
+//! Walks already-analyzed node/edge/invariant facts and decides whether the
+//! whole [`QueryPlan`] forms a recognized strict-bounded shape (root join,
+//! keyless conditional, mixed residual, etc.) or must be rejected with a
+//! local reason.
+
+#![deny(missing_docs)]
+
 use super::{graph::*, model::*, shape::*, *};
 
 pub(super) fn analyze_root_join_admission(

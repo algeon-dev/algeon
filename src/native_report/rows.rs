@@ -1,3 +1,13 @@
+//! Row structs for the native planning/execution/fallback-pressure TSV surfaces.
+//!
+//! Top-level optional fields serialize as `none`. Nested source-diagnostics
+//! values use their own sentinels (e.g. `unknown`, `all`) documented on each
+//! field. Reservation requested/granted byte fields are cumulative admission
+//! accounting over the query lifetime; live peak and retained-byte fields
+//! describe instantaneous resident device memory.
+
+#![deny(missing_docs)]
+
 use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
 use super::metrics::NativeDataFusionExecutionMetrics;
@@ -266,9 +276,10 @@ pub struct NativeSourceDiagnosticSummary {
     pub file_count: usize,
     /// Number of files with explicit byte ranges.
     pub ranged_file_count: usize,
-    /// Known source bytes, or `none` when unavailable.
+    /// Known source bytes; `None` serializes as `unknown` in nested TSV cells.
     pub known_bytes: Option<u64>,
-    /// Selected row-group count, or `none` when unavailable.
+    /// Selected row-group count; `None` means "all row groups" and serializes
+    /// as `all` in nested TSV cells.
     pub selected_row_groups: Option<usize>,
     /// Predicate support/disposition label.
     pub predicate_disposition: String,

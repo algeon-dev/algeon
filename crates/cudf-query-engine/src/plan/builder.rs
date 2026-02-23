@@ -1,3 +1,11 @@
+//! Append-only builder for [`QueryPlan`].
+//!
+//! Frontends construct plans through [`QueryPlanBuilder`] so node ids stay
+//! stable and forward references are impossible. Equivalent nodes (same kind
+//! and facts) are interned as a small CSE step.
+
+#![deny(missing_docs)]
+
 use super::*;
 
 /// Builder for native query plans.
