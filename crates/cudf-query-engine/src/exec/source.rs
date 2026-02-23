@@ -25,6 +25,11 @@ use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_f
 
 use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
 
+/// Read a local Parquet source into a GPU dataframe.
+///
+/// The source is validated before reading. When a compatible source cache is
+/// configured on the context, lookup and retained-byte metrics are recorded;
+/// otherwise the files are read directly.
 pub fn read_local_parquet_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,

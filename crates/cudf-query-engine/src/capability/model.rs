@@ -1,3 +1,10 @@
+//! Capability-analysis model for native query admission.
+//!
+//! This module is the public vocabulary for local node, edge, and subgraph
+//! proofs. Rejection reasons and fact keys are report-facing stable strings;
+//! add new labels instead of reusing old whole-plan family names.
+#![deny(missing_docs)]
+
 use super::*;
 use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 
@@ -36,6 +43,7 @@ pub enum ContractQuality {
 }
 
 impl ContractQuality {
+    /// Stable snake-case label emitted in contract diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ExactPreflight => "exact_preflight",
@@ -52,12 +60,16 @@ impl ContractQuality {
 /// The most local graph scope that owns a reservation requirement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ReservationRequirementScope {
+    /// Requirement owned by one native plan node.
     Node,
+    /// Requirement owned by one producer-consumer boundary.
     Edge,
+    /// Requirement owned by a non-local graph proof or compiled envelope.
     Subgraph,
 }
 
 impl ReservationRequirementScope {
+    /// Stable snake-case label emitted in contract diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Node => "node",
@@ -89,12 +101,17 @@ pub struct ReservationRequirement {
 /// placeholder contract with a stronger cudf-rs/libcudf contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StrictUnresolvedPreflightGap {
+    /// Reservation kind affected by the unresolved lower-level contract.
     pub kind: ReservationKind,
+    /// Stable contract label that currently relies on a placeholder proof.
     pub required_contract: &'static str,
+    /// Stable report code naming the missing cudf-rs/libcudf preflight.
     pub unresolved_gap: &'static str,
+    /// Human-readable condition required to remove this gap from strict mode.
     pub retirement_requirement: &'static str,
 }
 
+/// Known strict-mode preflight gaps that require lower-level cudf-rs/libcudf work.
 pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::SourceRead,
@@ -135,6 +152,7 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
 ];
 
 impl ReservationRequirement {
+    /// Creates an admitted strict-bounded reservation requirement.
     pub fn modeled(
         kind: ReservationKind,
         memory_boundary: &'static str,
@@ -151,6 +169,7 @@ impl ReservationRequirement {
         }
     }
 
+    /// Creates a requirement whose strict proof waits on a lower-level contract.
     pub fn blocked_by_lower_level(
         kind: ReservationKind,
         memory_boundary: &'static str,
@@ -168,10 +187,12 @@ impl ReservationRequirement {
     }
 }
 
+/// Returns the stable unresolved-gap code for a reservation contract, if known.
 pub fn lower_level_unresolved_preflight_gap(kind: ReservationKind, required_contract: &str) -> Option<&'static str> {
     strict_unresolved_preflight_gap(kind, required_contract).map(|gap| gap.unresolved_gap)
 }
 
+/// Returns the stable unresolved-gap code for a contract label, if known.
 pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str) -> Option<&'static str> {
     STRICT_UNRESOLVED_PREFLIGHT_GAPS
         .iter()
@@ -179,6 +200,7 @@ pub fn lower_level_unresolved_preflight_gap_for_contract(required_contract: &str
         .map(|gap| gap.unresolved_gap)
 }
 
+/// Looks up the full strict-mode unresolved preflight descriptor.
 pub fn strict_unresolved_preflight_gap(
     kind: ReservationKind,
     required_contract: &str,
@@ -186,6 +208,7 @@ pub fn strict_unresolved_preflight_gap(
     STRICT_UNRESOLVED_PREFLIGHT_GAPS.iter().find(|gap| gap.kind == kind && gap.required_contract == required_contract)
 }
 
+/// Maps a reservation kind to the most local capability scope that owns it.
 pub const fn reservation_requirement_scope(kind: ReservationKind) -> ReservationRequirementScope {
     match kind {
         ReservationKind::OperatorOutput
@@ -210,19 +233,24 @@ pub const fn reservation_requirement_scope(kind: ReservationKind) -> Reservation
 /// A symbolic dependency that a conditional capability is waiting for.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConstraintRef {
+    /// Graph scope that owns the prerequisite proof.
     pub scope: ConstraintScope,
+    /// Stable local constraint name within that scope.
     pub name: &'static str,
 }
 
 impl ConstraintRef {
+    /// Creates a prerequisite reference owned by a node.
     pub const fn node(node_id: NodeId, name: &'static str) -> Self {
         Self { scope: ConstraintScope::Node(node_id), name }
     }
 
+    /// Creates a prerequisite reference owned by a producer-consumer edge.
     pub const fn edge(producer: NodeId, consumer: EdgeConsumer, name: &'static str) -> Self {
         Self { scope: ConstraintScope::Edge { producer, consumer }, name }
     }
 
+    /// Creates a prerequisite reference owned by a subgraph invariant.
     pub const fn invariant(invariant_id: InvariantId, name: &'static str) -> Self {
         Self { scope: ConstraintScope::Invariant(invariant_id), name }
     }
@@ -231,8 +259,16 @@ impl ConstraintRef {
 /// The graph scope where a constraint belongs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ConstraintScope {
+    /// Constraint attached to one native plan node.
     Node(NodeId),
-    Edge { producer: NodeId, consumer: EdgeConsumer },
+    /// Constraint attached to one producer-consumer boundary.
+    Edge {
+        /// Producer node on the dependency edge.
+        producer: NodeId,
+        /// Consumer endpoint on the dependency edge.
+        consumer: EdgeConsumer,
+    },
+    /// Constraint attached to a non-local subgraph invariant.
     Invariant(InvariantId),
 }
 
@@ -242,9 +278,17 @@ pub enum CapabilityDecision {
     /// The capability is fully proven at its owning scope.
     Satisfied,
     /// The capability failed at this scope; facts should name the local cause.
-    Rejected { reason: &'static str, facts: BTreeMap<&'static str, String> },
+    Rejected {
+        /// Stable rejection code for reports and tests.
+        reason: &'static str,
+        /// Stable fact-key map with values formatted for diagnostics.
+        facts: BTreeMap<&'static str, String>,
+    },
     /// The capability depends on other graph-scope proofs.
-    Conditional { waiting_on: Vec<ConstraintRef> },
+    Conditional {
+        /// Prerequisite proofs that must be satisfied before this decision is final.
+        waiting_on: Vec<ConstraintRef>,
+    },
 }
 
 impl CapabilityDecision {
@@ -252,6 +296,7 @@ impl CapabilityDecision {
         Self::Rejected { reason, facts: facts.into_iter().collect() }
     }
 
+    /// Returns the stable rejection code for rejected decisions.
     pub const fn rejection_reason(&self) -> Option<&'static str> {
         match self {
             Self::Rejected { reason, .. } => Some(reason),
@@ -259,6 +304,7 @@ impl CapabilityDecision {
         }
     }
 
+    /// Returns the stable rejection fact map for rejected decisions.
     pub fn rejection_facts(&self) -> Option<&BTreeMap<&'static str, String>> {
         match self {
             Self::Rejected { facts, .. } => Some(facts),
@@ -285,54 +331,114 @@ pub struct NodeCapability {
 /// Native operator shape captured without naming a whole bounded family.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NodeOperator {
-    Source { format: SourceFormatCapability },
+    /// Local or resident source scan.
+    Source {
+        /// Physical input format and residency source.
+        format: SourceFormatCapability,
+    },
+    /// Predicate filter preserving row order and residency when admitted.
     Filter,
+    /// Expression projection over a resident input frame.
     Projection,
-    Aggregate { grouping: AggregateGrouping, functions: Vec<AggregateFunction> },
-    Window { function_count: usize },
-    Sort { ordering: OrderingRequirement },
+    /// Aggregate operator with grouping and aggregate-function capability facts.
+    Aggregate {
+        /// Grouping shape used for capability admission.
+        grouping: AggregateGrouping,
+        /// Aggregate functions that must be supported by the native engine.
+        functions: Vec<AggregateFunction>,
+    },
+    /// Window operator over a resident input.
+    Window {
+        /// Number of window functions that participate in output sizing.
+        function_count: usize,
+    },
+    /// Sort or top-k ordering barrier.
+    Sort {
+        /// Whether the plan shape requires the operator to establish ordering.
+        ordering: OrderingRequirement,
+    },
+    /// Row-count limit over a resident input.
     Limit,
-    Join { join_type: JoinType, key_count: usize, residual: ResidualRequirement, build_side: JoinSide },
-    Union { input_count: usize },
-    EdgeNormalize { add_reverse: bool, dedup: EdgeDedupStrategy, weight_combiner: EdgeWeightCombiner },
-    GraphAlgorithm { algorithm: GraphAlgorithm },
+    /// Join operator with local join-shape facts.
+    Join {
+        /// Logical join type requested by the plan.
+        join_type: JoinType,
+        /// Number of equality key pairs.
+        key_count: usize,
+        /// Whether an additional residual predicate must be evaluated.
+        residual: ResidualRequirement,
+        /// Input side chosen as the resident build side.
+        build_side: JoinSide,
+    },
+    /// Union over multiple resident inputs.
+    Union {
+        /// Number of input edges expected by the union node.
+        input_count: usize,
+    },
+    /// Graph edge normalization operator before graph construction.
+    EdgeNormalize {
+        /// Whether reverse edges are inserted for undirected processing.
+        add_reverse: bool,
+        /// Duplicate-edge handling requested by the graph operation.
+        dedup: EdgeDedupStrategy,
+        /// Weight-combining rule applied when duplicate edges are collapsed.
+        weight_combiner: EdgeWeightCombiner,
+    },
+    /// cuGraph algorithm execution over a constructed graph.
+    GraphAlgorithm {
+        /// Algorithm family whose parameter contract must be supported.
+        algorithm: GraphAlgorithm,
+    },
 }
 
 /// Source format capability known by the native engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceFormatCapability {
+    /// Local Parquet files decoded through the native source reader.
     LocalParquet,
+    /// Already resident cudf table supplied by an upstream native node.
     GpuResident,
 }
 
 /// Aggregate grouping mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AggregateGrouping {
+    /// Scalar aggregate with no grouping keys.
     Scalar,
+    /// Standard grouped aggregate with explicit grouping keys.
     Grouped,
+    /// Grouping sets, rollups, or cubes, which require separate support.
     GroupingSets,
 }
 
 /// Whether a node establishes an ordering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OrderingRequirement {
+    /// The operator or edge must establish an ordered output.
     Required,
+    /// No ordering proof is required.
     None,
 }
 
 /// Whether a join has a residual predicate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResidualRequirement {
+    /// Join has no residual predicate beyond equality keys.
     None,
+    /// Join includes a residual predicate that must be proven supported.
     Required,
 }
 
 /// Properties produced by a node for downstream edge contracts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProducedProperty {
+    /// Output is a resident cudf frame available to downstream consumers.
     ResidentFrame,
+    /// Output is a grouped aggregate frame.
     GroupedFrame,
+    /// Output is a one-row scalar aggregate frame.
     ScalarFrame,
+    /// Output ordering is established for downstream order-sensitive consumers.
     OrderedFrame,
 }
 
@@ -362,58 +468,110 @@ pub struct EdgeContract {
 /// resident input contract and the build-side residency contract.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EdgeContractKind {
-    ResidentSourceInput { format: SourceFormatCapability },
+    /// Source output must be resident before the consumer runs.
+    ResidentSourceInput {
+        /// Source format that supplies the resident input.
+        format: SourceFormatCapability,
+    },
+    /// Aggregate input must be a resident frame.
     ResidentAggregateInput,
+    /// Window input must be a resident frame.
     WindowInput,
-    JoinBuildInput { side: JoinSide },
-    JoinProbeInput { side: JoinSide },
-    UnionInput { input_index: usize },
-    SharedProducer { identity: SharedProducerIdentity },
+    /// Join build input residency and ordering contract.
+    JoinBuildInput {
+        /// Join side consumed as the build input.
+        side: JoinSide,
+    },
+    /// Join probe input residency contract.
+    JoinProbeInput {
+        /// Join side consumed as the probe input.
+        side: JoinSide,
+    },
+    /// Union input position contract.
+    UnionInput {
+        /// Zero-based union input index.
+        input_index: usize,
+    },
+    /// Shared resident producer identity contract.
+    SharedProducer {
+        /// Identity proof that lets multiple consumers reuse the producer.
+        identity: SharedProducerIdentity,
+    },
+    /// Generic resident-frame flow between native nodes.
     ResidentFrameFlow,
+    /// Materialized join output required by a downstream consumer.
     JoinMaterialization,
+    /// Sort input residency contract.
     SortInput,
+    /// Graph algorithm input residency contract.
     GraphAlgorithmInput,
+    /// Final result materialization boundary.
     ExplicitSinkMaterialization,
 }
 
 /// Identity proof used for resident producers with multiple consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SharedProducerIdentity {
+    /// Common-subexpression elimination preserved the same producer node id.
     SameNodeIdAfterCse,
 }
 
 /// Consumer endpoint for an edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EdgeConsumer {
+    /// Another native plan node consumes the edge.
     Node(NodeId),
+    /// Final result sink consumes the edge.
     Sink(ResultSinkKind),
 }
 
 /// Result sink kinds as capability consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResultSinkKind {
+    /// Host Arrow batches are materialized for the caller.
     HostArrow,
+    /// Output remains resident on the GPU for a native downstream consumer.
     GpuResident,
 }
 
 /// Semantic role of an input edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum InputRole {
+    /// Single ordinary input for unary operators.
     UnaryInput,
+    /// Input consumed by an aggregate node.
     AggregateInput,
+    /// Input consumed by a window node.
     WindowInput,
+    /// Input consumed by a sort or top-k node.
     SortInput,
-    UnionInput { input_index: usize },
+    /// Input consumed at a specific union position.
+    UnionInput {
+        /// Zero-based union input index.
+        input_index: usize,
+    },
+    /// Input consumed by a graph algorithm node.
     GraphAlgorithmInput,
+    /// Input consumed by a limit node.
     LimitInput,
-    JoinBuildInput { side: JoinSide },
-    JoinProbeInput { side: JoinSide },
+    /// Build-side input consumed by a join node.
+    JoinBuildInput {
+        /// Join side consumed as build.
+        side: JoinSide,
+    },
+    /// Probe-side input consumed by a join node.
+    JoinProbeInput {
+        /// Join side consumed as probe.
+        side: JoinSide,
+    },
+    /// Final result sink input.
     SinkInput,
 }
 
 /// Property required from an edge producer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RequiredProperty {
+    /// Producer must yield a GPU-resident cudf frame.
     ResidentFrame,
 }
 
@@ -422,6 +580,7 @@ pub enum RequiredProperty {
 pub struct InvariantId(pub usize);
 
 impl InvariantId {
+    /// Returns the zero-based index within one capability analysis.
     pub const fn index(self) -> usize {
         self.0
     }
@@ -451,10 +610,16 @@ pub struct SubgraphInvariant {
 pub enum SubgraphInvariantKind {
     /// The join's build input can be made resident before the probe side needs
     /// it, without a graph cycle through the join itself.
-    BuildBeforeProbe { join_id: NodeId },
+    BuildBeforeProbe {
+        /// Join whose build side must be scheduled before its probe side.
+        join_id: NodeId,
+    },
     /// The reachable join region below the root is closed over supported join,
     /// projection, filter, and source nodes.
-    ClosedJoinSubtree { root_join_id: NodeId },
+    ClosedJoinSubtree {
+        /// Root join of the closed resident join region.
+        root_join_id: NodeId,
+    },
     /// The compiled graph can schedule all reachable joins in dependency order
     /// so build/probe residency requirements are not violated by join nesting.
     TopologicalBuildProbeSchedule,
@@ -470,7 +635,10 @@ pub enum SubgraphInvariantKind {
     FinalBarrierOrder,
     /// Post-root stages above a root join remain in the specific order required
     /// by the admitted envelope.
-    PostRootStageOrder { root_join_id: NodeId },
+    PostRootStageOrder {
+        /// Root join whose post-root stages are being ordered.
+        root_join_id: NodeId,
+    },
     /// A projection wrapper can be ignored for residency only when both the
     /// peeled producer and the projection output are resident frames.
     ProjectionTransparentResidency,
@@ -480,7 +648,10 @@ pub enum SubgraphInvariantKind {
     ResidentUnaryChainPreservesResidency,
     /// The residual predicate on the join references both join inputs, so the
     /// residual is a true join condition rather than a single-side filter.
-    ResidualUsesBothInputs { join_id: NodeId },
+    ResidualUsesBothInputs {
+        /// Join whose residual predicate is being checked.
+        join_id: NodeId,
+    },
     /// Every reachable resident producer remains valid for all of its admitted
     /// consumers, and no rejected producer-consumer edge is hidden by the
     /// broader compiled subgraph admission.
@@ -490,36 +661,67 @@ pub enum SubgraphInvariantKind {
 /// Scheduling proof required by an invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScheduleConstraint {
+    /// No non-local scheduling constraint is required.
     None,
+    /// Build-side work must complete before probe-side work.
     BuildBeforeProbe,
+    /// Nodes must be schedulable in topological dependency order.
     Topological,
+    /// A final barrier must wait for all upstream producers.
     Barrier,
 }
 
 /// Resident resources whose lifetime or ordering is governed by an invariant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResidentResource {
+    /// Resident output table produced by one node.
     NodeOutput(NodeId),
-    JoinBuildInput { join_id: NodeId, input: NodeId },
-    JoinProbeInput { join_id: NodeId, input: NodeId },
+    /// Resident join build input retained for a join.
+    JoinBuildInput {
+        /// Join that owns the resident build input.
+        join_id: NodeId,
+        /// Producer node supplying the build input.
+        input: NodeId,
+    },
+    /// Resident join probe input retained for a join.
+    JoinProbeInput {
+        /// Join that owns the resident probe input.
+        join_id: NodeId,
+        /// Producer node supplying the probe input.
+        input: NodeId,
+    },
 }
 
 /// Report-facing projection of the first capability rejection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilityRejectionProjection {
+    /// Local owner whose rejection is projected into diagnostics.
     pub owner: CapabilityRejectionOwner,
+    /// Contract scope used by strict bounded reports.
     pub contract_scope: ReservationRequirementScope,
+    /// Stable diagnostic boundary label.
     pub memory_boundary: &'static str,
+    /// Stable rejection code.
     pub reason: &'static str,
+    /// Stable fact-key map copied from the rejected capability decision.
     pub facts: BTreeMap<&'static str, String>,
 }
 
 /// Local capability owner projected into strict bounded contract diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityRejectionOwner {
+    /// Rejection owned by a node-local capability.
     Node(NodeId),
-    Edge { producer: NodeId, consumer: EdgeConsumer },
+    /// Rejection owned by a producer-consumer edge.
+    Edge {
+        /// Producer node for the rejected edge.
+        producer: NodeId,
+        /// Consumer endpoint for the rejected edge.
+        consumer: EdgeConsumer,
+    },
+    /// Rejection owned by a subgraph invariant.
     Invariant(InvariantId),
+    /// Rejection owned by a compiled-envelope admission gate.
     Admission(&'static str),
 }
 
@@ -563,53 +765,65 @@ pub struct CapabilityAnalysis {
 }
 
 impl CapabilityAnalysis {
+    /// Returns true when any node, edge, or invariant has a local rejection.
     pub fn has_rejections(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.executable, CapabilityDecision::Rejected { .. }))
             || self.edges.iter().any(|edge| matches!(edge.decision, CapabilityDecision::Rejected { .. }))
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
 
+    /// Returns whether the strict closed multi-join envelope is admitted.
     pub fn admits_closed_multi_join_subgraph(&self) -> bool {
         self.closed_multi_join_subgraph_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict root-join envelope is admitted.
     pub fn admits_root_join(&self) -> bool {
         self.root_join_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict single-join post-root envelope is admitted.
     pub fn admits_single_join_post_root_pipeline(&self) -> bool {
         self.single_join_post_root_pipeline_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict multi-join aggregate/top-k envelope is admitted.
     pub fn admits_multi_join_aggregate_over_join_subplan_topk_pipeline(&self) -> bool {
         self.multi_join_aggregate_over_join_subplan_topk_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict mixed keyed/residual aggregate-input envelope is admitted.
     pub fn admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(&self) -> bool {
         self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict hash-join aggregate post-join/top-k envelope is admitted.
     pub fn admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(&self) -> bool {
         self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission
             == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict shared resident-subplan envelope is admitted.
     pub fn admits_keyed_hash_join_resident_subplan_pipeline(&self) -> bool {
         self.keyed_hash_join_resident_subplan_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict keyless conditional input-subplan envelope is admitted.
     pub fn admits_keyless_conditional_join_input_subplan_pipeline(&self) -> bool {
         self.keyless_conditional_join_input_subplan_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict keyless aggregate-over-inputs envelope is admitted.
     pub fn admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(&self) -> bool {
         self.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns whether the strict resident aggregate subquery-filter envelope is admitted.
     pub fn admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(&self) -> bool {
         self.multi_join_resident_grouped_aggregate_subquery_filter_admission == CapabilityDecision::Satisfied
     }
 
+    /// Returns true when any strict bounded join compiled envelope is admitted.
     pub fn admits_strict_bounded_join(&self) -> bool {
         self.admits_root_join()
             || self.admits_single_join_post_root_pipeline()
@@ -624,6 +838,7 @@ impl CapabilityAnalysis {
             || self.union_pipeline_admission == CapabilityDecision::Satisfied
     }
 
+    /// Projects the first local rejection or lower-level block into report diagnostics.
     pub fn first_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
         self.nodes
             .iter()
@@ -730,6 +945,7 @@ fn capability_rejection_projection(
 }
 
 impl ContractStatus {
+    /// Stable snake-case label emitted in contract diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Modeled => "modeled",

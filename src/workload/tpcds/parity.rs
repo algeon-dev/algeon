@@ -19,17 +19,25 @@ use crate::{
     NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityWorkloadItem,
 };
 
+/// External oracle configuration for TPC-DS parity runs.
 #[derive(Debug, Clone)]
 pub struct TpcdsExternalOracleConfig {
+    /// Directory used for generated SQL and Parquet oracle outputs.
     pub scratch_dir: PathBuf,
+    /// Optional DuckDB-compatible oracle process.
     pub duckdb: Option<TpcdsExternalEngineConfig>,
+    /// Optional external-engine oracle process.
     pub external-engine: Option<TpcdsExternalEngineConfig>,
 }
 
+/// One external engine process used by the TPC-DS parity oracle surface.
 #[derive(Debug, Clone)]
 pub struct TpcdsExternalEngineConfig {
+    /// Executable invoked with SQL on stdin and an in-memory database argument.
     pub binary: PathBuf,
+    /// Optional external-engine config path passed through `external-engine_CONFIG_FILE`.
     pub external-engine_config_file: Option<PathBuf>,
+    /// Sets `external-engine_DISABLE=1` for DuckDB-without-external-engine comparisons.
     pub disable_external-engine: bool,
 }
 
@@ -45,6 +53,12 @@ pub async fn tpcds_parity_workload_items(
     tpcds_parity_workload_items_with_external_oracles(root, session_config, optimizer_config, query_filter, None).await
 }
 
+/// Build TPC-DS parity items and optionally run external oracles.
+///
+/// `query_filter` matches exact query ids and silently skips unknown ids.
+/// External engines write one SQL file and one Parquet result per selected
+/// query under `scratch_dir`; failures are captured in the workload item rather
+/// than aborting the whole run.
 pub async fn tpcds_parity_workload_items_with_external_oracles(
     root: &Path,
     session_config: SessionConfig,

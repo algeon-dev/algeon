@@ -1,3 +1,10 @@
+//! Native query result sink boundary.
+//!
+//! Sinks define the final residency contract for a query plan: host Arrow or a
+//! GPU-resident handle. They do not imply intermediate host materialization.
+
+#![deny(missing_docs)]
+
 use super::*;
 
 /// Explicit result boundary for a native query plan.
@@ -8,9 +15,17 @@ use super::*;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ResultSink {
     /// Return a GPU-resident handle for the sink input.
-    GpuResident { input: NodeId },
+    GpuResident {
+        /// Node whose output remains GPU-resident.
+        input: NodeId,
+    },
     /// Materialize the sink input to host Arrow batches with the given schema.
-    HostArrow { input: NodeId, schema: SchemaRef },
+    HostArrow {
+        /// Node whose output crosses the device-to-host boundary.
+        input: NodeId,
+        /// Host Arrow schema expected after materialization.
+        schema: SchemaRef,
+    },
 }
 
 impl ResultSink {

@@ -14,9 +14,16 @@ use super::{TpchWorkloadError, TpchWorkloadResult, tiny::write_tiny_tpch_parquet
 
 pub const TPCH_TABLES: &[&str] =
     &["customer", "lineitem", "nation", "orders", "part", "partsupp", "region", "supplier"];
+/// Explicit Parquet fixture root. When unset, report helpers use the default
+/// NVMe/local fallback chain before generating tiny data where allowed.
 pub const CUDF_TPCH_PARQUET_DIR_ENV: &str = "CUDF_TPCH_PARQUET_DIR";
+/// Reported scale-factor label; it does not change fixture discovery by itself.
 pub const CUDF_TPCH_SCALE_FACTOR_ENV: &str = "CUDF_TPCH_SCALE_FACTOR";
+/// Free-form provenance command recorded in dataset metadata.
 pub const CUDF_TPCH_GENERATION_COMMAND_ENV: &str = "CUDF_TPCH_GENERATION_COMMAND";
+/// Optional caller-supplied content fingerprint. When unset, only the cheaper
+/// metadata fingerprint is recorded unless the caller explicitly requests a
+/// content-fingerprint pass.
 pub const CUDF_TPCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCH_CONTENT_FINGERPRINT";
 
 /// Root of the on-host NVMe mount where `rsync-tpch.service` /
@@ -94,44 +101,75 @@ impl TpchDefaultScale {
     }
 }
 
+/// TPC-H fixture metadata recorded in report headers.
+///
+/// `metadata_fingerprint` is derived from paths, schema, row counts, row-group
+/// metadata, and byte sizes. `content_fingerprint`, when present, requires
+/// reading Parquet contents and is intentionally opt-in for large fixtures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpchDatasetMetadata {
+    /// Fixture root used for table discovery.
     pub root: PathBuf,
+    /// Report label such as `sf1`, `sf10`, `sf100`, `tiny`, or `unknown`.
     pub scale_factor: String,
+    /// Stable provenance label written to report headers.
     pub provenance: String,
+    /// Free-form generation command or fixture description.
     pub generation_command: String,
+    /// Number of discovered TPC-H tables.
     pub table_count: usize,
+    /// Total Parquet file count across all tables.
     pub file_count: usize,
+    /// Total row count from Parquet metadata.
     pub total_rows: u64,
+    /// Total compressed file bytes from filesystem metadata.
     pub total_bytes: u64,
+    /// Stable metadata hash; changes with paths, schema, row counts, row groups, or sizes.
     pub metadata_fingerprint: String,
+    /// Optional content hash; computing it reads Parquet contents.
     pub content_fingerprint: Option<String>,
+    /// Per-table metadata in canonical TPC-H table order.
     pub tables: Vec<TpchTableMetadata>,
 }
 
+/// Per-table TPC-H fixture metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpchTableMetadata {
+    /// Logical TPC-H table name.
     pub table: String,
+    /// Registration anchor: a single file, a table directory, or first sibling shard.
     pub path: PathBuf,
+    /// Canonical Arrow schema string used by metadata fingerprints.
     pub schema: String,
+    /// File metadata in deterministic path order.
     pub files: Vec<TpchTableFileMetadata>,
     pub file_count: usize,
     pub row_count: u64,
     pub byte_size: u64,
     pub row_group_count: usize,
+    /// Row counts per row group, flattened in file order.
     pub row_group_rows: Vec<u64>,
+    /// Compressed bytes per row group, flattened in file order.
     pub row_group_bytes: Vec<u64>,
 }
 
+/// Per-file TPC-H Parquet metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpchTableFileMetadata {
+    /// Absolute or caller-relative Parquet path as discovered.
     pub path: PathBuf,
+    /// Path relative to the dataset root, used in fingerprints.
     pub relative_path: String,
+    /// Canonical Arrow schema string.
     pub schema: String,
+    /// File byte size from filesystem metadata.
     pub byte_size: u64,
+    /// Row count from Parquet row-group metadata.
     pub row_count: u64,
     pub row_group_count: usize,
+    /// Row counts per row group in file order.
     pub row_group_rows: Vec<u64>,
+    /// Compressed bytes per row group in file order.
     pub row_group_bytes: Vec<u64>,
 }
 
@@ -185,6 +223,12 @@ pub fn external_tpch_dataset_metadata(
     describe_tpch_dataset(root, scale_factor, "external_parquet_root", generation_command)
 }
 
+/// Selects the TPC-H fixture for report helpers.
+///
+/// `CUDF_TPCH_PARQUET_DIR` is strict: if set, that fixture must be complete.
+/// When unset, the helper tries the implicit SF1 default and falls back to
+/// generating tiny data under `tiny_root`. A truthy
+/// `CUDF_TPCH_CONTENT_FINGERPRINT` requests the expensive content hash.
 pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(PathBuf, TpchDatasetMetadata)> {
     if let Ok(root) = std::env::var(CUDF_TPCH_PARQUET_DIR_ENV) {
         let root = PathBuf::from(root);
@@ -268,6 +312,7 @@ pub fn default_nvme_tpch_dataset_with_fingerprint(
     Some((root_path, metadata))
 }
 
+/// Describes a complete TPC-H fixture without reading Parquet contents.
 pub fn describe_tpch_dataset(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -277,6 +322,11 @@ pub fn describe_tpch_dataset(
     describe_tpch_dataset_with_content_fingerprint(root, scale_factor, provenance, generation_command, false)
 }
 
+/// Describes a complete TPC-H fixture and optionally hashes file contents.
+///
+/// Metadata fingerprints are cheap and derived from Parquet metadata. Content
+/// fingerprints scan table bytes and use a stable `tpch-content-fnv1a64-v1`
+/// report vocabulary.
 pub fn describe_tpch_dataset_with_content_fingerprint(
     root: &Path,
     scale_factor: impl Into<String>,
@@ -316,7 +366,9 @@ pub fn describe_tpch_dataset_with_content_fingerprint(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TpchTableLayout {
+    /// Registration anchor: single file, table directory, or first sibling shard.
     pub anchor: PathBuf,
+    /// Concrete Parquet files in deterministic order.
     pub files: Vec<PathBuf>,
 }
 
@@ -326,6 +378,10 @@ impl TpchTableLayout {
     }
 }
 
+/// Discovers one TPC-H table layout under a fixture root.
+///
+/// Accepted layouts are `<table>.parquet`, `<table>/` containing Parquet
+/// files recursively, or sibling shards named `<table>_NNNN.parquet`.
 pub fn discover_tpch_table_layout(root: &Path, table: &str) -> TpchWorkloadResult<TpchTableLayout> {
     let file_path = root.join(format!("{table}.parquet"));
     if file_path.is_file() {

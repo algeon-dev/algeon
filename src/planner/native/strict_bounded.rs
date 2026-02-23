@@ -7,6 +7,7 @@ use datafusion::common::{DataFusionError, Result as DataFusionResult};
 
 use crate::{error::Error, native_exec::NativeCudfExecutionConfig, report::GpuCandidate};
 
+/// Stable reason used when strict report rows intentionally omit bounded non-join plans.
 pub const STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
     "strict_bounded_contract_report_scope_is_compiled_join_pipeline";
 
@@ -27,6 +28,7 @@ pub struct NativeStrictBoundedContractDiagnostics {
 }
 
 impl NativeStrictBoundedContractDiagnostics {
+    /// Appends accepted/rejected candidate evidence from another optimizer phase.
     pub fn merge(&mut self, other: Self) {
         self.accepted_candidates.extend(other.accepted_candidates);
         self.rejected_candidates.extend(other.rejected_candidates);
@@ -36,6 +38,7 @@ impl NativeStrictBoundedContractDiagnostics {
         }
     }
 
+    /// Returns true when no strict bounded report evidence was captured.
     pub fn is_empty(&self) -> bool {
         self.accepted_candidates.is_empty()
             && self.rejected_candidates.is_empty()

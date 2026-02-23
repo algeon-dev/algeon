@@ -1,3 +1,11 @@
+//! Native query plan node payloads.
+//!
+//! Node structs carry operator-local contracts. Graph connectivity and id
+//! validity are owned by [`QueryPlan`](super::QueryPlan) and validated by
+//! execution/planning entrypoints.
+
+#![deny(missing_docs)]
+
 use super::*;
 
 /// Boolean filtering operation over one input.
@@ -20,19 +28,23 @@ pub struct ProjectionNode {
 }
 
 impl ProjectionNode {
+    /// Create a projection and derive its output schema from `outputs`.
     pub fn new(input: NodeId, outputs: Vec<ProjectionOutput>) -> Self {
         let output_schema = projection_output_schema(&outputs);
         Self { input, outputs, output_schema }
     }
 
+    /// Projection output schema in output expression order.
     pub fn output_schema(&self) -> &SchemaRef {
         &self.output_schema
     }
 
+    /// Projection expressions in output order.
     pub fn expressions(&self) -> impl Iterator<Item = &Expr> {
         self.outputs.iter().map(|output| &output.expr)
     }
 
+    /// Projection fields in output order.
     pub fn output_fields(&self) -> impl Iterator<Item = &Field> {
         self.outputs.iter().map(|output| &output.field)
     }
@@ -48,6 +60,7 @@ pub struct ProjectionOutput {
 }
 
 impl ProjectionOutput {
+    /// Create one typed projection output.
     pub fn new(expr: Expr, field: Field) -> Self {
         Self { expr, field }
     }
@@ -89,6 +102,7 @@ pub struct WindowSpec {
 }
 
 impl WindowSpec {
+    /// Create a native window specification.
     pub fn new(partition_by: Vec<Expr>, order_by: Vec<SortExpr>, functions: Vec<WindowFunction>) -> Self {
         Self { partition_by, order_by, functions }
     }
@@ -99,9 +113,21 @@ impl WindowSpec {
 pub enum WindowFunction {
     /// Full-partition aggregate window. The frame must be constant for every
     /// row in the partition.
-    Aggregate { function: AggregateFunction, expr: Expr, alias: String, frame: WindowFrame },
+    Aggregate {
+        /// Aggregate function evaluated over the frame.
+        function: AggregateFunction,
+        /// Input expression to aggregate.
+        expr: Expr,
+        /// Output column name.
+        alias: String,
+        /// Native frame contract.
+        frame: WindowFrame,
+    },
     /// SQL `rank()` over the window peer groups.
-    Rank { alias: String },
+    Rank {
+        /// Output column name.
+        alias: String,
+    },
 }
 
 /// Supported native aggregate window frames.
@@ -114,18 +140,22 @@ pub enum WindowFrame {
 }
 
 impl WindowFunction {
+    /// Create a full-partition aggregate window function.
     pub fn aggregate(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
         Self::Aggregate { function, expr, alias: alias.into(), frame: WindowFrame::WholePartition }
     }
 
+    /// Create a cumulative aggregate window function from partition start to current row.
     pub fn cumulative_aggregate(function: AggregateFunction, expr: Expr, alias: impl Into<String>) -> Self {
         Self::Aggregate { function, expr, alias: alias.into(), frame: WindowFrame::RowsUnboundedPrecedingToCurrent }
     }
 
+    /// Create a `rank()` window function.
     pub fn rank(alias: impl Into<String>) -> Self {
         Self::Rank { alias: alias.into() }
     }
 
+    /// Output column name for this window function.
     pub fn alias(&self) -> &str {
         match self {
             Self::Aggregate { alias, .. } | Self::Rank { alias } => alias,

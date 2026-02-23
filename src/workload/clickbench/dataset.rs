@@ -23,8 +23,15 @@ pub const CLICKBENCH_TABLE: &str = "hits";
 /// the canonical `EventDate` cast. Mirrors `ClickBench/datafusion/create.sql`.
 pub const CLICKBENCH_RAW_TABLE: &str = "hits_raw";
 
+/// Explicit ClickBench Parquet fixture. Accepts a single `hits.parquet` file
+/// or an unambiguous partitioned directory.
 pub const CUDF_CLICKBENCH_PARQUET_DIR_ENV: &str = "CUDF_CLICKBENCH_PARQUET_DIR";
+/// Free-form provenance command recorded in dataset metadata.
 pub const CUDF_CLICKBENCH_GENERATION_COMMAND_ENV: &str = "CUDF_CLICKBENCH_GENERATION_COMMAND";
+/// Truthy flag requesting a content-fingerprint pass.
+///
+/// Accepted truthy values are `1`, `true`, `yes`, and `on`. The env value is
+/// not used as the fingerprint; it only decides whether to scan file bytes.
 pub const CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_CLICKBENCH_CONTENT_FINGERPRINT";
 
 /// In-repo default for the single-file ClickBench fixture. Used when no env
@@ -39,10 +46,27 @@ pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./tests/data/clickbe
 /// preparation walks the local fallback chain instead.
 pub const DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR: &str = "/opt/dlami/nvme/clickbench/partitioned";
 
+/// Discovered ClickBench fixture layout.
+///
+/// Mixed single-file and shard layouts are rejected so reports cannot silently
+/// benchmark a different fixture than the caller intended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClickbenchLayout {
-    Single { file: PathBuf },
-    Partitioned { dir: PathBuf, files: Vec<PathBuf> },
+    /// One canonical Parquet file, usually `hits.parquet`.
+    Single {
+        /// Path to the canonical ClickBench Parquet file.
+        file: PathBuf,
+    },
+    /// Canonical `hits_<N>.parquet` shards under one directory.
+    ///
+    /// Discovery admits only numeric-suffix shards, sorts them by suffix, and
+    /// ignores unrelated Parquet files in the same directory.
+    Partitioned {
+        /// Directory containing the shard files.
+        dir: PathBuf,
+        /// Sorted shard paths included in the fixture.
+        files: Vec<PathBuf>,
+    },
 }
 
 impl ClickbenchLayout {
@@ -57,6 +81,7 @@ impl ClickbenchLayout {
         }
     }
 
+    /// Concrete Parquet files in deterministic order.
     pub fn files(&self) -> Vec<&Path> {
         match self {
             Self::Single { file } => vec![file.as_path()],
@@ -64,6 +89,7 @@ impl ClickbenchLayout {
         }
     }
 
+    /// Number of concrete Parquet files in the layout.
     pub fn file_count(&self) -> usize {
         match self {
             Self::Single { .. } => 1,
@@ -71,6 +97,7 @@ impl ClickbenchLayout {
         }
     }
 
+    /// Stable report label: `single` or `partitioned`.
     pub fn label(&self) -> &'static str {
         match self {
             Self::Single { .. } => "single",
@@ -79,28 +106,49 @@ impl ClickbenchLayout {
     }
 }
 
+/// ClickBench fixture metadata recorded in report headers.
+///
+/// `metadata_fingerprint` is derived from schema, row counts, row-group
+/// metadata, and byte sizes. `content_fingerprint`, when present, requires
+/// reading Parquet contents and is intentionally opt-in for the 100M-row
+/// fixture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClickbenchDatasetMetadata {
+    /// Fixture root passed by the caller or selected by fallback discovery.
     pub root: PathBuf,
+    /// Discovered single-file or partitioned layout.
     pub layout: ClickbenchLayout,
+    /// Stable provenance label written to report headers.
     pub provenance: String,
+    /// Free-form generation command or fixture description.
     pub generation_command: String,
+    /// Total Parquet file count.
     pub file_count: usize,
+    /// Total row count from Parquet metadata.
     pub total_rows: u64,
+    /// Total file bytes from filesystem metadata.
     pub total_bytes: u64,
+    /// Canonical Arrow debug schema string used by metadata fingerprints.
     pub schema: String,
+    /// Total row-group count across files.
     pub row_group_count: usize,
+    /// Row counts per row group, flattened in file order.
     pub row_group_rows: Vec<u64>,
+    /// Parquet compressed bytes per row group, flattened in file order.
     pub row_group_bytes: Vec<u64>,
+    /// Stable `metadata-fnv1a64:*` hash over layout, schema, row groups, sizes, and provenance.
     pub metadata_fingerprint: String,
+    /// Optional `content-fnv1a64:*` hash; computing it reads Parquet contents.
     pub content_fingerprint: Option<String>,
 }
 
 impl ClickbenchDatasetMetadata {
+    /// Stable layout label projected as the shared `dataset_scale_factor`.
     pub fn layout_label(&self) -> &'static str {
         self.layout.label()
     }
 
+    /// Converts ClickBench metadata into shared report-header metadata.
     pub fn to_workload_dataset_metadata(&self) -> crate::native_report::WorkloadDatasetMetadata {
         crate::native_report::WorkloadDatasetMetadata {
             workload: "clickbench",
@@ -226,6 +274,11 @@ pub fn describe_clickbench_dataset(
     describe_clickbench_dataset_with_content_fingerprint(root, provenance, generation_command, false)
 }
 
+/// Describes a ClickBench fixture and optionally hashes file contents.
+///
+/// Metadata fingerprints are cheap and derived from Parquet metadata. All file
+/// schemas must match. Content fingerprints scan the full fixture, using paths
+/// relative to the caller-supplied `root`.
 pub fn describe_clickbench_dataset_with_content_fingerprint(
     root: &Path,
     provenance: impl Into<String>,
@@ -279,6 +332,7 @@ pub fn describe_clickbench_dataset_with_content_fingerprint(
     })
 }
 
+/// Describes an explicitly supplied external ClickBench fixture.
 pub fn external_clickbench_dataset_metadata(
     root: &Path,
     generation_command: impl Into<String>,
@@ -294,9 +348,11 @@ pub fn external_clickbench_dataset_metadata(
 /// 3. Local partitioned default (`./tests/data/clickbench/partitioned`).
 /// 4. Local single-file default (`./tests/data/clickbench/hits.parquet`).
 ///
-/// Returns `Ok(None)` when no fixture is available — callers may either error
-/// or fall back to a synthetic dataset. ClickBench has no canonical tiny
-/// dataset in this crate yet, so MVP reports should treat `None` as "skip".
+/// The env-var fixture is strict: if set, it must describe a valid complete
+/// ClickBench layout, and its generation command defaults to
+/// `unknown_external`. Invalid implicit NVMe/local candidates are skipped
+/// during fallback. A truthy `CUDF_CLICKBENCH_CONTENT_FINGERPRINT` requests the
+/// expensive content hash. Returns `Ok(None)` when no implicit fixture exists.
 pub fn prepare_clickbench_report_dataset() -> ClickbenchWorkloadResult<Option<(PathBuf, ClickbenchDatasetMetadata)>> {
     if let Ok(root) = std::env::var(CUDF_CLICKBENCH_PARQUET_DIR_ENV) {
         let root_path = PathBuf::from(&root);

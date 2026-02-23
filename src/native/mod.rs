@@ -1,3 +1,8 @@
+//! DataFusion physical-plan lowering into native query-engine IR.
+//!
+//! Lowering is planning-only: it returns native query plans plus structured
+//! planning/source diagnostics, but does not execute or allocate GPU memory.
+
 mod literal;
 mod lowering;
 mod normalize;
@@ -19,27 +24,35 @@ use validate::native_zero_column_count_source_is_safe;
 
 use crate::report::PlanningReport;
 
+/// Result of attempting to lower one DataFusion physical plan.
 #[derive(Debug, Clone)]
 pub struct NativeLoweringResult {
+    /// Native query plans produced for rewritten candidates.
     pub plans: Vec<NativeQueryPlan>,
+    /// Structured candidate outcomes used by planning/report surfaces.
     pub report: PlanningReport,
+    /// Source diagnostics gathered from normalized or lowered source nodes.
     pub source_diagnostics: Vec<NativeSourceDiagnostics>,
 }
 
 impl NativeLoweringResult {
+    /// Returns the number of candidates recorded in the planning report.
     pub fn candidate_count(&self) -> usize {
         self.report.outcomes().len()
     }
 
+    /// Returns the number of candidates successfully lowered.
     pub fn rewritten_count(&self) -> usize {
         self.report.rewritten_count()
     }
 
+    /// Returns the number of rejected candidates.
     pub fn rejected_count(&self) -> usize {
         self.report.rejected_count()
     }
 }
 
+/// Lowers a physical plan using the final native rewrite rules.
 pub fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
     lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final)
 }

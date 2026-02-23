@@ -1,3 +1,5 @@
+#![deny(missing_docs)]
+
 use super::*;
 
 /// Boundary contract for how native execution crosses source, build, probe, and

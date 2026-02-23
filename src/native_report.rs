@@ -1,3 +1,12 @@
+//! Public report and TSV contracts for native planning/execution diagnostics.
+//!
+//! The constants and row structs re-exported from this module are consumed by
+//! benchmark binaries and external comparison scripts. TSV header order is
+//! stable within a schema version; adding, removing, renaming, or reordering a
+//! column requires bumping the corresponding `*_TSV_SCHEMA_VERSION`.
+//! Sentinel strings such as `none`, `unknown`, `not_run`, and `not_computed`
+//! are part of the report contract when emitted by the TSV helpers.
+
 use std::{fmt::Write, sync::Arc};
 
 use cudf_query_engine::{

@@ -1,3 +1,11 @@
+//! Public GPU-resident execution handles, outputs, and caches.
+//!
+//! Handles in this module are runtime/device-affine. Cloning shares the
+//! underlying cuDF resources; host materialization is explicit. Cache byte
+//! counters are observed retained device bytes, not reservation totals.
+
+#![deny(missing_docs)]
+
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write,
@@ -20,15 +28,23 @@ use crate::{
     source::{LocalParquetSource, SourceColumnRef},
 };
 
+/// Local lookup table for GPU-resident inputs consumed by a query.
+///
+/// Keys are plan-local input names, not global handles. All handles must be
+/// reusable by the same [`ExecutionContext`] that executes the consuming plan.
 pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
 
+/// Output residency requested by a query sink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryOutputMode {
+    /// Keep the query output as a runtime/device-affine GPU handle.
     GpuResident,
+    /// Materialize the query output to a host Arrow record batch.
     MaterializeToHost,
 }
 
 impl QueryOutputMode {
+    /// Derive the output mode requested by a query plan sink.
     pub fn for_sink(sink: &ResultSink) -> Self {
         match sink {
             ResultSink::GpuResident { .. } => Self::GpuResident,
@@ -36,6 +52,7 @@ impl QueryOutputMode {
         }
     }
 
+    /// Stable lowercase label used in metrics and diagnostics.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::GpuResident => "gpu_resident",
@@ -44,6 +61,11 @@ impl QueryOutputMode {
     }
 }
 
+/// Owned cuDF DataFrame plus the placement observed when it entered the engine.
+///
+/// The wrapper preserves the device placement contract while allowing callers
+/// to move the underlying frame between native operators. Clone semantics are
+/// those of `cudf::DataFrame`.
 #[derive(Clone)]
 pub struct GpuDataFrame {
     frame: DataFrame,
@@ -51,32 +73,39 @@ pub struct GpuDataFrame {
 }
 
 impl GpuDataFrame {
+    /// Wrap a cuDF frame and record its current execution placement.
     pub fn new(frame: DataFrame) -> Self {
         let placement = frame.placement();
         Self { frame, placement }
     }
 
+    /// Borrow the underlying cuDF frame.
     pub fn frame(&self) -> &DataFrame {
         &self.frame
     }
 
+    /// Consume the wrapper and return the underlying cuDF frame.
     pub fn into_frame(self) -> DataFrame {
         debug_assert_eq!(self.placement, self.frame.placement());
         self.frame
     }
 
+    /// Execution placement observed when the frame entered the engine.
     pub fn placement(&self) -> ExecutionPlacement {
         self.placement
     }
 
+    /// Current row count reported by the cuDF frame.
     pub fn num_rows(&self) -> usize {
         self.frame.num_rows()
     }
 
+    /// Current column count reported by the cuDF frame.
     pub fn num_columns(&self) -> usize {
         self.frame.num_columns()
     }
 
+    /// Observed device allocation for the frame in bytes.
     pub fn device_allocated_size_bytes(&self) -> Result<u64> {
         let info = self.frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
             QueryError::from_cudf(
@@ -99,6 +128,11 @@ impl GpuDataFrame {
     }
 }
 
+/// GPU-resident query result bound to an Arrow schema and runtime.
+///
+/// Cloning shares the underlying cuDF batch/runtime handle. A handle is only
+/// reusable with the same runtime and device placement that created it; host
+/// materialization is explicit through [`to_host_record_batch`](Self::to_host_record_batch).
 #[derive(Clone)]
 pub struct GpuResultHandle {
     batch: GpuRecordBatch,
@@ -107,6 +141,10 @@ pub struct GpuResultHandle {
 }
 
 impl GpuResultHandle {
+    /// Bind a GPU frame to a schema and the runtime from `context`.
+    ///
+    /// The frame must already reside on the context's device. Hidden
+    /// DataFusion order columns may be stripped before schema binding.
     pub fn new(context: &ExecutionContext, frame: GpuDataFrame, schema: SchemaRef) -> Result<Self> {
         if frame.placement().device != context.runtime().device() {
             return Err(QueryError::new(
@@ -128,38 +166,47 @@ impl GpuResultHandle {
         Ok(Self { batch, runtime: context.shared_runtime(), device_placement: context.device_placement() })
     }
 
+    /// Borrow the underlying GPU cuDF frame.
     pub fn frame(&self) -> &DataFrame {
         self.batch.frame()
     }
 
+    /// Consume the handle and return its GPU frame wrapper.
     pub fn into_gpu_frame(self) -> GpuDataFrame {
         GpuDataFrame::new(self.batch.into_frame())
     }
 
+    /// Arrow schema bound to this result.
     pub fn schema(&self) -> &SchemaRef {
         self.batch.schema()
     }
 
+    /// Shared cuDF runtime that created the handle.
     pub fn runtime(&self) -> &Arc<cudf::Runtime> {
         &self.runtime
     }
 
+    /// Native-engine device placement recorded at handle creation.
     pub fn device_placement(&self) -> DevicePlacement {
         self.device_placement
     }
 
+    /// Current cuDF execution placement for the underlying batch.
     pub fn placement(&self) -> ExecutionPlacement {
         self.batch.placement()
     }
 
+    /// Row count in the GPU result.
     pub fn num_rows(&self) -> usize {
         self.batch.num_rows()
     }
 
+    /// Column count in the GPU result.
     pub fn num_columns(&self) -> usize {
         self.batch.num_columns()
     }
 
+    /// Materialize this GPU result to host Arrow.
     pub fn to_host_record_batch(&self) -> Result<RecordBatch> {
         self.batch.to_host_record_batch().map_err(|error| {
             QueryError::from_cudf(
@@ -197,6 +244,11 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
     Ok(GpuDataFrame::new(raw))
 }
 
+/// Reusable cuDF hash-join build artifact.
+///
+/// The handle is runtime/device-affine and carries the build key, build schema,
+/// null-equality, and retained hash-table byte contract needed to reject unsafe
+/// reuse. Cloning shares the underlying cuDF artifact.
 #[derive(Clone)]
 pub struct GpuHashJoinBuildHandle {
     hash_join: DataFrameHashJoin,
@@ -208,6 +260,10 @@ pub struct GpuHashJoinBuildHandle {
     device_allocated_size_bytes: u64,
 }
 
+/// Reusable cuDF filtered-join build artifact.
+///
+/// Like [`GpuHashJoinBuildHandle`], this is runtime/device-affine and reports
+/// observed retained device bytes for reservation/cache accounting.
 #[derive(Clone)]
 pub struct GpuFilteredJoinBuildHandle {
     filtered_join: DataFrameFilteredJoin,
@@ -257,26 +313,32 @@ impl GpuFilteredJoinBuildHandle {
         &self.filtered_join
     }
 
+    /// Shared cuDF runtime that created this reusable build artifact.
     pub fn runtime(&self) -> &Arc<cudf::Runtime> {
         &self.runtime
     }
 
+    /// Native-engine device placement recorded at artifact creation.
     pub fn device_placement(&self) -> DevicePlacement {
         self.device_placement
     }
 
+    /// Current cuDF execution placement for the retained build side.
     pub fn placement(&self) -> ExecutionPlacement {
         self.filtered_join.build().placement()
     }
 
+    /// Build-key column names used to construct the artifact.
     pub fn build_keys(&self) -> &[String] {
         &self.build_keys
     }
 
+    /// Null-equality policy required for safe reuse.
     pub fn null_equality(&self) -> JoinNullEquality {
         self.null_equality
     }
 
+    /// Observed retained device bytes for this artifact.
     pub fn device_allocated_size_bytes(&self) -> u64 {
         self.device_allocated_size_bytes
     }
@@ -323,26 +385,32 @@ impl GpuHashJoinBuildHandle {
         &self.hash_join
     }
 
+    /// Shared cuDF runtime that created this reusable build artifact.
     pub fn runtime(&self) -> &Arc<cudf::Runtime> {
         &self.runtime
     }
 
+    /// Native-engine device placement recorded at artifact creation.
     pub fn device_placement(&self) -> DevicePlacement {
         self.device_placement
     }
 
+    /// Current cuDF execution placement for the retained build side.
     pub fn placement(&self) -> ExecutionPlacement {
         self.hash_join.build().placement()
     }
 
+    /// Build-key column names used to construct the artifact.
     pub fn build_keys(&self) -> &[String] {
         &self.build_keys
     }
 
+    /// Null-equality policy required for safe reuse.
     pub fn null_equality(&self) -> JoinNullEquality {
         self.null_equality
     }
 
+    /// Observed retained device bytes for this artifact.
     pub fn device_allocated_size_bytes(&self) -> u64 {
         self.device_allocated_size_bytes
     }
@@ -449,6 +517,11 @@ fn format_gpu_hash_join_build_columns(columns: &[GpuHashJoinBuildColumn]) -> Str
         .join(",")
 }
 
+/// Durable cache for reusable GPU hash-join build artifacts.
+///
+/// Entries are keyed by plan-local [`HashJoinBuildArtifactId`] values. Reuse is
+/// still validated against runtime, device placement, build keys, build schema,
+/// and null-equality before an artifact is consumed.
 #[derive(Default)]
 pub struct GpuHashJoinBuildCache {
     cache: Mutex<HashMap<HashJoinBuildArtifactId, GpuHashJoinBuildHandle>>,
@@ -462,18 +535,22 @@ impl std::fmt::Debug for GpuHashJoinBuildCache {
 }
 
 impl GpuHashJoinBuildCache {
+    /// Create an empty durable hash-join build cache.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Number of retained build artifacts.
     pub fn len(&self) -> Result<usize> {
         Ok(self.lock()?.len())
     }
 
+    /// Whether the cache currently holds no build artifacts.
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
 
+    /// Sum of observed retained hash-table device bytes.
     pub fn retained_hash_table_bytes(&self) -> Result<u64> {
         Ok(self.lock()?.values().map(GpuHashJoinBuildHandle::device_allocated_size_bytes).sum())
     }
@@ -502,12 +579,19 @@ impl GpuHashJoinBuildCache {
     }
 }
 
+/// Stable key for a GPU-local Parquet source cache entry.
+///
+/// The key fingerprints the source scan contract: schema, projected/read
+/// columns, predicates, file identities, row groups, scan limit, and chunk
+/// boundaries. It is stable for equivalent local source scans, but is not a
+/// cross-version or cross-process persistence format.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GpuLocalParquetSourceCacheKey {
     fingerprint: String,
 }
 
 impl GpuLocalParquetSourceCacheKey {
+    /// Build a key for an unbounded local Parquet source scan.
     pub fn from_source(source: &LocalParquetSource) -> Self {
         let mut fingerprint = String::new();
         push_token(&mut fingerprint, "mode", "unbounded_local_parquet_source");
@@ -563,6 +647,7 @@ impl GpuLocalParquetSourceCacheKey {
         Self { fingerprint }
     }
 
+    /// Build a key for one bounded local Parquet source chunk.
     pub fn from_source_chunk(source: &LocalParquetSource, chunk: &SourceChunk) -> Self {
         let mut fingerprint = String::new();
         push_token(&mut fingerprint, "mode", "bounded_local_parquet_source_chunk");
@@ -645,15 +730,20 @@ impl GpuLocalParquetSourceCacheKey {
         Self { fingerprint }
     }
 
+    /// Escaped textual fingerprint for diagnostics and tests.
     pub fn as_str(&self) -> &str {
         &self.fingerprint
     }
 }
 
+/// Result of attempting to retain a GPU source chunk in the cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuLocalParquetSourceCacheInsert {
+    /// Entry was inserted and may have evicted older entries.
     Inserted,
+    /// Equivalent entry was already present; the existing handle is retained.
     AlreadyPresent,
+    /// Entry was too large or protected entries prevented enough eviction.
     CapacitySkipped,
 }
 
@@ -687,6 +777,11 @@ struct GpuLocalParquetSourceCacheState {
     next_access_epoch: u64,
 }
 
+/// LRU cache for GPU-resident local Parquet source results.
+///
+/// Capacity and retained sizes are device bytes. Cached handles remain
+/// runtime/device-affine; a lookup with a different runtime or device silently
+/// misses, while a schema mismatch is treated as an invalid plan.
 pub struct GpuLocalParquetSourceCache {
     max_retained_device_bytes: u64,
     state: Mutex<GpuLocalParquetSourceCacheState>,
@@ -704,22 +799,27 @@ impl std::fmt::Debug for GpuLocalParquetSourceCache {
 }
 
 impl GpuLocalParquetSourceCache {
+    /// Create an empty source cache with a retained-device-byte capacity.
     pub fn new(max_retained_device_bytes: u64) -> Self {
         Self { max_retained_device_bytes, state: Mutex::new(GpuLocalParquetSourceCacheState::default()) }
     }
 
+    /// Maximum retained device bytes allowed by this cache.
     pub fn max_retained_device_bytes(&self) -> u64 {
         self.max_retained_device_bytes
     }
 
+    /// Number of retained source-result entries.
     pub fn len(&self) -> Result<usize> {
         Ok(self.lock()?.cache.len())
     }
 
+    /// Whether the cache currently holds no source-result entries.
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
 
+    /// Observed retained device bytes across all cache entries.
     pub fn retained_device_bytes(&self) -> Result<u64> {
         Ok(self.lock()?.retained_device_bytes)
     }
@@ -998,12 +1098,21 @@ fn escape_token(value: &str) -> String {
     escaped
 }
 
+/// Output produced by native query execution.
+///
+/// The variant is driven by the query plan's sink. Host Arrow output has
+/// crossed the device-to-host boundary; GPU-resident output remains bound to
+/// its originating runtime and must be materialized explicitly if a caller
+/// needs Arrow.
 pub enum QueryOutput {
+    /// GPU-resident result bound to its originating runtime/device.
     GpuResident(GpuResultHandle),
+    /// Host Arrow result after explicit device-to-host materialization.
     HostArrow(RecordBatch),
 }
 
 impl QueryOutput {
+    /// Output residency mode represented by this value.
     pub fn mode(&self) -> QueryOutputMode {
         match self {
             Self::GpuResident(_) => QueryOutputMode::GpuResident,
@@ -1011,6 +1120,7 @@ impl QueryOutput {
         }
     }
 
+    /// Borrow the host Arrow batch when the result was materialized to host.
     pub fn as_host_arrow(&self) -> Option<&RecordBatch> {
         match self {
             Self::HostArrow(batch) => Some(batch),
@@ -1018,6 +1128,7 @@ impl QueryOutput {
         }
     }
 
+    /// Borrow the GPU handle when the result stayed device-resident.
     pub fn as_gpu_resident(&self) -> Option<&GpuResultHandle> {
         match self {
             Self::GpuResident(frame) => Some(frame),
@@ -1026,24 +1137,32 @@ impl QueryOutput {
     }
 }
 
+/// Native query output plus metrics collected during that execution.
+///
+/// Metrics ownership stays with the result so adapters can record them after
+/// deciding whether to pass through a GPU handle or materialize host output.
 pub struct QueryExecutionResult {
     output: QueryOutput,
     metrics: QueryMetrics,
 }
 
 impl QueryExecutionResult {
+    /// Create an execution result with its collected metrics.
     pub fn new(output: QueryOutput, metrics: QueryMetrics) -> Self {
         Self { output, metrics }
     }
 
+    /// Borrow the query output without consuming metrics.
     pub fn output(&self) -> &QueryOutput {
         &self.output
     }
 
+    /// Borrow metrics collected during query execution.
     pub fn metrics(&self) -> &QueryMetrics {
         &self.metrics
     }
 
+    /// Consume the result into output and metrics.
     pub fn into_parts(self) -> (QueryOutput, QueryMetrics) {
         (self.output, self.metrics)
     }

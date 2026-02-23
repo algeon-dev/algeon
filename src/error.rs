@@ -16,6 +16,7 @@ pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
+/// Adapter result type used before conversion to `DataFusionError`.
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Machine-readable facts attached to an [`Error`].
@@ -58,6 +59,7 @@ impl Facts {
     }
 }
 
+/// Structured adapter error with stable classification and facts.
 pub struct Error {
     code: ErrorCode,
     operation: &'static str,
@@ -143,34 +145,42 @@ impl Error {
         error.with_source(source)
     }
 
+    /// Returns the stable machine-readable adapter error code.
     pub fn code(&self) -> ErrorCode {
         self.code
     }
 
+    /// Returns the coarse category derived from [`Self::code`].
     pub fn kind(&self) -> ErrorKind {
         self.code.kind()
     }
 
+    /// Returns the retry/remediation status derived from [`Self::code`].
     pub fn status(&self) -> ErrorStatus {
         self.code.status()
     }
 
+    /// Returns the stable dotted operation id that produced the error.
     pub fn operation(&self) -> &'static str {
         self.operation
     }
 
+    /// Returns the human-facing diagnostic message.
     pub fn message(&self) -> &str {
         &self.message
     }
 
+    /// Returns the sorted machine-readable fact set.
     pub fn facts(&self) -> &Facts {
         &self.facts
     }
 
+    /// Returns one fact value by key.
     pub fn fact_value(&self, key: &str) -> Option<&str> {
         self.facts.get(key)
     }
 
+    /// Returns the underlying source error when one was attached.
     pub fn source_error(&self) -> Option<&(dyn StdError + 'static)> {
         self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
     }

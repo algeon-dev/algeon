@@ -1,3 +1,10 @@
+//! Stable DataFusion metric names populated by native execution wrappers.
+//!
+//! The public name list is the contract consumed by tests, reports, and users
+//! who inspect DataFusion metrics after native execution.
+
+#![deny(missing_docs)]
+
 use std::collections::BTreeMap;
 
 use cudf_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, QueryMetrics};

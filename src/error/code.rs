@@ -55,6 +55,7 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NativeCandidateRejected => "native_candidate_rejected",
@@ -75,10 +76,12 @@ impl ErrorCode {
         }
     }
 
+    /// Returns the stable coarse error category for this code.
     pub const fn kind(self) -> ErrorKind {
         kind_for_code(self)
     }
 
+    /// Returns the retry/remediation status for this code.
     pub const fn status(self) -> ErrorStatus {
         status_for_code(self)
     }
@@ -90,6 +93,7 @@ impl fmt::Display for ErrorCode {
     }
 }
 
+/// Coarse adapter error category.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorKind {
@@ -112,6 +116,7 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
+    /// Stable snake-case category label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Planning => "planning",
@@ -132,6 +137,7 @@ impl fmt::Display for ErrorKind {
     }
 }
 
+/// Retry and remediation status for adapter errors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorStatus {
     /// Non-retryable without changing the query, input, configuration, or code.
@@ -147,6 +153,7 @@ pub enum ErrorStatus {
 }
 
 impl ErrorStatus {
+    /// Stable snake-case status label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Permanent => "permanent",

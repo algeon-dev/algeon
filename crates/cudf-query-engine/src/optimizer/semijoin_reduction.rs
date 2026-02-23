@@ -14,18 +14,24 @@ use crate::{
     },
 };
 
+/// Stable rule name used in optimizer diagnostics.
 pub const SEMIJOIN_REDUCTION_RULE_NAME: &str = "semijoin_reduction";
+/// Default cost gate multiplier for comparing semijoin-side cost to target cost.
 pub const DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER: u64 = 8;
 
 /// Configuration for the semijoin-reduction optimizer pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemijoinReductionOptions {
+    /// Whether the pass is allowed to rewrite eligible left-semi joins.
     pub enabled: bool,
+    /// Maximum accepted `semi_side / target_side` cost multiplier.
     pub cost_threshold_multiplier: u64,
+    /// Optional post-rewrite admission gate used to protect execution modes.
     pub admission_mode: SemijoinReductionAdmissionMode,
 }
 
 impl SemijoinReductionOptions {
+    /// Returns options with the pass disabled and default thresholds preserved.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
@@ -34,6 +40,7 @@ impl SemijoinReductionOptions {
         }
     }
 
+    /// Sets the mode-specific admission gate used after tentative rewrites.
     pub fn with_admission_mode(mut self, admission_mode: SemijoinReductionAdmissionMode) -> Self {
         self.admission_mode = admission_mode;
         self
@@ -53,32 +60,43 @@ impl Default for SemijoinReductionOptions {
 /// Mode-specific admission gate to use after a tentative semijoin rewrite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemijoinReductionAdmissionMode {
+    /// Do not run a post-rewrite admission gate.
     NotEvaluated,
+    /// Keep the rewrite only if strict bounded admission still succeeds.
     StrictBounded,
+    /// Keep the rewrite only if adaptive admission still succeeds.
     Adaptive,
 }
 
 /// Result for one semijoin-reduction optimizer pass invocation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemijoinReductionResult {
+    /// Plan returned after the pass, rewritten only when the pass was kept.
     pub plan: QueryPlan,
+    /// Whether this pass changed the plan.
     pub change: super::NativeOptimizerChange,
+    /// Candidate diagnostics collected by the pass.
     pub diagnostics: SemijoinReductionDiagnostics,
 }
 
 /// Diagnostics for semijoin-reduction candidates considered by the optimizer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SemijoinReductionDiagnostics {
+    /// Number of left-semi candidates considered.
     pub considered_count: usize,
+    /// Number of candidates applied and kept.
     pub applied_count: usize,
+    /// Per-candidate evidence in discovery order.
     pub candidates: Vec<SemijoinReductionCandidateDiagnostics>,
 }
 
 impl SemijoinReductionDiagnostics {
+    /// Returns true when the pass produced no candidate evidence.
     pub fn is_empty(&self) -> bool {
         self.considered_count == 0 && self.applied_count == 0 && self.candidates.is_empty()
     }
 
+    /// Merges another semijoin diagnostics value into this one.
     pub fn merge(&mut self, other: Self) {
         self.considered_count += other.considered_count;
         self.applied_count += other.applied_count;
@@ -89,72 +107,124 @@ impl SemijoinReductionDiagnostics {
 /// Per-candidate semijoin-reduction evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemijoinReductionCandidateDiagnostics {
+    /// Stable rule name for this diagnostic row.
     pub rule_name: &'static str,
+    /// Left-semi join candidate node id before rewrite.
     pub candidate_node_id: NodeId,
+    /// Root node id before the tentative rewrite.
     pub before_root_node_id: NodeId,
+    /// Root node id after rewrite when a tentative rewrite was built.
     pub after_root_node_id: Option<NodeId>,
+    /// Join node ids crossed while pushing the semijoin reduction.
     pub crossed_join_node_ids: Vec<NodeId>,
+    /// Target subtree that would receive the pushed semijoin filter.
     pub target_subtree_id: Option<NodeId>,
+    /// Key lineage mappings from the original semijoin to the target subtree.
     pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
+    /// Cost-gate evidence when lineage reached a target subtree.
     pub cost_gate: Option<SemijoinReductionCostGateDiagnostics>,
+    /// Admission decision used after tentative rewrite, if evaluated.
     pub admission_decision: Option<SemijoinReductionAdmissionDecision>,
+    /// Whether the original plan was admitted by the selected admission mode.
     pub original_admitted: Option<bool>,
+    /// Whether the rewritten plan was admitted by the selected admission mode.
     pub rewritten_admitted: Option<bool>,
+    /// True when this candidate's rewrite was applied to the returned plan.
     pub applied: bool,
+    /// Rejection reason when the candidate was not applied.
     pub rejected_reason: Option<SemijoinReductionRejectedReason>,
 }
 
 /// One left-semi key mapping before and after a pushdown step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemijoinReductionKeyMappingDiagnostics {
+    /// Column name referenced by the original semijoin key.
     pub before_column: String,
+    /// Column name after crossing projections/joins, if lineage survived.
     pub after_column: Option<String>,
+    /// Target subtree reached by this mapping.
     pub target_subtree_id: Option<NodeId>,
 }
 
 /// Cost-gate evidence used to decide whether a semijoin pushdown is worth keeping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemijoinReductionCostGateDiagnostics {
+    /// Cost signal used for the keep/reject decision.
     pub signal: SemijoinReductionCostSignal,
+    /// Threshold multiplier configured for this pass.
     pub threshold_multiplier: u64,
+    /// Whether the cost gate accepted the candidate.
     pub accepted: bool,
 }
 
 /// Cost signal used by semijoin reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemijoinReductionCostSignal {
-    RowEstimate { semi_right_rows: u64, target_rows: u64 },
-    ByteEstimate { semi_right_bytes: u64, target_bytes: u64 },
+    /// Row-count estimates were available for both compared sides.
+    RowEstimate {
+        /// Estimated rows on the semijoin right side.
+        semi_right_rows: u64,
+        /// Estimated rows for the target subtree.
+        target_rows: u64,
+    },
+    /// Byte estimates were available for both compared sides.
+    ByteEstimate {
+        /// Estimated bytes on the semijoin right side.
+        semi_right_bytes: u64,
+        /// Estimated bytes for the target subtree.
+        target_bytes: u64,
+    },
+    /// Aggregate keyset shape was considered small enough without estimates.
     AggregateKeysetShape,
+    /// No usable cost signal was available.
     Unavailable,
 }
 
 /// Mode-specific admission decision that caused a rewrite to be kept or rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SemijoinReductionAdmissionDecision {
+    /// No admission gate was evaluated.
     NotEvaluated,
+    /// Strict bounded admission accepted the rewritten plan.
     StrictBoundedKept,
+    /// Strict bounded admission rejected the rewritten plan.
     StrictBoundedRejectedRewrite,
+    /// Adaptive admission accepted the rewritten plan.
     AdaptiveKept,
+    /// Adaptive admission rejected the rewritten plan.
     AdaptiveRejectedRewrite,
 }
 
 /// Generic semijoin-reduction rejection reasons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SemijoinReductionRejectedReason {
+    /// Pass was disabled.
     PassDisabled,
+    /// Candidate node was not a left-semi join.
     NotLeftSemiJoin,
+    /// Left-semi shape was not supported by this pass.
     UnsupportedLeftShape,
+    /// A crossed join type was not safe for semijoin pushdown.
     UnsupportedCrossedJoinType,
+    /// Join null-equality semantics were unsupported.
     UnsupportedNullEquality,
+    /// Required key lineage could not be found.
     MissingKeyLineage,
+    /// Key lineage matched more than one possible target.
     AmbiguousKeyLineage,
+    /// Key lineage passed through a derived expression.
     ExpressionDerivedKey,
+    /// Key lineage was dropped before reaching the target.
     DroppedKeyLineage,
+    /// Semijoin projection referenced non-left-side output.
     NonLeftOnlySemiProjection,
+    /// Cost gate rejected the candidate.
     CostGateRejected,
+    /// Rewritten root schema did not match the original root schema.
     RootSchemaMismatch,
+    /// Rewritten root output projection did not match the original.
     RootOutputProjectionMismatch,
+    /// Mode-specific admission rejected the rewritten plan.
     AdmissionRejectedRewrite,
 }
 

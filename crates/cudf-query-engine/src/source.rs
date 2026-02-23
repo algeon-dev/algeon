@@ -1,3 +1,12 @@
+//! Native query source contracts and source diagnostics.
+//!
+//! This module contains frontend-neutral source metadata. File locations,
+//! schema mapping, partition values, missing columns, row-group metadata, and
+//! reader predicate support are represented explicitly so native execution does
+//! not depend on DataFusion scan internals.
+
+#![deny(missing_docs)]
+
 use std::{
     fmt,
     path::{Path, PathBuf},
@@ -28,15 +37,27 @@ pub const ZERO_COLUMN_COUNT_COLUMN: &str = "__cudf_zero_column_row_count";
 /// Explicit location/read-capability model for native Parquet sources.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParquetSourceLocation {
+    /// Local filesystem path readable by cuDF local Parquet readers.
     LocalPath(PathBuf),
-    ObjectStoreUri { scheme: String, uri: String },
+    /// Object-store URI plus parsed scheme.
+    ObjectStoreUri {
+        /// Lowercase object-store scheme such as `s3`.
+        scheme: String,
+        /// Original object-store URI.
+        uri: String,
+    },
 }
 
 impl ParquetSourceLocation {
+    /// Build a local filesystem source location.
     pub fn local_path(path: impl Into<PathBuf>) -> Self {
         Self::LocalPath(path.into())
     }
 
+    /// Build a supported object-store URI location.
+    ///
+    /// Currently only `s3://...` is accepted. Errors are stable reason strings
+    /// such as `missing_uri_scheme` or `unsupported_uri_scheme:<scheme>`.
     pub fn object_store_uri(uri: impl Into<String>) -> Result<Self, String> {
         let uri = uri.into();
         let Some((scheme, _)) = uri.split_once("://") else {
@@ -52,6 +73,7 @@ impl ParquetSourceLocation {
         Ok(Self::ObjectStoreUri { scheme, uri })
     }
 
+    /// Path or URI string passed to lower-level readers.
     pub fn reader_path(&self) -> String {
         match self {
             Self::LocalPath(path) => path.display().to_string(),
@@ -59,6 +81,7 @@ impl ParquetSourceLocation {
         }
     }
 
+    /// Stable read-capability diagnostic string.
     pub fn read_capability(&self) -> String {
         match self {
             Self::LocalPath(_) => "local_file_system".to_string(),
@@ -66,10 +89,12 @@ impl ParquetSourceLocation {
         }
     }
 
+    /// Whether this location is a local filesystem path.
     pub fn is_local_path(&self) -> bool {
         matches!(self, Self::LocalPath(_))
     }
 
+    /// Borrow the local path when this location is local.
     pub fn as_local_path(&self) -> Option<&Path> {
         match self {
             Self::LocalPath(path) => Some(path.as_path()),
@@ -77,6 +102,7 @@ impl ParquetSourceLocation {
         }
     }
 
+    /// Display wrapper for path/URI diagnostics.
     pub fn display(&self) -> impl fmt::Display + '_ {
         self
     }
@@ -454,6 +480,7 @@ impl LocalParquetSource {
         self.diagnostics.direct_device_read = self.diagnostics.rejected_features.is_empty();
     }
 
+    /// Number of represented file entries.
     pub fn file_count(&self) -> usize {
         self.files.len()
     }
@@ -474,10 +501,12 @@ impl LocalParquetSource {
         self.pure_filter_columns.len()
     }
 
+    /// Total selected row groups across files, or zero when unknown.
     pub fn selected_row_group_count(&self) -> usize {
         self.files.iter().map(LocalParquetFile::selected_row_group_count).sum()
     }
 
+    /// Number of file entries represented as byte-ranged in diagnostics.
     pub fn ranged_file_count(&self) -> usize {
         self.diagnostics.ranged_file_count
     }
@@ -985,6 +1014,11 @@ fn invert_reader_op(op: crate::expr::BinaryOp) -> crate::expr::BinaryOp {
     }
 }
 
+/// One local or object-store Parquet file plus optional row-group metadata.
+///
+/// Byte vectors are aligned with the selected row groups when `row_groups` is
+/// present, otherwise with the frontend's represented row-group order. `None`
+/// means the metadata is unavailable, not zero.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetFile {
     /// Explicit source location for the Parquet file.

@@ -126,6 +126,11 @@ impl From<DataFusionError> for TpchWorkloadError {
     }
 }
 
+/// Session config used by TPC-H native report surfaces.
+///
+/// Uses one target partition and disables DataFusion repartitioning and
+/// dynamic filter pushdown so planning/execution reports are stable and easy
+/// to compare across native lowering changes.
 pub fn tpch_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -139,6 +144,11 @@ pub fn tpch_report_session_config() -> SessionConfig {
     config
 }
 
+/// Tuned CPU DataFusion baseline for TPC-H benchmark comparisons.
+///
+/// Uses available CPU parallelism, batch size 8192, repartitioning for scans,
+/// joins, aggregates, and sorts, dynamic filter pushdown enabled, and Parquet
+/// pushdown filters disabled to match the current decision-grade CPU profile.
 pub fn tpch_tuned_cpu_session_config() -> SessionConfig {
     let target_partitions = std::thread::available_parallelism().map(usize::from).unwrap_or(1);
     let mut config = SessionConfig::new()
@@ -156,11 +166,21 @@ pub fn tpch_tuned_cpu_session_config() -> SessionConfig {
     config
 }
 
+/// Conservative native optimizer config used by default TPC-H report surfaces.
+///
+/// The bounded profile uses a 256 MiB device budget, 64 MiB source chunk
+/// target, one row group per chunk, three retry attempts, and one row group as
+/// the retry floor. Decision-grade benchmark binaries override this through
+/// their own TPC-H env-var surface.
 pub fn tpch_native_optimizer_config() -> CudfOptimizerConfig {
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
 }
 
+/// Builds fallback-pressure planning items for all TPC-H queries.
+///
+/// SQL and physical-planning failures are encoded as per-query rows so report
+/// consumers can distinguish planning failures from native shape rejection.
 pub async fn tpch_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,

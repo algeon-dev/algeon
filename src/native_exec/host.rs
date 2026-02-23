@@ -1,3 +1,11 @@
+//! Host-materializing native DataFusion execution node.
+//!
+//! This wrapper is the normal native execution boundary for DataFusion: it
+//! executes a DataFusion-free native plan and streams the final result as host
+//! Arrow batches.
+
+#![deny(missing_docs)]
+
 use std::{any::Any, sync::Arc};
 
 use arrow::record_batch::RecordBatch;

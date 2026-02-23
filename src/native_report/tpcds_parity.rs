@@ -1,3 +1,16 @@
+//! TPC-DS parity report contracts.
+//!
+//! This module compares CPU DataFusion output, native GPU output, and optional
+//! external-oracle output for the same TPC-DS query. The TSV surface is stable
+//! within [`NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION`]: column order comes from
+//! [`NATIVE_TPCDS_PARITY_TSV_HEADER`], missing optional values serialize as
+//! `none`, and status enums serialize through their `as_str` methods.
+//!
+//! Output fingerprints use a stable FNV-1a hash over schema metadata and
+//! canonicalized row values. They are diagnostic identifiers, not
+//! cryptographic hashes. Unordered comparisons sort canonical rows before
+//! comparing values; ordered comparisons preserve batch row order.
+
 use std::{collections::HashMap, fmt::Write, sync::Arc};
 
 use arrow::{
@@ -20,20 +33,33 @@ use super::{
 };
 use crate::planner::NativePlanningDiagnostics;
 
+/// TPC-DS parity TSV schema version.
+///
+/// Bump this when a column is added, removed, renamed, reordered, or given a
+/// new meaning that would change downstream parsing.
 pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 3;
+/// TPC-DS parity TSV header. Column order is stable for schema version 3.
 pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\texternal-engine_output_status\texternal-engine_cpu_parity_status\texternal-engine_cpu_parity_detail\texternal-engine_output_rows\texternal-engine_output_batches\texternal-engine_output_fingerprint\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
 
+/// Stable top-level parity outcome for one query row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityStatus {
+    /// CPU and native or oracle outputs matched under the selected comparison mode.
     Matched,
+    /// Both sides ran, but schema, row count, or row values differed.
     Mismatched,
+    /// The CPU DataFusion baseline did not produce comparable output.
     CpuFailed,
+    /// Native planning rejected the query before native runtime started.
     NativeRejected,
+    /// Native runtime started but failed before producing comparable output.
     NativeFailed,
+    /// Comparison was intentionally skipped because required inputs were missing.
     NotCompared,
 }
 
 impl ParityStatus {
+    /// Stable TSV value for this status.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Matched => "matched",
@@ -46,16 +72,23 @@ impl ParityStatus {
     }
 }
 
+/// Row-order and float-tolerance mode used for output comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityComparisonMode {
+    /// Compare canonical rows in emitted order with exact value equality.
     OrderedExact,
+    /// Sort canonical rows before exact value comparison.
     UnorderedExact,
+    /// Compare emitted rows in order, allowing configured float tolerance.
     OrderedFloatTolerant,
+    /// Sort canonical rows, then allow configured float tolerance.
     UnorderedFloatTolerant,
+    /// No record-batch comparison was attempted for this row.
     NotApplicable,
 }
 
 impl ParityComparisonMode {
+    /// Stable TSV value for this comparison mode.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::OrderedExact => "ordered_exact",
@@ -66,6 +99,7 @@ impl ParityComparisonMode {
         }
     }
 
+    /// Selects the report mode from SQL ordering and float-tolerance evidence.
     pub const fn select(ordered: bool, float_tolerant: bool) -> Self {
         match (ordered, float_tolerant) {
             (true, false) => Self::OrderedExact,
@@ -76,21 +110,30 @@ impl ParityComparisonMode {
     }
 }
 
+/// Absolute and relative tolerance for floating-point parity checks.
+///
+/// A zero/zero tolerance keeps comparisons exact. Non-zero tolerances apply
+/// only when the compared schema contains `Float32` or `Float64` columns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ParityFloatTolerance {
+    /// Absolute error bound accepted before relative tolerance is considered.
     pub absolute: f64,
+    /// Relative error bound multiplied by the larger absolute input value.
     pub relative: f64,
 }
 
 impl ParityFloatTolerance {
+    /// Exact comparison with no float tolerance.
     pub const fn exact() -> Self {
         Self { absolute: 0.0, relative: 0.0 }
     }
 
+    /// Builds a tolerance from absolute and relative error bounds.
     pub const fn new(absolute: f64, relative: f64) -> Self {
         Self { absolute, relative }
     }
 
+    /// Returns true when either tolerance component is non-zero.
     pub fn is_enabled(self) -> bool {
         self.absolute > 0.0 || self.relative > 0.0
     }
@@ -102,44 +145,80 @@ impl Default for ParityFloatTolerance {
     }
 }
 
+/// One row in the TPC-DS parity TSV.
+///
+/// Optional string and count fields serialize as `none`. Count fields are rows
+/// or batches unless the field name says `bytes`; native reservation fields
+/// are device-byte runtime metrics projected from the native execution plan.
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityRow {
+    /// Stable TPC-DS query id such as `q01`.
     pub query_id: String,
+    /// CPU DataFusion SQL/physical planning status.
     pub cpu_planning_status: ParityStageStatus,
+    /// CPU DataFusion runtime status after physical planning succeeds.
     pub cpu_runtime_status: ParityStageStatus,
+    /// Native planning outcome, including explicit planning failures.
     pub native_planning_outcome: NativeTpcdsParityPlanningOutcome,
+    /// Native fallback or planning reason code; `None` serializes as `none`.
     pub native_reason_code: Option<String>,
+    /// Coarse unsupported category for native rejection; `None` serializes as `none`.
     pub native_unsupported_category: Option<String>,
+    /// Native coverage of the post-optimizer DataFusion plan.
     pub post_native_execution_path: NativeDataFusionPostNativeExecutionPath,
+    /// Number of native plan fragments visible after native planning.
     pub native_plan_fragment_count: usize,
+    /// Number of host DataFusion boundaries around native fragments.
     pub host_datafusion_boundary_count: usize,
+    /// Whether native runtime was invoked for this query.
     pub native_runtime_started: bool,
+    /// Native runtime status after planning.
     pub native_runtime_outcome: NativeDataFusionRuntimeOutcome,
+    /// CPU-vs-native parity result.
     pub parity_status: ParityStatus,
+    /// Human-readable mismatch or skip detail; escaped for TSV output.
     pub parity_detail: Option<String>,
+    /// CPU output row count, or `none` when CPU output was unavailable.
     pub cpu_output_rows: Option<usize>,
+    /// Native output row count, or `none` when native output was unavailable.
     pub native_output_rows: Option<usize>,
+    /// CPU output batch count, or `none` when CPU output was unavailable.
     pub cpu_output_batches: Option<usize>,
+    /// Native output batch count, or `none` when native output was unavailable.
     pub native_output_batches: Option<usize>,
+    /// Stable diagnostic hash of canonical CPU output.
     pub cpu_output_fingerprint: Option<String>,
+    /// Stable diagnostic hash of canonical native output.
     pub native_output_fingerprint: Option<String>,
+    /// Comparison mode chosen from SQL ordering and float tolerance.
     pub comparison_mode: ParityComparisonMode,
+    /// DuckDB oracle output and CPU parity summary.
     pub duckdb_output: NativeTpcdsParityExternalOutputSummary,
+    /// external-engine oracle output and CPU parity summary.
     pub external-engine_output: NativeTpcdsParityExternalOutputSummary,
+    /// Native reservation live peak in device bytes.
     pub native_reservation_live_peak_bytes: Option<usize>,
+    /// Number of native reservation denials recorded during runtime.
     pub native_reservation_denied_count: Option<usize>,
+    /// Number of native retry attempts recorded during runtime.
     pub native_retry_count: Option<usize>,
+    /// CPU planning/runtime or native planning/runtime failure detail.
     pub native_runtime_failure: Option<String>,
 }
 
+/// Planning/runtime stage status used by the parity row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityStageStatus {
+    /// Stage completed successfully.
     Succeeded,
+    /// Stage failed.
     Failed,
+    /// Stage did not start.
     NotStarted,
 }
 
 impl ParityStageStatus {
+    /// Stable TSV value for this stage status.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
@@ -149,14 +228,19 @@ impl ParityStageStatus {
     }
 }
 
+/// Native planning outcome vocabulary for the TPC-DS parity report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeTpcdsParityPlanningOutcome {
+    /// Native planning accepted and replaced at least one candidate.
     AcceptedReplaced,
+    /// Native planning rejected the candidate before execution.
     RejectedBeforeExecution,
+    /// Native planning itself failed.
     PlanningFailed,
 }
 
 impl NativeTpcdsParityPlanningOutcome {
+    /// Stable TSV value for this planning outcome.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::AcceptedReplaced => "accepted_replaced",
@@ -166,14 +250,19 @@ impl NativeTpcdsParityPlanningOutcome {
     }
 }
 
+/// Execution status for an optional external TPC-DS oracle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeTpcdsParityExternalOutputStatus {
+    /// External oracle was not configured.
     NotConfigured,
+    /// External oracle completed successfully.
     Succeeded,
+    /// External oracle failed.
     Failed,
 }
 
 impl NativeTpcdsParityExternalOutputStatus {
+    /// Stable TSV value for this external-output status.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NotConfigured => "not_configured",
@@ -183,17 +272,29 @@ impl NativeTpcdsParityExternalOutputStatus {
     }
 }
 
+/// External oracle output summary projected into one parity TSV row.
+///
+/// `cpu_parity_*` fields compare the oracle output against CPU DataFusion, not
+/// against native GPU output. Optional counts and fingerprints serialize as
+/// `none` when the oracle is not configured or did not produce output.
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityExternalOutputSummary {
+    /// Whether the external oracle was configured and produced output.
     pub status: NativeTpcdsParityExternalOutputStatus,
+    /// Oracle-vs-CPU parity result.
     pub cpu_parity_status: ParityStatus,
+    /// Oracle-vs-CPU mismatch or execution detail.
     pub cpu_parity_detail: Option<String>,
+    /// Oracle output row count.
     pub output_rows: Option<usize>,
+    /// Oracle output batch count.
     pub output_batches: Option<usize>,
+    /// Stable diagnostic hash of canonical oracle output.
     pub output_fingerprint: Option<String>,
 }
 
 impl NativeTpcdsParityExternalOutputSummary {
+    /// Summary used when no external oracle is configured.
     pub fn not_configured() -> Self {
         Self {
             status: NativeTpcdsParityExternalOutputStatus::NotConfigured,
@@ -215,18 +316,27 @@ impl From<NativeDataFusionPlanningOutcome> for NativeTpcdsParityPlanningOutcome 
     }
 }
 
+/// In-memory TPC-DS parity report.
+///
+/// `to_tsv` writes schema version, float tolerance, optional dataset metadata,
+/// and then rows using [`NATIVE_TPCDS_PARITY_TSV_HEADER`].
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityReport {
+    /// Per-query rows in caller-provided workload order.
     pub rows: Vec<NativeTpcdsParityRow>,
+    /// Optional fixture metadata written as `# workload_*` TSV header lines.
     pub workload_dataset: Option<WorkloadDatasetMetadata>,
+    /// Float tolerance recorded in the TSV header and used for comparisons.
     pub float_tolerance: ParityFloatTolerance,
 }
 
 impl NativeTpcdsParityReport {
+    /// Builds a report from already-derived rows.
     pub fn from_rows(rows: Vec<NativeTpcdsParityRow>, float_tolerance: ParityFloatTolerance) -> Self {
         Self { rows, workload_dataset: None, float_tolerance }
     }
 
+    /// Builds report rows from captured CPU/native/oracle workload outcomes.
     pub fn collect(
         items: impl IntoIterator<Item = NativeTpcdsParityWorkloadItem>,
         float_tolerance: ParityFloatTolerance,
@@ -235,19 +345,23 @@ impl NativeTpcdsParityReport {
         Self { rows, workload_dataset: None, float_tolerance }
     }
 
+    /// Attaches fixture metadata to the TSV header.
     pub fn with_workload_dataset_metadata(mut self, metadata: WorkloadDatasetMetadata) -> Self {
         self.workload_dataset = Some(metadata);
         self
     }
 
+    /// Number of rows whose CPU and native outputs matched.
     pub fn matched_count(&self) -> usize {
         self.rows.iter().filter(|row| row.parity_status == ParityStatus::Matched).count()
     }
 
+    /// Number of rows whose CPU and native outputs were compared and differed.
     pub fn mismatched_count(&self) -> usize {
         self.rows.iter().filter(|row| row.parity_status == ParityStatus::Mismatched).count()
     }
 
+    /// Serializes the report as TSV with metadata comments followed by rows.
     pub fn to_tsv(&self) -> String {
         let mut output = String::new();
         let _ = writeln!(output, "# native_tpcds_parity_tsv_schema_version={NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION}");
@@ -318,40 +432,96 @@ fn format_optional_usize(value: Option<usize>) -> String {
 /// outcomes for one TPC-DS query.
 #[derive(Debug, Clone)]
 pub struct NativeTpcdsParityWorkloadItem {
+    /// Stable TPC-DS query id such as `q01`.
     pub query_id: String,
+    /// SQL text used to choose ordered versus unordered comparison.
     pub sql: String,
+    /// CPU DataFusion baseline outcome.
     pub cpu_outcome: NativeTpcdsParityCpuOutcome,
+    /// Native optimizer outcome and retained diagnostics.
     pub native_planning: NativeTpcdsParityNativePlanningOutcome,
+    /// Native runtime outcome when planning accepted a native fragment.
     pub native_runtime: NativeTpcdsParityNativeRuntimeOutcome,
+    /// Optional DuckDB oracle output.
     pub duckdb_output: NativeTpcdsParityExternalOutput,
+    /// Optional external-engine oracle output.
     pub external-engine_output: NativeTpcdsParityExternalOutput,
 }
 
+/// Captured CPU DataFusion baseline outcome for one parity query.
 #[derive(Debug, Clone)]
 pub enum NativeTpcdsParityCpuOutcome {
-    Succeeded { schema: SchemaRef, batches: Vec<RecordBatch> },
+    /// CPU baseline produced Arrow batches under the supplied schema.
+    Succeeded {
+        /// Output schema produced by CPU DataFusion.
+        schema: SchemaRef,
+        /// Output batches produced by CPU DataFusion.
+        batches: Vec<RecordBatch>,
+    },
+    /// CPU planning failed before execution started.
     PlanningFailed(NativePlanningFailure),
-    ExecutionFailed { message: String },
+    /// CPU execution failed after physical planning succeeded.
+    ExecutionFailed {
+        /// Human-facing execution failure message.
+        message: String,
+    },
 }
 
+/// Captured native planning outcome for one parity query.
 #[derive(Debug, Clone)]
 pub enum NativeTpcdsParityNativePlanningOutcome {
-    Planned { accepted: bool, planned_plan: Arc<dyn ExecutionPlan>, diagnostics: Box<NativePlanningDiagnostics> },
+    /// Native planning completed; `accepted` records whether a native fragment
+    /// was present in the optimized plan.
+    Planned {
+        /// Whether the optimized plan contains a native fragment.
+        accepted: bool,
+        /// DataFusion physical plan after native planning.
+        planned_plan: Arc<dyn ExecutionPlan>,
+        /// Native planning diagnostics retained for report rows.
+        diagnostics: Box<NativePlanningDiagnostics>,
+    },
+    /// Native SQL, physical, or diagnostic planning failed.
     PlanningFailed(NativePlanningFailure),
 }
 
+/// Captured native runtime outcome for one parity query.
 #[derive(Debug, Clone)]
 pub enum NativeTpcdsParityNativeRuntimeOutcome {
+    /// Runtime was not invoked, usually because native planning rejected the query.
     NotStarted,
-    Succeeded { schema: SchemaRef, batches: Vec<RecordBatch>, metrics: MetricsSet },
-    Failed { message: String },
+    /// Runtime produced Arrow batches and DataFusion metrics.
+    Succeeded {
+        /// Output schema produced by native execution.
+        schema: SchemaRef,
+        /// Output batches produced by native execution.
+        batches: Vec<RecordBatch>,
+        /// DataFusion metrics collected from the native execution plan.
+        metrics: MetricsSet,
+    },
+    /// Runtime started but failed before producing comparable output.
+    Failed {
+        /// Human-facing runtime failure message.
+        message: String,
+    },
 }
 
+/// Captured output from an optional external TPC-DS oracle.
 #[derive(Debug, Clone)]
 pub enum NativeTpcdsParityExternalOutput {
+    /// No binary/config was provided for this oracle.
     NotConfigured,
-    Succeeded { schema: SchemaRef, batches: Vec<RecordBatch> },
-    Failed { message: String },
+    /// Oracle produced Arrow batches after reading its Parquet result.
+    Succeeded {
+        /// Output schema produced by the external oracle.
+        schema: SchemaRef,
+        /// Output batches produced by the external oracle.
+        batches: Vec<RecordBatch>,
+    },
+    /// Oracle execution or output reading failed.
+    Failed {
+        /// Human-facing oracle failure message.
+        message: String,
+    },
 }
 
 fn parity_row_for_item(
@@ -626,15 +796,26 @@ fn derive_parity_outcome(
     (result.status, result.mode, result.detail, Some(result.cpu_fingerprint), Some(result.native_fingerprint))
 }
 
+/// Result of comparing CPU and native Arrow outputs.
 #[derive(Debug, Clone)]
 pub struct ParityComparisonResult {
+    /// Match, mismatch, or skip status.
     pub status: ParityStatus,
+    /// Row-order and float-tolerance mode used for comparison.
     pub mode: ParityComparisonMode,
+    /// Mismatch or skip detail when available.
     pub detail: Option<String>,
+    /// Stable diagnostic hash of canonical CPU output.
     pub cpu_fingerprint: String,
+    /// Stable diagnostic hash of canonical native output.
     pub native_fingerprint: String,
 }
 
+/// Compares CPU and native Arrow output using TPC-DS parity rules.
+///
+/// Schema differences are reported before row comparison. When `ordered` is
+/// false, canonical rows are sorted before comparison. Float tolerance applies
+/// only to float columns and is recorded in the returned comparison mode.
 pub fn compare_record_batches(
     cpu_schema: &Schema,
     cpu_batches: &[RecordBatch],

@@ -1,3 +1,11 @@
+//! Composed native execution node for GPU-resident native fragments.
+//!
+//! Producer children emit device-resident handles into a shared native context.
+//! The consumer plan then uses those handles as GPU inputs and materializes the
+//! final result back to host Arrow for DataFusion.
+
+#![deny(missing_docs)]
+
 use std::{any::Any, collections::BTreeSet, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
@@ -38,6 +46,11 @@ pub struct NativeCudfComposedExec {
 }
 
 impl NativeCudfComposedExec {
+    /// Create composed native execution from GPU-resident producer children.
+    ///
+    /// The final plan must use a host Arrow sink, every child must advertise a
+    /// unique GPU-resident input name, and the child names must match the
+    /// consumer plan's declared GPU sources exactly.
     pub fn try_new(
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
@@ -111,6 +124,7 @@ impl NativeCudfComposedExec {
         })
     }
 
+    /// Native consumer plan executed after all GPU-resident producers finish.
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }

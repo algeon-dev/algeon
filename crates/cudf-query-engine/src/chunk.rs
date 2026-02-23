@@ -1,3 +1,11 @@
+//! Source chunk planning for local Parquet scans.
+//!
+//! Chunk plans split one native source node into file or row-group ranges that
+//! can be scheduled under a bounded memory policy. Byte fields are device-side
+//! planning estimates unless explicitly named as compressed Parquet bytes or
+//! exact source-read preflight bytes.
+#![deny(missing_docs)]
+
 use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
@@ -18,12 +26,26 @@ use crate::{
     source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation},
 };
 
+/// Policy that controls how a local Parquet source is split into chunks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceChunkPlanningPolicy {
+    /// Target upper bound, in bytes, for source-read planning per chunk.
+    ///
+    /// `None` means row-group grouping is constrained only by
+    /// [`max_row_groups_per_chunk`](Self::max_row_groups_per_chunk).
     pub max_source_chunk_bytes: Option<u64>,
+    /// Maximum number of row groups assigned to one chunk.
+    ///
+    /// Callers must pass a value greater than zero; unbounded policies use
+    /// `usize::MAX`.
     pub max_row_groups_per_chunk: usize,
 }
 
+/// Slot model used to derive a per-source-task chunk target from a device budget.
+///
+/// Each slot represents one live chunk-sized region that may coexist during the
+/// source task. The model is a planning heuristic, not an executor allocation
+/// ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SourceTaskMemoryModel {
     source_read_slots: u64,
@@ -59,26 +81,32 @@ impl SourceTaskMemoryModel {
         }
     }
 
+    /// Returns live slots reserved for the source read itself.
     pub const fn source_read_slots(self) -> u64 {
         self.source_read_slots
     }
 
+    /// Returns live slots reserved for filters/projections adjacent to the source.
     pub const fn source_adjacent_operator_slots(self) -> u64 {
         self.source_adjacent_operator_slots
     }
 
+    /// Returns live slots reserved for the immediate downstream operator.
     pub const fn downstream_operator_slots(self) -> u64 {
         self.downstream_operator_slots
     }
 
+    /// Returns live slots reserved for output retained after the task completes.
     pub const fn retained_output_slots(self) -> u64 {
         self.retained_output_slots
     }
 
+    /// Returns slack slots for source-read preflight overhead.
     pub const fn source_read_preflight_slack_slots(self) -> u64 {
         self.source_read_preflight_slack_slots
     }
 
+    /// Returns the total number of live chunk-sized slots in this model.
     pub const fn live_slot_count(self) -> u64 {
         self.source_read_slots
             + self.source_adjacent_operator_slots
@@ -89,10 +117,16 @@ impl SourceTaskMemoryModel {
 }
 
 impl SourceChunkPlanningPolicy {
+    /// Creates a policy from an optional byte target and row-group limit.
     pub const fn new(max_source_chunk_bytes: Option<u64>, max_row_groups_per_chunk: usize) -> Self {
         Self { max_source_chunk_bytes, max_row_groups_per_chunk }
     }
 
+    /// Derives a source-task policy from the bounded memory policy and slot model.
+    ///
+    /// For unbounded execution this returns the default unbounded policy. For
+    /// bounded execution the target is the smaller of the configured source
+    /// chunk size and `device_budget_bytes / model.live_slot_count()`.
     pub fn for_source_task(memory_policy: MemoryControlPolicy, model: SourceTaskMemoryModel) -> Self {
         let base = Self::from(memory_policy);
         let MemoryControlPolicy::Bounded {
@@ -131,67 +165,112 @@ impl From<MemoryControlPolicy> for SourceChunkPlanningPolicy {
     }
 }
 
+/// Planned chunks and metadata diagnostics for one source node.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceChunkPlan {
+    /// Ordered chunks produced for one source node.
     pub chunks: Vec<SourceChunk>,
+    /// Native source node these chunks belong to.
     pub source_node_id: NodeId,
+    /// True when every planned file had row-group metadata available.
     pub row_group_metadata_available: bool,
+    /// True when at least one chunk used file-size proportional estimates.
     pub size_estimate_based: bool,
+    /// Number of files whose row-group metadata could not be loaded or supplied.
     pub metadata_unavailable_files: usize,
+    /// Wall-clock time spent loading Parquet footer metadata.
     pub metadata_load_time: Duration,
+    /// Number of footer metadata reads performed after cache misses.
     pub metadata_load_count: u64,
 }
 
 impl SourceChunkPlan {
+    /// Returns the number of chunks in this plan.
     pub fn chunk_count(&self) -> usize {
         self.chunks.len()
     }
 
+    /// Returns the total number of explicitly planned row groups.
+    ///
+    /// File-level chunks whose row groups are unknown contribute zero here.
     pub fn row_group_count(&self) -> usize {
         self.chunks.iter().map(SourceChunk::row_group_count).sum()
     }
 }
 
+/// One executable read range for a local Parquet source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceChunk {
+    /// Native source node this chunk belongs to.
     pub source_node_id: NodeId,
+    /// Zero-based index within the containing [`SourceChunkPlan`].
     pub chunk_index: usize,
+    /// Zero-based index into [`LocalParquetSource::files`](crate::source::LocalParquetSource::files).
     pub file_index: usize,
+    /// Source location for the Parquet file.
     pub location: ParquetSourceLocation,
+    /// Local path used for diagnostics and footer reads.
     pub path: PathBuf,
+    /// Stable file identifier copied from the source definition.
     pub stable_id: String,
+    /// Row groups selected for this chunk when row-group metadata is known.
     pub row_group_indexes: Vec<usize>,
+    /// True when the chunk must read the whole file because row groups are unknown.
     pub reads_all_row_groups: bool,
+    /// Known file size in bytes, if supplied by the source.
     pub known_file_bytes: Option<u64>,
+    /// Sum of selected row-group bytes across all read columns, if known.
     pub known_row_group_bytes: Option<u64>,
+    /// Sum of selected projected-output column compressed bytes, if known.
     pub known_projected_compressed_bytes: Option<u64>,
+    /// Sum of selected projected-output column uncompressed bytes, if known.
     pub known_projected_uncompressed_bytes: Option<u64>,
+    /// Sum of pure-filter column compressed bytes not emitted downstream, if known.
     pub known_pure_filter_compressed_bytes: Option<u64>,
+    /// Sum of pure-filter column uncompressed bytes not emitted downstream, if known.
     pub known_pure_filter_uncompressed_bytes: Option<u64>,
+    /// Best available retained-output size estimate in bytes.
     pub estimated_chunk_bytes: Option<u64>,
+    /// Best available source-read budget estimate in bytes.
     pub estimated_source_read_bytes: Option<u64>,
+    /// Exact cudf source-read budget in bytes for fixed-width projected columns.
     pub exact_source_read_preflight_bytes: Option<u64>,
+    /// Source-level selected row groups, before chunking.
     pub source_file_row_groups: Option<Vec<usize>>,
+    /// Per-row-group read-column bytes for the full file, if available.
     pub source_file_row_group_bytes: Option<Vec<u64>>,
+    /// Per-row-group projected-output compressed bytes for the full file, if available.
     pub source_file_projected_compressed_bytes: Option<Vec<u64>>,
+    /// Per-row-group projected-output uncompressed bytes for the full file, if available.
     pub source_file_projected_uncompressed_bytes: Option<Vec<u64>>,
+    /// Per-row-group pure-filter compressed bytes for the full file, if available.
     pub source_file_pure_filter_compressed_bytes: Option<Vec<u64>>,
+    /// Per-row-group pure-filter uncompressed bytes for the full file, if available.
     pub source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
+    /// Per-row-group row counts for the full file, if available.
     pub source_file_row_group_rows: Option<Vec<u64>>,
+    /// Physical file columns read by the source.
     pub read_columns: Vec<String>,
+    /// Partition values attached to the source file.
     pub partition_values: Vec<LiteralValue>,
+    /// True when this source is a zero-column count scan.
     pub zero_column_count: bool,
+    /// Known row count for this chunk after scan-limit trimming, if available.
     pub known_row_count: Option<u64>,
+    /// Per-chunk row limit applied when a source scan limit cuts through this chunk.
     pub scan_limit_rows: Option<usize>,
+    /// True when chunk sizing relied on file-size estimates instead of row-group bytes.
     pub size_estimate_based: bool,
 }
 
 impl SourceChunk {
+    /// Returns the number of explicitly selected row groups in this chunk.
     pub fn row_group_count(&self) -> usize {
         self.row_group_indexes.len()
     }
 }
 
+/// Plans chunks for a local Parquet source using a fresh footer metadata cache.
 pub fn plan_local_parquet_source_chunks(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -201,6 +280,10 @@ pub fn plan_local_parquet_source_chunks(
     plan_local_parquet_source_chunks_with_metadata_cache(source_node_id, source, policy, &mut metadata_cache)
 }
 
+/// Plans chunks for a local Parquet source using a caller-owned footer cache.
+///
+/// The cache is keyed by source path, stable id, and known file size so repeated
+/// planning of the same fixture can avoid re-reading footers.
 pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -273,6 +356,7 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     })
 }
 
+/// Returns true when the source can compute exact fixed-width source-read budgets.
 pub fn local_parquet_source_has_exact_read_preflight(source: &LocalParquetSource) -> bool {
     source.files.iter().all(source_file_has_row_count_metadata)
         && exact_source_read_preflight_bytes(source, Some(1), source.is_zero_column_count_source()).is_some()
@@ -346,12 +430,14 @@ fn apply_source_scan_limit_to_chunks(
     Ok(limited)
 }
 
+/// Footer metadata cache shared across repeated source chunk planning calls.
 #[derive(Debug, Default)]
 pub struct SourceMetadataCache {
     footers: HashMap<SourceMetadataCacheKey, Option<Arc<ParquetMetaData>>>,
 }
 
 impl SourceMetadataCache {
+    /// Returns the number of cached footer entries, including failed loads.
     pub fn cached_footer_count(&self) -> usize {
         self.footers.len()
     }

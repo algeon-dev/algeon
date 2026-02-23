@@ -1,3 +1,15 @@
+//! DataFusion physical optimizer integration for native cuDF execution.
+//!
+//! The planner exposes one public optimizer rule, but session integration
+//! inserts it in two phases: a count-only probe before DataFusion aggregate
+//! statistics and the final native rewrite immediately before final plan
+//! validation. `GpuPreferred` keeps DataFusion CPU fallback available during
+//! planning; `GpuOnly` turns native candidate rejection into an optimizer
+//! error. Once a native execution node starts running, CPU fallback is no
+//! longer attempted.
+
+#![deny(missing_docs)]
+
 use std::{
     collections::BTreeSet,
     fmt,
@@ -32,6 +44,14 @@ pub use native::{
     NativeStrictBoundedRejectedCandidateDiagnostics, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
 };
 
+/// DataFusion-facing native optimizer configuration.
+///
+/// Defaults are conservative: GPU is preferred but not mandatory, native
+/// execution is unbounded, and query-engine optimizer options use their own
+/// defaults. The native [`ExecutionContext`](cudf_query_engine::ExecutionContext)
+/// is still built lazily at execution time through
+/// [`NativeCudfExecutionConfig`], so allocator and memory-control validation
+/// fail at the DataFusion/native boundary rather than during rule construction.
 #[derive(Debug, Clone)]
 pub struct CudfOptimizerConfig {
     fallback_policy: GpuFallbackPolicy,
@@ -50,36 +70,44 @@ impl Default for CudfOptimizerConfig {
 }
 
 impl CudfOptimizerConfig {
+    /// Build from an explicit fallback policy; all other fields use conservative defaults.
     pub fn new(fallback_policy: GpuFallbackPolicy) -> Self {
         Self { fallback_policy, ..Self::default() }
     }
 
+    /// Planning fallback policy used after native candidate analysis.
     pub fn fallback_policy(&self) -> GpuFallbackPolicy {
         self.fallback_policy
     }
 
+    /// Native execution settings copied into rewritten execution nodes.
     pub fn native_execution_config(&self) -> &NativeCudfExecutionConfig {
         &self.native_execution_config
     }
 
+    /// Query-engine optimizer options applied after lowering.
     pub fn native_optimizer_options(&self) -> &cudf_query_engine::NativeOptimizerOptions {
         &self.native_optimizer_options
     }
 
+    /// Strict bounded or adaptive pipeline mode used by native execution.
     pub fn native_pipeline_execution_mode(&self) -> cudf_query_engine::NativePipelineExecutionMode {
         self.native_execution_config.native_pipeline_execution_mode()
     }
 
+    /// Replace the native execution config copied into accepted native plans.
     pub fn with_native_execution_config(mut self, execution_config: NativeCudfExecutionConfig) -> Self {
         self.native_execution_config = execution_config;
         self
     }
 
+    /// Replace DataFusion-free native optimizer options.
     pub fn with_native_optimizer_options(mut self, options: cudf_query_engine::NativeOptimizerOptions) -> Self {
         self.native_optimizer_options = options;
         self
     }
 
+    /// Set strict bounded or adaptive execution without rebuilding the rest of the config.
     pub fn with_native_pipeline_execution_mode(mut self, mode: cudf_query_engine::NativePipelineExecutionMode) -> Self {
         self.native_execution_config = self.native_execution_config.clone().with_native_pipeline_execution_mode(mode);
         self

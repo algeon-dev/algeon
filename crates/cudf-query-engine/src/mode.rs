@@ -3,6 +3,7 @@
 //! These labels describe the bounded pipeline execution contract, not the
 //! final result placement. Result placement is represented by `QueryOutputMode`
 //! in the execution layer.
+#![deny(missing_docs)]
 
 use std::{fmt, str::FromStr};
 
@@ -17,6 +18,7 @@ pub enum NativePipelineExecutionMode {
 }
 
 impl NativePipelineExecutionMode {
+    /// Stable snake-case mode label used in env vars and reports.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::StrictBounded => "strict_bounded",
@@ -43,12 +45,14 @@ impl FromStr for NativePipelineExecutionMode {
     }
 }
 
+/// Error returned when parsing a native pipeline execution-mode label fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativePipelineExecutionModeParseError {
     value: String,
 }
 
 impl NativePipelineExecutionModeParseError {
+    /// Returns the unrecognized label after ASCII-lowercase normalization.
     pub fn value(&self) -> &str {
         &self.value
     }
@@ -72,6 +76,7 @@ pub enum StrictBoundedExecutionMode {
 }
 
 impl StrictBoundedExecutionMode {
+    /// Stable snake-case strict bounded report label.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::StrictBounded => "strict_bounded",
@@ -79,6 +84,7 @@ impl StrictBoundedExecutionMode {
         }
     }
 
+    /// Returns the coarse native pipeline mode for this strict report label.
     pub const fn native_mode(self) -> NativePipelineExecutionMode {
         NativePipelineExecutionMode::StrictBounded
     }
@@ -100,6 +106,7 @@ pub enum AdaptiveExecutionMode {
 }
 
 impl AdaptiveExecutionMode {
+    /// Stable snake-case adaptive report label.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Adaptive => "adaptive",
@@ -107,6 +114,7 @@ impl AdaptiveExecutionMode {
         }
     }
 
+    /// Returns the coarse native pipeline mode for this adaptive report label.
     pub const fn native_mode(self) -> NativePipelineExecutionMode {
         NativePipelineExecutionMode::Adaptive
     }

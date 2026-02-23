@@ -1,6 +1,11 @@
 use super::*;
 use crate::source::PredicateDisposition;
 
+/// Validate local Parquet source invariants before native reads.
+///
+/// Checks file identity/path presence, partition value types, read-column
+/// requirements, row-count metadata for missing-column-only reads, and reader
+/// predicate support.
 pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> {
     if source.files.is_empty() {
         return Err(QueryError::new(

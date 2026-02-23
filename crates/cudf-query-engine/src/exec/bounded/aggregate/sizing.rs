@@ -35,10 +35,14 @@ pub enum PartialAggregateShape {
     /// the conservative bound used in strict mode until a libcudf
     /// grouped-aggregate row-count preflight lands (Phase 4.G follow-up
     /// per the q72 design doc).
-    Grouped { input_rows: u64 },
+    Grouped {
+        /// Input row count used as the conservative grouped-output upper bound.
+        input_rows: u64,
+    },
 }
 
 impl PartialAggregateShape {
+    /// Conservative output-row upper bound for this aggregate shape.
     pub fn output_row_count_upper_bound(&self) -> u64 {
         match self {
             Self::Global => 1,
