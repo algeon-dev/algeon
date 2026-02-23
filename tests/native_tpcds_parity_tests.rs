@@ -6,22 +6,26 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use datafusion::{
-    physical_plan::ExecutionPlan,
-    prelude::{ParquetReadOptions, SessionContext},
+    physical_plan::{ExecutionPlan, empty::EmptyExec, metrics::MetricsSet},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CudfOptimizerConfig, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION,
-    NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-    NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativeTpcdsParityCpuOutcome,
-    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativeRuntimeOutcome,
-    NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem,
-    ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus, TPCDS_QUERIES, TPCDS_TABLES,
-    compare_record_batches, discover_tpcds_table_layout, lower_physical_plan_to_native, sql_has_top_level_order_by,
-    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_parity_workload_items,
-    tpcds_report_session_config,
+    CudfOptimizerConfig, GpuCandidate, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER,
+    NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAdaptivePipelineDiagnostics, NativeCudfExecutionConfig,
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
+    NativeDataFusionRuntimeOutcome, NativePlanningDiagnostics, NativeStrictBoundedContractDiagnostics,
+    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputSummary,
+    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
+    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
+    ParityFloatTolerance, ParityStageStatus, ParityStatus, PlanningReport, TPCDS_QUERIES, TPCDS_TABLES,
+    TpcdsWorkloadResult, compare_record_batches, discover_tpcds_table_layout, lower_physical_plan_to_native,
+    sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    tpcds_datafusion_planning_workload_items_with_optimizer_config,
+    tpcds_parity_workload_items as raw_tpcds_parity_workload_items, tpcds_report_session_config,
 };
 
 const TPCDS_SF1_FIXTURE: &str = "tests/data/tpcds/sf1/parquet";
+static TPCDS_NATIVE_PARITY_WORKLOAD_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[test]
 fn parity_tsv_header_pins_schema_version_and_columns() {
@@ -1430,6 +1434,51 @@ fn compare_record_batches_row_count_mismatch_is_explicit() {
 }
 
 #[test]
+fn parity_report_retries_unordered_only_for_partial_order_by_ties() {
+    let schema = int_string_schema();
+    let cpu_batch = int_string_batch(&schema, &[1, 1], &[Some("a"), Some("b")]);
+    let native_batch = int_string_batch(&schema, &[1, 1], &[Some("b"), Some("a")]);
+    let partial_item = NativeTpcdsParityWorkloadItem {
+        query_id: "partial".to_string(),
+        sql: "SELECT id, label FROM t ORDER BY id".to_string(),
+        cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded {
+            schema: Arc::clone(&schema),
+            batches: vec![cpu_batch.clone()],
+        },
+        native_planning: accepted_native_planning(&schema),
+        native_runtime: NativeTpcdsParityNativeRuntimeOutcome::Succeeded {
+            schema: Arc::clone(&schema),
+            batches: vec![native_batch.clone()],
+            metrics: MetricsSet::new(),
+        },
+        duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
+        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
+    };
+    let total_item = NativeTpcdsParityWorkloadItem {
+        query_id: "total".to_string(),
+        sql: "SELECT id, label FROM t ORDER BY id, label".to_string(),
+        cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: Arc::clone(&schema), batches: vec![cpu_batch] },
+        native_planning: accepted_native_planning(&schema),
+        native_runtime: NativeTpcdsParityNativeRuntimeOutcome::Succeeded {
+            schema: Arc::clone(&schema),
+            batches: vec![native_batch],
+            metrics: MetricsSet::new(),
+        },
+        duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
+        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
+    };
+
+    let report = NativeTpcdsParityReport::collect([partial_item, total_item], ParityFloatTolerance::exact());
+    let partial = report.rows.iter().find(|row| row.query_id == "partial").unwrap();
+    assert_eq!(partial.parity_status, ParityStatus::Matched);
+    assert_eq!(partial.comparison_mode, ParityComparisonMode::UnorderedExact);
+
+    let total = report.rows.iter().find(|row| row.query_id == "total").unwrap();
+    assert_eq!(total.parity_status, ParityStatus::Mismatched);
+    assert_eq!(total.comparison_mode, ParityComparisonMode::OrderedExact);
+}
+
+#[test]
 fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
     let item = NativeTpcdsParityWorkloadItem {
         query_id: "q01".to_string(),
@@ -1476,6 +1525,45 @@ fn sql_has_top_level_order_by_ignores_order_by_inside_string_or_comment() {
     assert!(!sql_has_top_level_order_by(block));
 }
 
+#[test]
+fn sql_top_level_order_by_covers_output_columns_detects_total_order() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("label", DataType::Utf8, true),
+    ]));
+    assert!(sql_top_level_order_by_covers_output_columns("SELECT id, label FROM t ORDER BY id, label", &schema));
+    assert!(sql_top_level_order_by_covers_output_columns(
+        "SELECT id, label FROM t ORDER BY t.id DESC NULLS FIRST, label ASC LIMIT 10",
+        &schema,
+    ));
+}
+
+#[test]
+fn sql_top_level_order_by_covers_output_columns_rejects_partial_order() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("brand_id", DataType::Int64, false),
+        Field::new("brand", DataType::Utf8, true),
+        Field::new("t_hour", DataType::Int64, false),
+        Field::new("t_minute", DataType::Int64, false),
+        Field::new("ext_price", DataType::Decimal128(15, 2), true),
+    ]));
+    let q71_like = "
+SELECT i_brand_id brand_id, i_brand brand, t_hour, t_minute, sum(ext_price) ext_price
+FROM t
+GROUP BY i_brand, i_brand_id, t_hour, t_minute
+ORDER BY ext_price DESC NULLS FIRST, i_brand_id NULLS FIRST, t_hour NULLS FIRST
+";
+    assert!(!sql_top_level_order_by_covers_output_columns(q71_like, &schema));
+    assert!(!sql_top_level_order_by_covers_output_columns(
+        "SELECT id, label, value FROM t ORDER BY id, label",
+        &Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("label", DataType::Utf8, true),
+            Field::new("value", DataType::Int64, false),
+        ]),
+    ));
+}
+
 fn int_string_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("label", DataType::Utf8, true)]))
 }
@@ -1486,6 +1574,37 @@ fn int_string_batch(schema: &Arc<Schema>, ids: &[i64], labels: &[Option<&str>]) 
         vec![Arc::new(Int64Array::from(ids.to_vec())), Arc::new(StringArray::from(labels.to_vec()))],
     )
     .unwrap()
+}
+
+fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlanningOutcome {
+    let mut report = PlanningReport::new();
+    report.push_rewritten(GpuCandidate::new("test_native_plan", schema.fields().len()));
+    NativeTpcdsParityNativePlanningOutcome::Planned {
+        accepted: true,
+        planned_plan: Arc::new(EmptyExec::new(Arc::clone(schema))) as Arc<dyn ExecutionPlan>,
+        diagnostics: Box::new(NativePlanningDiagnostics {
+            input_plan_root: "EmptyExec".to_string(),
+            input_plan_shape: "EmptyExec".to_string(),
+            report,
+            native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics::default(),
+            source_diagnostics: Vec::new(),
+            strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
+            adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
+        }),
+    }
+}
+
+async fn tpcds_parity_workload_items(
+    root: &Path,
+    session_config: SessionConfig,
+    optimizer_config: CudfOptimizerConfig,
+    query_filter: Option<&[String]>,
+) -> TpcdsWorkloadResult<Vec<NativeTpcdsParityWorkloadItem>> {
+    // The parity workload executes native CUDA/libcudf plans. Those bindings use
+    // process-global CUDA/RMM state, so parallel libtest workers in this one test
+    // binary can crash the process even when each individual query is valid.
+    let _guard = TPCDS_NATIVE_PARITY_WORKLOAD_LOCK.lock().await;
+    raw_tpcds_parity_workload_items(root, session_config, optimizer_config, query_filter).await
 }
 
 async fn plain_tpcds_physical_plan(root: &Path, query_id: &str) -> Arc<dyn ExecutionPlan> {
