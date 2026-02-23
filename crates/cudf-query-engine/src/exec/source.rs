@@ -44,6 +44,54 @@ pub fn read_local_parquet_source(
     read_local_parquet_source_uncached(context, source, metrics)
 }
 
+/// Import a literal host Arrow source into a GPU dataframe.
+pub fn read_literal_batch_source(
+    context: &ExecutionContext,
+    source: &crate::source::LiteralBatchSource,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    crate::exec::validate_literal_batch_source(source)?;
+    let mut frames = Vec::with_capacity(source.batches.len());
+    for batch in &source.batches {
+        context.check_cancellation("cudf_query_engine.literal_batch_source.read")?;
+        let timer = Instant::now();
+        let frame = DataFrame::from_record_batch(context.runtime(), batch).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.literal_batch_source.read",
+                "failed to import literal Arrow batch into native cudf",
+                error,
+            )
+            .with_fact("rows", batch.num_rows())
+            .with_fact("columns", batch.num_columns())
+        })?;
+        metrics.operator_time += timer.elapsed();
+        metrics.record_input_batch(frame.num_rows() as u64);
+        metrics.boundary.record_host_to_device_upload(batch.num_rows() as u64, record_batch_memory_size(batch) as u64);
+        frames.push(frame);
+    }
+
+    let mut frames = frames.into_iter();
+    let frame = frames.next().expect("validated literal source contains at least one batch");
+    let other_frames = frames.collect::<Vec<_>>();
+    if other_frames.is_empty() {
+        return Ok(GpuDataFrame::new(frame));
+    }
+
+    let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.literal_batch_source.concat",
+            "failed to concatenate native literal batches",
+            error,
+        )
+        .with_fact("batch_count", source.batches.len())
+    })?;
+    metrics.operator_time += timer.elapsed();
+    Ok(GpuDataFrame::new(output))
+}
+
 fn read_cacheable_local_parquet_source(
     context: &ExecutionContext,
     source: &LocalParquetSource,

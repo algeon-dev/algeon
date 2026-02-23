@@ -2,15 +2,16 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 use cudf_query_engine::{
-    Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder, SortExpr as NativeSortExpr,
-    WindowFrame as NativeWindowFrame, WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
+    Expr as NativeExpr, LiteralValue as NativeLiteralValue, QueryPlanBuilder as NativeQueryPlanBuilder,
+    ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr, WindowFrame as NativeWindowFrame,
+    WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
 };
 use datafusion::{
     common::ScalarValue,
     logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits},
     physical_expr::{
         PhysicalExpr,
-        expressions::Column,
+        expressions::{Column, Literal},
         window::{PlainAggregateWindowExpr, StandardWindowExpr, WindowExpr},
     },
     physical_plan::{ExecutionPlan, windows::WindowUDFExpr},
@@ -25,6 +26,7 @@ use super::{
 };
 use crate::{
     native::{
+        literal::{NativeLiteralContext, native_literal_value},
         normalize::{NormalizedNativeSort, NormalizedNativeWindow},
         validate::{is_supported_native_type, validate_physical_expr, validate_schema, validate_sort},
     },
@@ -86,7 +88,7 @@ fn validate_window_exprs(window_exprs: &[Arc<dyn WindowExpr>], input_schema: &Sc
         if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
             validate_plain_aggregate_window(plain, input_schema)?;
         } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
-            validate_standard_window(standard)?;
+            validate_standard_window(standard, input_schema)?;
         } else {
             return Err(FallbackReason::UnsupportedOperator);
         }
@@ -127,16 +129,196 @@ fn validate_plain_aggregate_window(
     validate_physical_expr(arg, input_schema)
 }
 
-fn validate_standard_window(standard: &StandardWindowExpr) -> Result<(), FallbackReason> {
-    if !standard_window_function_name(standard).eq_ignore_ascii_case("rank") || standard.order_by().is_empty() {
-        return Err(FallbackReason::UnsupportedOperator);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandardWindowKind {
+    Rank,
+    RowNumber,
+    Lag,
+    Lead,
+}
+
+fn validate_standard_window(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    match standard_window_kind(standard)? {
+        StandardWindowKind::Rank if standard.order_by().is_empty() => Err(FallbackReason::UnsupportedOperator),
+        StandardWindowKind::Rank | StandardWindowKind::RowNumber => Ok(()),
+        StandardWindowKind::Lag | StandardWindowKind::Lead => {
+            if standard.order_by().is_empty() {
+                return Err(FallbackReason::UnsupportedOperator);
+            }
+            // Parsing the offset / default literals here keeps validation
+            // and lowering in sync. We do not commit a fallback reason for
+            // parse failures because lowering will surface a structured
+            // rejection if the literal arguments are not constant.
+            let _ = parse_lag_lead_args(standard, input_schema)?;
+            Ok(())
+        },
     }
-    Ok(())
+}
+
+fn standard_window_kind(standard: &StandardWindowExpr) -> Result<StandardWindowKind, FallbackReason> {
+    match standard_window_function_name(standard).to_ascii_lowercase().as_str() {
+        "rank" => Ok(StandardWindowKind::Rank),
+        "row_number" => Ok(StandardWindowKind::RowNumber),
+        "lag" => Ok(StandardWindowKind::Lag),
+        "lead" => Ok(StandardWindowKind::Lead),
+        _ => Err(FallbackReason::UnsupportedOperator),
+    }
 }
 
 fn standard_window_function_name(standard: &StandardWindowExpr) -> &str {
     let function = standard.get_standard_func_expr();
     function.as_any().downcast_ref::<WindowUDFExpr>().map_or_else(|| function.name(), |expr| expr.fun().name())
+}
+
+#[derive(Debug, Clone)]
+struct LagLeadArgs {
+    value_expr: Arc<dyn PhysicalExpr>,
+    offset: u32,
+    default: Option<NativeLiteralValue>,
+}
+
+/// Parse the (`value`, `offset`, `default`) argument triple for a
+/// `lag` / `lead` window UDF.
+///
+/// DataFusion's `lag(value, offset, default)` / `lead(value, offset, default)`
+/// constructor always expands missing arguments to typed null literals, so
+/// the physical form carries three expressions on the underlying
+/// [`WindowUDFExpr`]'s `args()` list. `offset` must be a non-negative
+/// signed-integer literal that fits in `u32`, or a typed null (which means
+/// the SQL default of `1`). `default` must be a literal scalar.
+///
+/// Reading the full argument list from `WindowUDFExpr::args()` is load
+/// bearing: [`StandardWindowFunctionExpr::expressions`] filters lag / lead
+/// down to the value column for batch evaluation, so it does not surface
+/// the literal `offset` / `default` arguments needed by the native IR.
+fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) -> Result<LagLeadArgs, FallbackReason> {
+    let udf = standard
+        .get_standard_func_expr()
+        .as_any()
+        .downcast_ref::<WindowUDFExpr>()
+        .ok_or(FallbackReason::UnsupportedOperator)?;
+    let args = udf.args();
+    if args.is_empty() || args.len() > 3 {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    let value_expr = args[0].clone();
+    validate_physical_expr(&value_expr, input_schema)?;
+    let value_type =
+        value_expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if !is_supported_native_type(&value_type) {
+        return Err(FallbackReason::UnsupportedType);
+    }
+    let offset = match args.get(1) {
+        None => 1u32,
+        Some(expr) => parse_lag_lead_offset(expr)?,
+    };
+    let default = match args.get(2) {
+        None => None,
+        Some(expr) => parse_lag_lead_default(expr, &value_type)?,
+    };
+    Ok(LagLeadArgs { value_expr, offset, default })
+}
+
+fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, FallbackReason> {
+    let literal = expr.as_any().downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
+    match literal.value() {
+        ScalarValue::Null => Ok(1u32),
+        ScalarValue::Int8(None)
+        | ScalarValue::Int16(None)
+        | ScalarValue::Int32(None)
+        | ScalarValue::Int64(None)
+        | ScalarValue::UInt8(None)
+        | ScalarValue::UInt16(None)
+        | ScalarValue::UInt32(None)
+        | ScalarValue::UInt64(None) => Ok(1u32),
+        ScalarValue::Int8(Some(value)) => offset_from_i64(i64::from(*value)),
+        ScalarValue::Int16(Some(value)) => offset_from_i64(i64::from(*value)),
+        ScalarValue::Int32(Some(value)) => offset_from_i64(i64::from(*value)),
+        ScalarValue::Int64(Some(value)) => offset_from_i64(*value),
+        ScalarValue::UInt8(Some(value)) => Ok(u32::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Ok(u32::from(*value)),
+        ScalarValue::UInt32(Some(value)) => offset_from_u32(*value),
+        ScalarValue::UInt64(Some(value)) => {
+            offset_from_i64(i64::try_from(*value).map_err(|_| FallbackReason::UnsupportedExpression)?)
+        },
+        _ => Err(FallbackReason::UnsupportedExpression),
+    }
+}
+
+/// Reject offsets outside libcudf's signed shift range.
+///
+/// libcudf's `groupby::shift` uses `cudf::size_type` (`int32`), and the
+/// engine negates the offset for `LEAD`, so the supported window is
+/// `[0, i32::MAX]`. Rejecting larger offsets here means the plan falls back
+/// to CPU DataFusion instead of admitting a native plan that would error at
+/// execute time.
+fn offset_from_i64(value: i64) -> Result<u32, FallbackReason> {
+    if value < 0 {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    let value = u64::try_from(value).map_err(|_| FallbackReason::UnsupportedExpression)?;
+    if value > i32::MAX as u64 {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(value as u32)
+}
+
+fn offset_from_u32(value: u32) -> Result<u32, FallbackReason> {
+    if value > i32::MAX as u32 {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    Ok(value)
+}
+
+fn parse_lag_lead_default(
+    expr: &Arc<dyn PhysicalExpr>,
+    value_type: &arrow::datatypes::DataType,
+) -> Result<Option<NativeLiteralValue>, FallbackReason> {
+    let literal = expr.as_any().downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
+    let scalar = literal.value();
+    // Match DataFusion's lag/lead constructor, which encodes the missing
+    // `default` argument as `ScalarValue::Null`. Treat that as the no-default
+    // case so the engine fills with NULL of the value column's type.
+    if matches!(scalar, ScalarValue::Null) {
+        return Ok(None);
+    }
+    let lowered = native_literal_value(scalar, NativeLiteralContext::Expression)?;
+    if matches!(&lowered, NativeLiteralValue::Null(_)) {
+        // Typed nulls (e.g. `ScalarValue::Int32(None)`) collapse to the
+        // no-default case so the engine derives the fill from the output
+        // schema, matching DataFusion's "null default of expression type".
+        return Ok(None);
+    }
+    if &lowered.data_type() != value_type {
+        return Err(FallbackReason::UnsupportedExpression);
+    }
+    // Mirror the literal families that the engine's
+    // `build_lag_lead_value_fill_scalar` can lower to a cudf-rs Scalar today.
+    // Decimal, date, timestamp, duration, and interval literals still need a
+    // cudf-rs fill-scalar contract before the adapter can admit them; until
+    // then we reject so the query falls back to CPU instead of failing at
+    // execute time.
+    match &lowered {
+        NativeLiteralValue::Boolean(_)
+        | NativeLiteralValue::Int8(_)
+        | NativeLiteralValue::Int16(_)
+        | NativeLiteralValue::Int32(_)
+        | NativeLiteralValue::Int64(_)
+        | NativeLiteralValue::UInt8(_)
+        | NativeLiteralValue::UInt16(_)
+        | NativeLiteralValue::UInt32(_)
+        | NativeLiteralValue::UInt64(_)
+        | NativeLiteralValue::Float32(_)
+        | NativeLiteralValue::Float64(_)
+        | NativeLiteralValue::Utf8(_)
+        | NativeLiteralValue::LargeUtf8(_) => Ok(Some(lowered)),
+        NativeLiteralValue::Decimal128 { .. }
+        | NativeLiteralValue::Date32(_)
+        | NativeLiteralValue::Timestamp { .. }
+        | NativeLiteralValue::Duration { .. }
+        | NativeLiteralValue::IntervalMonthDayNano { .. }
+        | NativeLiteralValue::Null(_) => Err(FallbackReason::UnsupportedExpression),
+    }
 }
 
 fn is_whole_partition_frame(frame: &WindowFrame) -> bool {
@@ -353,8 +535,28 @@ fn lower_window_spec(
                 alias,
                 frame,
             });
-        } else if window_expr.as_any().downcast_ref::<StandardWindowExpr>().is_some() {
-            functions.push(NativeWindowFunction::Rank { alias });
+        } else if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
+            match standard_window_kind(standard)? {
+                StandardWindowKind::Rank => functions.push(NativeWindowFunction::Rank { alias }),
+                StandardWindowKind::RowNumber => functions.push(NativeWindowFunction::RowNumber { alias }),
+                StandardWindowKind::Lag | StandardWindowKind::Lead => {
+                    let direction = match standard_window_kind(standard)? {
+                        StandardWindowKind::Lag => NativeShiftDirection::Lag,
+                        StandardWindowKind::Lead => NativeShiftDirection::Lead,
+                        _ => unreachable!(),
+                    };
+                    let args = parse_lag_lead_args(standard, input_schema)?;
+                    let lowered_value =
+                        lower_physical_expr_with_bindings(&args.value_expr, input_schema, Some(&input.bindings))?;
+                    functions.push(NativeWindowFunction::LagLead {
+                        expr: lowered_value,
+                        offset: args.offset,
+                        default: args.default,
+                        alias,
+                        direction,
+                    });
+                },
+            }
         } else {
             return Err(FallbackReason::UnsupportedOperator);
         }

@@ -9,7 +9,6 @@ pub(super) use final_merge::{
 };
 pub(super) use plan::{BoundedPlan, BoundedUnaryStage};
 pub use sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
-
 use sizing::{partial_aggregate_upper_bound_violation_error, partial_aggregate_work_reservation_upper_bound_bytes};
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
     context: &ExecutionContext,
@@ -88,38 +87,40 @@ fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             return Err(error);
         },
     };
-    let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&partition_reservation),
-        "compiled_aggregate_hash_partition",
-        "cudf_query_engine.bounded.aggregate.compiled_partitioned_hash.budget_token",
-        "failed to create bounded native compiled partitioned aggregate budget token",
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            reservations.release(partition_reservation, metrics);
-            drop(input);
-            return Err(error);
-        },
-    };
-
     let frame = input.into_frame();
-    let partitioned = frame
-        .with_execution(&token.execution_overrides())
-        .hash_partition_by(lowered_keys.key_columns.iter().map(String::as_str), partition_count)
-        .map_err(|error| {
-            attach_budget_token_failure_facts(
-                QueryError::from_cudf(
-                    "cudf_query_engine.bounded.aggregate.hash_partition",
-                    "failed to hash-partition compiled bounded aggregate input",
-                    error,
+    let partitioned = {
+        let token = match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&partition_reservation),
+            "compiled_aggregate_hash_partition",
+            "cudf_query_engine.bounded.aggregate.compiled_partitioned_hash.budget_token",
+            "failed to create bounded native compiled partitioned aggregate budget token",
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                reservations.release(partition_reservation, metrics);
+                drop(frame);
+                return Err(error);
+            },
+        };
+
+        frame
+            .with_execution(&token.execution_overrides())
+            .hash_partition_by(lowered_keys.key_columns.iter().map(String::as_str), partition_count)
+            .map_err(|error| {
+                attach_budget_token_failure_facts(
+                    QueryError::from_cudf(
+                        "cudf_query_engine.bounded.aggregate.hash_partition",
+                        "failed to hash-partition compiled bounded aggregate input",
+                        error,
+                    )
+                    .with_fact("node_id", node_id)
+                    .with_fact("key_count", lowered_keys.key_columns.len())
+                    .with_fact("partition_count", partition_count),
+                    &token,
                 )
-                .with_fact("node_id", node_id)
-                .with_fact("key_count", lowered_keys.key_columns.len())
-                .with_fact("partition_count", partition_count),
-                &token,
-            )
-        });
+            })
+    };
     drop(frame);
     let partitioned = match partitioned {
         Ok(partitioned) => partitioned,
@@ -419,40 +420,41 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
             return Err(error);
         },
     };
-    let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&concat_reservation),
-        "compiled_aggregate_distinct_stream_concat",
-        "cudf_query_engine.bounded.aggregate.distinct_stream_concat.budget_token",
-        "failed to create bounded native distinct aggregate concat budget token",
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            reservations.release(concat_reservation, metrics);
-            drop(frames);
-            return Err(error);
-        },
-    };
-
     let first = frames.remove(0);
     let first_reservation = first.reservation;
     let first_frame = first.frame.into_frame();
-    let other_frame_refs = frames.iter().map(|frame| frame.frame.frame()).collect::<Vec<_>>();
-    let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+    let concatenated = {
+        let token = match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&concat_reservation),
+            "compiled_aggregate_distinct_stream_concat",
+            "cudf_query_engine.bounded.aggregate.distinct_stream_concat.budget_token",
+            "failed to create bounded native distinct aggregate concat budget token",
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                reservations.release(concat_reservation, metrics);
+                drop(first_frame);
+                return Err(error);
+            },
+        };
+        let other_frame_refs = frames.iter().map(|frame| frame.frame.frame()).collect::<Vec<_>>();
+        first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
+            attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "cudf_query_engine.bounded.aggregate.distinct_stream_concat",
+                    "failed to concatenate distinct aggregate stream inputs",
+                    error,
+                ),
+                &token,
+            )
+        })
+    };
     for frame in frames {
         reservations.release(frame.reservation, metrics);
     }
     reservations.release(first_reservation, metrics);
-    let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
-        attach_budget_token_failure_facts(
-            QueryError::from_cudf(
-                "cudf_query_engine.bounded.aggregate.distinct_stream_concat",
-                "failed to concatenate distinct aggregate stream inputs",
-                error,
-            ),
-            &token,
-        )
-    })?;
+    let concatenated = concatenated.map(GpuDataFrame::new)?;
     let concatenated_bytes = observe_device_memory_bytes(&concatenated, metrics)?;
     if concatenated_bytes > concat_reservation.bytes() {
         let grow_request = MemoryReservationRequest::new(
@@ -923,6 +925,11 @@ pub(super) fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec
                     Expr::column(expr.alias.clone()),
                     expr.alias.clone(),
                 )],
+                AggregateFunction::NUnique => vec![AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column(expr.alias.clone()),
+                    expr.alias.clone(),
+                )],
                 AggregateFunction::Avg => {
                     let state = AvgStateAliases::for_aggregate_index(index);
                     vec![
@@ -1019,40 +1026,42 @@ pub(in crate::exec::bounded) fn execute_bounded_distinct_aggregate_from_raw_chun
             return Err(error);
         },
     };
-    let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&concat_reservation),
-        "distinct_aggregate_concat",
-        "cudf_query_engine.bounded.distinct_aggregate.concat.budget_token",
-        "failed to create bounded native distinct aggregate concat budget token",
-    ) {
-        Ok(token) => token,
-        Err(error) => {
-            reservations.release(concat_reservation, metrics);
-            release_partials_reverse(reservations, raw_frames, metrics);
-            return Err(error);
-        },
-    };
-
     let first = raw_frames.remove(0);
-    let first_reservation = first.reservation;
+    let mut first_reservation = Some(first.reservation);
     let first_df = first.frame.into_frame();
-    let other_frame_refs: Vec<_> = raw_frames.iter().map(|f| f.frame.frame()).collect();
-    let concatenated = first_df.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
+    let concatenated = {
+        let token = match execution_budget_token_for_boundary(
+            context,
+            reservations.available_bytes_including(&concat_reservation),
+            "distinct_aggregate_concat",
+            "cudf_query_engine.bounded.distinct_aggregate.concat.budget_token",
+            "failed to create bounded native distinct aggregate concat budget token",
+        ) {
+            Ok(token) => token,
+            Err(error) => {
+                reservations.release(concat_reservation, metrics);
+                reservations.release(first_reservation.take().expect("first reservation is present"), metrics);
+                release_partials_reverse(reservations, raw_frames, metrics);
+                return Err(error);
+            },
+        };
+        let other_frame_refs: Vec<_> = raw_frames.iter().map(|f| f.frame.frame()).collect();
+        first_df.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
+            attach_budget_token_failure_facts(
+                QueryError::from_cudf(
+                    "cudf_query_engine.bounded.distinct_aggregate.concat",
+                    "failed to concatenate raw frames for bounded distinct aggregate",
+                    error,
+                ),
+                &token,
+            )
+        })
+    };
     for frame in raw_frames {
         reservations.release(frame.reservation, metrics);
     }
-    reservations.release(first_reservation, metrics);
-    let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
-        attach_budget_token_failure_facts(
-            QueryError::from_cudf(
-                "cudf_query_engine.bounded.distinct_aggregate.concat",
-                "failed to concatenate raw frames for bounded distinct aggregate",
-                error,
-            ),
-            &token,
-        )
-    })?;
+    reservations.release(first_reservation.take().expect("first reservation is present"), metrics);
+    let concatenated = concatenated.map(GpuDataFrame::new)?;
     let concat_bytes = observe_device_memory_bytes(&concatenated, metrics)?;
     if concat_bytes > concat_reservation.bytes() {
         let delta = concat_bytes.saturating_sub(concat_reservation.bytes());

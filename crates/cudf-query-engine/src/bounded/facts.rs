@@ -41,6 +41,7 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
     let mut build_side_bytes = Vec::new();
     let mut probe_side_bytes = Vec::new();
     let mut probe_reuse_count = Vec::new();
+    let mut reusable_prebuild_supported = Vec::new();
     let mut partition_counts = Vec::new();
     let mut partition_target_bytes = Vec::new();
 
@@ -77,6 +78,9 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
         if let Some(value) = decision_facts.get("probe_reuse_count") {
             probe_reuse_count.push(format!("{node_label}:{value}"));
         }
+        if let Some(value) = decision_facts.get("reusable_prebuild_supported") {
+            reusable_prebuild_supported.push(format!("{node_label}:{value}"));
+        }
         if let Some(value) = decision_facts.get("partition_count") {
             partition_counts.push(format!("{node_label}:{value}"));
         }
@@ -93,6 +97,7 @@ fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: 
     insert_csv_fact(facts, "build_side_bytes", build_side_bytes);
     insert_csv_fact(facts, "probe_side_bytes", probe_side_bytes);
     insert_csv_fact(facts, "probe_reuse_count", probe_reuse_count);
+    insert_csv_fact(facts, "reusable_prebuild_supported", reusable_prebuild_supported);
     insert_csv_fact(facts, "partition_count", partition_counts);
     insert_csv_fact(facts, "partition_target_bytes", partition_target_bytes);
 }

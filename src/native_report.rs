@@ -16,24 +16,29 @@ use cudf_query_engine::{
 use datafusion::{
     common::ScalarValue,
     datasource::{
+        memory::MemorySourceConfig,
         physical_plan::{FileSource, ParquetSource},
         source::DataSourceExec,
     },
-    logical_expr::Operator,
+    logical_expr::{Operator, WindowFrame, WindowFrameBound, WindowFrameUnits},
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
         expressions::{
             BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal,
             NegativeExpr, NotExpr, TryCastExpr,
         },
+        window::{PlainAggregateWindowExpr, SlidingAggregateWindowExpr, StandardWindowExpr, WindowExpr},
     },
     physical_plan::{
         ExecutionPlan,
         aggregates::AggregateExec,
+        empty::EmptyExec,
         filter::FilterExec,
         joins::{CrossJoinExec, HashJoinExec, NestedLoopJoinExec},
+        placeholder_row::PlaceholderRowExec,
         projection::ProjectionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
+        windows::{BoundedWindowAggExec, WindowAggExec, WindowUDFExpr},
     },
 };
 

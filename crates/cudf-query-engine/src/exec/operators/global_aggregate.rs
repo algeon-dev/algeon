@@ -86,7 +86,7 @@ fn execute_global_aggregate_impl(
                 };
                 columns.push((state.count().to_string(), count));
             },
-            AggregateFunction::Count => {
+            AggregateFunction::Count | AggregateFunction::NUnique => {
                 let count = match token {
                     Some(token) => global_count_series_with_budget(context, &frame, expr, token, metrics)?,
                     None => global_count_series(context, &frame, expr)?,
@@ -264,7 +264,9 @@ fn execute_scalar_reduction(
         AggregateFunction::Min => series.min_in(overrides),
         AggregateFunction::Max => series.max_in(overrides),
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
-        AggregateFunction::Count => unreachable!("global COUNT is not a scalar reduction"),
+        AggregateFunction::Count | AggregateFunction::NUnique => {
+            unreachable!("global count-like aggregates are not scalar reductions")
+        },
         AggregateFunction::StddevSamp => {
             unreachable!("global STDDEV_SAMP uses the DataFusion-exact Welford aggregate path")
         },
@@ -292,7 +294,9 @@ fn execute_scalar_reduction_with_budget(
         AggregateFunction::Min => ReduceAgg::Min,
         AggregateFunction::Max => ReduceAgg::Max,
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
-        AggregateFunction::Count => unreachable!("global COUNT is not a scalar reduction"),
+        AggregateFunction::Count | AggregateFunction::NUnique => {
+            unreachable!("global count-like aggregates are not scalar reductions")
+        },
         AggregateFunction::StddevSamp => {
             unreachable!("global STDDEV_SAMP uses the DataFusion-exact Welford aggregate path")
         },

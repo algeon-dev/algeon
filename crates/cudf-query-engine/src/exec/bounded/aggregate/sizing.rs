@@ -178,7 +178,7 @@ fn global_partial_aggregate_upper_bound_columns(
                     "global aggregate valid-count state",
                 )?));
             },
-            AggregateFunction::Count | AggregateFunction::StddevSamp => {
+            AggregateFunction::Count | AggregateFunction::NUnique | AggregateFunction::StddevSamp => {
                 columns.push(partial_column_for_field_and_optional_input(
                     context,
                     node_id,
@@ -274,7 +274,7 @@ fn grouped_partial_aggregate_upper_bound_columns(
                 debug_assert!(lowered.output_names.iter().any(|name| name == state.sum()));
                 debug_assert!(lowered.output_names.iter().any(|name| name == state.count()));
             },
-            AggregateFunction::Count => {
+            AggregateFunction::Count | AggregateFunction::NUnique => {
                 let field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
                     QueryError::new(
                         QueryErrorCode::InvalidPlan,

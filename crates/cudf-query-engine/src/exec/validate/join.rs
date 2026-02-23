@@ -382,10 +382,16 @@ fn collect_join_residual_sides(expr: &Expr, left: &mut bool, right: &mut bool) -
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner)
         | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. }
         | Expr::Abs(inner)
+        | Expr::Sqrt { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
         | Expr::Alias { expr: inner, .. } => collect_join_residual_sides(inner, left, right),
         Expr::Binary { left: lhs, right: rhs, .. } => {
+            collect_join_residual_sides(lhs, left, right)?;
+            collect_join_residual_sides(rhs, left, right)
+        },
+        Expr::IsDistinctFrom { left: lhs, right: rhs } | Expr::IsNotDistinctFrom { left: lhs, right: rhs } => {
             collect_join_residual_sides(lhs, left, right)?;
             collect_join_residual_sides(rhs, left, right)
         },
@@ -554,7 +560,8 @@ fn validate_join_residual_expr(
         Expr::Alias { expr, .. } => {
             validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
         },
-        Expr::Like { .. }
+        Expr::TryCast { .. }
+        | Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
@@ -562,7 +569,10 @@ fn validate_join_residual_expr(
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
+        | Expr::Sqrt { .. }
         | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::DateTrunc { .. } => Err(QueryError::new(
@@ -657,6 +667,13 @@ fn validate_post_join_residual_expr(
             require_arithmetic_type(&data_type, "post-join residual ABS input")?;
             Ok(data_type)
         },
+        Expr::Sqrt { expr, output_type } => {
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_arithmetic_type(&data_type, "post-join residual SQRT input")?;
+            require_arithmetic_type(output_type, "post-join residual SQRT output")?;
+            Ok(output_type.clone())
+        },
         Expr::Round { expr, output_type, .. } => {
             let data_type =
                 validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
@@ -735,6 +752,14 @@ fn validate_post_join_residual_expr(
                 },
             }
         },
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            let left_type =
+                validate_post_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
+            let right_type =
+                validate_post_join_residual_expr(right, left_schema, left_available, right_schema, right_available)?;
+            require_comparable_types(&left_type, &right_type)?;
+            Ok(ArrowDataType::Boolean)
+        },
         Expr::InList { expr, list, .. } => {
             let expr_type =
                 validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
@@ -803,7 +828,7 @@ fn validate_post_join_residual_expr(
         Expr::Alias { expr, .. } => {
             validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
         },
-        Expr::Like { .. } | Expr::Substring { .. } => Err(QueryError::new(
+        Expr::TryCast { .. } | Expr::Like { .. } | Expr::Substring { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             "cudf_query_engine.join.validate_residual",
             "post-join residual predicates do not yet support this expression family",
@@ -826,6 +851,7 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         | Expr::IsNull(expr)
         | Expr::IsNotNull(expr)
         | Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::StringLength { expr, .. }
@@ -833,10 +859,12 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. } => residual_expr_requires_post_filter(expr),
         Expr::Concat(exprs) => exprs.iter().any(residual_expr_requires_post_filter),
         Expr::Like { expr, .. } | Expr::Substring { expr, .. } => residual_expr_requires_post_filter(expr),
+        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
         Expr::Binary { op: BinaryOp::Or, .. } => true,
         Expr::Binary { left, right, .. } => {
             residual_expr_requires_post_filter(left) || residual_expr_requires_post_filter(right)

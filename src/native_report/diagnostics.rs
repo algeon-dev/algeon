@@ -11,7 +11,10 @@ use super::*;
 mod expressions;
 mod shape_family;
 
-use expressions::{expression_category, join_residual_expression_category};
+use expressions::{
+    expression_category, expression_category_with_schema, join_residual_expression_category,
+    stable_data_type_identifier,
+};
 pub(super) use shape_family::{candidate_shape_family, physical_plan_shape};
 
 pub(super) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> NativeDataFusionPlanCoverage {
@@ -149,12 +152,13 @@ pub(super) fn unsupported_category(
             })
             .or_else(|| Some("expression".to_string())),
         FallbackReason::UnsupportedOperator => first_aggregate_category(plan)
+            .or_else(|| first_window_category(plan))
             .or_else(|| first_unsupported_operator_category(plan, candidate.shape.as_str()))
             .or_else(|| first_global_aggregate_category(plan))
             .or_else(|| Some("operator_shape".to_string())),
-        FallbackReason::UnsupportedType => {
-            first_unsupported_expression_category(plan).or_else(|| Some("type".to_string()))
-        },
+        FallbackReason::UnsupportedType => first_unsupported_expression_category(plan)
+            .or_else(|| first_literal_source_type_category(plan))
+            .or_else(|| Some("type".to_string())),
         FallbackReason::NativeDistributedAggregateUnsupported => {
             first_aggregate_category(plan).or_else(|| Some("aggregate_distributed".to_string()))
         },
@@ -162,7 +166,6 @@ pub(super) fn unsupported_category(
         | FallbackReason::NativeSourcePartitionColumns
         | FallbackReason::NativeSourceExprAdapter
         | FallbackReason::NativeSourceParquetFileReaderFactory
-        | FallbackReason::NativeSourceScanLimit
         | FallbackReason::NativeSourcePreserveOrder
         | FallbackReason::NativeSourceOutputOrdering
         | FallbackReason::NativeSourcePushedDownParquetPredicate
@@ -172,6 +175,7 @@ pub(super) fn unsupported_category(
         | FallbackReason::NativeSourceFileOrdering
         | FallbackReason::NativeSourceRowSelection
         | FallbackReason::NativeSourceSchemaMapping => Some("source".to_string()),
+        FallbackReason::NativeSourceScanLimit => Some("limit_contract".to_string()),
         FallbackReason::TableFormatUnsupported
         | FallbackReason::TableFormatPlanningFailed
         | FallbackReason::IcebergNonParquetDataFile
@@ -266,20 +270,20 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
 
     if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
         for (expr, _alias) in aggregate.group_expr().expr() {
-            if let Some(category) = expression_category(expr) {
+            if let Some(category) = expression_category_with_schema(expr, Some(aggregate.input().schema().as_ref())) {
                 return Some(category);
             }
         }
         for expr in aggregate.aggr_expr() {
             let function = stable_identifier(expr.fun().name());
-            if !matches!(function.as_str(), "sum" | "min" | "max" | "count" | "avg") {
+            if !matches!(function.as_str(), "sum" | "min" | "max" | "count" | "avg" | "stddev" | "stddev_samp") {
                 return Some(format!("aggregate_{function}"));
             }
             let expressions = expr.expressions();
             let [arg] = expressions.as_slice() else {
                 return Some("aggregate_argument_count".to_string());
             };
-            if let Some(category) = expression_category(arg) {
+            if let Some(category) = expression_category_with_schema(arg, Some(aggregate.input().schema().as_ref())) {
                 return Some(category);
             }
         }
@@ -308,10 +312,11 @@ fn first_global_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
 }
 
 fn aggregate_semantic_modifier_category(aggregate: &AggregateExec) -> Option<String> {
-    for filter in aggregate.filter_expr() {
-        if filter.is_some() {
-            return Some("aggregate_filter".to_string());
+    if let Some(filter) = aggregate.filter_expr().iter().flatten().next() {
+        if let Some(category) = expression_category_with_schema(filter, Some(aggregate.input().schema().as_ref())) {
+            return Some(format!("aggregate_filter_{category}"));
         }
+        return Some("aggregate_filter".to_string());
     }
     for expr in aggregate.aggr_expr() {
         if expr.is_distinct() {
@@ -324,16 +329,166 @@ fn aggregate_semantic_modifier_category(aggregate: &AggregateExec) -> Option<Str
     None
 }
 
+fn first_window_category(plan: &dyn ExecutionPlan) -> Option<String> {
+    if let Some(window) = plan.as_any().downcast_ref::<WindowAggExec>()
+        && let Some(category) = window_expr_category(window.window_expr())
+    {
+        return Some(category);
+    }
+    if let Some(window) = plan.as_any().downcast_ref::<BoundedWindowAggExec>()
+        && let Some(category) = window_expr_category(window.window_expr())
+    {
+        return Some(category);
+    }
+    for child in plan.children() {
+        if let Some(category) = first_window_category(child.as_ref()) {
+            return Some(category);
+        }
+    }
+    None
+}
+
+fn window_expr_category(window_exprs: &[Arc<dyn WindowExpr>]) -> Option<String> {
+    for window_expr in window_exprs {
+        if let Some(category) = single_window_expr_category(window_expr) {
+            return Some(category);
+        }
+    }
+    None
+}
+
+fn single_window_expr_category(window_expr: &Arc<dyn WindowExpr>) -> Option<String> {
+    if let Some(plain) = window_expr.as_any().downcast_ref::<PlainAggregateWindowExpr>() {
+        return aggregate_window_category(plain.get_aggregate_expr().fun().name(), plain.get_window_frame());
+    }
+    if let Some(sliding) = window_expr.as_any().downcast_ref::<SlidingAggregateWindowExpr>() {
+        return aggregate_window_category(sliding.get_aggregate_expr().fun().name(), sliding.get_window_frame());
+    }
+    if let Some(standard) = window_expr.as_any().downcast_ref::<StandardWindowExpr>() {
+        let function = standard_window_function_identifier(standard);
+        if !matches!(function.as_str(), "rank" | "row_number") {
+            return Some(format!("window_function_{function}"));
+        }
+        if function == "rank" && standard.order_by().is_empty() {
+            return Some("window_function_rank_without_order".to_string());
+        }
+        return unsupported_window_frame_category(standard.get_window_frame(), true);
+    }
+    Some(format!("window_function_{}", stable_identifier(window_expr.name())))
+}
+
+fn aggregate_window_category(function: &str, frame: &WindowFrame) -> Option<String> {
+    let function = stable_identifier(function);
+    if !matches!(function.as_str(), "sum" | "min" | "max" | "count" | "avg" | "stddev" | "stddev_samp") {
+        return Some(format!("aggregate_{function}"));
+    }
+    unsupported_window_frame_category(frame, false)
+}
+
+fn standard_window_function_identifier(standard: &StandardWindowExpr) -> String {
+    let function = standard.get_standard_func_expr();
+    stable_identifier(
+        function
+            .as_any()
+            .downcast_ref::<WindowUDFExpr>()
+            .map_or_else(|| function.name().to_string(), |expr| expr.fun().name().to_string())
+            .as_str(),
+    )
+}
+
+fn unsupported_window_frame_category(frame: &WindowFrame, standard_function: bool) -> Option<String> {
+    let whole_partition = is_whole_partition_window_frame(frame);
+    let cumulative = is_rows_unbounded_preceding_to_current_window_frame(frame);
+    let supported = if standard_function { true } else { whole_partition || cumulative };
+    if supported {
+        return None;
+    }
+    Some(format!("window_frame_{}", window_frame_identifier(frame)))
+}
+
+fn is_whole_partition_window_frame(frame: &WindowFrame) -> bool {
+    frame.units == WindowFrameUnits::Rows
+        && matches!(&frame.start_bound, WindowFrameBound::Preceding(value) if value.is_null())
+        && matches!(&frame.end_bound, WindowFrameBound::Following(value) if value.is_null())
+}
+
+fn is_rows_unbounded_preceding_to_current_window_frame(frame: &WindowFrame) -> bool {
+    frame.units == WindowFrameUnits::Rows
+        && matches!(&frame.start_bound, WindowFrameBound::Preceding(value) if value.is_null())
+        && matches!(frame.end_bound, WindowFrameBound::CurrentRow)
+}
+
+fn window_frame_identifier(frame: &WindowFrame) -> String {
+    format!(
+        "{}_{}_to_{}",
+        stable_identifier(format!("{:?}", frame.units).as_str()),
+        window_frame_bound_identifier(&frame.start_bound),
+        window_frame_bound_identifier(&frame.end_bound)
+    )
+}
+
+fn window_frame_bound_identifier(bound: &WindowFrameBound) -> String {
+    match bound {
+        WindowFrameBound::CurrentRow => "current_row".to_string(),
+        WindowFrameBound::Preceding(value) if value.is_null() => "unbounded_preceding".to_string(),
+        WindowFrameBound::Following(value) if value.is_null() => "unbounded_following".to_string(),
+        WindowFrameBound::Preceding(value) => format!("{}_preceding", scalar_window_bound_identifier(value)),
+        WindowFrameBound::Following(value) => format!("{}_following", scalar_window_bound_identifier(value)),
+    }
+}
+
+fn scalar_window_bound_identifier(value: &ScalarValue) -> String {
+    match value {
+        ScalarValue::Int8(Some(value)) => value.to_string(),
+        ScalarValue::Int16(Some(value)) => value.to_string(),
+        ScalarValue::Int32(Some(value)) => value.to_string(),
+        ScalarValue::Int64(Some(value)) => value.to_string(),
+        ScalarValue::UInt8(Some(value)) => value.to_string(),
+        ScalarValue::UInt16(Some(value)) => value.to_string(),
+        ScalarValue::UInt32(Some(value)) => value.to_string(),
+        ScalarValue::UInt64(Some(value)) => value.to_string(),
+        _ => stable_identifier(format!("{value:?}").as_str()).trim_matches('_').to_string(),
+    }
+}
+
+fn first_literal_source_type_category(plan: &dyn ExecutionPlan) -> Option<String> {
+    if literal_source_plan(plan) {
+        for field in plan.schema().fields() {
+            if !is_supported_arrow_type(field.data_type()) {
+                return Some(format!("literal_source_type_{}", stable_data_type_identifier(field.data_type())));
+            }
+        }
+    }
+    for child in plan.children() {
+        if let Some(category) = first_literal_source_type_category(child.as_ref()) {
+            return Some(category);
+        }
+    }
+    None
+}
+
+fn literal_source_plan(plan: &dyn ExecutionPlan) -> bool {
+    plan.as_any().downcast_ref::<PlaceholderRowExec>().is_some()
+        || plan.as_any().downcast_ref::<EmptyExec>().is_some()
+        || plan
+            .as_any()
+            .downcast_ref::<DataSourceExec>()
+            .is_some_and(|source| source.data_source().as_any().downcast_ref::<MemorySourceConfig>().is_some())
+}
+
 fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<String> {
     if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>()
-        && let Some(category) = expression_category(filter.predicate())
+        && let Some(category) =
+            expression_category_with_schema(filter.predicate(), Some(filter.input().schema().as_ref()))
     {
         return Some(category);
     }
 
     if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
         for expr in projection.expr() {
-            if let Some(category) = expression_category(&expr.expr) {
+            if let Some(category) =
+                expression_category_with_schema(&expr.expr, Some(projection.input().schema().as_ref()))
+            {
                 return Some(category);
             }
         }
@@ -341,7 +496,7 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
 
     if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
         for expr in sort.expr() {
-            if let Some(category) = expression_category(&expr.expr) {
+            if let Some(category) = expression_category_with_schema(&expr.expr, Some(sort.input().schema().as_ref())) {
                 return Some(category);
             }
         }
@@ -360,11 +515,28 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
     }
 
     if let Some(source) = plan.as_any().downcast_ref::<DataSourceExec>()
-        && let Some((_file_scan, parquet_source)) = source.downcast_to_file_source::<ParquetSource>()
-        && let Some(predicate) = parquet_source.filter()
-        && let Some(category) = expression_category(&predicate)
+        && let Some((file_scan, parquet_source)) = source.downcast_to_file_source::<ParquetSource>()
     {
-        return Some(category);
+        // DataFusion projection pushdown can absorb scalar expressions such as
+        // TRY_CAST into the FileSource projection rather than leaving them in a
+        // ProjectionExec above the scan. Walk those projection expressions
+        // against the unprojected table schema so type-aware labels still
+        // resolve here.
+        let projection_input_schema = file_scan.file_source().table_schema().table_schema().as_ref();
+        if let Some(projection) = file_scan.file_source().projection() {
+            for projection_expr in projection.iter() {
+                if let Some(category) =
+                    expression_category_with_schema(&projection_expr.expr, Some(projection_input_schema))
+                {
+                    return Some(category);
+                }
+            }
+        }
+        if let Some(predicate) = parquet_source.filter()
+            && let Some(category) = expression_category_with_schema(&predicate, Some(projection_input_schema))
+        {
+            return Some(category);
+        }
     }
 
     if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {

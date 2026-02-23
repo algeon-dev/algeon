@@ -337,7 +337,7 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
     assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
     assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
     assert_eq!(error.fact_value("budget_bytes"), Some(operator_budget.as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
     assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
     assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));

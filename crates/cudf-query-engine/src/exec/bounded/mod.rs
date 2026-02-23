@@ -283,6 +283,9 @@ fn execute_bounded_generic_node(
             crate::source::SourceNode::GpuResident(source) => {
                 execute_bounded_generic_gpu_resident_source(context, source, id, gpu_inputs, reservations, metrics)
             },
+            crate::source::SourceNode::LiteralBatch(source) => {
+                execute_bounded_generic_literal_batch_source(context, source, id, reservations, metrics)
+            },
         },
         PlanNode::Filter(filter) => {
             if let Some(frame) =
@@ -839,6 +842,26 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
             .with_memory_boundary("bounded_generic_gpu_resident_source")
             .with_node_id(node_id)
             .with_stage("bounded_generic_gpu_resident_source")
+            .with_attempt(1, 1),
+        metrics,
+    )?;
+    Ok(ResidentGpuFrame { frame, reservation })
+}
+
+pub(in crate::exec::bounded) fn execute_bounded_generic_literal_batch_source(
+    context: &ExecutionContext,
+    source: &crate::source::LiteralBatchSource,
+    node_id: NodeId,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let frame = read_literal_batch_source(context, source, metrics)?;
+    let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
+    let reservation = reservations.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+            .with_memory_boundary("bounded_generic_literal_batch_source")
+            .with_node_id(node_id)
+            .with_stage("bounded_generic_literal_batch_source")
             .with_attempt(1, 1),
         metrics,
     )?;

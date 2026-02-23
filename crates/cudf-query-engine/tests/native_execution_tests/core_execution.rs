@@ -161,6 +161,47 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
 }
 
 #[test]
+fn native_query_executes_literal_batch_source_with_offset_only_limit() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("label", DataType::Utf8, true),
+    ]));
+    let input_batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec![Some("one"), None, Some("three")])),
+        ],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![input_batch])));
+    let limit = builder.add_limit(source, LimitSpec::offset(1), Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(limit);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.input_batches, 1);
+    assert_eq!(metrics.input_rows, 3);
+    assert_eq!(metrics.boundary.host_to_device_uploads, 1);
+    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metrics.boundary.device_to_host_materialized_rows, 2);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[2, 3]);
+    assert!(string_array(batch, 1).is_null(0));
+    assert_eq!(string_array(batch, 1).value(1), "three");
+}
+
+#[test]
 fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column_type() {
     let dir = unique_temp_dir("cudf-query-engine-native-reader-float-integer-predicate");
     let path = dir.join("input.parquet");

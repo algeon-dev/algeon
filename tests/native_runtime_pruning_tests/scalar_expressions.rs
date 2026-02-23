@@ -84,6 +84,10 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
         ("is-null", SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY),
         ("round", SQL_PHASE5_ROUND_SCALAR_QUERY),
         ("abs", SQL_PHASE7_ABS_SCALAR_QUERY),
+        ("sqrt", SQL_PHASE2_SQRT_SCALAR_QUERY),
+        ("string-concat-operator", SQL_PHASE2_STRING_CONCAT_OPERATOR_QUERY),
+        ("null-aware-comparison", SQL_PHASE2_NULL_AWARE_COMPARISON_QUERY),
+        ("integer-to-timestamp-cast", SQL_PHASE2_INTEGER_TO_TIMESTAMP_CAST_QUERY),
     ];
 
     for (name, sql) in cases {

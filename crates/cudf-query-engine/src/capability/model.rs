@@ -398,6 +398,8 @@ pub enum SourceFormatCapability {
     LocalParquet,
     /// Already resident cudf table supplied by an upstream native node.
     GpuResident,
+    /// Host Arrow literal batches imported by native execution.
+    LiteralBatch,
 }
 
 /// Aggregate grouping mode.

@@ -58,6 +58,44 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
 }
 
 #[tokio::test]
+async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-count-distinct-nunique");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
+    let sort = plan.as_any().downcast_ref::<SortExec>().expect("direct SQL root should be SortExec");
+    let projection =
+        sort.input().as_any().downcast_ref::<ProjectionExec>().expect("direct SQL sort input should be ProjectionExec");
+    let aggregate = projection
+        .input()
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("direct SQL projection input should be AggregateExec");
+    let m01_index = aggregate.input().schema().index_of("m01").expect("aggregate input should include m01");
+    let distinct_count = aggregate_expr_on_column_with_alias(
+        count_udaf(),
+        aggregate.input().schema(),
+        m01_index,
+        "distinct_payload",
+        true,
+        vec![],
+    );
+    let aggregate: Arc<dyn ExecutionPlan> = Arc::new(aggregate.with_new_aggr_exprs(vec![distinct_count]));
+
+    let result = lower_physical_plan_to_native(aggregate);
+
+    assert_eq!(result.candidate_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::NUnique);
+    assert!(!aggregate_exprs[0].distinct);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-count-star");
     let path = dir.join("input.parquet");

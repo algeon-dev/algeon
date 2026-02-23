@@ -21,6 +21,9 @@ fn native_query_executes_phase2_scalar_expression_families() {
         Field::new("status_like_o", DataType::Boolean, true),
         Field::new("status_not_like_f", DataType::Boolean, true),
         Field::new("abs_order_delta", DataType::Int64, false),
+        Field::new("sqrt_orderkey", DataType::Float64, false),
+        Field::new("status_distinct_from_o", DataType::Boolean, false),
+        Field::new("status_not_distinct_from_o", DataType::Boolean, false),
     ]));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -69,6 +72,11 @@ fn native_query_executes_phase2_scalar_expression_families() {
         Expr::not_like(Expr::column("status"), "F%").alias("status_not_like_f"),
         Expr::abs(Expr::binary(Expr::column("orderkey"), BinaryOp::Subtract, Expr::literal(LiteralValue::Int64(3))))
             .alias("abs_order_delta"),
+        Expr::sqrt(Expr::column("orderkey"), DataType::Float64).alias("sqrt_orderkey"),
+        Expr::is_distinct_from(Expr::column("status"), Expr::literal(LiteralValue::Utf8("O".to_string())))
+            .alias("status_distinct_from_o"),
+        Expr::is_not_distinct_from(Expr::column("status"), Expr::literal(LiteralValue::Utf8("O".to_string())))
+            .alias("status_not_distinct_from_o"),
     ];
 
     let mut builder = QueryPlanBuilder::new();
@@ -107,6 +115,15 @@ fn native_query_executes_phase2_scalar_expression_families() {
     assert!(boolean_array(batch, 12).value(1));
     assert!(boolean_array(batch, 12).is_null(2));
     assert_eq!(int64_array(batch, 13).values().as_ref(), &[2, 0, 1]);
+    assert_eq!(float64_array(batch, 14).value(0), 1.0);
+    assert!((float64_array(batch, 14).value(1) - 3.0_f64.sqrt()).abs() < 1e-12);
+    assert_eq!(float64_array(batch, 14).value(2), 2.0);
+    assert!(!boolean_array(batch, 15).value(0));
+    assert!(!boolean_array(batch, 15).value(1));
+    assert!(boolean_array(batch, 15).value(2));
+    assert!(boolean_array(batch, 16).value(0));
+    assert!(boolean_array(batch, 16).value(1));
+    assert!(!boolean_array(batch, 16).value(2));
 
     fs::remove_dir_all(dir).unwrap();
 }

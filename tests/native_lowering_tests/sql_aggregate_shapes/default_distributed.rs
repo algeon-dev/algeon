@@ -98,7 +98,7 @@ async fn default_sql_distributed_rollup_aggregate_lowers_to_native_grouping_sets
 }
 
 #[tokio::test]
-async fn default_sql_distributed_aggregate_filter_is_rejected() {
+async fn default_sql_distributed_aggregate_filter_lowers_to_native_filter() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filtered-aggregate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -106,7 +106,23 @@ async fn default_sql_distributed_aggregate_filter_is_rejected() {
 
     let result = lower_physical_plan_to_native(plan);
 
-    assert_distributed_aggregate_rejection(&result, FallbackReason::NativeDistributedAggregateUnsupported);
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Sum);
+    assert!(
+        matches!(
+            aggregate_exprs[0].filter.as_ref(),
+            Some(Expr::Column(column)) if column.name() == "__cudf_aggregate_filter_0"
+        ),
+        "distributed aggregate filter should be materialized once before the native aggregate"
+    );
+    assert!(native_projection_exprs(&result.plans[0]).iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, .. } if alias == "__cudf_aggregate_filter_0"
+    )));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -173,7 +189,7 @@ async fn distributed_final_aggregate_state_schema_mismatch_is_rejected() {
 }
 
 #[tokio::test]
-async fn distributed_aggregate_filter_expr_is_rejected() {
+async fn distributed_partial_aggregate_filter_lowers_to_native_filter() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-filter-mutation");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
@@ -195,6 +211,52 @@ async fn distributed_aggregate_filter_expr_is_rejected() {
                 vec![Some(predicate)],
                 Arc::clone(partial_aggregate.input()),
                 partial_aggregate.input_schema(),
+            )
+            .unwrap(),
+        )
+    });
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert!(
+        matches!(
+            aggregate_exprs[0].filter.as_ref(),
+            Some(Expr::Column(column)) if column.name() == "__cudf_aggregate_filter_0"
+        ),
+        "partial-side filter should be retained on the native aggregate"
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn distributed_final_aggregate_filter_expr_is_rejected() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-distributed-final-filter-mutation");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_benchmark_plan(&path, SessionConfig::new()).await;
+    let plan = with_rewritten_distributed_final_aggregate_exec(plan, |final_aggregate| {
+        let input_schema = final_aggregate.input().schema();
+        let predicate = binary(
+            col("key", &input_schema).unwrap(),
+            Operator::GtEq,
+            lit(ScalarValue::Int32(Some(10))),
+            &input_schema,
+        )
+        .unwrap();
+        Arc::new(
+            AggregateExec::try_new(
+                *final_aggregate.mode(),
+                final_aggregate.group_expr().clone(),
+                final_aggregate.aggr_expr().to_vec(),
+                vec![Some(predicate)],
+                Arc::clone(final_aggregate.input()),
+                final_aggregate.input_schema(),
             )
             .unwrap(),
         )

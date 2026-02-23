@@ -62,6 +62,48 @@ fn native_plan_can_represent_proven_benchmark_shape() {
 }
 
 #[test]
+fn native_plan_can_represent_offset_only_limit() {
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1, 2, 3]))]).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let limit = builder.add_limit(source, LimitSpec::offset(2), Arc::clone(&schema));
+    let plan = builder.finish_with_host_sink(limit);
+
+    assert!(
+        matches!(&plan.root_node().kind, PlanNode::Limit(node) if node.spec.skip == 2 && node.spec.fetch.is_none())
+    );
+    assert!(plan.to_string().contains("LiteralBatchSource batches=1 rows=3 schema_fields=1"));
+    assert!(plan.to_string().contains("Limit input=n0 skip=2 fetch=none"));
+    assert!(
+        plan.capability_analysis().nodes.iter().all(|node| matches!(node.executable, CapabilityDecision::Satisfied))
+    );
+}
+
+#[test]
+fn native_plan_can_represent_literal_batch_source() {
+    let schema = Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![7, 8]))]).unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let plan = builder.finish_with_host_sink(source);
+
+    assert_eq!(plan.output_schema().as_ref(), schema.as_ref());
+    assert!(matches!(
+        &plan.root_node().kind,
+        PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(source) if source.row_count() == 2)
+    ));
+    assert_eq!(
+        plan.capability_analysis().nodes[0].operator,
+        NodeOperator::Source { format: SourceFormatCapability::LiteralBatch }
+    );
+}
+
+#[test]
 fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
     let input_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

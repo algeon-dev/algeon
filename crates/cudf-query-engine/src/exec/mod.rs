@@ -20,7 +20,7 @@ use arrow::{
 use cudf::{
     AggSpec as CudfAggSpec, BudgetedExecutionOutcome, DataFrame, DuplicateKeepOption, ExecutionBudgetEnforcement,
     ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionOverrides, GroupByAgg, GroupByOptions, ReduceAgg,
-    SortOptions as CudfSortOptions,
+    ShiftSpec as CudfShiftSpec, SortOptions as CudfSortOptions,
     core::Scalar as CudfScalar,
     frame::dataframe::{DropDuplicatesOptions, InfoDetail, ParquetReadOptions},
     io::source::SourceReadMode,
@@ -54,7 +54,9 @@ pub use bounded::{
     partial_aggregate_upper_bound_bytes,
 };
 use edge_normalize::execute_edge_normalize;
-pub use source::{read_gpu_resident_source, read_local_parquet_source, validate_local_parquet_source};
+pub use source::{
+    read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,
+};
 pub use types::{
     GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
     GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey, GpuResidentInputMap,
@@ -280,6 +282,7 @@ pub mod reservation_contract_testing {
     }
 }
 
+pub(crate) use self::validate::validate_literal_batch_source;
 use self::{
     bounded::*,
     graph_algorithm::*,
@@ -299,7 +302,9 @@ use crate::{
     },
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
-    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue, SortSpec},
+    expr::{
+        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue, SortSpec,
+    },
     metrics::QueryMetrics,
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
@@ -468,6 +473,7 @@ fn execute_node(
             crate::source::SourceNode::GpuResident(source) => {
                 read_gpu_resident_source(context, source, gpu_inputs, metrics)
             },
+            crate::source::SourceNode::LiteralBatch(source) => read_literal_batch_source(context, source, metrics),
         },
         PlanNode::Filter(filter) => {
             let input = execute_node(context, plan, filter.input, gpu_inputs, scratch, metrics)?;

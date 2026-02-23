@@ -9,6 +9,7 @@ use tonic::transport::Server;
 mod admission;
 mod cancel;
 pub mod config;
+pub mod diagnostics;
 pub mod error;
 mod flight;
 mod session;
@@ -23,6 +24,7 @@ pub use config::{
     DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV,
     DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig, ServerSessionProfile,
 };
+pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report};
 pub use error::{Result, ServerError};
 pub use session::{apply_session_profile, build_session_config};
 
@@ -40,10 +42,12 @@ pub use session::{apply_session_profile, build_session_config};
 pub async fn serve(config: ServerConfig) -> Result<()> {
     let addr = config.bind_addr;
     log_server_config_snapshot(&config);
+    warn_if_testing_profile_active(&config);
     let ctx = Arc::new(session::build_session_context(&config).await?);
     let service = flight::DatafusionCudfFlightSqlService::new(
         ctx,
         config.native_optimizer_config.clone(),
+        config.session_profile,
         config.max_in_flight,
         config.statement_ticket_ttl,
     );
@@ -211,6 +215,45 @@ fn option_display(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
 
+/// Emit a one-shot startup warning when the operator selected the
+/// [`ServerSessionProfile::CpuFallback`] profile against an Iceberg
+/// deployment.
+///
+/// The combination is testing-only: `CudfTableFormatScanExec` has no CPU
+/// Arrow reader yet (tracked as Phase 6 of
+/// `docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md`), so plain
+/// `ORDER BY` shapes will hit the Phase 1 leaf guard and fail in planning.
+/// Production Iceberg deployments should use [`ServerSessionProfile::Native`]
+/// — which is the default when an Iceberg catalog is configured.
+fn warn_if_testing_profile_active(config: &ServerConfig) {
+    if !is_testing_profile_active(config) {
+        return;
+    }
+    tracing::warn!(
+        session_profile = %config.session_profile,
+        "datafusion-cudf Flight SQL server starting with cpu_fallback session \
+         profile while Iceberg is configured. This profile is testing-only and \
+         does NOT actually fall back to CPU for Iceberg tables (GPU-only \
+         CudfTableFormatScanExec has no CPU Arrow reader yet — tracked as \
+         Phase 6 of docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md). \
+         Plain ORDER BY queries over Iceberg will fail with a structured \
+         planning error. Set DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native \
+         (the default for Iceberg deployments) for production use."
+    );
+}
+
+#[cfg(feature = "iceberg")]
+pub(crate) fn is_testing_profile_active(config: &ServerConfig) -> bool {
+    matches!(config.session_profile, ServerSessionProfile::CpuFallback) && config.iceberg.is_some()
+}
+
+#[cfg(not(feature = "iceberg"))]
+pub(crate) fn is_testing_profile_active(_config: &ServerConfig) -> bool {
+    // Without the iceberg feature there is no GPU-only table-format leaf, so
+    // cpu_fallback is the right choice for any CPU-readable source.
+    false
+}
+
 /// Resolve when the process receives SIGINT or SIGTERM. cudf and cugraph are
 /// Linux-only, so the whole server is Linux-only and we do not gate on `unix`.
 /// The future also resolves if the signal stream errors out so the server
@@ -233,5 +276,64 @@ async fn wait_for_shutdown_signal() {
             }
         }
         _ = sigterm.recv() => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CudfOptimizerConfig;
+
+    fn base_config(profile: ServerSessionProfile) -> ServerConfig {
+        ServerConfig {
+            bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
+            log_filter: "info".to_string(),
+            max_in_flight: 1,
+            statement_ticket_ttl: std::time::Duration::from_secs(60),
+            native_optimizer_config: CudfOptimizerConfig::default(),
+            session_profile: profile,
+            #[cfg(feature = "iceberg")]
+            iceberg: None,
+        }
+    }
+
+    #[test]
+    fn testing_profile_inactive_for_native_profile() {
+        let config = base_config(ServerSessionProfile::Native);
+        assert!(!is_testing_profile_active(&config));
+    }
+
+    #[test]
+    fn testing_profile_inactive_for_cpu_fallback_without_iceberg() {
+        // Without an Iceberg catalog the cpu_fallback profile is the correct
+        // choice for any CPU-readable source — no warning should fire.
+        let config = base_config(ServerSessionProfile::CpuFallback);
+        assert!(!is_testing_profile_active(&config));
+    }
+
+    #[cfg(feature = "iceberg")]
+    #[test]
+    fn testing_profile_active_only_for_cpu_fallback_plus_iceberg() {
+        let iceberg = config::IcebergServerConfig {
+            catalog_name: "glue".to_string(),
+            glue_catalog_handle: "glue".to_string(),
+            namespace: "demo_db".to_string(),
+            warehouse: "s3://test/".to_string(),
+            catalog_id: None,
+            region: "us-east-1".to_string(),
+            profile: None,
+            tables: Vec::new(),
+        };
+
+        let mut config = base_config(ServerSessionProfile::CpuFallback);
+        config.iceberg = Some(iceberg.clone());
+        assert!(is_testing_profile_active(&config), "cpu_fallback + iceberg must arm the WARN");
+
+        let mut config = base_config(ServerSessionProfile::Native);
+        config.iceberg = Some(iceberg);
+        assert!(
+            !is_testing_profile_active(&config),
+            "native + iceberg must stay silent — that is the recommended production setup",
+        );
     }
 }

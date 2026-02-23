@@ -81,9 +81,29 @@ pub enum ServerSessionProfile {
     Native,
     /// Preserve DataFusion's CPU-style profile derived from
     /// `DATAFUSION_EXECUTION_*` environment variables (single underscores,
-    /// matching DataFusion's `SessionConfig::from_env()` mapping). Suitable
-    /// when the session only serves CPU-readable sources and benefits from
-    /// DataFusion's parallel CPU exchanges.
+    /// matching DataFusion's `SessionConfig::from_env()` mapping).
+    ///
+    /// **Testing-only when Iceberg is configured.** The Iceberg table
+    /// providers register a GPU-only `CudfTableFormatScanExec` leaf that has
+    /// no CPU Arrow reader, so this profile does **not** actually fall back
+    /// to CPU for Iceberg queries — DataFusion repartitioning will insert
+    /// `RepartitionExec` / `SortPreservingMergeExec` shapes the native rule
+    /// cannot lower, and the Phase 1 leaf guard converts those into
+    /// structured planning errors. Selecting this profile against an Iceberg
+    /// deployment is therefore only useful for regression repro and
+    /// diagnostics work; production deployments should stick to
+    /// [`ServerSessionProfile::Native`] (the default when Iceberg is
+    /// configured).
+    ///
+    /// A CPU Arrow reader for Iceberg is tracked as Phase 6 of
+    /// `docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md`.
+    /// Without it, multi-partition CPU execution over `CudfTableFormatScanExec`
+    /// is unreachable.
+    ///
+    /// For CPU-only sessions that do not register an Iceberg catalog
+    /// (e.g., a server serving CSV / vanilla Parquet sources), this profile
+    /// is the right choice and `target_partitions` > 1 provides real CPU
+    /// parallelism.
     CpuFallback,
 }
 

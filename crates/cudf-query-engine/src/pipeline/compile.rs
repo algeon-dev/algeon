@@ -343,6 +343,7 @@ fn build_tasks(
                 let kind = match source.as_ref() {
                     SourceNode::LocalParquet(_) => PipelineTaskKind::SourceRead,
                     SourceNode::GpuResident(_) => PipelineTaskKind::GpuResidentSource,
+                    SourceNode::LiteralBatch(_) => PipelineTaskKind::LiteralBatchSource,
                 };
                 let task = single_task(task_ids, *node_id)?;
                 let gates = gate_builder

@@ -225,6 +225,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     self.metrics,
                 )
                 .map(CompiledGpuResource::new),
+                SourceNode::LiteralBatch(source) => execute_bounded_generic_literal_batch_source(
+                    self.context,
+                    source,
+                    node_id,
+                    &mut self.reservations,
+                    self.metrics,
+                )
+                .map(CompiledGpuResource::new),
             },
             _ => Err(invalid("compiled source task does not reference a source plan node")
                 .with_fact("compiled_task_id", task.id())
@@ -1299,7 +1307,9 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         self.reservations.set_diagnostic_context(Some(task.id()), task_diagnostic_resident_resource(task));
         let timer = Instant::now();
         let result = match task.kind() {
-            PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource => self.execute_source_task(task),
+            PipelineTaskKind::SourceRead
+            | PipelineTaskKind::GpuResidentSource
+            | PipelineTaskKind::LiteralBatchSource => self.execute_source_task(task),
             PipelineTaskKind::Unary => self.execute_unary_task(task, state),
             PipelineTaskKind::JoinBuild => self.execute_join_build_task(task, state),
             PipelineTaskKind::JoinProbe => self.execute_join_probe_task(task, state),

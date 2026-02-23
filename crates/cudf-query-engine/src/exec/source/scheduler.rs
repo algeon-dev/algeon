@@ -57,9 +57,10 @@ impl ScheduledLocalParquetRead {
         prefetch: bool,
         attempt: usize,
         max_attempts: usize,
-    ) -> Self {
+    ) -> Result<Self> {
         let thread_chunk = chunk.clone();
-        let thread_context = context.clone();
+        let worker_context = context.clone_for_source_read_worker()?;
+        let thread_context = worker_context.clone();
         let thread_source = source.clone();
         let handle = thread::spawn(move || {
             let mut metrics = QueryMetrics::default();
@@ -70,22 +71,32 @@ impl ScheduledLocalParquetRead {
                 budget_bytes,
                 budget_boundary,
                 &mut metrics,
-            );
+            )
+            .and_then(|frame| {
+                thread_context.runtime().synchronize().map_err(|error| {
+                    QueryError::from_cudf(
+                        "cudf_query_engine.source_scheduler.worker_sync",
+                        "failed to synchronize scheduled source read worker stream",
+                        error,
+                    )
+                })?;
+                Ok(frame)
+            });
             ScheduledLocalParquetReadResult { frame, metrics }
         });
-        Self {
+        Ok(Self {
             chunk,
             state: ScheduledLocalParquetReadState::Running {
                 reservation: Box::new(reservation),
                 handle,
-                context: Box::new(context),
+                context: Box::new(worker_context),
                 source: Box::new(source),
                 attempt,
                 max_attempts,
             },
             budget_boundary,
             prefetch,
-        }
+        })
     }
 
     pub(in crate::exec) fn ready(

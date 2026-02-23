@@ -43,6 +43,7 @@ pub(super) fn gpu_resident_source_names(plan: &QueryPlan) -> BTreeSet<String> {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::GpuResident(source) => Some(source.input_name.clone()),
                 SourceNode::LocalParquet(_) => None,
+                SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })

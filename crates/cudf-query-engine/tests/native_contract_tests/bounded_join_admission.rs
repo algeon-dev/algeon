@@ -175,6 +175,31 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
 }
 
 #[test]
+fn string_keyed_join_selects_non_reusable_strategy_before_runtime() {
+    let plan = string_keyed_join_strategy_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.has_rejections(), "string-key join should remain executable without reusable pre-build");
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("string-key join should report modeled bounded facts");
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
+    assert_eq!(
+        facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
+        Some("n2:build_key_prebuild_reservation_unsupported")
+    );
+    assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:false"));
+
+    let pipeline =
+        cudf_query_engine::compile_pipeline(&plan, &analysis).expect("string-key partitioned join should compile");
+    assert!(
+        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
+        "string-key partitioned joins must not carry reusable hash-table gates"
+    );
+    assert_one_shot_output_preflight_gap(&pipeline, "string-key partitioned join");
+}
+
+#[test]
 fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     let plan = large_keyed_probe_join_strategy_plan(2_000_000, 128 * 1024 * 1024);
     let analysis = plan.capability_analysis();
@@ -405,6 +430,61 @@ fn large_keyed_probe_join_strategy_plan(build_rows: u64, build_bytes: u64) -> cu
             JoinOutputColumn::left(ColumnRef::input(0, "order_id", "order_id"), "order_id"),
             JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
             JoinOutputColumn::right(ColumnRef::input(1, "category", "category"), "category"),
+        ])
+        .with_build_side(JoinSide::Right),
+        output_schema,
+    );
+    builder.finish_with_host_sink(join)
+}
+
+fn string_keyed_join_strategy_plan() -> cudf_query_engine::QueryPlan {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("customer_id", DataType::Utf8, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("customer_id", DataType::Utf8, true),
+        Field::new("segment", DataType::Utf8, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("customer_id", DataType::Utf8, false),
+        Field::new("qty", DataType::Int32, false),
+        Field::new("segment", DataType::Utf8, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/string-key-join-left.parquet")
+                .with_row_group_rows(vec![10_000])
+                .with_row_group_bytes(vec![1024 * 1024]),
+        ],
+        Arc::clone(&left_schema),
+        vec!["customer_id".to_string(), "qty".to_string()],
+    )));
+    let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/string-key-join-right.parquet")
+                .with_row_group_rows(vec![10])
+                .with_row_group_bytes(vec![1024]),
+        ],
+        Arc::clone(&right_schema),
+        vec!["customer_id".to_string(), "segment".to_string()],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "customer_id", "left_customer_id"),
+                ColumnRef::input(1, "customer_id", "right_customer_id"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "customer_id", "customer_id"), "customer_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "segment", "segment"), "segment"),
         ])
         .with_build_side(JoinSide::Right),
         output_schema,

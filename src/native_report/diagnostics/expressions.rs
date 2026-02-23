@@ -1,4 +1,4 @@
-use arrow::datatypes::SchemaRef;
+use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 
 use super::*;
@@ -57,6 +57,13 @@ fn expression_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
 }
 
 pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {
+    expression_category_with_schema(expr, None)
+}
+
+pub(super) fn expression_category_with_schema(
+    expr: &Arc<dyn PhysicalExpr>,
+    input_schema: Option<&Schema>,
+) -> Option<String> {
     if expr.as_any().downcast_ref::<Column>().is_some() {
         return None;
     }
@@ -70,32 +77,40 @@ pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String
         if !binary_operator_is_supported(binary.op()) {
             return Some(format!("expression_binary_{}", binary_operator_identifier(binary.op())));
         }
-        return expression_category(binary.left()).or_else(|| expression_category(binary.right()));
+        return expression_category_with_schema(binary.left(), input_schema)
+            .or_else(|| expression_category_with_schema(binary.right(), input_schema));
     }
     if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
-        return expression_category(not.arg());
+        return expression_category_with_schema(not.arg(), input_schema);
     }
     if let Some(negative) = expr.as_any().downcast_ref::<NegativeExpr>() {
-        return expression_category(negative.arg()).or_else(|| Some("expression_unary_negative".to_string()));
+        return expression_category_with_schema(negative.arg(), input_schema)
+            .or_else(|| Some("expression_unary_negative".to_string()));
     }
     if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
-        return expression_category(is_null.arg());
+        return expression_category_with_schema(is_null.arg(), input_schema);
     }
     if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
-        return expression_category(is_not_null.arg());
+        return expression_category_with_schema(is_not_null.arg(), input_schema);
     }
     if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
-        return expression_category(cast.expr());
+        return expression_category_with_schema(cast.expr(), input_schema).or_else(|| {
+            cast.cast_options()
+                .safe
+                .then(|| cast_type_pair_category("expression_try_cast", cast.expr(), cast.cast_type(), input_schema))
+        });
     }
     if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
-        return expression_category(try_cast.expr()).or_else(|| Some("expression_try_cast".to_string()));
+        return expression_category_with_schema(try_cast.expr(), input_schema).or_else(|| {
+            Some(cast_type_pair_category("expression_try_cast", try_cast.expr(), try_cast.cast_type(), input_schema))
+        });
     }
     if let Some(like) = expr.as_any().downcast_ref::<LikeExpr>() {
         if like.case_insensitive() {
             return Some("expression_like_case_insensitive".to_string());
         }
-        return expression_category(like.expr()).or_else(|| {
-            expression_category(like.pattern())
+        return expression_category_with_schema(like.expr(), input_schema).or_else(|| {
+            expression_category_with_schema(like.pattern(), input_schema)
                 .or_else(|| literal_string(like.pattern()).is_none().then(|| "expression_like_pattern".to_string()))
         });
     }
@@ -110,24 +125,27 @@ pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String
         {
             return Some("expression_in_list".to_string());
         }
-        return expression_category(in_list.expr()).or_else(|| in_list.list().iter().find_map(expression_category));
+        return expression_category_with_schema(in_list.expr(), input_schema)
+            .or_else(|| in_list.list().iter().find_map(|expr| expression_category_with_schema(expr, input_schema)));
     }
     if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
         if let Some(expr) = case.expr()
-            && let Some(category) = expression_category(expr)
+            && let Some(category) = expression_category_with_schema(expr, input_schema)
         {
             return Some(category);
         }
         for (when, then) in case.when_then_expr() {
-            if let Some(category) = expression_category(when).or_else(|| expression_category(then)) {
+            if let Some(category) = expression_category_with_schema(when, input_schema)
+                .or_else(|| expression_category_with_schema(then, input_schema))
+            {
                 return Some(category);
             }
         }
-        return case.else_expr().and_then(expression_category);
+        return case.else_expr().and_then(|expr| expression_category_with_schema(expr, input_schema));
     }
     if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
         return match dynamic_filter.current() {
-            Ok(current) => expression_category(&current),
+            Ok(current) => expression_category_with_schema(&current, input_schema),
             Err(_error) => Some("expression_dynamic_filter".to_string()),
         };
     }
@@ -135,25 +153,38 @@ pub(super) fn expression_category(expr: &Arc<dyn PhysicalExpr>) -> Option<String
         let function_name = stable_identifier(function.name());
         match function_name.as_str() {
             "substr" | "substring" => {
-                return function.args().iter().find_map(expression_category).or_else(|| {
-                    (!substring_arguments_are_supported(function)).then(|| "expression_substring_argument".to_string())
-                });
+                return function
+                    .args()
+                    .iter()
+                    .find_map(|expr| expression_category_with_schema(expr, input_schema))
+                    .or_else(|| {
+                        (!substring_arguments_are_supported(function))
+                            .then(|| "expression_substring_argument".to_string())
+                    });
             },
             "date_part" | "extract" => {
-                return function.args().iter().find_map(expression_category).or_else(|| {
-                    (!extract_field_is_supported(function)).then(|| "expression_extract_field".to_string())
-                });
+                return function
+                    .args()
+                    .iter()
+                    .find_map(|expr| expression_category_with_schema(expr, input_schema))
+                    .or_else(|| {
+                        (!extract_field_is_supported(function)).then(|| "expression_extract_field".to_string())
+                    });
             },
             "lower" | "upper" => {
-                return function.args().iter().find_map(expression_category).or_else(|| {
-                    (function.args().len() != 1).then(|| format!("expression_scalar_function_{function_name}"))
-                });
+                return function
+                    .args()
+                    .iter()
+                    .find_map(|expr| expression_category_with_schema(expr, input_schema))
+                    .or_else(|| {
+                        (function.args().len() != 1).then(|| format!("expression_scalar_function_{function_name}"))
+                    });
             },
             _ => return Some(format!("expression_scalar_function_{function_name}")),
         }
     }
     for child in expr.children() {
-        if let Some(category) = expression_category(child) {
+        if let Some(category) = expression_category_with_schema(child, input_schema) {
             return Some(category);
         }
     }
@@ -196,6 +227,28 @@ fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
     expr.as_any()
         .downcast_ref::<Literal>()
         .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
+}
+
+pub(super) fn stable_data_type_identifier(data_type: &DataType) -> String {
+    stable_identifier(format!("{data_type:?}").as_str()).trim_matches('_').to_string()
+}
+
+fn cast_type_pair_category(
+    prefix: &str,
+    expr: &Arc<dyn PhysicalExpr>,
+    to_type: &DataType,
+    input_schema: Option<&Schema>,
+) -> String {
+    input_schema.map_or_else(
+        || prefix.to_string(),
+        |schema| {
+            let from_type = expr
+                .data_type(schema)
+                .map(|data_type| stable_data_type_identifier(&data_type))
+                .unwrap_or_else(|_error| "unknown".to_string());
+            format!("{}_{}_to_{}", prefix, from_type, stable_data_type_identifier(to_type))
+        },
+    )
 }
 
 fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {

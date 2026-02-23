@@ -87,7 +87,7 @@ pub(in crate::exec) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Resul
 }
 
 pub(in crate::exec) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupByAgg {
-    if expr.distinct && expr.function == AggregateFunction::Count {
+    if aggregate_expr_is_exact_nunique(expr) {
         return GroupByAgg::NUnique;
     }
     match expr.function {
@@ -95,6 +95,7 @@ pub(in crate::exec) fn lower_aggregate_function(expr: &AggregateExpr) -> GroupBy
         AggregateFunction::Min => GroupByAgg::Min,
         AggregateFunction::Max => GroupByAgg::Max,
         AggregateFunction::Count => GroupByAgg::Count { include_nulls: false },
+        AggregateFunction::NUnique => GroupByAgg::NUnique,
         AggregateFunction::Avg => GroupByAgg::Mean,
         AggregateFunction::StddevSamp => unreachable!("stddev_samp uses the DataFusion-exact Welford aggregate path"),
     }
@@ -106,6 +107,7 @@ pub(in crate::exec) fn lower_final_aggregate_function(function: AggregateFunctio
         AggregateFunction::Min => GroupByAgg::Min,
         AggregateFunction::Max => GroupByAgg::Max,
         AggregateFunction::Count => GroupByAgg::Sum,
+        AggregateFunction::NUnique => GroupByAgg::Sum,
         AggregateFunction::Avg => unreachable!("avg final aggregate is lowered as explicit sum/count state"),
         AggregateFunction::StddevSamp => {
             unreachable!("stddev_samp final aggregate uses the DataFusion-exact Welford aggregate path")
@@ -145,7 +147,15 @@ pub(in crate::exec) fn aggregate_spec_has_stddev_samp(spec: &AggregateSpec) -> b
 }
 
 pub(in crate::exec) fn aggregate_spec_has_distinct(spec: &AggregateSpec) -> bool {
-    spec.aggr_exprs.iter().any(|expr| expr.distinct)
+    spec.aggr_exprs.iter().any(aggregate_expr_is_exact_nunique)
+}
+
+pub(in crate::exec) fn aggregate_expr_is_exact_nunique(expr: &AggregateExpr) -> bool {
+    expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
+}
+
+pub(in crate::exec) fn aggregate_spec_has_filters(spec: &AggregateSpec) -> bool {
+    spec.aggr_exprs.iter().any(|expr| expr.filter.is_some())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

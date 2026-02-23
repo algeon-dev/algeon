@@ -30,7 +30,8 @@ impl<'a> NormalizedNativePlan<'a> {
         match &root.input {
             NormalizedNativeInput::Source(source) => Some(source),
             NormalizedNativeInput::GpuResidentSource(_) => None,
-            NormalizedNativeInput::Filter(_)
+            NormalizedNativeInput::LiteralSource(_)
+            | NormalizedNativeInput::Filter(_)
             | NormalizedNativeInput::Projection(_)
             | NormalizedNativeInput::Limit(_)
             | NormalizedNativeInput::Aggregate(_)
@@ -99,6 +100,7 @@ pub(in crate::native) struct NormalizedNativeInputRoot<'a> {
 pub(in crate::native) enum NormalizedNativeInput<'a> {
     Source(NormalizedNativeSource<'a>),
     GpuResidentSource(NormalizedNativeGpuResidentSource<'a>),
+    LiteralSource(NormalizedNativeLiteralSource<'a>),
     Filter(NormalizedNativeFilter<'a>),
     Projection(NormalizedNativeProjection<'a>),
     Limit(NormalizedNativeLimit<'a>),
@@ -119,6 +121,7 @@ impl NormalizedNativeInput<'_> {
         match self {
             Self::Source(source) => source.shape(),
             Self::GpuResidentSource(source) => source.shape(),
+            Self::LiteralSource(source) => source.shape(),
             Self::Filter(filter) => filter.shape(),
             Self::Projection(projection) => projection.shape(),
             Self::Limit(limit) => limit.shape(),
@@ -139,6 +142,7 @@ impl NormalizedNativeInput<'_> {
         match self {
             Self::Source(source) => source.operator_count(),
             Self::GpuResidentSource(source) => source.operator_count(),
+            Self::LiteralSource(source) => source.operator_count(),
             Self::Filter(filter) => filter.operator_count(),
             Self::Projection(projection) => projection.operator_count(),
             Self::Limit(limit) => limit.operator_count(),
@@ -150,6 +154,31 @@ impl NormalizedNativeInput<'_> {
             Self::NestedLoopJoin(join) => join.operator_count(),
             Self::Union(union) => union.operator_count(),
         }
+    }
+}
+
+/// In-memory literal source recognized by native normalization.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::native) enum NormalizedNativeLiteralSource<'a> {
+    /// DataFusion placeholder one-row, zero-column input.
+    PlaceholderRow(&'a datafusion::physical_plan::placeholder_row::PlaceholderRowExec),
+    /// DataFusion typed empty input.
+    Empty(&'a datafusion::physical_plan::empty::EmptyExec),
+    /// DataFusion memory source, including SQL `VALUES`.
+    Memory(&'a datafusion::datasource::source::DataSourceExec),
+}
+
+impl NormalizedNativeLiteralSource<'_> {
+    fn shape(&self) -> String {
+        match self {
+            Self::PlaceholderRow(_) => "PlaceholderRowExec".to_string(),
+            Self::Empty(_) => "EmptyExec".to_string(),
+            Self::Memory(_) => "MemorySource".to_string(),
+        }
+    }
+
+    fn operator_count(&self) -> usize {
+        1
     }
 }
 

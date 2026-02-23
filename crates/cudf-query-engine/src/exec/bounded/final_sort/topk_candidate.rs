@@ -1,11 +1,9 @@
 use super::*;
 
-pub(super) fn execute_topk_candidate_with_budget(
+pub(super) fn sort_topk_candidate_with_budget(
     sort: &SortNode,
     input: GpuDataFrame,
-    keep_rows: usize,
     work_token: &cudf::ExecutionBudgetToken,
-    limit_token: &cudf::ExecutionBudgetToken,
     boundary: &'static str,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -35,14 +33,6 @@ pub(super) fn execute_topk_candidate_with_budget(
         .with_fact_if_absent("stage", "final_sort")
     })?;
     metrics.record_budgeted_execution("cudf_query_engine.final_sort.topk_materialize", materialized.report());
-    let sorted = GpuDataFrame::new(materialized.into_value());
-    let output = execute_limit_spec_with_token(
-        LimitSpec::fetch(keep_rows),
-        sorted,
-        limit_token,
-        "cudf_query_engine.final_sort.topk_limit",
-        metrics,
-    )?;
     metrics.operator_time += timer.elapsed();
-    Ok(output)
+    Ok(GpuDataFrame::new(materialized.into_value()))
 }

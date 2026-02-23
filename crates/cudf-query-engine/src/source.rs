@@ -13,7 +13,11 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use arrow::{
+    array::new_empty_array,
+    datatypes::{DataType, Field, Schema, SchemaRef},
+    record_batch::{RecordBatch, RecordBatchOptions},
+};
 
 use crate::{
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
@@ -130,6 +134,8 @@ pub enum SourceNode {
     LocalParquet(LocalParquetSource),
     /// Already-materialized GPU input identified by a frontend-provided name.
     GpuResident(GpuResidentSource),
+    /// Host Arrow literal batches imported into GPU memory at execution time.
+    LiteralBatch(LiteralBatchSource),
 }
 
 impl SourceNode {
@@ -138,7 +144,57 @@ impl SourceNode {
         match self {
             Self::LocalParquet(source) => &source.schema,
             Self::GpuResident(source) => &source.schema,
+            Self::LiteralBatch(source) => &source.schema,
         }
+    }
+}
+
+/// Literal host Arrow batches used as a native source.
+///
+/// This source is for SQL roots such as `VALUES`, `SELECT 1`, and typed empty
+/// inputs. Execution imports the batches into the query runtime explicitly; it
+/// does not read files or call back into a frontend executor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiteralBatchSource {
+    /// Schema exposed by this source.
+    pub schema: SchemaRef,
+    /// Host Arrow batches in source order.
+    pub batches: Vec<RecordBatch>,
+}
+
+impl LiteralBatchSource {
+    /// Creates a literal source from already-typed host Arrow batches.
+    pub fn new(schema: SchemaRef, batches: Vec<RecordBatch>) -> Self {
+        Self { schema, batches }
+    }
+
+    /// Creates a one-row, zero-column placeholder source.
+    pub fn placeholder_row() -> Self {
+        let schema = Arc::new(Schema::empty());
+        let batch = RecordBatch::try_new_with_options(
+            Arc::clone(&schema),
+            vec![],
+            &RecordBatchOptions::new().with_row_count(Some(1)),
+        )
+        .expect("one-row empty RecordBatch is valid");
+        Self::new(schema, vec![batch])
+    }
+
+    /// Creates a zero-row source with the provided schema.
+    pub fn empty(schema: SchemaRef) -> Self {
+        let columns = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new_with_options(
+            Arc::clone(&schema),
+            columns,
+            &RecordBatchOptions::new().with_row_count(Some(0)),
+        )
+        .expect("zero-row RecordBatch must match its schema");
+        Self::new(schema, vec![batch])
+    }
+
+    /// Total row count across all batches.
+    pub fn row_count(&self) -> usize {
+        self.batches.iter().map(RecordBatch::num_rows).sum()
     }
 }
 
@@ -616,7 +672,10 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
                     .iter()
                     .all(|value| matches!(value, Expr::Literal(_)) && reader_predicate_expr_is_supported(source, value))
         },
-        Expr::Like { .. }
+        // TRY_CAST is rejected from reader-predicate pushdown: null-on-failure
+        // semantics interact differently with filter logic than strict CAST.
+        Expr::TryCast { .. }
+        | Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
         | Expr::Upper(_)
@@ -624,7 +683,10 @@ fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) 
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
+        | Expr::Sqrt { .. }
         | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::DateTrunc { .. } => false,
@@ -716,8 +778,11 @@ fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Optio
         },
         Expr::Literal(value) => Some(value.data_type()),
         Expr::Alias { expr, .. } => reader_predicate_expr_type(source, expr),
-        Expr::Cast { target_type, .. } | Expr::Round { output_type: target_type, .. } => Some(target_type.clone()),
+        Expr::Cast { target_type, .. }
+        | Expr::TryCast { target_type, .. }
+        | Expr::Round { output_type: target_type, .. } => Some(target_type.clone()),
         Expr::Not(_) | Expr::IsNull(_) | Expr::IsNotNull(_) | Expr::InList { .. } => Some(DataType::Boolean),
+        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => Some(DataType::Boolean),
         Expr::Binary { output_type: Some(output_type), .. } => Some(output_type.clone()),
         Expr::Binary { op, .. } if reader_predicate_operator_outputs_boolean(*op) => Some(DataType::Boolean),
         Expr::Lower(_) | Expr::Upper(_) | Expr::Concat(_) => Some(DataType::Utf8),
@@ -727,6 +792,7 @@ fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Optio
         Expr::Substring { .. }
         | Expr::Like { .. }
         | Expr::Abs(_)
+        | Expr::Sqrt { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::Binary { .. } => None,
@@ -869,7 +935,8 @@ fn reader_predicate_references_decimal_column(source: &LocalParquetSource, expr:
         | Expr::IsNull(inner)
         | Expr::IsNotNull(inner)
         | Expr::Alias { expr: inner, .. }
-        | Expr::Cast { expr: inner, .. } => reader_predicate_references_decimal_column(source, inner),
+        | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. } => reader_predicate_references_decimal_column(source, inner),
         Expr::Binary { left, right, .. } => {
             reader_predicate_references_decimal_column(source, left)
                 || reader_predicate_references_decimal_column(source, right)
@@ -885,10 +952,15 @@ fn reader_predicate_references_decimal_column(source: &LocalParquetSource, expr:
         | Expr::StringLength { expr, .. }
         | Expr::RegexpReplace { expr, .. }
         | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. } => reader_predicate_references_decimal_column(source, expr),
         Expr::Concat(exprs) => exprs.iter().any(|expr| reader_predicate_references_decimal_column(source, expr)),
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            reader_predicate_references_decimal_column(source, left)
+                || reader_predicate_references_decimal_column(source, right)
+        },
         Expr::Case { branches, else_expr } => {
             branches.iter().any(|branch| {
                 reader_predicate_references_decimal_column(source, &branch.when)
@@ -921,6 +993,7 @@ fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSour
         | Expr::IsNull(_)
         | Expr::IsNotNull(_)
         | Expr::Cast { .. }
+        | Expr::TryCast { .. }
         | Expr::Like { .. }
         | Expr::Substring { .. }
         | Expr::Lower(_)
@@ -929,7 +1002,10 @@ fn reader_predicate_source_contract_shape_is_supported(source: &LocalParquetSour
         | Expr::RegexpReplace { .. }
         | Expr::Concat(_)
         | Expr::Abs(_)
+        | Expr::Sqrt { .. }
         | Expr::Round { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. }
         | Expr::Case { .. }
         | Expr::Extract { .. }
         | Expr::DateTrunc { .. } => false,

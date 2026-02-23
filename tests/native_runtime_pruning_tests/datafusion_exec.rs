@@ -177,7 +177,8 @@ async fn native_datafusion_exec_unsupported_sql_falls_back_before_native_executi
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
 
-    let plan = native_datafusion_sql_plan(&path, SQL_FILTERED_GLOBAL_COUNT_QUERY, native_datafusion_config()).await;
+    let plan =
+        native_datafusion_sql_plan(&path, SQL_UNSUPPORTED_APPROX_DISTINCT_QUERY, native_datafusion_config()).await;
 
     assert_ne!(plan.name(), "NativeCudfExec");
     assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_none());

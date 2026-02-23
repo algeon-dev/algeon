@@ -138,6 +138,10 @@ pub(super) fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
     batch.column(index).as_any().downcast_ref::<Int64Array>().expect("expected Int64Array")
 }
 
+pub(super) fn uint64_array(batch: &RecordBatch, index: usize) -> &UInt64Array {
+    batch.column(index).as_any().downcast_ref::<UInt64Array>().expect("expected UInt64Array")
+}
+
 pub(super) fn boolean_array(batch: &RecordBatch, index: usize) -> &BooleanArray {
     batch.column(index).as_any().downcast_ref::<BooleanArray>().expect("expected BooleanArray")
 }

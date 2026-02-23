@@ -22,7 +22,7 @@ use datafusion::{
     physical_expr::{
         LexOrdering, PhysicalSortExpr,
         aggregate::AggregateExprBuilder,
-        expressions::{binary, col, lit},
+        expressions::{TryCastExpr, binary, col, lit},
     },
     physical_plan::{
         ExecutionPlan,
@@ -331,7 +331,7 @@ pub(super) fn aggregate_sort_limit_plan(
     Arc::new(LocalLimitExec::new(sort, 2))
 }
 
-pub(super) fn unsupported_distinct_projection_aggregate_sort_limit_plan(
+pub(super) fn unsupported_try_cast_projection_aggregate_sort_limit_plan(
     scan: Arc<dyn ExecutionPlan>,
 ) -> Arc<dyn ExecutionPlan> {
     let scan_schema = scan.schema();
@@ -341,13 +341,7 @@ pub(super) fn unsupported_distinct_projection_aggregate_sort_limit_plan(
     let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
 
     let filter_schema = filter.schema();
-    let unsupported_x00 = binary(
-        col("m00", &filter_schema).unwrap(),
-        Operator::IsDistinctFrom,
-        col("m01", &filter_schema).unwrap(),
-        &filter_schema,
-    )
-    .unwrap();
+    let unsupported_x00 = Arc::new(TryCastExpr::new(col("m00", &filter_schema).unwrap(), DataType::Int16));
     let projection: Arc<dyn ExecutionPlan> = Arc::new(
         ProjectionExec::try_new(
             [

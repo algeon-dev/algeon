@@ -24,7 +24,11 @@ fn cast_count_output_columns_impl(
     output_schema: &arrow::datatypes::SchemaRef,
     mut token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
 ) -> Result<DataFrame> {
-    for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Count) {
+    for expr in spec
+        .aggr_exprs
+        .iter()
+        .filter(|expr| matches!(expr.function, AggregateFunction::Count | AggregateFunction::NUnique))
+    {
         let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
             QueryError::new(
                 QueryErrorCode::InvalidPlan,

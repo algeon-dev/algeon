@@ -41,7 +41,8 @@ pub(in crate::exec) fn validate_aggregate_capability(
         }
         return Ok(());
     }
-    let aggregate = lower_aggregate_spec(&node.spec)?;
+    let validation_spec = aggregate_validation_spec(&node.spec);
+    let aggregate = lower_aggregate_spec(&validation_spec)?;
     validate_aggregate_output_names(
         &aggregate,
         output_schema,
@@ -52,6 +53,20 @@ pub(in crate::exec) fn validate_aggregate_capability(
         validate_avg_output_fields(&node.spec, output_schema)?;
     }
     Ok(())
+}
+
+fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
+    let mut validation = spec.clone();
+    for (index, expr) in validation.aggr_exprs.iter_mut().enumerate() {
+        if expr.filter.is_some()
+            && expr.function == AggregateFunction::Count
+            && !expr.distinct
+            && global_count_star_expr(&expr.expr)
+        {
+            expr.expr = Expr::column(format!("__cudf_filtered_count_star_validation_{index}"));
+        }
+    }
+    validation
 }
 
 pub(in crate::exec) fn validate_final_aggregate_capability(
@@ -170,14 +185,31 @@ pub(in crate::exec) fn execute_aggregate(
     output_schema: &arrow::datatypes::SchemaRef,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if aggregate_spec_has_stddev_samp(&node.spec) {
-        return execute_datafusion_exact_host_aggregate(context, node, input_schema, input, output_schema, metrics);
+    let (frame, spec, prepared_input_schema) =
+        prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, None, metrics)?;
+    if aggregate_spec_has_stddev_samp(&spec) {
+        return execute_datafusion_exact_host_aggregate(
+            context,
+            &spec,
+            &prepared_input_schema,
+            GpuDataFrame::new(frame),
+            output_schema,
+            metrics,
+        );
     }
-    if node.spec.group_exprs.is_empty() {
-        return execute_global_aggregate(context, &node.spec, input, output_schema, metrics);
+    if spec.group_exprs.is_empty() {
+        return execute_global_aggregate(context, &spec, GpuDataFrame::new(frame), output_schema, metrics);
     }
-    if node.spec.grouping_sets.is_some() {
-        return execute_grouping_sets_aggregate(context, node, input_schema, input, output_schema, None, metrics);
+    if spec.grouping_sets.is_some() {
+        return execute_grouping_sets_aggregate(
+            context,
+            &spec,
+            &prepared_input_schema,
+            GpuDataFrame::new(frame),
+            output_schema,
+            None,
+            metrics,
+        );
     }
 
     // Lowering AVG through libcudf's groupby `MEAN` (`GroupByAgg::Mean`) keeps
@@ -187,19 +219,18 @@ pub(in crate::exec) fn execute_aggregate(
     // instead of `17.325`. Route AVG through the same explicit `sum + count +
     // finalize` state used by the partial/final and global aggregate paths so
     // the division happens at the output scale.
-    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
-    if aggregate_spec_has_avg(&node.spec) {
-        validate_avg_output_fields(&node.spec, output_schema)?;
+    let aggregate = lower_partial_aggregate_spec(&spec)?;
+    if aggregate_spec_has_avg(&spec) {
+        validate_avg_output_fields(&spec, output_schema)?;
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
-    let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate(&overrides, frame, &aggregate, "cudf_query_engine.aggregate.execute")?;
-    output = finalize_avg_output_columns(context, output, &node.spec, output_schema)?;
-    output = cast_reduction_output_columns(output, &node.spec, output_schema)?;
-    output = cast_count_output_columns(output, &node.spec, output_schema)?;
+    output = finalize_avg_output_columns(context, output, &spec, output_schema)?;
+    output = cast_reduction_output_columns(output, &spec, output_schema)?;
+    output = cast_count_output_columns(output, &spec, output_schema)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select",
@@ -220,18 +251,34 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if aggregate_spec_has_stddev_samp(&node.spec) {
-        return execute_datafusion_exact_host_aggregate(context, node, input_schema, input, output_schema, metrics);
+    let (frame, spec, prepared_input_schema) =
+        prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, Some(token), metrics)?;
+    if aggregate_spec_has_stddev_samp(&spec) {
+        return execute_datafusion_exact_host_aggregate(
+            context,
+            &spec,
+            &prepared_input_schema,
+            GpuDataFrame::new(frame),
+            output_schema,
+            metrics,
+        );
     }
-    if node.spec.group_exprs.is_empty() {
-        return execute_global_aggregate_with_budget(context, &node.spec, input, output_schema, token, metrics);
+    if spec.group_exprs.is_empty() {
+        return execute_global_aggregate_with_budget(
+            context,
+            &spec,
+            GpuDataFrame::new(frame),
+            output_schema,
+            token,
+            metrics,
+        );
     }
-    if node.spec.grouping_sets.is_some() {
+    if spec.grouping_sets.is_some() {
         return execute_grouping_sets_aggregate(
             context,
-            node,
-            input_schema,
-            input,
+            &spec,
+            &prepared_input_schema,
+            GpuDataFrame::new(frame),
             output_schema,
             Some(token),
             metrics,
@@ -240,13 +287,12 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
 
     // See `execute_aggregate` for why AVG must not lower to libcudf groupby
     // `MEAN`; the same finalize-at-output-scale contract applies here.
-    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
-    if aggregate_spec_has_avg(&node.spec) {
-        validate_avg_output_fields(&node.spec, output_schema)?;
+    let aggregate = lower_partial_aggregate_spec(&spec)?;
+    if aggregate_spec_has_avg(&spec) {
+        validate_avg_output_fields(&spec, output_schema)?;
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
-    let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget(
@@ -258,9 +304,9 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
         "cudf_query_engine.aggregate.execute",
         "failed to execute bounded native cudf aggregate",
     )?;
-    output = finalize_avg_output_columns_with_budget(context, output, &node.spec, output_schema, token, metrics)?;
-    output = cast_reduction_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
-    output = cast_count_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?;
+    output = finalize_avg_output_columns_with_budget(context, output, &spec, output_schema, token, metrics)?;
+    output = cast_reduction_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
+    output = cast_count_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select",
@@ -281,26 +327,35 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if node.spec.group_exprs.is_empty() {
-        let partial_spec = partial_global_aggregate_spec(&node.spec);
-        let output_schema = partial_global_aggregate_output_schema(&node.spec, input_schema, aggregate_output_schema)?;
-        return execute_global_aggregate_with_budget(context, &partial_spec, input, &output_schema, token, metrics);
+    let (frame, spec, prepared_input_schema) =
+        prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, Some(token), metrics)?;
+    if spec.group_exprs.is_empty() {
+        let partial_spec = partial_global_aggregate_spec(&spec);
+        let output_schema =
+            partial_global_aggregate_output_schema(&spec, &prepared_input_schema, aggregate_output_schema)?;
+        return execute_global_aggregate_with_budget(
+            context,
+            &partial_spec,
+            GpuDataFrame::new(frame),
+            &output_schema,
+            token,
+            metrics,
+        );
     }
-    if node.spec.grouping_sets.is_some() {
+    if spec.grouping_sets.is_some() {
         return execute_grouping_sets_partial_aggregate_with_budget(
             context,
-            node,
-            input_schema,
+            &spec,
+            &prepared_input_schema,
             aggregate_output_schema,
-            input,
+            GpuDataFrame::new(frame),
             token,
             metrics,
         );
     }
 
-    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    let aggregate = lower_partial_aggregate_spec(&spec)?;
     let expected_output_names = aggregate.output_names.clone();
-    let frame = input.into_frame();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let mut output = execute_groupby_aggregate_with_budget(
@@ -312,7 +367,7 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
         "cudf_query_engine.aggregate.execute_partial",
         "failed to execute bounded native partial cudf aggregate",
     )?;
-    output = cast_count_output_columns_with_budget(output, &node.spec, aggregate_output_schema, token, metrics)?;
+    output = cast_count_output_columns_with_budget(output, &spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.select_partial",
@@ -324,25 +379,151 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     Ok(GpuDataFrame::new(output))
 }
 
+fn prepare_filtered_aggregate_frame(
+    context: &ExecutionContext,
+    frame: DataFrame,
+    input_schema: &arrow::datatypes::SchemaRef,
+    spec: &AggregateSpec,
+    token: Option<&ExecutionBudgetToken>,
+    metrics: &mut QueryMetrics,
+) -> Result<(DataFrame, AggregateSpec, arrow::datatypes::SchemaRef)> {
+    if !aggregate_spec_has_filters(spec) {
+        return Ok((frame, spec.clone(), Arc::clone(input_schema)));
+    }
+
+    let mut expressions = Vec::<(String, cudf::Expr)>::new();
+    let mut fields = input_schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+    let mut prepared_aggr_exprs = Vec::with_capacity(spec.aggr_exprs.len());
+    for (index, aggregate_expr) in spec.aggr_exprs.iter().enumerate() {
+        let Some(filter) = &aggregate_expr.filter else {
+            prepared_aggr_exprs.push(aggregate_expr.clone());
+            continue;
+        };
+        let input_type = filtered_aggregate_input_type(aggregate_expr, input_schema)?;
+        let value_expr = filtered_aggregate_value_expr(aggregate_expr);
+        let alias = unique_filtered_aggregate_alias(index, &fields);
+        let masked = Expr::case(
+            vec![CaseWhen::new(filter.clone(), value_expr)],
+            Expr::literal(LiteralValue::Null(input_type.clone())),
+        );
+        expressions.push((alias.clone(), lower_expr(&masked)?));
+        fields.push(Field::new(alias.as_str(), input_type, true));
+        prepared_aggr_exprs.push(
+            AggregateExpr::new(aggregate_expr.function, Expr::column(alias), aggregate_expr.alias.clone())
+                .with_distinct(aggregate_expr.distinct),
+        );
+    }
+
+    let timer = Instant::now();
+    let frame = match token {
+        Some(token) => frame
+            .with_columns_with_budget(expressions, token)
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "cudf_query_engine.aggregate.filter_inputs",
+                    "failed to materialize bounded native aggregate filter inputs",
+                    error,
+                )
+            })
+            .map(|outcome| budgeted_value(outcome, metrics, "cudf_query_engine.aggregate.filter_inputs"))?,
+        None => {
+            let overrides = execution_overrides(context);
+            frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.aggregate.filter_inputs",
+                    "failed to materialize native aggregate filter inputs",
+                    error,
+                )
+            })?
+        },
+    };
+    metrics.operator_time += timer.elapsed();
+    let mut prepared_spec = AggregateSpec::new(spec.group_exprs.clone(), prepared_aggr_exprs);
+    prepared_spec.grouping_sets = spec.grouping_sets.clone();
+    Ok((frame, prepared_spec, Arc::new(Schema::new(fields))))
+}
+
+fn filtered_aggregate_value_expr(aggregate_expr: &AggregateExpr) -> Expr {
+    if aggregate_expr.function == AggregateFunction::Count
+        && !aggregate_expr.distinct
+        && global_count_star_expr(&aggregate_expr.expr)
+    {
+        Expr::literal(LiteralValue::Int64(1))
+    } else {
+        aggregate_expr.expr.clone()
+    }
+}
+
+fn filtered_aggregate_input_type(
+    aggregate_expr: &AggregateExpr,
+    input_schema: &arrow::datatypes::SchemaRef,
+) -> Result<ArrowDataType> {
+    if aggregate_expr.function == AggregateFunction::Count
+        && !aggregate_expr.distinct
+        && global_count_star_expr(&aggregate_expr.expr)
+    {
+        return Ok(ArrowDataType::Int64);
+    }
+    aggregate_expr_type(&aggregate_expr.expr, input_schema)
+}
+
+fn aggregate_expr_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
+    match expr {
+        Expr::Column(column) => {
+            input_schema.field_with_name(column.name()).map(|field| field.data_type().clone()).map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "cudf_query_engine.aggregate.filter_input_type",
+                    "aggregate filter input references a missing column",
+                )
+                .with_fact("column", column.name())
+                .with_fact("arrow_error", error.to_string())
+            })
+        },
+        Expr::Alias { expr, .. } => aggregate_expr_type(expr, input_schema),
+        Expr::Literal(value) => Ok(value.data_type()),
+        _ => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.aggregate.filter_input_type",
+            "filtered aggregate input must be a prepared column or literal",
+        )
+        .with_fact("expression", expr.to_string())),
+    }
+}
+
+fn unique_filtered_aggregate_alias(index: usize, fields: &[Field]) -> String {
+    let base = format!("__cudf_filtered_aggregate_arg_{index}");
+    if fields.iter().all(|field| field.name() != base.as_str()) {
+        return base;
+    }
+    for suffix in 1usize.. {
+        let alias = format!("{base}_{suffix}");
+        if fields.iter().all(|field| field.name() != alias.as_str()) {
+            return alias;
+        }
+    }
+    unreachable!("usize suffix space is finite but practically inexhaustible")
+}
+
 fn execute_grouping_sets_aggregate(
     context: &ExecutionContext,
-    node: &AggregateNode,
+    spec: &AggregateSpec,
     input_schema: &arrow::datatypes::SchemaRef,
     input: GpuDataFrame,
     output_schema: &arrow::datatypes::SchemaRef,
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if aggregate_spec_has_stddev_samp(&node.spec) {
+    if aggregate_spec_has_stddev_samp(spec) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
             "cudf_query_engine.aggregate.grouping_sets",
             "grouping sets do not currently support stddev_samp",
         ));
     }
-    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
-    if aggregate_spec_has_avg(&node.spec) {
-        validate_avg_output_fields(&node.spec, output_schema)?;
+    let aggregate = lower_partial_aggregate_spec(spec)?;
+    if aggregate_spec_has_avg(spec) {
+        validate_avg_output_fields(spec, output_schema)?;
     }
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
 
@@ -350,7 +531,7 @@ fn execute_grouping_sets_aggregate(
     let frame = input.into_frame();
     let mut output = execute_grouping_sets_groupby(
         context,
-        &node.spec,
+        spec,
         input_schema,
         output_schema,
         frame,
@@ -360,18 +541,16 @@ fn execute_grouping_sets_aggregate(
         "cudf_query_engine.aggregate.grouping_sets",
     )?;
     output = match token {
-        Some(token) => {
-            finalize_avg_output_columns_with_budget(context, output, &node.spec, output_schema, token, metrics)?
-        },
-        None => finalize_avg_output_columns(context, output, &node.spec, output_schema)?,
+        Some(token) => finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?,
+        None => finalize_avg_output_columns(context, output, spec, output_schema)?,
     };
     output = match token {
-        Some(token) => cast_reduction_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?,
-        None => cast_reduction_output_columns(output, &node.spec, output_schema)?,
+        Some(token) => cast_reduction_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
+        None => cast_reduction_output_columns(output, spec, output_schema)?,
     };
     output = match token {
-        Some(token) => cast_count_output_columns_with_budget(output, &node.spec, output_schema, token, metrics)?,
-        None => cast_count_output_columns(output, &node.spec, output_schema)?,
+        Some(token) => cast_count_output_columns_with_budget(output, spec, output_schema, token, metrics)?,
+        None => cast_count_output_columns(output, spec, output_schema)?,
     };
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
@@ -386,27 +565,27 @@ fn execute_grouping_sets_aggregate(
 
 fn execute_grouping_sets_partial_aggregate_with_budget(
     context: &ExecutionContext,
-    node: &AggregateNode,
+    spec: &AggregateSpec,
     input_schema: &arrow::datatypes::SchemaRef,
     aggregate_output_schema: &arrow::datatypes::SchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
-    if aggregate_spec_has_stddev_samp(&node.spec) {
+    if aggregate_spec_has_stddev_samp(spec) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedOperator,
             "cudf_query_engine.aggregate.grouping_sets_partial",
             "grouping sets do not currently support stddev_samp",
         ));
     }
-    let aggregate = lower_partial_aggregate_spec(&node.spec)?;
+    let aggregate = lower_partial_aggregate_spec(spec)?;
     let expected_output_names = aggregate.output_names.clone();
     let timer = Instant::now();
     let frame = input.into_frame();
     let mut output = execute_grouping_sets_groupby(
         context,
-        &node.spec,
+        spec,
         input_schema,
         aggregate_output_schema,
         frame,
@@ -415,7 +594,7 @@ fn execute_grouping_sets_partial_aggregate_with_budget(
         metrics,
         "cudf_query_engine.aggregate.grouping_sets_partial",
     )?;
-    output = cast_count_output_columns_with_budget(output, &node.spec, aggregate_output_schema, token, metrics)?;
+    output = cast_count_output_columns_with_budget(output, spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.aggregate.grouping_sets_select_partial",
@@ -788,7 +967,7 @@ enum HostAggregateState {
 impl HostAggregateState {
     fn new(function: AggregateFunction) -> Self {
         match function {
-            AggregateFunction::Count => Self::Count { count: 0 },
+            AggregateFunction::Count | AggregateFunction::NUnique => Self::Count { count: 0 },
             AggregateFunction::Sum => Self::Sum { sum: 0.0, seen: false },
             AggregateFunction::Min => Self::Min { value: 0.0, seen: false },
             AggregateFunction::Max => Self::Max { value: 0.0, seen: false },
@@ -877,7 +1056,7 @@ struct HostAggregateGroup {
 
 fn execute_datafusion_exact_host_aggregate(
     context: &ExecutionContext,
-    node: &AggregateNode,
+    spec: &AggregateSpec,
     input_schema: &arrow::datatypes::SchemaRef,
     input: GpuDataFrame,
     output_schema: &arrow::datatypes::SchemaRef,
@@ -888,24 +1067,23 @@ fn execute_datafusion_exact_host_aggregate(
     let schema = schema_with_datafusion_order_columns(&frame, input_schema);
     let handle = GpuResultHandle::new(context, GpuDataFrame::new(frame), schema)?;
     let batch = handle.to_host_record_batch()?;
-    let output = execute_datafusion_exact_host_aggregate_batch(context, node, &batch, output_schema)?;
+    let output = execute_datafusion_exact_host_aggregate_batch(context, spec, &batch, output_schema)?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
 }
 
 fn execute_datafusion_exact_host_aggregate_batch(
     context: &ExecutionContext,
-    node: &AggregateNode,
+    spec: &AggregateSpec,
     batch: &RecordBatch,
     output_schema: &arrow::datatypes::SchemaRef,
 ) -> Result<DataFrame> {
-    let key_columns = node
-        .spec
+    let key_columns = spec
         .group_exprs
         .iter()
         .map(|expr| lower_named_column_expr(expr, "cudf_query_engine.aggregate.stddev_exact.lower_key"))
         .collect::<Result<Vec<_>>>()?;
-    let aggregate_columns = node.spec.aggr_exprs.iter().map(aggregate_input_column).collect::<Result<Vec<_>>>()?;
+    let aggregate_columns = spec.aggr_exprs.iter().map(aggregate_input_column).collect::<Result<Vec<_>>>()?;
     let mut group_indices = HashMap::<Vec<HostGroupKeyValue>, usize>::new();
     let mut groups = Vec::<HostAggregateGroup>::new();
     let row_count = batch.num_rows();
@@ -922,25 +1100,20 @@ fn execute_datafusion_exact_host_aggregate_batch(
                 group_indices.insert(key.clone(), index);
                 groups.push(HostAggregateGroup {
                     keys: key,
-                    aggregates: node
-                        .spec
-                        .aggr_exprs
-                        .iter()
-                        .map(|expr| HostAggregateState::new(expr.function))
-                        .collect(),
+                    aggregates: spec.aggr_exprs.iter().map(|expr| HostAggregateState::new(expr.function)).collect(),
                 });
                 index
             },
         };
         for ((expr, input_column), state) in
-            node.spec.aggr_exprs.iter().zip(&aggregate_columns).zip(&mut groups[group_index].aggregates)
+            spec.aggr_exprs.iter().zip(&aggregate_columns).zip(&mut groups[group_index].aggregates)
         {
             let value = match input_column {
                 HostAggregateInput::Column(name) => host_numeric_value(batch, name, row)?,
                 HostAggregateInput::NonNullLiteral => Some(1.0),
                 HostAggregateInput::NullLiteral => None,
             };
-            if matches!(expr.function, AggregateFunction::Count) {
+            if matches!(expr.function, AggregateFunction::Count | AggregateFunction::NUnique) {
                 state.update(value.map(|_| 1.0));
             } else {
                 state.update(value);
@@ -951,7 +1124,7 @@ fn execute_datafusion_exact_host_aggregate_batch(
     if key_columns.is_empty() && groups.is_empty() {
         groups.push(HostAggregateGroup {
             keys: Vec::new(),
-            aggregates: node.spec.aggr_exprs.iter().map(|expr| HostAggregateState::new(expr.function)).collect(),
+            aggregates: spec.aggr_exprs.iter().map(|expr| HostAggregateState::new(expr.function)).collect(),
         });
     }
 

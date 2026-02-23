@@ -313,6 +313,7 @@ fn native_local_parquet_source(plan: &cudf_query_engine::QueryPlan) -> &cudf_que
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
                 SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })

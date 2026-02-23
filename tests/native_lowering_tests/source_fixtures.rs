@@ -277,6 +277,19 @@ pub(super) fn with_rewritten_distributed_final_aggregate(
     rebuild_default_distributed_sql_plan(&parts, rewritten_final)
 }
 
+pub(super) fn with_rewritten_distributed_final_aggregate_exec(
+    plan: Arc<dyn ExecutionPlan>,
+    rewrite: impl FnOnce(&AggregateExec) -> Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let parts = default_distributed_sql_plan_parts(plan);
+    let final_aggregate = parts
+        .final_aggregate
+        .as_any()
+        .downcast_ref::<AggregateExec>()
+        .expect("default SQL final aggregate should be AggregateExec");
+    rebuild_default_distributed_sql_plan(&parts, rewrite(final_aggregate))
+}
+
 pub(super) fn with_rewritten_distributed_partial_aggregate(
     plan: Arc<dyn ExecutionPlan>,
     rewrite: impl FnOnce(&AggregateExec) -> Arc<dyn ExecutionPlan>,

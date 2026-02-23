@@ -52,7 +52,10 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
     if !task_kinds_are_in_d2_envelope(pipeline) {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
-    if task_kind_count(pipeline, PipelineTaskKind::SourceRead) < 1 {
+    if task_kind_count(pipeline, PipelineTaskKind::SourceRead)
+        + task_kind_count(pipeline, PipelineTaskKind::LiteralBatchSource)
+        < 1
+    {
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if !task_reservation_gates_are_in_d2_envelope(pipeline) {
@@ -247,6 +250,7 @@ fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
         matches!(
             task.kind(),
             PipelineTaskKind::SourceRead
+                | PipelineTaskKind::LiteralBatchSource
                 | PipelineTaskKind::Unary
                 | PipelineTaskKind::Aggregate
                 | PipelineTaskKind::Window
@@ -267,7 +271,9 @@ fn task_resource_shapes_are_in_d2_envelope(
     sink_materialize: &PipelineTask,
 ) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::SourceRead => task.input_resources().is_empty() && task.output_resources().len() == 1,
+        PipelineTaskKind::SourceRead | PipelineTaskKind::LiteralBatchSource => {
+            task.input_resources().is_empty() && task.output_resources().len() == 1
+        },
         PipelineTaskKind::Unary
         | PipelineTaskKind::Aggregate
         | PipelineTaskKind::Window
@@ -426,6 +432,7 @@ fn shared_resident_producer_edges_are_in_d3_5_envelope(pipeline: &CompiledPipeli
             task.kind(),
             PipelineTaskKind::SourceRead
                 | PipelineTaskKind::GpuResidentSource
+                | PipelineTaskKind::LiteralBatchSource
                 | PipelineTaskKind::Unary
                 | PipelineTaskKind::Aggregate
                 | PipelineTaskKind::Window
@@ -672,6 +679,7 @@ fn sink_path_stage_order_is_in_d3_6_envelope(pipeline: &CompiledPipeline, sink_p
             },
             PipelineTaskKind::SourceRead
             | PipelineTaskKind::GpuResidentSource
+            | PipelineTaskKind::LiteralBatchSource
             | PipelineTaskKind::JoinBuild
             | PipelineTaskKind::JoinProbe
             | PipelineTaskKind::Unary
@@ -875,7 +883,7 @@ fn downstream_sink_path_union_tasks(pipeline: &CompiledPipeline, task: PipelineT
 
 fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::SourceRead => {
+        PipelineTaskKind::SourceRead | PipelineTaskKind::LiteralBatchSource => {
             matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Source(_)))
         },
         PipelineTaskKind::Unary => matches!(

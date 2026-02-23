@@ -78,6 +78,16 @@ impl QueryNode {
                     self.facts.placement,
                     self.facts.schema_behavior
                 ),
+                SourceNode::LiteralBatch(source) => writeln!(
+                    f,
+                    "{padding}{} LiteralBatchSource batches={} rows={} schema_fields={} placement={} schema_behavior={}",
+                    self.id,
+                    source.batches.len(),
+                    source.row_count(),
+                    source.schema.fields().len(),
+                    self.facts.placement,
+                    self.facts.schema_behavior
+                ),
             },
             PlanNode::Filter(node) => writeln!(
                 f,
@@ -133,7 +143,12 @@ impl QueryNode {
             PlanNode::Limit(node) => writeln!(
                 f,
                 "{padding}{} Limit input={} skip={} fetch={} placement={} schema_behavior={}",
-                self.id, node.input, node.spec.skip, node.spec.fetch, self.facts.placement, self.facts.schema_behavior
+                self.id,
+                node.input,
+                node.spec.skip,
+                node.spec.fetch.map_or_else(|| "none".to_string(), |fetch| fetch.to_string()),
+                self.facts.placement,
+                self.facts.schema_behavior
             ),
             PlanNode::Join(node) => writeln!(
                 f,
@@ -215,7 +230,8 @@ fn format_aggregate_exprs(expressions: &[crate::expr::AggregateExpr]) -> String 
             .iter()
             .map(|expr| {
                 let distinct = if expr.distinct { "DISTINCT " } else { "" };
-                format!("{:?}({distinct}{}) AS {}", expr.function, expr.expr, expr.alias)
+                let filter = expr.filter.as_ref().map(|filter| format!(" FILTER ({filter})")).unwrap_or_default();
+                format!("{:?}({distinct}{}){filter} AS {}", expr.function, expr.expr, expr.alias)
             })
             .collect::<Vec<_>>()
             .join(",")
@@ -233,6 +249,17 @@ fn format_window_functions(functions: &[super::WindowFunction]) -> String {
                     format!("{function:?}({expr}) {frame:?} AS {alias}")
                 },
                 super::WindowFunction::Rank { alias } => format!("RANK() AS {alias}"),
+                super::WindowFunction::RowNumber { alias } => format!("ROW_NUMBER() AS {alias}"),
+                super::WindowFunction::LagLead { expr, offset, default, alias, direction } => {
+                    let name = match direction {
+                        super::ShiftDirection::Lag => "LAG",
+                        super::ShiftDirection::Lead => "LEAD",
+                    };
+                    match default {
+                        Some(value) => format!("{name}({expr}, {offset}, {value}) AS {alias}"),
+                        None => format!("{name}({expr}, {offset}) AS {alias}"),
+                    }
+                },
             })
             .collect::<Vec<_>>()
             .join(",")

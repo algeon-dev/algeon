@@ -535,6 +535,7 @@ fn native_plan_gpu_resident_source_names(plan: &cudf_query_engine::QueryPlan) ->
             cudf_query_engine::PlanNode::Source(source) => match source.as_ref() {
                 cudf_query_engine::SourceNode::GpuResident(source) => Some(source.input_name.clone()),
                 cudf_query_engine::SourceNode::LocalParquet(_) => None,
+                cudf_query_engine::SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })

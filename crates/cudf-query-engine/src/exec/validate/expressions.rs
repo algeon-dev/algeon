@@ -50,6 +50,9 @@ pub(super) fn validate_expr(
             }
             Ok(target_type.clone())
         },
+        Expr::TryCast { expr, target_type } => {
+            validate_try_cast_expr(expr, target_type, input_schema, available_columns)
+        },
         Expr::Binary { left, op, right, output_type } => {
             validate_binary_expr(left, *op, right, output_type.as_ref(), input_schema, available_columns)
         },
@@ -90,6 +93,21 @@ pub(super) fn validate_expr(
             require_arithmetic_type(&data_type, "ABS input")?;
             Ok(data_type)
         },
+        Expr::Sqrt { expr, output_type } => {
+            let data_type = validate_expr(expr, input_schema, available_columns)?;
+            require_arithmetic_type(&data_type, "SQRT input")?;
+            require_arithmetic_type(output_type, "SQRT output")?;
+            if is_decimal_type(&data_type) != is_decimal_type(output_type) {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedType,
+                    "cudf_query_engine.plan.validate_expr",
+                    "native SQRT input and output must both be decimal or both be non-decimal",
+                )
+                .with_fact("input_type", format!("{data_type:?}"))
+                .with_fact("output_type", format!("{output_type:?}")));
+            }
+            Ok(output_type.clone())
+        },
         Expr::Round { expr, output_type, .. } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
             require_arithmetic_type(&data_type, "ROUND input")?;
@@ -106,6 +124,12 @@ pub(super) fn validate_expr(
             Ok(output_type.clone())
         },
         Expr::InList { expr, list, .. } => validate_in_list_expr(expr, list, input_schema, available_columns),
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            let left_type = validate_expr(left, input_schema, available_columns)?;
+            let right_type = validate_expr(right, input_schema, available_columns)?;
+            require_comparable_types(&left_type, &right_type)?;
+            Ok(ArrowDataType::Boolean)
+        },
         Expr::Case { branches, else_expr } => validate_case_expr(branches, else_expr, input_schema, available_columns),
         Expr::Extract { field, expr } => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;
@@ -135,6 +159,43 @@ pub(super) fn validate_expr(
         },
         Expr::Alias { expr, .. } => validate_expr(expr, input_schema, available_columns),
     }
+}
+
+fn validate_try_cast_expr(
+    input: &Expr,
+    target_type: &ArrowDataType,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    let source_type = validate_expr(input, input_schema, available_columns)?;
+    if !is_string_arrow_type(&source_type) || !is_integer_arrow_type(target_type) {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "cudf_query_engine.plan.validate_expr",
+            "native TRY_CAST currently supports only string -> integer targets",
+        )
+        .with_fact("source_type", format!("{source_type:?}"))
+        .with_fact("target_type", format!("{target_type:?}")));
+    }
+    Ok(target_type.clone())
+}
+
+fn is_string_arrow_type(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn is_integer_arrow_type(data_type: &ArrowDataType) -> bool {
+    matches!(
+        data_type,
+        ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+    )
 }
 
 fn validate_timestamp_second_integer_cast_expr(
@@ -185,6 +246,9 @@ fn validate_expr_with_expected_type(
                 .with_fact("target_type", format!("{target_type:?}")));
             }
             Ok(target_type.clone())
+        },
+        Expr::TryCast { expr, target_type } => {
+            validate_try_cast_expr(expr, target_type, input_schema, available_columns)
         },
         Expr::Binary { left, op, right, output_type } => validate_binary_expr_with_expected_type(
             left,

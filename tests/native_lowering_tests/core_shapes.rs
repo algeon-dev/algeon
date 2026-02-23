@@ -20,7 +20,7 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
     let PlanNode::Limit(limit) = &plan.root_node().kind else {
         panic!("native root should be a limit node");
     };
-    assert_eq!(limit.spec.fetch, 2);
+    assert_eq!(limit.spec.fetch, Some(2));
     assert!(matches!(plan.sink(), ResultSink::HostArrow { input, .. } if *input == plan.root_id()));
     let sort_node = plan.node(limit.input).expect("limit input should exist");
     let PlanNode::Sort(sort) = &sort_node.kind else {
@@ -100,6 +100,7 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
             PlanNode::Source(source_node) => match source_node.as_ref() {
                 SourceNode::LocalParquet(source) => Some(source),
                 SourceNode::GpuResident(_) => None,
+                SourceNode::LiteralBatch(_) => None,
             },
             _ => None,
         })
@@ -317,7 +318,7 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
     let PlanNode::Limit(limit) = &result.plans[0].root_node().kind else {
         panic!("native root should be a limit node");
     };
-    assert_eq!(limit.spec.fetch, 2);
+    assert_eq!(limit.spec.fetch, Some(2));
     let sort_node = result.plans[0].node(limit.input).expect("limit input should exist");
     assert!(matches!(sort_node.kind, PlanNode::Sort(_)));
 

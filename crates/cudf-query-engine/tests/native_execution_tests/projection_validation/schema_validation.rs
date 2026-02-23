@@ -213,7 +213,7 @@ fn bounded_projection_schema_coercion_rejects_unsupported_output_type_mismatch_w
     assert_eq!(error.fact_value("expected_type"), Some("Utf8"));
     assert_eq!(error.fact_value("budget_boundary"), Some("post_aggregate_projection"));
     assert!(error.fact_value("budget_bytes").is_some());
-    assert_eq!(error.fact_value("budget_enforcement"), Some("hard_memory_resource_limit"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("stream_bound_reservation"));
 
     fs::remove_dir_all(dir).unwrap();
 }

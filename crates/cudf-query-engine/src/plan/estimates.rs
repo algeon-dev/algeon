@@ -27,13 +27,17 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
                 Some(source.scan_limit.map_or(rows, |limit| rows.min(limit as u64)))
             },
             SourceNode::GpuResident(_) => None,
+            SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),
         },
         PlanNode::Projection(projection) => estimated_output_rows(plan, projection.input),
         PlanNode::Filter(filter) => estimated_output_rows(plan, filter.input),
         PlanNode::Window(window) => estimated_output_rows(plan, window.input),
         PlanNode::Sort(sort) => estimated_output_rows(plan, sort.input),
-        PlanNode::Limit(limit) => estimated_output_rows(plan, limit.input)
-            .map(|rows| rows.min(limit.spec.skip.saturating_add(limit.spec.fetch) as u64)),
+        PlanNode::Limit(limit) => estimated_output_rows(plan, limit.input).map(|rows| {
+            limit.spec.fetch.map_or(rows.saturating_sub(limit.spec.skip as u64), |fetch| {
+                rows.min(limit.spec.skip.saturating_add(fetch) as u64).saturating_sub(limit.spec.skip as u64)
+            })
+        }),
         PlanNode::Union(union) => {
             union.inputs.iter().try_fold(0_u64, |total, input| total.checked_add(estimated_output_rows(plan, *input)?))
         },
@@ -61,6 +65,10 @@ pub(crate) fn estimated_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Optio
                 })
                 .try_fold(0_u64, |sum, bytes| sum.checked_add(bytes?)),
             SourceNode::GpuResident(_) => None,
+            SourceNode::LiteralBatch(source) => source
+                .batches
+                .iter()
+                .try_fold(0_u64, |sum, batch| sum.checked_add(batch.get_array_memory_size() as u64)),
         },
         PlanNode::Projection(projection) => estimated_output_bytes(plan, projection.input),
         PlanNode::Filter(filter) => estimated_output_bytes(plan, filter.input),

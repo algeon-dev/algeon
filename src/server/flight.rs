@@ -30,9 +30,11 @@ use uuid::Uuid;
 use super::{
     admission::QueryAdmission,
     cancel::QueryCancellation,
+    config::ServerSessionProfile,
+    diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
     error::{ServerError, datafusion_error_to_status},
 };
-use crate::{CudfOptimizerConfig, CudfSessionStateBuilderExt};
+use crate::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt};
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
@@ -44,6 +46,10 @@ const ADMISSION_SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 pub struct DatafusionCudfFlightSqlService {
     ctx: Arc<SessionContext>,
     native_optimizer_config: CudfOptimizerConfig,
+    /// Static session-profile selection from [`crate::server::ServerConfig`];
+    /// per-statement diagnostics use it to add the "switch to native" hint
+    /// when the testing-only `cpu_fallback` profile is active.
+    session_profile: ServerSessionProfile,
     admission: Arc<QueryAdmission>,
     cancellations: Arc<QueryCancellation>,
     tickets: Arc<DashMap<String, StatementTicket>>,
@@ -53,6 +59,15 @@ pub struct DatafusionCudfFlightSqlService {
     /// has been admitted but not yet registered (or any statement still to
     /// register) sees a pre-cancelled token and stops at the first await.
     shutdown_token: CancellationToken,
+}
+
+/// Per-statement session context paired with the retained native rule that
+/// will plan it. The native rule reference is kept alive for the lifetime of
+/// planning so [`CudfNativePhysicalOptimizerRule::last_report`] can be read
+/// after physical optimization runs (during `DataFrame::execute_stream`).
+struct QueryPlanning {
+    ctx: SessionContext,
+    native_rule: Arc<CudfNativePhysicalOptimizerRule>,
 }
 
 #[derive(Debug)]
@@ -69,12 +84,14 @@ impl DatafusionCudfFlightSqlService {
     pub fn new(
         ctx: Arc<SessionContext>,
         native_optimizer_config: CudfOptimizerConfig,
+        session_profile: ServerSessionProfile,
         max_in_flight: usize,
         statement_ticket_ttl: Duration,
     ) -> Self {
         Self {
             ctx,
             native_optimizer_config,
+            session_profile,
             admission: Arc::new(QueryAdmission::new(max_in_flight).expect("validated server admission limit")),
             cancellations: Arc::default(),
             tickets: Arc::default(),
@@ -95,12 +112,17 @@ impl DatafusionCudfFlightSqlService {
         &self.shutdown_token
     }
 
-    fn query_context(&self, cancellation: ExecutionCancellation) -> SessionContext {
+    fn query_planning(&self, cancellation: ExecutionCancellation) -> QueryPlanning {
         let execution_config =
             self.native_optimizer_config.native_execution_config().clone().with_cancellation(cancellation);
         let optimizer_config = self.native_optimizer_config.clone().with_native_execution_config(execution_config);
-        let state = SessionStateBuilder::new_from_existing(self.ctx.state()).with_cudf_native(optimizer_config).build();
-        SessionContext::new_with_state(state)
+        // Retain the native rule so we can read its `last_report` for the
+        // Phase 4 planning-report log after physical optimization runs.
+        let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+        let state = SessionStateBuilder::new_from_existing(self.ctx.state())
+            .with_cudf_native_rule(Arc::clone(&native_rule))
+            .build();
+        QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule }
     }
 
     async fn statement_flight_info(
@@ -125,7 +147,8 @@ impl DatafusionCudfFlightSqlService {
         // because no native execution has started yet (this method only runs
         // logical/physical planning to derive the result schema).
         let native_cancellation = ExecutionCancellation::new();
-        let query_ctx = self.query_context(native_cancellation.clone());
+        let planning = self.query_planning(native_cancellation.clone());
+        let query_ctx = &planning.ctx;
         let df = tokio::select! {
             result = query_ctx.sql(&sql) => result.map_err(datafusion_error_to_status)?,
             _ = self.shutdown_token.cancelled() => {
@@ -259,11 +282,20 @@ impl DatafusionCudfFlightSqlService {
             _permit: permit,
             lifecycle: Arc::clone(&lifecycle),
         };
-        let query_ctx = self.query_context(native_cancellation.clone());
+        let planning = self.query_planning(native_cancellation.clone());
+        let query_ctx = &planning.ctx;
         let df = tokio::select! {
             result = query_ctx.sql(&sql) => match result {
                 Ok(df) => df,
                 Err(error) => {
+                    // Logical-planning failures (e.g. SQL parse, unknown
+                    // table) happen before the physical optimizer runs, so
+                    // `last_report` is empty here. The leaf-guard helper
+                    // still no-ops on non-leaf-guard errors, but we run it
+                    // for completeness so any planning-time adapter error
+                    // that does carry the leaf-guard facts gets the
+                    // structured warn line.
+                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let status = status_with_query_id(datafusion_error_to_status(error), &query_id);
                     lifecycle.finish_status("planning", &status);
                     return Err(status);
@@ -277,10 +309,22 @@ impl DatafusionCudfFlightSqlService {
             },
         };
         let schema = df.schema().as_arrow().clone();
+        // `df.execute_stream()` calls `create_physical_plan()` internally,
+        // which runs the cudf native physical optimizer rule plus the Phase 1
+        // GPU-only leaf guard. Both branches below read `last_report` after
+        // that point so the planning report log reflects whatever physical
+        // planning produced. The leaf-guard warn line only fires on the
+        // failure branch because that is where the guard's structured error
+        // surfaces.
         let stream = tokio::select! {
             result = df.execute_stream() => match result {
-                Ok(stream) => stream,
+                Ok(stream) => {
+                    log_native_planning_report(&query_id, planning.native_rule.last_report().as_ref());
+                    stream
+                },
                 Err(error) => {
+                    log_native_planning_report(&query_id, planning.native_rule.last_report().as_ref());
+                    log_leaf_guard_rejection(&query_id, &error, self.session_profile);
                     let status = status_with_query_id(datafusion_error_to_status(error), &query_id);
                     lifecycle.finish_status("execute_stream", &status);
                     return Err(status);

@@ -315,6 +315,9 @@ pub(super) fn rewrite_join_residual_for_candidate(
         Expr::Cast { expr, target_type } => {
             Ok(Expr::cast(rewrite_join_residual_for_candidate(expr, residual_output_names)?, target_type.clone()))
         },
+        Expr::TryCast { expr, target_type } => {
+            Ok(Expr::try_cast(rewrite_join_residual_for_candidate(expr, residual_output_names)?, target_type.clone()))
+        },
         Expr::Binary { left, op, right, output_type } => {
             let left = rewrite_join_residual_for_candidate(left, residual_output_names)?;
             let right = rewrite_join_residual_for_candidate(right, residual_output_names)?;
@@ -345,6 +348,9 @@ pub(super) fn rewrite_join_residual_for_candidate(
             output_type.clone(),
         )),
         Expr::Abs(expr) => Ok(Expr::abs(rewrite_join_residual_for_candidate(expr, residual_output_names)?)),
+        Expr::Sqrt { expr, output_type } => {
+            Ok(Expr::sqrt(rewrite_join_residual_for_candidate(expr, residual_output_names)?, output_type.clone()))
+        },
         Expr::Concat(exprs) => Ok(Expr::concat(
             exprs
                 .iter()
@@ -364,6 +370,14 @@ pub(super) fn rewrite_join_residual_for_candidate(
                 .collect::<Result<Vec<_>>>()?,
             negated: *negated,
         }),
+        Expr::IsDistinctFrom { left, right } => Ok(Expr::is_distinct_from(
+            rewrite_join_residual_for_candidate(left, residual_output_names)?,
+            rewrite_join_residual_for_candidate(right, residual_output_names)?,
+        )),
+        Expr::IsNotDistinctFrom { left, right } => Ok(Expr::is_not_distinct_from(
+            rewrite_join_residual_for_candidate(left, residual_output_names)?,
+            rewrite_join_residual_for_candidate(right, residual_output_names)?,
+        )),
         Expr::Case { branches, else_expr } => Ok(Expr::case(
             branches
                 .iter()

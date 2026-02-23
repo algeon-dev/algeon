@@ -19,7 +19,7 @@ use cudf_query_engine::{
     runtime::ReservationKind,
 };
 use datafusion::{
-    common::ScalarValue,
+    common::{ScalarValue, config::ConfigOptions},
     execution::SessionStateBuilder,
     functions_aggregate::sum::sum_udaf,
     logical_expr::Operator,
@@ -29,6 +29,7 @@ use datafusion::{
         aggregate::AggregateExprBuilder,
         expressions::{TryCastExpr, binary, col, lit},
     },
+    physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
@@ -96,7 +97,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
         ("not_rewrite", SQL_NOT_QUERY),
         ("cast_rewrite", SQL_CAST_QUERY),
         ("avg_rewrite", SQL_AVG_QUERY),
-        ("filtered_reject", SQL_FILTERED_QUERY),
+        ("filtered_rewrite", SQL_FILTERED_QUERY),
         ("modulo_rewrite", SQL_MODULO_QUERY),
     ];
     let mut items = Vec::with_capacity(workload.len());
@@ -108,7 +109,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     }
     for (query_id, sql) in [
         ("distributed_avg_rewrite", SQL_AVG_QUERY),
-        ("distributed_filtered_avg_reject", SQL_FILTERED_AVG_QUERY),
+        ("distributed_filtered_avg_rewrite", SQL_FILTERED_AVG_QUERY),
         ("distributed_distinct_avg_rewrite", SQL_DISTINCT_AVG_QUERY),
     ] {
         items.push(NativeFallbackPressureWorkloadItem::new(query_id, sql_plan(&path, SessionConfig::new(), sql).await));
@@ -117,6 +118,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
         "count_only_rewrite",
         sql_plan(&path, count_only_sql_session_config(), SQL_COUNT_ONLY_QUERY).await,
     ));
+    let try_cast_reject = typed_null_and_try_cast_reject_plan(parquet_scan(&path).await);
+    items.push(NativeFallbackPressureWorkloadItem::new("try_cast_reject", try_cast_reject));
     items.push(NativeFallbackPressureWorkloadItem::planning_failure(
         "q00_planning_failure",
         "sql_to_logical_plan",
@@ -126,9 +129,9 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
     let report = NativeFallbackPressureReport::collect(items);
 
-    assert_eq!(report.rows.len(), 11);
-    assert_eq!(report.rewritten_count(), 8);
-    assert_eq!(report.rejected_count(), 3);
+    assert_eq!(report.rows.len(), 12);
+    assert_eq!(report.rewritten_count(), 10);
+    assert_eq!(report.rejected_count(), 2);
 
     let rewritten = report_row(&report, "sum_rewrite");
     assert_eq!(rewritten.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -193,15 +196,23 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(count_only.source_diagnostics[0].pure_filter_column_count, 0);
     assert_eq!(count_only.source_diagnostics[0].zero_column_count_disposition, "represented");
 
-    let filtered = report_row(&report, "filtered_reject");
-    assert_eq!(filtered.reason_code.as_deref(), Some("unsupported_expression"));
-    assert_eq!(filtered.unsupported_category.as_deref(), Some("aggregate_filter"));
-    assert!(filtered.rejected_before_execution);
+    let filtered = report_row(&report, "filtered_rewrite");
+    assert_eq!(filtered.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(filtered.reason_code, None);
+    assert_eq!(filtered.unsupported_category, None);
+    assert!(!filtered.rejected_before_execution);
 
-    let distributed_filtered_avg = report_row(&report, "distributed_filtered_avg_reject");
-    assert_eq!(distributed_filtered_avg.reason_code.as_deref(), Some("native_distributed_aggregate_unsupported"));
-    assert_eq!(distributed_filtered_avg.unsupported_category.as_deref(), Some("aggregate_filter"));
-    assert!(distributed_filtered_avg.rejected_before_execution);
+    let distributed_filtered_avg = report_row(&report, "distributed_filtered_avg_rewrite");
+    assert_eq!(distributed_filtered_avg.outcome, NativeFallbackPressureOutcome::Rewritten);
+    assert_eq!(distributed_filtered_avg.reason_code, None);
+    assert_eq!(distributed_filtered_avg.unsupported_category, None);
+    assert!(!distributed_filtered_avg.rejected_before_execution);
+
+    let try_cast = report_row(&report, "try_cast_reject");
+    assert_eq!(try_cast.outcome, NativeFallbackPressureOutcome::Rejected);
+    assert_eq!(try_cast.reason_code.as_deref(), Some("unsupported_expression"));
+    assert_eq!(try_cast.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
+    assert!(try_cast.rejected_before_execution);
 
     let distributed_distinct_avg = report_row(&report, "distributed_distinct_avg_rewrite");
     assert_eq!(distributed_distinct_avg.outcome, NativeFallbackPressureOutcome::Rewritten);
@@ -242,8 +253,8 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(text.contains("count_only_rewrite\t"));
     assert!(text.contains("zero_column_count=represented"));
     assert!(text.contains("\trewritten\tnone\tnone\t"));
-    assert!(text.contains("\tnative_distributed_aggregate_unsupported\taggregate_filter\t"));
-    assert!(text.contains("\tunsupported_expression\taggregate_filter\t"));
+    assert!(text.contains("\tunsupported_expression\texpression_try_cast_int64_to_int32\t"));
+    assert!(!text.contains("\taggregate_filter\t"));
     assert!(text.contains("q00_planning_failure\tPlanningFailure\tsql_to_logical_plan\tnone\tnone\trejected\tsql_planning_failed\tplanning\tnone\tnone\tnone\ttrue"));
 
     fs::remove_dir_all(dir).unwrap();
@@ -336,7 +347,7 @@ async fn native_fallback_pressure_report_keeps_supported_typed_null_literals_out
     let row = report_row(&report, "typed_null_try_cast_reject");
     assert_eq!(row.outcome, NativeFallbackPressureOutcome::Rejected);
     assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"));
-    assert_eq!(row.unsupported_category.as_deref(), Some("expression_try_cast"));
+    assert_eq!(row.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
     assert_ne!(row.unsupported_category.as_deref(), Some("expression_literal"));
     assert!(row.rejected_before_execution);
 
@@ -403,13 +414,19 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(distributed_avg_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(!distributed_avg_row.rejected_before_execution);
 
-    let rejected = native_datafusion_planning_report("filtered_session", &path, SQL_FILTERED_QUERY).await;
+    let rejected_plan = typed_null_and_try_cast_reject_plan(parquet_scan(&path).await);
+    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(NativeCudfExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
+    let native_rule = CudfNativePhysicalOptimizerRule::new(optimizer_config);
+    let rejected_plan = native_rule.optimize(rejected_plan, &ConfigOptions::default()).unwrap();
+    let rejected = NativeDataFusionPlanningReport::from_retained_rule("try_cast_session", rejected_plan, &native_rule);
     assert_eq!(rejected.rows.len(), 1);
     assert_eq!(rejected.accepted_count(), 0);
     assert_eq!(rejected.rejected_count(), 1);
     let rejected_row = &rejected.rows[0];
     assert_eq!(rejected_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
     assert_eq!(rejected_row.reason_code.as_deref(), Some("unsupported_expression"));
+    assert_eq!(rejected_row.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
     assert_ne!(rejected_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
     assert!(rejected_row.rejected_before_execution);
     assert_eq!(rejected_row.source_diagnostics.len(), 1);

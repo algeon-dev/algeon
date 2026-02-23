@@ -49,6 +49,7 @@ fn collect_source_diagnostics_for_input(
             }
         },
         NormalizedNativeInput::GpuResidentSource(_) => {},
+        NormalizedNativeInput::LiteralSource(_) => {},
         NormalizedNativeInput::Filter(filter) => {
             collect_source_diagnostics_for_input(&filter.input, normalized, diagnostics);
         },

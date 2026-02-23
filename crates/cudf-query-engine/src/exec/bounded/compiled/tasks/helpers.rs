@@ -68,6 +68,7 @@ pub(super) fn join_strategy(
         build_side_bytes: Some(build_side_bytes),
         probe_side_bytes: plan_facts.probe_side_bytes,
         probe_reuse_count: plan_facts.probe_reuse_count,
+        reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
     };
     CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(node, strategy_facts)
         .map_err(|decision| {

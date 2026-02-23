@@ -63,6 +63,7 @@ pub(crate) struct KeyedHashJoinStrategyInputFacts {
     pub(crate) build_side_bytes: Option<u64>,
     pub(crate) probe_side_bytes: Option<u64>,
     pub(crate) probe_reuse_count: u64,
+    pub(crate) reusable_prebuild_supported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +205,7 @@ pub(crate) fn keyed_hash_join_strategy_input_facts_for_plan(
         build_side_bytes: estimated_output_bytes(plan, build_input),
         probe_side_bytes: estimated_output_bytes(plan, probe_input_for_join(join)),
         probe_reuse_count: 1,
+        reusable_prebuild_supported: reusable_hash_prebuild_supported_for_plan(plan, join),
     }
 }
 
@@ -246,7 +248,9 @@ pub(crate) fn keyed_hash_join_strategy_decision(
         || input.estimated_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
         || input.build_side_bytes.is_some_and(|bytes| bytes <= SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD);
     let large_probe = input.probe_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD);
-    let reusable_rejected_reason = if large_build {
+    let reusable_rejected_reason = if !input.reusable_prebuild_supported {
+        Some("build_key_prebuild_reservation_unsupported")
+    } else if large_build {
         Some("build_side_too_large")
     } else if large_probe && !small_build {
         Some("probe_side_too_large")
@@ -354,6 +358,7 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::IsNull(expr)
         | Expr::IsNotNull(expr)
         | Expr::Cast { expr, .. }
+        | Expr::TryCast { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
         | Expr::StringLength { expr, .. }
@@ -361,6 +366,7 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         | Expr::Extract { expr, .. }
         | Expr::DateTrunc { expr, .. }
         | Expr::Abs(expr)
+        | Expr::Sqrt { expr, .. }
         | Expr::Round { expr, .. }
         | Expr::Alias { expr, .. }
         | Expr::Substring { expr, .. }
@@ -374,6 +380,7 @@ fn expr_requires_post_join_filter(expr: &Expr) -> bool {
         Expr::InList { expr, list, .. } => {
             expr_requires_post_join_filter(expr) || list.iter().any(expr_requires_post_join_filter)
         },
+        Expr::IsDistinctFrom { .. } | Expr::IsNotDistinctFrom { .. } => true,
         Expr::Column(_) | Expr::Literal(_) => false,
     }
 }
@@ -393,6 +400,7 @@ fn strategy_facts(
         ("key_count", join.spec.keys.len().to_string()),
         ("probe_reuse_count", input.probe_reuse_count.to_string()),
         ("build_artifact_id_present", join.spec.build_artifact_id.is_some().to_string()),
+        ("reusable_prebuild_supported", input.reusable_prebuild_supported.to_string()),
         ("large_keyed_hash_build_row_threshold", LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD.to_string()),
         ("large_keyed_hash_build_bytes_threshold", LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD.to_string()),
         ("large_keyed_hash_probe_bytes_threshold", LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD.to_string()),
@@ -428,6 +436,42 @@ fn probe_input_for_join(join: &JoinNode) -> NodeId {
         JoinSide::Left => join.inputs[1],
         JoinSide::Right => join.inputs[0],
     }
+}
+
+fn reusable_hash_prebuild_supported_for_plan(plan: &QueryPlan, join: &JoinNode) -> bool {
+    let build_input = match join.spec.build_side {
+        JoinSide::Left => join.inputs[0],
+        JoinSide::Right => join.inputs[1],
+    };
+    let Some(input) = plan.node(build_input) else {
+        return true;
+    };
+    let schema = input.output_schema();
+    join.spec.keys.iter().all(|key| {
+        let column = match join.spec.build_side {
+            JoinSide::Left => &key.left,
+            JoinSide::Right => &key.right,
+        };
+        schema
+            .field_with_name(column.name())
+            .map(|field| reusable_hash_prebuild_supported_type(field.data_type()))
+            .unwrap_or(true)
+    })
+}
+
+fn reusable_hash_prebuild_supported_type(data_type: &DataType) -> bool {
+    !matches!(
+        data_type,
+        DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Utf8View
+            | DataType::List(_)
+            | DataType::LargeList(_)
+            | DataType::FixedSizeList(_, _)
+            | DataType::Struct(_)
+            | DataType::Map(_, _)
+            | DataType::Union(_, _)
+    )
 }
 
 pub(crate) fn keyed_filtered_semi_anti_join_capable(join: &JoinNode) -> bool {

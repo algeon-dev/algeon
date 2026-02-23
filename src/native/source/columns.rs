@@ -150,6 +150,10 @@ pub(in crate::native) fn required_parquet_column_requirements(
                 collect_required_columns(&expr, &aggregate.input().schema(), &mut scan_output_columns)?;
             }
         }
+        for filter in aggregate.filter_expr().iter().flatten() {
+            collect_source_required_columns(filter, scan_projection, &table_schema, &mut output_columns)?;
+            collect_required_columns(filter, &aggregate.input().schema(), &mut scan_output_columns)?;
+        }
         for (group_expr, _alias) in aggregate.group_expr().expr() {
             collect_source_required_columns(group_expr, scan_projection, &table_schema, &mut output_columns)?;
             collect_required_columns(group_expr, &aggregate.input().schema(), &mut scan_output_columns)?;

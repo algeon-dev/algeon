@@ -754,4 +754,3 @@ fn derive_parity_outcome(
     );
     (result.status, result.mode, result.detail, Some(result.cpu_fingerprint), Some(result.native_fingerprint))
 }
-

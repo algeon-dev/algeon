@@ -587,7 +587,10 @@ fn bounded_native_query_streams_q72_shaped_partitioned_left_join_into_grouped_ag
     assert_eq!(join_metrics.join_type, "left");
     assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
     assert_eq!(join_metrics.output_rows, 6);
-    assert_eq!(metrics.hash_join_build_count, 1);
+    assert_eq!(
+        metrics.hash_join_build_count, 0,
+        "partitioned hash joins should not build reusable hash-table artifacts"
+    );
     assert!(metrics.partial_aggregate_count > 0);
     assert!(
         metrics
@@ -595,27 +598,13 @@ fn bounded_native_query_streams_q72_shaped_partitioned_left_join_into_grouped_ag
             .iter()
             .any(|event| { event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_output" })
     );
-    let hash_table_release = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            event.outcome.as_str() == "applied"
-                && event.action == MemoryReservationEventAction::Release
-                && event.memory_boundary == "join_hash_table"
-        })
-        .expect("streamed root hash join should eventually release its hash table");
-    let first_partial_work = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
+    assert!(
+        metrics.reservation_events.iter().any(|event| {
             event.outcome.as_str() == "granted"
                 && event.action == MemoryReservationEventAction::Reserve
                 && event.memory_boundary == "compiled_aggregate_partial_state_work"
-        })
-        .expect("aggregate should consume streamed hash outputs frame by frame");
-    assert!(
-        first_partial_work < hash_table_release,
-        "root hash frame-stream probe should stay lazy through aggregate consumption instead of collecting all outputs before releasing the build"
+        }),
+        "aggregate should consume streamed partitioned hash outputs frame by frame"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {

@@ -258,7 +258,6 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
     }
 }
 
-
 fn materialize_partitioned_hash_equi_join_partition(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -420,7 +419,6 @@ fn materialize_partitioned_hash_equi_join_partition(
         output_rows,
     })
 }
-
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_probe_from_stream(
     context: &ExecutionContext,

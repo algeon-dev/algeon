@@ -1,7 +1,6 @@
 use super::*;
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
 
-
 mod hash_equi;
 mod mixed_keyed;
 
@@ -244,4 +243,3 @@ pub(super) fn join_keys_for_side(node: &JoinNode, side: JoinSide) -> Vec<String>
         })
         .collect()
 }
-

@@ -30,9 +30,9 @@ use params::{
 };
 #[cfg(feature = "cugraph")]
 use structure::{
-    execute_core_number, execute_degrees_all, execute_in_degrees_all, execute_k_core,
-    execute_minimum_spanning_tree, execute_out_degrees_all, execute_strongly_connected_components,
-    execute_triangle_count_all, execute_weakly_connected_components,
+    execute_core_number, execute_degrees_all, execute_in_degrees_all, execute_k_core, execute_minimum_spanning_tree,
+    execute_out_degrees_all, execute_strongly_connected_components, execute_triangle_count_all,
+    execute_weakly_connected_components,
 };
 #[cfg(feature = "cugraph")]
 use traversal::{execute_bfs, execute_sssp};
