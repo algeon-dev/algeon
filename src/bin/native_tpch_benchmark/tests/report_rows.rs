@@ -152,6 +152,62 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             one_shot_join_materialization_bytes: 64,
             one_shot_join_output_bytes: 65,
             join_gather_map_bytes: 66,
+            aggregate_strategy_rows: vec![NativeAggregateStrategyMetricRow {
+                node_id: "n3".to_string(),
+                selected_strategy: "libcudf_groupby".to_string(),
+                execution_stage: "partial".to_string(),
+                memory_mode: "bounded".to_string(),
+                group_key_count: 1,
+                group_key_exprs: "l_returnflag".to_string(),
+                group_key_dtypes: "Utf8".to_string(),
+                aggregate_functions: "sum,count".to_string(),
+                aggregate_filter_count: 0,
+                distinct_aggregate_count: 0,
+                input_rows: 6001215,
+                output_group_count: 4,
+                reduction_ratio_ppm: 0,
+                chunk_row_count: 6001215,
+                chunk_count: 1,
+                partial_aggregate_count: 0,
+                source_adjacent_partial: "true".to_string(),
+                source_chunk_row_group_count: "1".to_string(),
+                source_chunk_reads_all_row_groups: "false".to_string(),
+                source_chunk_known_row_count: "6001215".to_string(),
+                source_chunk_estimated_source_read_bytes: "123456".to_string(),
+                source_chunk_size_estimate_based: "false".to_string(),
+                source_adjacent_partition_strategy: "row_balanced".to_string(),
+                source_adjacent_partition_count: "32".to_string(),
+                source_adjacent_non_empty_partition_count: "32".to_string(),
+                source_adjacent_partition_key_count: "0".to_string(),
+                source_adjacent_max_partition_fan_in: "17".to_string(),
+                partitioned_merge_partition_count: "unknown".to_string(),
+                partitioned_merge_non_empty_partition_count: "unknown".to_string(),
+                partitioned_merge_max_partition_fan_in: "unknown".to_string(),
+                selection_elapsed_ns: 0,
+                encode_elapsed_ns: 0,
+                groupby_elapsed_ns: 123456789,
+                decode_elapsed_ns: 0,
+                strategy_operator_elapsed_ns: 123456789,
+                encoded_key_partial_cost_model: "prior_partial_reduction_ratio".to_string(),
+                encoded_key_partial_cost_model_status: "rejected_by_cost_model".to_string(),
+                encoded_key_partial_selection_reason: "no_prior_cardinality_evidence".to_string(),
+                encoded_key_partial_reduction_ratio_threshold_ppm: 100000,
+                encoded_key_partial_prior_reduction_ratio_ppm: 0,
+                encoded_key_partial_prior_strategy: "".to_string(),
+                prepared_sort_groupby_rejected_reason: "prepared_sort_groupby_cost_model_no_prior_cardinality_evidence"
+                    .to_string(),
+                prepared_sort_groupby_contract_status: "available".to_string(),
+                prepared_sort_groupby_required_contract: "prepared_sort_groupby_execution_contract".to_string(),
+                prepared_sort_groupby_cost_model: "exact_grouped_key_facts_required".to_string(),
+                prepared_sort_groupby_cost_model_status: "rejected_by_cost_model".to_string(),
+                prepared_sort_groupby_selection_reason: "no_prior_cardinality_evidence".to_string(),
+                prepared_sort_groupby_num_groups: "unknown".to_string(),
+                prepared_sort_groupby_grouped_key_output_bytes: "unknown".to_string(),
+                prepared_sort_groupby_max_group_size: "unknown".to_string(),
+                rejected_candidate_strategies:
+                    "encoded_key_partial:encoded_key_partial_cost_model_no_prior_cardinality_evidence;prepared_sort_groupby:prepared_sort_groupby_cost_model_no_prior_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
+                        .to_string(),
+            }],
             join_strategy_rows: vec![NativeJoinStrategyMetricRow {
                 node_id: "n7".to_string(),
                 join_strategy: "one_shot_equi".to_string(),
@@ -236,6 +292,26 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(
         fields[header_index(&header_fields, "task_high_water_rows")]
             .contains("operator_class=final_merge,task_count=39")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")]
+            .contains("node_id=n3,selected_strategy=libcudf_groupby,execution_stage=partial")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")]
+            .contains("source_adjacent_partition_strategy=row_balanced")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")]
+            .contains("partitioned_merge_partition_count=unknown")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")]
+            .contains("prepared_sort_groupby_cost_model=exact_grouped_key_facts_required")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")]
+            .contains("prepared_sort_groupby_num_groups=unknown")
     );
     assert!(text.contains("\tnode_id=n7,join_strategy=one_shot_equi,execution_strategy=bounded_one_shot_equi_join"));
     assert!(text.contains("\t1.000\t2.000\t3.000\t4.000\t5.000\t6.000\t7.000\t8.000\t9.000\n"));

@@ -11,6 +11,7 @@ use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::tsv::{metric_count, optional_observed_metric_count};
 
+const NATIVE_AGGREGATE_STRATEGY_ROWS_METRIC_NAME: &str = "native_aggregate_strategy_rows";
 const NATIVE_JOIN_STRATEGY_ROWS_METRIC_NAME: &str = "native_join_strategy_rows";
 const NATIVE_GRAPH_RUNTIME_ROWS_METRIC_NAME: &str = "native_graph_runtime_rows";
 const NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME: &str = "native_task_operator_rows";
@@ -168,6 +169,8 @@ pub struct NativeDataFusionExecutionMetrics {
     pub one_shot_join_output_bytes: usize,
     /// Device bytes retained by join gather maps.
     pub join_gather_map_bytes: usize,
+    /// Stable nested aggregate strategy rows.
+    pub aggregate_strategy_rows: Vec<NativeAggregateStrategyMetricRow>,
     /// Stable nested join strategy rows.
     pub join_strategy_rows: Vec<NativeJoinStrategyMetricRow>,
 }
@@ -248,8 +251,21 @@ impl NativeDataFusionExecutionMetrics {
             one_shot_join_materialization_bytes: metric_count(metrics, "one_shot_join_materialization_bytes"),
             one_shot_join_output_bytes: metric_count(metrics, "one_shot_join_output_bytes"),
             join_gather_map_bytes: metric_count(metrics, "join_gather_map_bytes"),
+            aggregate_strategy_rows: aggregate_strategy_rows(metrics),
             join_strategy_rows: join_strategy_rows(metrics),
         }
+    }
+
+    /// Merges aggregate strategy rows by aggregate site and keeps stable sort order.
+    pub fn merge_aggregate_strategy_rows(&mut self, rows: Vec<NativeAggregateStrategyMetricRow>) {
+        for row in rows {
+            if let Some(existing) = self.aggregate_strategy_rows.iter_mut().find(|existing| existing.same_site(&row)) {
+                existing.merge_runtime_from(row);
+            } else {
+                self.aggregate_strategy_rows.push(row);
+            }
+        }
+        self.aggregate_strategy_rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
     }
 
     /// Merges join strategy rows by join site and keeps stable sort order.
@@ -492,6 +508,269 @@ impl NativeTaskRuntimeMetricRow {
     }
 }
 
+/// Aggregate strategy diagnostics with runtime counters merged by aggregate site.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeAggregateStrategyMetricRow {
+    /// Native aggregate node id, or a stage-local fallback label.
+    pub node_id: String,
+    /// Strategy selected for this aggregate stage.
+    pub selected_strategy: String,
+    /// Aggregate execution stage label.
+    pub execution_stage: String,
+    /// Native memory mode label.
+    pub memory_mode: String,
+    /// Number of group-key expressions.
+    pub group_key_count: usize,
+    /// Stable group-key expression summary.
+    pub group_key_exprs: String,
+    /// Stable group-key dtype summary.
+    pub group_key_dtypes: String,
+    /// Stable aggregate function summary.
+    pub aggregate_functions: String,
+    /// Count of aggregate filter predicates.
+    pub aggregate_filter_count: usize,
+    /// Count of distinct aggregate expressions.
+    pub distinct_aggregate_count: usize,
+    /// Input rows consumed by this aggregate stage.
+    pub input_rows: usize,
+    /// Output groups produced by this aggregate stage.
+    pub output_group_count: usize,
+    /// `output_group_count / input_rows` scaled by 1,000,000.
+    pub reduction_ratio_ppm: usize,
+    /// Chunk rows for partial stages, or zero for non-partial stages.
+    pub chunk_row_count: usize,
+    /// Source chunk count visible at this decision point.
+    pub chunk_count: usize,
+    /// Partial aggregate count visible at this decision point.
+    pub partial_aggregate_count: usize,
+    /// Whether this partial aggregate consumed source-adjacent stage output.
+    pub source_adjacent_partial: String,
+    /// Source row groups feeding this partial aggregate, or `unknown`.
+    pub source_chunk_row_group_count: String,
+    /// Whether the source chunk reads a whole file with unknown row groups.
+    pub source_chunk_reads_all_row_groups: String,
+    /// Known source row count for this chunk before source-adjacent stages.
+    pub source_chunk_known_row_count: String,
+    /// Best available source-read byte estimate for this chunk.
+    pub source_chunk_estimated_source_read_bytes: String,
+    /// Whether chunk sizing relied on file-size estimates.
+    pub source_chunk_size_estimate_based: String,
+    /// Source-adjacent partition strategy, or `unknown`/`none`.
+    pub source_adjacent_partition_strategy: String,
+    /// Planned source-adjacent partition count, or `unknown`.
+    pub source_adjacent_partition_count: String,
+    /// Non-empty source-adjacent partition count, or `unknown`.
+    pub source_adjacent_non_empty_partition_count: String,
+    /// Group-key column count used for source-adjacent partitioning, or `unknown`.
+    pub source_adjacent_partition_key_count: String,
+    /// Largest number of chunk fragments feeding one source-adjacent partition.
+    pub source_adjacent_max_partition_fan_in: String,
+    /// Planned partition count for partitioned final merge, or `unknown`/`none`.
+    pub partitioned_merge_partition_count: String,
+    /// Non-empty partition count for partitioned final merge, or `unknown`/`none`.
+    pub partitioned_merge_non_empty_partition_count: String,
+    /// Largest fan-in for one partitioned final-merge bucket, or `unknown`/`none`.
+    pub partitioned_merge_max_partition_fan_in: String,
+    /// Strategy-selection elapsed nanoseconds.
+    pub selection_elapsed_ns: usize,
+    /// Key-encoding elapsed nanoseconds.
+    pub encode_elapsed_ns: usize,
+    /// Groupby elapsed nanoseconds.
+    pub groupby_elapsed_ns: usize,
+    /// Key-decoding elapsed nanoseconds.
+    pub decode_elapsed_ns: usize,
+    /// Total operator elapsed nanoseconds charged to this strategy.
+    pub strategy_operator_elapsed_ns: usize,
+    /// Runtime cost-model name used for encoded-key partial selection.
+    pub encoded_key_partial_cost_model: String,
+    /// Runtime cost-model status for encoded-key partial selection.
+    pub encoded_key_partial_cost_model_status: String,
+    /// Stable reason for the encoded-key partial runtime selection decision.
+    pub encoded_key_partial_selection_reason: String,
+    /// Encoded-key partial reduction-ratio threshold scaled by 1,000,000.
+    pub encoded_key_partial_reduction_ratio_threshold_ppm: usize,
+    /// Prior partial reduction ratio used by the encoded-key cost model.
+    pub encoded_key_partial_prior_reduction_ratio_ppm: usize,
+    /// Strategy used by the prior partial evidence row.
+    pub encoded_key_partial_prior_strategy: String,
+    /// Stable local rejection reason for prepared sort groupby.
+    pub prepared_sort_groupby_rejected_reason: String,
+    /// Prepared sort groupby contract status.
+    pub prepared_sort_groupby_contract_status: String,
+    /// Required contract label for prepared sort groupby.
+    pub prepared_sort_groupby_required_contract: String,
+    /// Runtime cost-model name used for prepared sort groupby selection.
+    pub prepared_sort_groupby_cost_model: String,
+    /// Runtime cost-model status for prepared sort groupby selection.
+    pub prepared_sort_groupby_cost_model_status: String,
+    /// Stable reason for the prepared sort groupby runtime selection decision.
+    pub prepared_sort_groupby_selection_reason: String,
+    /// Exact prepared group count, or `unknown` when the prepare step did not run.
+    pub prepared_sort_groupby_num_groups: String,
+    /// Exact grouped-key output bytes, or `unknown` when the prepare step did not run.
+    pub prepared_sort_groupby_grouped_key_output_bytes: String,
+    /// Exact maximum group size, or `unknown` when the prepare step did not run.
+    pub prepared_sort_groupby_max_group_size: String,
+    /// Stable candidate rejection summary.
+    pub rejected_candidate_strategies: String,
+}
+
+impl NativeAggregateStrategyMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},aggregate_filter_count={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
+            self.node_id,
+            self.selected_strategy,
+            self.execution_stage,
+            self.memory_mode,
+            self.group_key_count,
+            self.group_key_exprs,
+            self.group_key_dtypes,
+            self.aggregate_functions,
+            self.aggregate_filter_count,
+            self.distinct_aggregate_count,
+            self.input_rows,
+            self.output_group_count,
+            self.reduction_ratio_ppm,
+            self.chunk_row_count,
+            self.chunk_count,
+            self.partial_aggregate_count,
+            self.source_adjacent_partial,
+            self.source_chunk_row_group_count,
+            self.source_chunk_reads_all_row_groups,
+            self.source_chunk_known_row_count,
+            self.source_chunk_estimated_source_read_bytes,
+            self.source_chunk_size_estimate_based,
+            self.source_adjacent_partition_strategy,
+            self.source_adjacent_partition_count,
+            self.source_adjacent_non_empty_partition_count,
+            self.source_adjacent_partition_key_count,
+            self.source_adjacent_max_partition_fan_in,
+            self.partitioned_merge_partition_count,
+            self.partitioned_merge_non_empty_partition_count,
+            self.partitioned_merge_max_partition_fan_in,
+            self.selection_elapsed_ns,
+            self.encode_elapsed_ns,
+            self.groupby_elapsed_ns,
+            self.decode_elapsed_ns,
+            self.strategy_operator_elapsed_ns,
+            self.encoded_key_partial_cost_model,
+            self.encoded_key_partial_cost_model_status,
+            self.encoded_key_partial_selection_reason,
+            self.encoded_key_partial_reduction_ratio_threshold_ppm,
+            self.encoded_key_partial_prior_reduction_ratio_ppm,
+            self.encoded_key_partial_prior_strategy,
+            self.prepared_sort_groupby_rejected_reason,
+            self.prepared_sort_groupby_contract_status,
+            self.prepared_sort_groupby_required_contract,
+            self.prepared_sort_groupby_cost_model,
+            self.prepared_sort_groupby_cost_model_status,
+            self.prepared_sort_groupby_selection_reason,
+            self.prepared_sort_groupby_num_groups,
+            self.prepared_sort_groupby_grouped_key_output_bytes,
+            self.prepared_sort_groupby_max_group_size,
+            self.rejected_candidate_strategies,
+        )
+    }
+
+    fn same_site(&self, other: &Self) -> bool {
+        self.node_id == other.node_id
+            && self.selected_strategy == other.selected_strategy
+            && self.execution_stage == other.execution_stage
+            && self.memory_mode == other.memory_mode
+            && self.group_key_count == other.group_key_count
+            && self.group_key_exprs == other.group_key_exprs
+            && self.group_key_dtypes == other.group_key_dtypes
+            && self.aggregate_functions == other.aggregate_functions
+            && self.aggregate_filter_count == other.aggregate_filter_count
+            && self.distinct_aggregate_count == other.distinct_aggregate_count
+            && self.source_adjacent_partial == other.source_adjacent_partial
+            && self.source_chunk_row_group_count == other.source_chunk_row_group_count
+            && self.source_chunk_reads_all_row_groups == other.source_chunk_reads_all_row_groups
+            && self.source_chunk_known_row_count == other.source_chunk_known_row_count
+            && self.source_chunk_estimated_source_read_bytes == other.source_chunk_estimated_source_read_bytes
+            && self.source_chunk_size_estimate_based == other.source_chunk_size_estimate_based
+            && self.source_adjacent_partition_strategy == other.source_adjacent_partition_strategy
+            && self.source_adjacent_partition_count == other.source_adjacent_partition_count
+            && self.source_adjacent_non_empty_partition_count == other.source_adjacent_non_empty_partition_count
+            && self.source_adjacent_partition_key_count == other.source_adjacent_partition_key_count
+            && self.source_adjacent_max_partition_fan_in == other.source_adjacent_max_partition_fan_in
+            && self.partitioned_merge_partition_count == other.partitioned_merge_partition_count
+            && self.partitioned_merge_non_empty_partition_count == other.partitioned_merge_non_empty_partition_count
+            && self.partitioned_merge_max_partition_fan_in == other.partitioned_merge_max_partition_fan_in
+            && self.encoded_key_partial_cost_model == other.encoded_key_partial_cost_model
+            && self.encoded_key_partial_cost_model_status == other.encoded_key_partial_cost_model_status
+            && self.encoded_key_partial_selection_reason == other.encoded_key_partial_selection_reason
+            && self.encoded_key_partial_reduction_ratio_threshold_ppm
+                == other.encoded_key_partial_reduction_ratio_threshold_ppm
+            && self.encoded_key_partial_prior_reduction_ratio_ppm == other.encoded_key_partial_prior_reduction_ratio_ppm
+            && self.encoded_key_partial_prior_strategy == other.encoded_key_partial_prior_strategy
+            && self.prepared_sort_groupby_rejected_reason == other.prepared_sort_groupby_rejected_reason
+            && self.prepared_sort_groupby_contract_status == other.prepared_sort_groupby_contract_status
+            && self.prepared_sort_groupby_required_contract == other.prepared_sort_groupby_required_contract
+            && self.prepared_sort_groupby_cost_model == other.prepared_sort_groupby_cost_model
+            && self.prepared_sort_groupby_cost_model_status == other.prepared_sort_groupby_cost_model_status
+            && self.prepared_sort_groupby_selection_reason == other.prepared_sort_groupby_selection_reason
+            && self.rejected_candidate_strategies == other.rejected_candidate_strategies
+    }
+
+    fn merge_runtime_from(&mut self, other: Self) {
+        self.input_rows = self.input_rows.saturating_add(other.input_rows);
+        self.output_group_count = self.output_group_count.saturating_add(other.output_group_count);
+        self.chunk_row_count = self.chunk_row_count.saturating_add(other.chunk_row_count);
+        self.chunk_count = self.chunk_count.max(other.chunk_count);
+        self.partial_aggregate_count = self.partial_aggregate_count.max(other.partial_aggregate_count);
+        self.selection_elapsed_ns = self.selection_elapsed_ns.saturating_add(other.selection_elapsed_ns);
+        self.encode_elapsed_ns = self.encode_elapsed_ns.saturating_add(other.encode_elapsed_ns);
+        self.groupby_elapsed_ns = self.groupby_elapsed_ns.saturating_add(other.groupby_elapsed_ns);
+        self.decode_elapsed_ns = self.decode_elapsed_ns.saturating_add(other.decode_elapsed_ns);
+        self.strategy_operator_elapsed_ns =
+            self.strategy_operator_elapsed_ns.saturating_add(other.strategy_operator_elapsed_ns);
+        self.prepared_sort_groupby_num_groups = merge_numeric_string_fact_sum(
+            &self.prepared_sort_groupby_num_groups,
+            &other.prepared_sort_groupby_num_groups,
+        );
+        self.prepared_sort_groupby_grouped_key_output_bytes = merge_numeric_string_fact_sum(
+            &self.prepared_sort_groupby_grouped_key_output_bytes,
+            &other.prepared_sort_groupby_grouped_key_output_bytes,
+        );
+        self.prepared_sort_groupby_max_group_size = merge_numeric_string_fact_max(
+            &self.prepared_sort_groupby_max_group_size,
+            &other.prepared_sort_groupby_max_group_size,
+        );
+        self.reduction_ratio_ppm = if self.input_rows == 0 {
+            0
+        } else {
+            self.output_group_count.saturating_mul(1_000_000).saturating_div(self.input_rows)
+        };
+    }
+
+    fn sort_key(&self) -> (&str, &str, &str, &str, &str) {
+        (
+            self.node_id.as_str(),
+            self.execution_stage.as_str(),
+            self.selected_strategy.as_str(),
+            self.group_key_dtypes.as_str(),
+            self.aggregate_functions.as_str(),
+        )
+    }
+}
+
+fn merge_numeric_string_fact_sum(left: &str, right: &str) -> String {
+    match (left.parse::<usize>(), right.parse::<usize>()) {
+        (Ok(left), Ok(right)) => left.saturating_add(right).to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
+fn merge_numeric_string_fact_max(left: &str, right: &str) -> String {
+    match (left.parse::<usize>(), right.parse::<usize>()) {
+        (Ok(left), Ok(right)) => left.max(right).to_string(),
+        _ => "unknown".to_string(),
+    }
+}
+
 /// Join strategy diagnostics with runtime counters merged by join site.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeJoinStrategyMetricRow {
@@ -684,6 +963,17 @@ fn join_strategy_rows(metrics: &MetricsSet) -> Vec<NativeJoinStrategyMetricRow> 
     rows
 }
 
+fn aggregate_strategy_rows(metrics: &MetricsSet) -> Vec<NativeAggregateStrategyMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_AGGREGATE_STRATEGY_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "node_id"))
+        .map(|metric| labels_to_aggregate_strategy_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.sort_key().cmp(&right.sort_key()));
+    rows
+}
+
 fn task_operator_rows(metrics: &MetricsSet) -> Vec<NativeTaskOperatorMetricRow> {
     let mut rows = metrics
         .iter()
@@ -791,6 +1081,74 @@ fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrate
         join_output_reservation_bytes: usize_label(&labels, "join_output_reservation_bytes"),
         join_output_rows: usize_label(&labels, "join_output_rows"),
         join_output_bytes: usize_label(&labels, "join_output_bytes"),
+    }
+}
+
+fn labels_to_aggregate_strategy_row(labels: BTreeMap<&str, &str>) -> NativeAggregateStrategyMetricRow {
+    NativeAggregateStrategyMetricRow {
+        node_id: string_label(&labels, "node_id"),
+        selected_strategy: string_label(&labels, "selected_strategy"),
+        execution_stage: string_label(&labels, "execution_stage"),
+        memory_mode: string_label(&labels, "memory_mode"),
+        group_key_count: usize_label(&labels, "group_key_count"),
+        group_key_exprs: string_label(&labels, "group_key_exprs"),
+        group_key_dtypes: string_label(&labels, "group_key_dtypes"),
+        aggregate_functions: string_label(&labels, "aggregate_functions"),
+        aggregate_filter_count: usize_label(&labels, "aggregate_filter_count"),
+        distinct_aggregate_count: usize_label(&labels, "distinct_aggregate_count"),
+        input_rows: usize_label(&labels, "input_rows"),
+        output_group_count: usize_label(&labels, "output_group_count"),
+        reduction_ratio_ppm: usize_label(&labels, "reduction_ratio_ppm"),
+        chunk_row_count: usize_label(&labels, "chunk_row_count"),
+        chunk_count: usize_label(&labels, "chunk_count"),
+        partial_aggregate_count: usize_label(&labels, "partial_aggregate_count"),
+        source_adjacent_partial: string_label(&labels, "source_adjacent_partial"),
+        source_chunk_row_group_count: string_label(&labels, "source_chunk_row_group_count"),
+        source_chunk_reads_all_row_groups: string_label(&labels, "source_chunk_reads_all_row_groups"),
+        source_chunk_known_row_count: string_label(&labels, "source_chunk_known_row_count"),
+        source_chunk_estimated_source_read_bytes: string_label(&labels, "source_chunk_estimated_source_read_bytes"),
+        source_chunk_size_estimate_based: string_label(&labels, "source_chunk_size_estimate_based"),
+        source_adjacent_partition_strategy: string_label(&labels, "source_adjacent_partition_strategy"),
+        source_adjacent_partition_count: string_label(&labels, "source_adjacent_partition_count"),
+        source_adjacent_non_empty_partition_count: string_label(&labels, "source_adjacent_non_empty_partition_count"),
+        source_adjacent_partition_key_count: string_label(&labels, "source_adjacent_partition_key_count"),
+        source_adjacent_max_partition_fan_in: string_label(&labels, "source_adjacent_max_partition_fan_in"),
+        partitioned_merge_partition_count: string_label(&labels, "partitioned_merge_partition_count"),
+        partitioned_merge_non_empty_partition_count: string_label(
+            &labels,
+            "partitioned_merge_non_empty_partition_count",
+        ),
+        partitioned_merge_max_partition_fan_in: string_label(&labels, "partitioned_merge_max_partition_fan_in"),
+        selection_elapsed_ns: usize_label(&labels, "selection_elapsed_ns"),
+        encode_elapsed_ns: usize_label(&labels, "encode_elapsed_ns"),
+        groupby_elapsed_ns: usize_label(&labels, "groupby_elapsed_ns"),
+        decode_elapsed_ns: usize_label(&labels, "decode_elapsed_ns"),
+        strategy_operator_elapsed_ns: usize_label(&labels, "strategy_operator_elapsed_ns"),
+        encoded_key_partial_cost_model: string_label(&labels, "encoded_key_partial_cost_model"),
+        encoded_key_partial_cost_model_status: string_label(&labels, "encoded_key_partial_cost_model_status"),
+        encoded_key_partial_selection_reason: string_label(&labels, "encoded_key_partial_selection_reason"),
+        encoded_key_partial_reduction_ratio_threshold_ppm: usize_label(
+            &labels,
+            "encoded_key_partial_reduction_ratio_threshold_ppm",
+        ),
+        encoded_key_partial_prior_reduction_ratio_ppm: usize_label(
+            &labels,
+            "encoded_key_partial_prior_reduction_ratio_ppm",
+        ),
+        encoded_key_partial_prior_strategy: string_label(&labels, "encoded_key_partial_prior_strategy"),
+        prepared_sort_groupby_rejected_reason: string_label(&labels, "prepared_sort_groupby_rejected_reason"),
+        prepared_sort_groupby_contract_status: string_label(&labels, "prepared_sort_groupby_contract_status"),
+        prepared_sort_groupby_required_contract: string_label(&labels, "prepared_sort_groupby_required_contract"),
+        prepared_sort_groupby_cost_model: string_label(&labels, "prepared_sort_groupby_cost_model"),
+        prepared_sort_groupby_cost_model_status: string_label(&labels, "prepared_sort_groupby_cost_model_status"),
+        prepared_sort_groupby_selection_reason: string_label(&labels, "prepared_sort_groupby_selection_reason"),
+        prepared_sort_groupby_num_groups: string_label(&labels, "prepared_sort_groupby_num_groups"),
+        prepared_sort_groupby_grouped_key_output_bytes: string_label(
+            &labels,
+            "prepared_sort_groupby_grouped_key_output_bytes",
+        ),
+        prepared_sort_groupby_max_group_size: string_label(&labels, "prepared_sort_groupby_max_group_size"),
+        rejected_candidate_strategies: string_label(&labels, "rejected_candidate_strategies"),
     }
 }
 

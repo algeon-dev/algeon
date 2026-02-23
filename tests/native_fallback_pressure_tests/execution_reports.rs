@@ -128,6 +128,30 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.one_shot_join_materialization_bytes, 8192);
     assert_eq!(row.metrics.one_shot_join_output_bytes, 16384);
     assert_eq!(row.metrics.join_gather_map_bytes, 2048);
+    assert_eq!(row.metrics.aggregate_strategy_rows.len(), 1);
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].node_id, "n4");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].selected_strategy, "libcudf_groupby");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].execution_stage, "partial");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].group_key_dtypes, "Utf8");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].aggregate_functions, "sum,count");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].input_rows, 6001215);
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].output_group_count, 4);
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].source_adjacent_partial, "true");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].source_chunk_row_group_count, "1");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].source_chunk_known_row_count, "6001215");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].groupby_elapsed_ns, 123456789);
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].encoded_key_partial_cost_model, "prior_partial_reduction_ratio");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].encoded_key_partial_cost_model_status, "rejected_by_cost_model");
+    assert_eq!(
+        row.metrics.aggregate_strategy_rows[0].encoded_key_partial_selection_reason,
+        "no_prior_cardinality_evidence"
+    );
+    assert_eq!(
+        row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_rejected_reason,
+        "prepared_sort_groupby_cost_model_no_prior_cardinality_evidence"
+    );
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_contract_status, "available");
+    assert_eq!(row.metrics.aggregate_strategy_rows[0].prepared_sort_groupby_num_groups, "unknown");
     assert_eq!(row.metrics.join_strategy_rows.len(), 1);
     assert_eq!(row.metrics.join_strategy_rows[0].node_id, "n2");
     assert_eq!(row.metrics.join_strategy_rows[0].join_strategy, "one_shot_equi");
@@ -137,15 +161,17 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 22);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 96);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 26);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 97);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tsource_cache_hits\tsource_cache_misses\tsource_cache_inserts\tsource_cache_insert_skipped\tsource_cache_retained_bytes\t"));
-    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=22\n"));
+    assert!(text.starts_with("# native_datafusion_execution_tsv_schema_version=26\n"));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_EXECUTION_TSV_HEADER}\n")));
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));
+    assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains("\taggregate_strategy_rows\tjoin_strategy_rows\t"));
+    assert!(text.contains("selected_strategy=libcudf_groupby,execution_stage=partial"));
     assert!(text.contains("algorithm=pagerank,runtime_outcome=succeeded"));
     assert!(
         text.contains(

@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 
 /// Result of comparing CPU and native Arrow outputs.
@@ -45,7 +47,7 @@ pub(super) struct ParityCompareOptions {
 }
 
 impl ParityCompareOptions {
-    const fn strict_native() -> Self {
+    pub(super) const fn strict_native() -> Self {
         Self { allow_decimal_precision_mismatch: false }
     }
 
@@ -207,18 +209,68 @@ pub(super) fn schema_has_float_column(schema: &Schema) -> bool {
 pub fn sql_has_top_level_order_by(sql: &str) -> bool {
     let depth_zero = strip_to_depth_zero(sql);
     let lowered = depth_zero.to_ascii_lowercase();
-    let bytes = lowered.as_bytes();
+    top_level_order_by_start(&lowered).is_some()
+}
+
+/// Returns true when the top-level `ORDER BY` names every output column.
+///
+/// This is a conservative total-order signal for parity comparison. A query may
+/// still be deterministic through uniqueness constraints, but those constraints
+/// are not visible here, so partial `ORDER BY` lists are treated as order-tie
+/// candidates.
+pub fn sql_top_level_order_by_covers_output_columns(sql: &str, schema: &Schema) -> bool {
+    let depth_zero = strip_to_depth_zero(sql);
+    let lowered = depth_zero.to_ascii_lowercase();
+    let Some(start) = top_level_order_by_start(&lowered) else {
+        return false;
+    };
+    let mut clause = &lowered[start..];
+    for keyword in ["limit", "fetch", "offset"] {
+        if let Some(index) = find_word(clause.as_bytes(), keyword.as_bytes()) {
+            clause = &clause[..index];
+        }
+    }
+    let order_columns = clause.split(',').filter_map(normalized_order_by_column).collect::<BTreeSet<_>>();
+    schema.fields().iter().all(|field| order_columns.contains(&field.name().to_ascii_lowercase()))
+}
+
+fn top_level_order_by_start(lowered_depth_zero_sql: &str) -> Option<usize> {
+    let bytes = lowered_depth_zero_sql.as_bytes();
     let mut i = 0;
     while i + 8 <= bytes.len() {
         if matches_word_at(bytes, i, b"order") && {
             let after = skip_whitespace(bytes, i + 5);
             matches_word_at(bytes, after, b"by")
         } {
-            return true;
+            return Some(skip_whitespace(bytes, skip_whitespace(bytes, i + 5) + 2));
         }
         i += 1;
     }
-    false
+    None
+}
+
+fn find_word(bytes: &[u8], word: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + word.len() <= bytes.len() {
+        if matches_word_at(bytes, i, word) {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+fn normalized_order_by_column(term: &str) -> Option<String> {
+    let tokens = term.split_whitespace().collect::<Vec<_>>();
+    let first = tokens.first()?.trim_matches(|c: char| c == '"' || c == '`');
+    if first.is_empty() {
+        return None;
+    }
+    if let Ok(ordinal) = first.parse::<usize>() {
+        return Some(format!("#{ordinal}"));
+    }
+    let column = first.rsplit('.').next().unwrap_or(first).trim_matches(|c: char| c == '"' || c == '`');
+    (!column.is_empty()).then(|| column.to_ascii_lowercase())
 }
 
 fn strip_to_depth_zero(sql: &str) -> String {
