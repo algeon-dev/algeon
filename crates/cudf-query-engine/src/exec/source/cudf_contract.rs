@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::{predicate::lower_source_reader_predicate, *};
 
@@ -74,6 +74,136 @@ pub(super) fn cudf_local_parquet_source_file_selection(
         None,
     )?;
     Ok((cudf_source, cudf_chunk))
+}
+
+pub(super) struct MiniParquetHostBufferDescriptor<'a> {
+    path: &'a Path,
+    stable_id: &'a str,
+    partition_values: &'a [LiteralValue],
+    read_columns: &'a [String],
+    file_index: usize,
+    chunk_index: usize,
+    pub(super) mini_file_size_bytes: u64,
+    pub(super) mini_row_group_bytes: &'a [u64],
+    pub(super) mini_row_group_rows: &'a [u64],
+}
+
+impl<'a> MiniParquetHostBufferDescriptor<'a> {
+    pub(super) fn from_chunk(
+        chunk: &'a SourceChunk,
+        mini_file_size_bytes: u64,
+        mini_row_group_bytes: &'a [u64],
+        mini_row_group_rows: &'a [u64],
+    ) -> Self {
+        Self {
+            path: chunk.path.as_path(),
+            stable_id: chunk.stable_id.as_str(),
+            partition_values: &chunk.partition_values,
+            read_columns: &chunk.read_columns,
+            file_index: chunk.file_index,
+            chunk_index: chunk.chunk_index,
+            mini_file_size_bytes,
+            mini_row_group_bytes,
+            mini_row_group_rows,
+        }
+    }
+
+    pub(super) fn from_file(
+        file: &'a LocalParquetFile,
+        source: &'a LocalParquetSource,
+        file_index: usize,
+        chunk_index: usize,
+        mini_file_size_bytes: u64,
+        mini_row_group_bytes: &'a [u64],
+        mini_row_group_rows: &'a [u64],
+    ) -> Self {
+        Self {
+            path: file.path.as_path(),
+            stable_id: file.stable_id.as_str(),
+            partition_values: &file.partition_values,
+            read_columns: &source.read_columns,
+            file_index,
+            chunk_index,
+            mini_file_size_bytes,
+            mini_row_group_bytes,
+            mini_row_group_rows,
+        }
+    }
+}
+
+pub(super) fn cudf_local_parquet_source_mini_host_buffer_chunk(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    descriptor: MiniParquetHostBufferDescriptor<'_>,
+) -> Result<(cudf::io::source::LocalParquetSource, cudf::io::source::SourceChunk)> {
+    let partition_values = descriptor.partition_values.iter().map(cudf_partition_value).collect::<Result<Vec<_>>>()?;
+    let mini_path = mini_host_buffer_path(descriptor.file_index, descriptor.chunk_index);
+    let mini_stable_id = format!("{}#mini:{}", descriptor.stable_id, descriptor.chunk_index);
+    let cudf_file = cudf::io::source::LocalParquetFile::new(&mini_path, mini_stable_id.as_str(), partition_values)
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.local_parquet_chunk.mini_host_buffer_file_cudf",
+                "failed to build mini-Parquet host-buffer file descriptor",
+                error,
+            )
+            .with_fact("path", descriptor.path.display())
+            .with_fact("chunk_index", descriptor.chunk_index)
+            .with_fact("file_index", descriptor.file_index)
+        })?
+        .with_file_size_bytes(descriptor.mini_file_size_bytes)
+        .with_row_group_metadata(descriptor.mini_row_group_bytes.to_vec(), descriptor.mini_row_group_rows.to_vec())
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.local_parquet_chunk.mini_host_buffer_file_cudf",
+                "failed to attach mini-Parquet row-group metadata to cudf source contract",
+                error,
+            )
+            .with_fact("path", descriptor.path.display())
+            .with_fact("chunk_index", descriptor.chunk_index)
+            .with_fact("file_index", descriptor.file_index)
+        })?;
+    let cudf_source = cudf_local_parquet_source_from_file(
+        source,
+        cudf_file,
+        descriptor.read_columns.iter().map(String::as_str),
+        "cudf_query_engine.local_parquet_chunk.mini_host_buffer_source_cudf",
+    )
+    .map_err(|error| {
+        error
+            .with_fact("path", descriptor.path.display())
+            .with_fact("chunk_index", descriptor.chunk_index)
+            .with_fact("file_index", descriptor.file_index)
+            .with_fact("read_columns", descriptor.read_columns.len())
+    })?;
+    let cudf_chunk =
+        cudf::io::source::SourceChunk::from_source_file_selection(&cudf_source, 0, descriptor.chunk_index, None)
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "cudf_query_engine.local_parquet_chunk.mini_host_buffer_chunk_cudf",
+                    "failed to convert mini-Parquet host-buffer chunk descriptor into cudf source chunk",
+                    error,
+                )
+                .with_fact("path", descriptor.path.display())
+                .with_fact("chunk_index", descriptor.chunk_index)
+                .with_fact("file_index", descriptor.file_index)
+            })?;
+    let cudf_source = attach_cudf_source_reader_predicate(
+        context,
+        cudf_source,
+        &cudf_chunk,
+        source,
+        "cudf_query_engine.local_parquet_chunk.mini_host_buffer_source_cudf",
+        descriptor.path,
+        descriptor.chunk_index,
+        descriptor.file_index,
+        descriptor.read_columns.len(),
+        Some("mini:all".to_string()),
+    )?;
+    Ok((cudf_source, cudf_chunk))
+}
+
+fn mini_host_buffer_path(file_index: usize, chunk_index: usize) -> PathBuf {
+    PathBuf::from(format!("/__cudf_host_buffer__/mini-{file_index}-{chunk_index}.parquet"))
 }
 
 fn cudf_local_parquet_source_for_chunk(

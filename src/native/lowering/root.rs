@@ -20,7 +20,7 @@ use super::{
     },
     executable_schema_and_bindings,
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
-    lower_native_input, projection_outputs,
+    lower_native_input, lower_native_input_with_scan_limit, projection_outputs,
     sort::lower_sort_with_input,
     source::{
         add_source_filter_projection, lower_required_file_source_projection_exprs,
@@ -28,6 +28,7 @@ use super::{
         required_scan_projection_requires_native_projection, required_scan_projection_schema,
         source_bindings_for_schema, source_reader_pushdown_predicate, table_format_scan_rejection,
     },
+    source_scan_limit_from_limit_spec,
     unary::add_projection_node_with_input,
 };
 use crate::{
@@ -436,7 +437,10 @@ pub(super) fn lower_input_root_plan(
     let mut builder = NativeQueryPlanBuilder::new();
     let required_input_fields =
         root.projection.map(required_root_projection_input_fields).transpose()?.unwrap_or_else(RequiredFields::all);
-    let lowered_input = lower_native_input(&root.input, &mut builder, &required_input_fields)?;
+    let pushed_scan_limit =
+        if normalized.sort.is_none() { source_scan_limit_from_limit_spec(normalized.limit) } else { None };
+    let lowered_input =
+        lower_native_input_with_scan_limit(&root.input, &mut builder, &required_input_fields, pushed_scan_limit)?;
     let projected = if let Some(projection) = root.projection {
         add_projection_node_with_input(&mut builder, lowered_input, projection)?
     } else {

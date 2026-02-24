@@ -8,7 +8,9 @@ use datafusion::{
     execution::context::TaskContext,
     logical_expr::Operator,
     physical_expr::expressions::{binary, col, lit},
-    physical_plan::{ExecutionPlan, coalesce_partitions::CoalescePartitionsExec, filter::FilterExec},
+    physical_plan::{
+        ExecutionPlan, coalesce_partitions::CoalescePartitionsExec, filter::FilterExec, limit::GlobalLimitExec,
+    },
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
@@ -111,6 +113,23 @@ async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() 
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.scan_limit, Some(7));
     assert_eq!(source.files[0].row_group_rows.as_deref(), Some(&[11][..]));
+}
+
+#[test]
+fn native_lowering_pushes_root_global_limit_into_table_format_source_scan_limit() {
+    let schema = iceberg_test_schema();
+    let scan: Arc<dyn ExecutionPlan> =
+        Arc::new(CudfTableFormatScanExec::new(native_admissible_scan_plan(Arc::clone(&schema)), schema));
+    let limited: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(scan, 3, Some(7)));
+
+    let result = lower_physical_plan_to_native(limited);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.scan_limit, Some(10), "source reads must cover skip + fetch before the native Limit trims");
+    assert_eq!(source.diagnostics.scan_limit_disposition.as_str(), "represented");
+    assert!(native_plan_limit_count(&result.plans[0]) >= 1, "native Limit must still preserve root LIMIT semantics");
 }
 
 #[tokio::test]
