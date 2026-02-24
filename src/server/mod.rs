@@ -313,14 +313,14 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
 
 /// Emit a one-shot startup warning when the operator selected the
 /// [`ServerSessionProfile::CpuFallback`] profile against an Iceberg
-/// deployment.
+/// deployment **without** the `iceberg-cpu` feature compiled in.
 ///
-/// The combination is testing-only: `CudfTableFormatScanExec` has no CPU
-/// Arrow reader yet (tracked as Phase 6 of
-/// `docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md`), so plain
-/// `ORDER BY` shapes will hit the Phase 1 leaf guard and fail in planning.
-/// Production Iceberg deployments should use [`ServerSessionProfile::Native`]
-/// — which is the default when an Iceberg catalog is configured.
+/// With `iceberg-cpu` enabled the dynamic catalog routes Iceberg tables
+/// through `iceberg_datafusion::IcebergStaticTableProvider`, which has a real
+/// CPU Arrow reader, so the combination is production-supported. Without it
+/// the catalog still hands out the GPU-only `CudfIcebergTableProvider`, plain
+/// `ORDER BY` queries hit the Phase 1 leaf guard, and the warning is the only
+/// surface that flags the misconfiguration.
 fn warn_if_testing_profile_active(config: &ServerConfig) {
     if !is_testing_profile_active(config) {
         return;
@@ -328,19 +328,33 @@ fn warn_if_testing_profile_active(config: &ServerConfig) {
     tracing::warn!(
         session_profile = %config.session_profile,
         "datafusion-cudf Flight SQL server starting with cpu_fallback session \
-         profile while Iceberg is configured. This profile is testing-only and \
-         does NOT actually fall back to CPU for Iceberg tables (GPU-only \
-         CudfTableFormatScanExec has no CPU Arrow reader yet — tracked as \
-         Phase 6 of docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md). \
-         Plain ORDER BY queries over Iceberg will fail with a structured \
-         planning error. Set DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native \
-         (the default for Iceberg deployments) for production use."
+         profile while Iceberg is configured, but this binary was built \
+         without the `iceberg-cpu` feature. Iceberg tables will be served by \
+         the GPU-only CudfTableFormatScanExec leaf and plain ORDER BY queries \
+         will fail with a structured planning error. Either rebuild with \
+         --features iceberg-cpu to enable the CPU Iceberg reader, or switch \
+         to DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native."
     );
 }
 
-#[cfg(feature = "iceberg")]
+/// Returns true when the active configuration produces a CPU profile + Iceberg
+/// pairing that this binary cannot actually serve.
+///
+/// With the `iceberg-cpu` feature compiled in, `CpuFallback` + Iceberg routes
+/// through `iceberg_datafusion::IcebergStaticTableProvider` and is fully
+/// supported, so this returns false. Without that feature the leaf is still
+/// GPU-only and the warning fires.
+#[cfg(all(feature = "iceberg", not(feature = "iceberg-cpu")))]
 pub(crate) fn is_testing_profile_active(config: &ServerConfig) -> bool {
     matches!(config.session_profile, ServerSessionProfile::CpuFallback) && config.iceberg.is_some()
+}
+
+#[cfg(all(feature = "iceberg", feature = "iceberg-cpu"))]
+pub(crate) fn is_testing_profile_active(_config: &ServerConfig) -> bool {
+    // CpuFallback + Iceberg + iceberg-cpu serves Iceberg via
+    // iceberg_datafusion::IcebergStaticTableProvider (real CPU Arrow reader),
+    // so the pairing is production-supported.
+    false
 }
 
 #[cfg(not(feature = "iceberg"))]
@@ -426,7 +440,19 @@ mod tests {
 
         let mut config = base_config(ServerSessionProfile::CpuFallback);
         config.iceberg = Some(iceberg.clone());
-        assert!(is_testing_profile_active(&config), "cpu_fallback + iceberg must arm the WARN");
+        // With `iceberg-cpu` compiled in the pairing is supported by
+        // iceberg_datafusion::IcebergStaticTableProvider; without it the
+        // GPU-only leaf still applies and the WARN must fire.
+        #[cfg(feature = "iceberg-cpu")]
+        assert!(
+            !is_testing_profile_active(&config),
+            "cpu_fallback + iceberg + iceberg-cpu is production-supported via iceberg-datafusion",
+        );
+        #[cfg(not(feature = "iceberg-cpu"))]
+        assert!(
+            is_testing_profile_active(&config),
+            "cpu_fallback + iceberg without iceberg-cpu must arm the WARN",
+        );
 
         let mut config = base_config(ServerSessionProfile::Native);
         config.iceberg = Some(iceberg);

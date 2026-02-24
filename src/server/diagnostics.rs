@@ -37,10 +37,18 @@ use crate::{
 };
 
 /// Hint appended to the leaf-guard log line when the server is running under
-/// the testing-only [`ServerSessionProfile::CpuFallback`] profile. The string
-/// is stable for log-grep tooling.
-const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profile over Iceberg — switch \
-     to DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native (the default for Iceberg) for production";
+/// [`ServerSessionProfile::CpuFallback`]. The string is stable for log-grep
+/// tooling.
+///
+/// The leaf-guard fires when the GPU-only `CudfTableFormatScanExec` survives
+/// to execution. Under `CpuFallback` that means the catalog handed out the
+/// GPU-only provider — which happens when the binary was built **without**
+/// the `iceberg-cpu` feature. With `iceberg-cpu` compiled in the catalog
+/// routes Iceberg through `iceberg_datafusion::IcebergStaticTableProvider`
+/// and this guard does not fire.
+const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profile over Iceberg when the \
+     `iceberg-cpu` feature was not compiled in — rebuild with --features iceberg-cpu, or switch to \
+     DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native";
 
 /// Stable bucket for common Flight SQL native-rejection codes.
 ///

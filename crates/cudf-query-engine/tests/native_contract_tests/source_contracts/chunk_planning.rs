@@ -322,9 +322,43 @@ fn source_chunk_planning_applies_scan_limit_to_planned_chunks() {
     assert_eq!(plan.chunks[0].row_group_indexes, vec![0, 1]);
     assert_eq!(plan.chunks[0].known_row_count, Some(20));
     assert_eq!(plan.chunks[0].scan_limit_rows, None);
-    assert_eq!(plan.chunks[1].row_group_indexes, vec![2, 3]);
+    assert_eq!(plan.chunks[1].row_group_indexes, vec![2]);
     assert_eq!(plan.chunks[1].known_row_count, Some(5));
+    assert_eq!(plan.chunks[1].known_row_group_bytes, Some(1_000));
+    assert_eq!(plan.chunks[1].known_projected_compressed_bytes, Some(50));
+    assert_eq!(plan.chunks[1].known_projected_uncompressed_bytes, Some(100));
     assert_eq!(plan.chunks[1].scan_limit_rows, Some(5));
+}
+
+#[test]
+fn source_chunk_planning_trims_scan_limit_before_large_chunk_packing() {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/part-000.parquet")
+                .with_file_size_bytes(4_000)
+                .with_row_groups(vec![0, 1, 2, 3])
+                .with_row_group_bytes(vec![1_000, 1_000, 1_000, 1_000])
+                .with_projected_row_group_bytes(vec![50, 50, 50, 50], vec![100, 100, 100, 100])
+                .with_row_group_rows(vec![10, 10, 10, 10]),
+        ],
+        Arc::clone(&schema),
+        vec!["key".to_string()],
+    )
+    .with_scan_limit(Some(5));
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+
+    let plan =
+        plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(Some(10_000), 8)).unwrap();
+
+    assert_eq!(plan.chunk_count(), 1);
+    assert_eq!(plan.row_group_count(), 1);
+    assert_eq!(plan.chunks[0].row_group_indexes, vec![0]);
+    assert_eq!(plan.chunks[0].known_row_count, Some(5));
+    assert_eq!(plan.chunks[0].known_row_group_bytes, Some(1_000));
+    assert_eq!(plan.chunks[0].known_projected_uncompressed_bytes, Some(100));
+    assert_eq!(plan.chunks[0].scan_limit_rows, Some(5));
 }
 
 #[test]

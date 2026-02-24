@@ -51,6 +51,9 @@ use strict::try_execute_strict_bounded_pipeline;
 
 use crate::mode::NativePipelineExecutionMode;
 
+const SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
+
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -131,10 +134,25 @@ fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
 ) -> SourceChunkPlanningPolicy {
-    SourceChunkPlanningPolicy::for_source_task(
+    let mut policy = SourceChunkPlanningPolicy::for_source_task(
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
-    )
+    );
+    if is_source_adjacent_grouped_aggregate(bounded) {
+        policy.max_source_chunk_bytes = Some(
+            policy
+                .max_source_chunk_bytes
+                .unwrap_or(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
+                .min(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES),
+        );
+    }
+    policy
+}
+
+fn is_source_adjacent_grouped_aggregate(bounded: &BoundedPlan<'_>) -> bool {
+    bounded.has_source_adjacent_stages()
+        && !bounded.aggregate.0.spec.group_exprs.is_empty()
+        && bounded.aggregate.0.spec.grouping_sets.is_none()
 }
 
 fn execute_bounded_aggregate_to_frame(
@@ -174,7 +192,7 @@ fn execute_bounded_aggregate_to_frame(
             metrics,
         );
     }
-    if should_execute_partitioned_source_adjacent_grouped_aggregate(bounded, &chunk_plan) {
+    if should_execute_partitioned_source_adjacent_grouped_aggregate(context, bounded, &chunk_plan) {
         return execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks(
             context,
             bounded,
@@ -190,6 +208,7 @@ fn execute_bounded_aggregate_to_frame(
 }
 
 fn should_execute_partitioned_source_adjacent_grouped_aggregate(
+    context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
     chunk_plan: &SourceChunkPlan,
 ) -> bool {
@@ -198,6 +217,52 @@ fn should_execute_partitioned_source_adjacent_grouped_aggregate(
         && !aggregate_spec_has_stddev_samp(&bounded.aggregate.0.spec)
         && bounded.aggregate.0.spec.grouping_sets.is_none()
         && chunk_plan.chunks.len() > 1
+        && source_adjacent_partitioned_raw_retention_fits_budget(context, &chunk_plan.chunks)
+        && source_adjacent_group_key_partitioning_fits_rows(bounded, &chunk_plan.chunks)
+}
+
+fn source_adjacent_partitioned_raw_retention_fits_budget(context: &ExecutionContext, chunks: &[SourceChunk]) -> bool {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        return true;
+    };
+
+    let mut retained_bytes = 0u64;
+    let mut largest_chunk_bytes = 0u64;
+    for chunk in chunks {
+        let Some(chunk_bytes) = chunk.estimated_chunk_bytes.or(chunk.estimated_source_read_bytes) else {
+            return false;
+        };
+        retained_bytes = match retained_bytes.checked_add(chunk_bytes) {
+            Some(bytes) => bytes,
+            None => return false,
+        };
+        largest_chunk_bytes = largest_chunk_bytes.max(chunk_bytes);
+    }
+
+    retained_bytes.saturating_add(largest_chunk_bytes) <= device_budget_bytes
+}
+
+fn source_adjacent_group_key_partitioning_fits_rows(bounded: &BoundedPlan<'_>, chunks: &[SourceChunk]) -> bool {
+    if !source_adjacent_grouped_aggregate_has_string_key(bounded) {
+        return true;
+    }
+    let Some(input_rows) =
+        chunks.iter().try_fold(0u64, |total, chunk| chunk.known_row_count.and_then(|rows| total.checked_add(rows)))
+    else {
+        return false;
+    };
+    input_rows <= SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS
+}
+
+fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -> bool {
+    let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
+        return false;
+    };
+    lowered_keys.key_columns.iter().any(|key_column| {
+        bounded.aggregate_input_schema.field_with_name(key_column).is_ok_and(|field| {
+            matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+        })
+    })
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {

@@ -36,6 +36,12 @@ iceberg = [
     "dep:object_store",
     "dep:tempfile",
 ]
+# CPU Iceberg read path via the upstream iceberg-datafusion integration.
+# Opt-in on top of `iceberg`. When this feature is on and the server runs
+# under SESSION_PROFILE=cpu_fallback, Iceberg tables are served by
+# IcebergStaticTableProvider (real CPU Arrow reader) instead of the
+# GPU-only CudfTableFormatScanExec leaf.
+iceberg-cpu = ["iceberg", "dep:iceberg-datafusion"]
 server = [
     "dep:arrow-flight",
     "dep:argon2",
@@ -78,6 +84,7 @@ datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg", optional = true }
 iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue", optional = true }
+iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion", optional = true }
 object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
 parquet = { workspace = true }
 prost = { version = "0.14.1", optional = true }
@@ -192,3 +199,15 @@ required-features = ["server", "iceberg"]
 [[test]]
 name = "flight_sql_iceberg_native_planning_tests"
 required-features = ["server", "iceberg"]
+
+# Patch iceberg-datafusion's `datafusion = "53.1.0"` (declared in the sibling
+# iceberg-rust workspace) over to the same path-dep this adapter uses. Without
+# this redirect cargo treats the registry copy and the path-dep copy as two
+# distinct crate instances, so traits like `TableProvider` are not interchange-
+# able between the two and `Arc::new(IcebergStaticTableProvider) as Arc<dyn TableProvider>`
+# fails to unify. Patching only the top-level `datafusion` crate is enough
+# because all its sub-crates (datafusion-catalog, datafusion-physical-plan,
+# ...) are referenced via `workspace = true` inside the sibling datafusion
+# workspace, so they automatically inherit the path-dep selection.
+[patch.crates-io]
+datafusion = { path = "../datafusion/datafusion/core" }

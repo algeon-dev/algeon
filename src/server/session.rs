@@ -119,6 +119,13 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         return Ok(());
     };
 
+    // Select which DataFusion TableProvider backs loaded Iceberg tables, based
+    // on the session profile. The CPU path is only available when built with
+    // the `iceberg-cpu` feature; without it Cpu+Iceberg falls back to the
+    // GPU-only provider (server emits a startup WARN — see [`is_testing_profile_active`]
+    // in `super::is_testing_profile_active`).
+    let provider_kind = iceberg_provider_kind_for(config.session_profile);
+
     // Build the Glue catalog backend once; it holds a connected catalog handle
     // that is reused for all namespace/table listing and lazy table loading.
     let catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
@@ -143,12 +150,14 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 
     // Discover only the configured namespace scope. Individual tables are
     // loaded lazily on first SQL access through the backend.
-    let catalog_provider =
-        crate::iceberg::catalog::build_scoped_catalog_provider_from_backend(backend, "glue", &iceberg.namespace)
-            .await
-            .map_err(|error| {
-                ServerError::session("failed to build Iceberg catalog provider from Glue backend", error)
-            })?;
+    let catalog_provider = crate::iceberg::catalog::build_scoped_catalog_provider_from_backend(
+        backend,
+        "glue",
+        &iceberg.namespace,
+        provider_kind,
+    )
+    .await
+    .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from Glue backend", error))?;
 
     // Seed pre-declared alias mappings before registering the catalog.
     // This makes catalog.namespace.alias resolve in addition to the real name.
@@ -171,11 +180,7 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             .await
             .map_err(|error| ServerError::session("failed to load Glue Iceberg table for alias seeding", error))?;
         let diagnostics = loaded.diagnostics.clone();
-        let provider: Arc<dyn datafusion::datasource::TableProvider> = Arc::new(
-            crate::iceberg::table_provider(loaded.table)
-                .map_err(|error| ServerError::session("failed to build CudfIcebergTableProvider", error))?
-                .with_catalog_type("glue"),
-        );
+        let provider = build_alias_provider(loaded.table, provider_kind).await?;
 
         // Seed the pre-loaded provider into the dynamic schema provider so that:
         //  - catalog.namespace.real_table_name reuses this load (skips a
@@ -239,9 +244,66 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
         df_catalog_name = iceberg.catalog_name,
         glue_catalog_handle = iceberg.glue_catalog_handle,
         namespace = iceberg.namespace,
+        provider_kind = provider_kind.as_str(),
         pre_declared_aliases = iceberg.tables.len(),
         "registered dynamic Iceberg catalog provider"
     );
 
     Ok(())
+}
+
+/// Maps a [`ServerSessionProfile`] to the Iceberg provider kind the dynamic
+/// catalog should use.
+///
+/// Without the `iceberg-cpu` feature the CPU path is unavailable, so
+/// `CpuFallback` still routes through the GPU-only provider; the server's
+/// startup WARN (see `super::is_testing_profile_active`) covers that
+/// configuration.
+#[cfg(feature = "iceberg")]
+fn iceberg_provider_kind_for(profile: ServerSessionProfile) -> crate::iceberg::catalog::IcebergProviderKind {
+    use crate::iceberg::catalog::IcebergProviderKind;
+    match profile {
+        ServerSessionProfile::Native => IcebergProviderKind::Gpu,
+        #[cfg(feature = "iceberg-cpu")]
+        ServerSessionProfile::CpuFallback => IcebergProviderKind::Cpu,
+        #[cfg(not(feature = "iceberg-cpu"))]
+        ServerSessionProfile::CpuFallback => IcebergProviderKind::Gpu,
+    }
+}
+
+/// Builds the [`TableProvider`] used to seed a pre-declared alias.
+///
+/// Mirrors the dispatch in [`crate::iceberg::catalog::CudfIcebergSchemaProvider`]
+/// so the dynamic three-part path and the legacy bare-alias path resolve to
+/// the same provider kind.
+#[cfg(feature = "iceberg")]
+async fn build_alias_provider(
+    table: iceberg::table::Table,
+    kind: crate::iceberg::catalog::IcebergProviderKind,
+) -> super::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
+    use crate::iceberg::catalog::IcebergProviderKind;
+    match kind {
+        IcebergProviderKind::Gpu => {
+            let provider = crate::iceberg::table_provider(table)
+                .map_err(|error| ServerError::session("failed to build CudfIcebergTableProvider", error))?
+                .with_catalog_type("glue");
+            Ok(Arc::new(provider))
+        },
+        #[cfg(feature = "iceberg-cpu")]
+        IcebergProviderKind::Cpu => {
+            let provider = iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table).await.map_err(
+                |error| ServerError::session("failed to build iceberg-datafusion CPU table provider", error),
+            )?;
+            Ok(Arc::new(provider))
+        },
+        #[cfg(not(feature = "iceberg-cpu"))]
+        IcebergProviderKind::Cpu => Err(ServerError::session(
+            "iceberg-cpu feature is required to build CPU IcebergStaticTableProvider",
+            crate::Error::new(
+                crate::ErrorCode::CudfInvalidInput,
+                "datafusion_cudf.server.session.build_alias_provider",
+                "iceberg-cpu feature disabled at build time",
+            ),
+        )),
+    }
 }
