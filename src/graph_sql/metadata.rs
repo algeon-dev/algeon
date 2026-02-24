@@ -15,10 +15,11 @@ use datafusion::{
 use serde_json::{Map, Value, json};
 
 use super::{
-    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-    CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
-    CugraphGraphOptions, CugraphSqlConfig, CugraphTableReference, parse_cugraph_algorithm_spec, plan_error,
-    stable_result_schema,
+    CUGRAPH_BFS_PATH_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
+    CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams,
+    CugraphAlgorithmSpec, CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig,
+    CugraphTableReference, CugraphVertexIdDomain, parse_cugraph_algorithm_spec, parse_cugraph_bfs_path_spec,
+    plan_error, stable_result_schema, vertex_id_domain_for_call,
 };
 
 const SEVERITY_OK: &str = "ok";
@@ -422,6 +423,7 @@ async fn validate_call(
             format!("unknown cuGraph algorithm function '{function_name}'"),
         );
     };
+    let force_bfs_path = function_name == CUGRAPH_BFS_PATH_FUNCTION;
     let output_schema_json = schema_json(&stable_result_schema(algorithm));
     if !config.allows(algorithm) {
         return ValidationRow::invalid(
@@ -439,13 +441,14 @@ async fn validate_call(
         },
     };
 
-    let spec = match build_validate_spec(algorithm, table_name, &call, config) {
+    let spec = match build_validate_spec(algorithm, table_name, &call, config, force_bfs_path) {
         Ok(spec) => spec,
         Err(error) => {
             return ValidationRow::invalid(function_name, parse_error_code(&error.to_string()), error.to_string())
                 .with_algorithm(true, output_schema_json);
         },
     };
+    let output_schema_json = schema_json(&spec.output_schema);
 
     let table_ref = datafusion_table_reference(&spec.table_name);
     let provider = match resolve_table_provider(state, table_ref).await {
@@ -459,11 +462,16 @@ async fn validate_call(
     let src = schema.field_with_name(&spec.src_col).ok();
     let dst = schema.field_with_name(&spec.dst_col).ok();
     let weight = spec.weight_col.as_ref().and_then(|name| schema.field_with_name(name).ok());
+    let edge_id = spec.edge_id_col.as_ref().and_then(|name| schema.field_with_name(name).ok());
     let src_dtype = src.map(|field| data_type_label(field.data_type())).unwrap_or_default();
     let dst_dtype = dst.map(|field| data_type_label(field.data_type())).unwrap_or_default();
     let weight_dtype = weight.map(|field| data_type_label(field.data_type())).unwrap_or_default();
 
-    if src.is_none() || dst.is_none() || spec.weight_col.as_ref().is_some_and(|_| weight.is_none()) {
+    if src.is_none()
+        || dst.is_none()
+        || spec.weight_col.as_ref().is_some_and(|_| weight.is_none())
+        || spec.edge_id_col.as_ref().is_some_and(|_| edge_id.is_none())
+    {
         let mut missing = Vec::new();
         if src.is_none() {
             missing.push(spec.src_col.as_str());
@@ -473,6 +481,9 @@ async fn validate_call(
         }
         if spec.weight_col.as_ref().is_some_and(|_| weight.is_none()) {
             missing.push(spec.weight_col.as_deref().unwrap_or_default());
+        }
+        if spec.edge_id_col.as_ref().is_some_and(|_| edge_id.is_none()) {
+            missing.push(spec.edge_id_col.as_deref().unwrap_or_default());
         }
         return ValidationRow {
             table_resolved: true,
@@ -493,6 +504,7 @@ async fn validate_call(
 
     let src_field = src.expect("checked above");
     let dst_field = dst.expect("checked above");
+    let edge_id_field = edge_id;
     if src_field.is_nullable() {
         return ValidationRow {
             table_resolved: true,
@@ -546,7 +558,9 @@ async fn validate_call(
             .with_algorithm(true, output_schema_json)
         };
     }
-    if !is_supported_vertex_dtype(src_field.data_type()) {
+    if let Some(edge_id_field) = edge_id_field
+        && edge_id_field.is_nullable()
+    {
         return ValidationRow {
             table_resolved: true,
             src_col_resolved: true,
@@ -557,13 +571,33 @@ async fn validate_call(
             weight_dtype,
             ..ValidationRow::invalid(
                 function_name,
-                ERROR_UNSUPPORTED_VERTEX_DTYPE,
-                format!("cuGraph source column '{}' has unsupported dtype", spec.src_col),
+                ERROR_NULLABLE_EDGE_COLUMN,
+                format!("cuGraph edge-id column '{}' must be non-null", spec.edge_id_col.as_deref().unwrap_or("")),
             )
             .with_algorithm(true, output_schema_json)
         };
     }
-    if !is_supported_vertex_dtype(dst_field.data_type()) {
+    let vertex_domain =
+        match vertex_id_domain_for_call(algorithm, &spec.params, src_field.data_type(), dst_field.data_type()) {
+            Ok(domain) => domain,
+            Err(error) => {
+                let message = error.to_string();
+                return ValidationRow {
+                    table_resolved: true,
+                    src_col_resolved: true,
+                    dst_col_resolved: true,
+                    weight_col_resolved: spec.weight_col.is_none() || weight.is_some(),
+                    src_dtype,
+                    dst_dtype,
+                    weight_dtype,
+                    ..ValidationRow::invalid(function_name, vertex_domain_error_code(&message), message)
+                        .with_algorithm(true, output_schema_json)
+                };
+            },
+        };
+    if let Some(_edge_id_field) = edge_id_field
+        && vertex_domain.is_string_logical()
+    {
         return ValidationRow {
             table_resolved: true,
             src_col_resolved: true,
@@ -574,13 +608,15 @@ async fn validate_call(
             weight_dtype,
             ..ValidationRow::invalid(
                 function_name,
-                ERROR_UNSUPPORTED_VERTEX_DTYPE,
-                format!("cuGraph destination column '{}' has unsupported dtype", spec.dst_col),
+                ERROR_UNSUPPORTED_OPTION,
+                "cuGraph BFS logical string vertex-id mapping does not yet support edge_id_col",
             )
             .with_algorithm(true, output_schema_json)
         };
     }
-    if src_field.data_type() != dst_field.data_type() {
+    if let Some(edge_id_field) = edge_id_field
+        && !vertex_domain.accepts(edge_id_field.data_type())
+    {
         return ValidationRow {
             table_resolved: true,
             src_col_resolved: true,
@@ -592,7 +628,11 @@ async fn validate_call(
             ..ValidationRow::invalid(
                 function_name,
                 ERROR_VERTEX_DTYPE_MISMATCH,
-                "cuGraph source and destination columns must have the same vertex dtype",
+                format!(
+                    "cuGraph edge-id column '{}' must have dtype {}",
+                    spec.edge_id_col.as_deref().unwrap_or(""),
+                    vertex_domain.label()
+                ),
             )
             .with_algorithm(true, output_schema_json)
         };
@@ -617,6 +657,12 @@ async fn validate_call(
         };
     }
 
+    if let Some(row) =
+        validate_bfs_predicate_sources(state, function_name, &spec, &vertex_domain, output_schema_json.clone()).await
+    {
+        return row;
+    }
+
     ValidationRow {
         valid: true,
         severity: SEVERITY_OK.to_string(),
@@ -637,9 +683,166 @@ async fn validate_call(
     }
 }
 
+async fn validate_bfs_predicate_sources(
+    state: &dyn Session,
+    function_name: &str,
+    spec: &CugraphAlgorithmSpec,
+    vertex_domain: &CugraphVertexIdDomain,
+    output_schema_json: String,
+) -> Option<ValidationRow> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return None;
+    };
+    let predicates = &params.predicates;
+    if let Some(input) = &predicates.include_vertices {
+        if let Some(row) = validate_predicate_columns(
+            state,
+            function_name,
+            &input.table_name,
+            &[("include_vertices", input.column.as_str())],
+            vertex_domain,
+            &output_schema_json,
+        )
+        .await
+        {
+            return Some(row);
+        }
+    }
+    if let Some(input) = &predicates.exclude_vertices {
+        if let Some(row) = validate_predicate_columns(
+            state,
+            function_name,
+            &input.table_name,
+            &[("exclude_vertices", input.column.as_str())],
+            vertex_domain,
+            &output_schema_json,
+        )
+        .await
+        {
+            return Some(row);
+        }
+    }
+    if let Some(input) = &predicates.target_vertices {
+        if let Some(row) = validate_predicate_columns(
+            state,
+            function_name,
+            &input.table_name,
+            &[("target_vertices", input.column.as_str())],
+            vertex_domain,
+            &output_schema_json,
+        )
+        .await
+        {
+            return Some(row);
+        }
+    }
+    if let Some(input) = &predicates.include_edge_ids {
+        if let Some(row) = validate_predicate_columns(
+            state,
+            function_name,
+            &input.table_name,
+            &[("include_edge_ids", input.column.as_str())],
+            vertex_domain,
+            &output_schema_json,
+        )
+        .await
+        {
+            return Some(row);
+        }
+    }
+    if let Some(input) = &predicates.include_edges {
+        let mut columns = vec![
+            ("include_edges_source", input.source_col.as_str()),
+            ("include_edges_destination", input.destination_col.as_str()),
+        ];
+        if let Some(edge_id_col) = &input.edge_id_col {
+            columns.push(("include_edges_edge_id", edge_id_col.as_str()));
+        }
+        if let Some(row) = validate_predicate_columns(
+            state,
+            function_name,
+            &input.table_name,
+            &columns,
+            vertex_domain,
+            &output_schema_json,
+        )
+        .await
+        {
+            return Some(row);
+        }
+    }
+    None
+}
+
+async fn validate_predicate_columns(
+    state: &dyn Session,
+    function_name: &str,
+    table_name: &CugraphTableReference,
+    columns: &[(&str, &str)],
+    vertex_domain: &CugraphVertexIdDomain,
+    output_schema_json: &str,
+) -> Option<ValidationRow> {
+    let provider = match resolve_table_provider(state, datafusion_table_reference(table_name)).await {
+        Ok(provider) => provider,
+        Err(message) => {
+            return Some(predicate_validation_error(function_name, ERROR_TABLE_NOT_FOUND, message, output_schema_json));
+        },
+    };
+    let schema = provider.schema();
+    for (role, column) in columns {
+        let field = match schema.field_with_name(column) {
+            Ok(field) => field,
+            Err(_) => {
+                return Some(predicate_validation_error(
+                    function_name,
+                    ERROR_COLUMN_NOT_FOUND,
+                    format!("cuGraph BFS predicate source '{}' is missing column '{}'", table_name, column),
+                    output_schema_json,
+                ));
+            },
+        };
+        if field.is_nullable() {
+            return Some(predicate_validation_error(
+                function_name,
+                ERROR_NULLABLE_EDGE_COLUMN,
+                format!("cuGraph BFS predicate column '{}' for {role} must be non-null", column),
+                output_schema_json,
+            ));
+        }
+        if !vertex_domain.accepts(field.data_type()) {
+            return Some(predicate_validation_error(
+                function_name,
+                ERROR_VERTEX_DTYPE_MISMATCH,
+                format!(
+                    "cuGraph BFS predicate column '{}' for {role} must have dtype {}",
+                    column,
+                    vertex_domain.label()
+                ),
+                output_schema_json,
+            ));
+        }
+    }
+    None
+}
+
+fn predicate_validation_error(
+    function_name: &str,
+    code: &str,
+    message: impl Into<String>,
+    output_schema_json: &str,
+) -> ValidationRow {
+    ValidationRow {
+        table_resolved: true,
+        src_col_resolved: true,
+        dst_col_resolved: true,
+        weight_col_resolved: true,
+        ..ValidationRow::invalid(function_name, code, message).with_algorithm(true, output_schema_json.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 struct ValidateCallJson {
-    source_vertex: Option<i64>,
+    source_vertex: Option<CugraphBfsSourceVertex>,
     src_col: String,
     dst_col: String,
     weight_col: Option<String>,
@@ -662,7 +865,7 @@ fn parse_validate_call_json(
     }
 
     let source_vertex = match object.get("source_vertex") {
-        Some(value) => Some(json_i64(value, "source_vertex")?),
+        Some(value) => Some(json_source_vertex(value, "source_vertex", algorithm)?),
         None => None,
     };
     if requires_source_vertex(algorithm) && source_vertex.is_none() {
@@ -698,10 +901,13 @@ fn build_validate_spec(
     table_name: &str,
     call: &ValidateCallJson,
     config: &CugraphSqlConfig,
+    force_bfs_path: bool,
 ) -> Result<CugraphAlgorithmSpec> {
     let mut args = vec![lit(table_name)];
     if requires_source_vertex(algorithm) {
-        args.push(lit(call.source_vertex.expect("source_vertex checked by parse_validate_call_json")));
+        args.push(source_vertex_expr(
+            call.source_vertex.as_ref().expect("source_vertex checked by parse_validate_call_json"),
+        ));
     }
     args.push(lit(call.src_col.as_str()));
     args.push(lit(call.dst_col.as_str()));
@@ -712,7 +918,11 @@ fn build_validate_spec(
     if !call.options.is_empty() {
         args.push(lit(Value::Object(call.options.clone()).to_string()));
     }
-    parse_cugraph_algorithm_spec(algorithm, &args, config)
+    if force_bfs_path {
+        parse_cugraph_bfs_path_spec(&args, config)
+    } else {
+        parse_cugraph_algorithm_spec(algorithm, &args, config)
+    }
 }
 
 async fn resolve_table_provider(
@@ -743,6 +953,9 @@ fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {
 }
 
 fn algorithm_for_function_name(function_name: &str) -> Option<CugraphAlgorithm> {
+    if function_name == CUGRAPH_BFS_PATH_FUNCTION {
+        return Some(CugraphAlgorithm::Bfs);
+    }
     CUGRAPH_OPERATION_REGISTRY
         .iter()
         .find(|definition| definition.sql_function_name == function_name)
@@ -820,7 +1033,24 @@ fn graph_options_value(options: &CugraphGraphOptions) -> Value {
 fn algorithm_option_names(algorithm: CugraphAlgorithm) -> Vec<&'static str> {
     match algorithm {
         CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict => vec!["alpha", "epsilon", "max_iterations"],
-        CugraphAlgorithm::Bfs => vec!["depth_limit"],
+        CugraphAlgorithm::Bfs => vec![
+            "depth_limit",
+            "edge_id_col",
+            "include_vertices_table",
+            "include_vertex_col",
+            "exclude_vertices_table",
+            "exclude_vertex_col",
+            "target_vertices_table",
+            "target_vertex_col",
+            "include_edge_ids_table",
+            "include_edge_ids_col",
+            "include_edges_table",
+            "include_edge_src_col",
+            "include_edge_dst_col",
+            "include_edge_id_col",
+            "output_mode",
+            "return_target_info",
+        ],
         CugraphAlgorithm::Louvain => vec!["resolution"],
         CugraphAlgorithm::EigenvectorCentrality => vec!["epsilon", "max_iterations"],
         CugraphAlgorithm::KatzCentrality => vec!["alpha", "beta", "epsilon", "max_iterations"],
@@ -857,7 +1087,24 @@ fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
             let params = super::CugraphPageRankParams::default();
             json!({"alpha": params.alpha, "epsilon": params.epsilon, "max_iterations": params.max_iterations})
         },
-        CugraphAlgorithm::Bfs => json!({"depth_limit": null}),
+        CugraphAlgorithm::Bfs => json!({
+            "depth_limit": null,
+            "edge_id_col": null,
+            "include_vertices_table": null,
+            "include_vertex_col": null,
+            "exclude_vertices_table": null,
+            "exclude_vertex_col": null,
+            "target_vertices_table": null,
+            "target_vertex_col": null,
+            "include_edge_ids_table": null,
+            "include_edge_ids_col": null,
+            "include_edges_table": null,
+            "include_edge_src_col": null,
+            "include_edge_dst_col": null,
+            "include_edge_id_col": null,
+            "output_mode": "raw",
+            "return_target_info": false,
+        }),
         CugraphAlgorithm::Louvain => json!({"resolution": super::CugraphLouvainParams::default().resolution}),
         CugraphAlgorithm::EigenvectorCentrality => {
             let params = super::CugraphEigenvectorCentralityParams::default();
@@ -940,6 +1187,7 @@ fn normalized_options_json(spec: &CugraphAlgorithmSpec) -> String {
         "src_col": spec.src_col,
         "dst_col": spec.dst_col,
         "weight_col": spec.weight_col,
+        "edge_id_col": spec.edge_id_col,
         "graph_options": graph_options_value(&spec.graph_options),
         "algorithm_options": params_json(&spec.params),
     })
@@ -951,9 +1199,15 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
         CugraphAlgorithmParams::PageRank(params) | CugraphAlgorithmParams::PageRankStrict(params) => {
             json!({"alpha": params.alpha, "epsilon": params.epsilon, "max_iterations": params.max_iterations})
         },
-        CugraphAlgorithmParams::Bfs(params) => {
-            json!({"source_vertex": params.source_vertex, "depth_limit": params.depth_limit})
-        },
+        CugraphAlgorithmParams::Bfs(params) => json!({
+            "source_vertex": source_vertex_json(&params.source_vertex),
+            "depth_limit": params.depth_limit,
+            "predicates": bfs_predicates_json(&params.predicates),
+            "output": {
+                "mode": params.output.mode.as_str(),
+                "return_target_info": params.output.return_target_info,
+            },
+        }),
         CugraphAlgorithmParams::Louvain(params) => json!({"resolution": params.resolution}),
         CugraphAlgorithmParams::EigenvectorCentrality(params) => {
             json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations})
@@ -987,6 +1241,31 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
     }
 }
 
+fn bfs_predicates_json(predicates: &CugraphBfsPredicateInputs) -> Value {
+    json!({
+        "include_vertices": predicates.include_vertices.as_ref().map(|input| {
+            json!({"table": input.table_name.to_string(), "column": input.column})
+        }),
+        "exclude_vertices": predicates.exclude_vertices.as_ref().map(|input| {
+            json!({"table": input.table_name.to_string(), "column": input.column})
+        }),
+        "target_vertices": predicates.target_vertices.as_ref().map(|input| {
+            json!({"table": input.table_name.to_string(), "column": input.column})
+        }),
+        "include_edge_ids": predicates.include_edge_ids.as_ref().map(|input| {
+            json!({"table": input.table_name.to_string(), "column": input.column})
+        }),
+        "include_edges": predicates.include_edges.as_ref().map(|input| {
+            json!({
+                "table": input.table_name.to_string(),
+                "source_col": input.source_col,
+                "destination_col": input.destination_col,
+                "edge_id_col": input.edge_id_col,
+            })
+        }),
+    })
+}
+
 fn parse_error_code(message: &str) -> &'static str {
     if message.contains("unknown option") {
         ERROR_UNSUPPORTED_OPTION
@@ -995,6 +1274,10 @@ fn parse_error_code(message: &str) -> &'static str {
     } else {
         ERROR_INVALID_ARGUMENT
     }
+}
+
+fn vertex_domain_error_code(message: &str) -> &'static str {
+    if message.contains("unsupported dtype") { ERROR_UNSUPPORTED_VERTEX_DTYPE } else { ERROR_VERTEX_DTYPE_MISMATCH }
 }
 
 fn literal_string_arg(args: &[Expr], index: usize, name: &str) -> Result<String> {
@@ -1028,6 +1311,35 @@ fn json_i64(value: &Value, key: &str) -> std::result::Result<i64, (&'static str,
     Err((ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' must be an integer")))
 }
 
+fn json_source_vertex(
+    value: &Value,
+    key: &str,
+    algorithm: CugraphAlgorithm,
+) -> std::result::Result<CugraphBfsSourceVertex, (&'static str, String)> {
+    if let Some(value) = value.as_str() {
+        return if algorithm == CugraphAlgorithm::Bfs {
+            Ok(CugraphBfsSourceVertex::Utf8(value.to_string()))
+        } else {
+            Err((ERROR_INVALID_ARGUMENT, format!("cuGraph call JSON key '{key}' must be an integer")))
+        };
+    }
+    json_i64(value, key).map(CugraphBfsSourceVertex::Int64)
+}
+
+fn source_vertex_expr(source_vertex: &CugraphBfsSourceVertex) -> Expr {
+    match source_vertex {
+        CugraphBfsSourceVertex::Int64(value) => lit(*value),
+        CugraphBfsSourceVertex::Utf8(value) => lit(value.as_str()),
+    }
+}
+
+fn source_vertex_json(source_vertex: &CugraphBfsSourceVertex) -> Value {
+    match source_vertex {
+        CugraphBfsSourceVertex::Int64(value) => json!(value),
+        CugraphBfsSourceVertex::Utf8(value) => json!(value),
+    }
+}
+
 fn data_type_label(data_type: &DataType) -> String {
     match data_type {
         DataType::Int32 => "Int32".to_string(),
@@ -1036,13 +1348,10 @@ fn data_type_label(data_type: &DataType) -> String {
         DataType::Float64 => "Float64".to_string(),
         DataType::Utf8 => "Utf8".to_string(),
         DataType::LargeUtf8 => "LargeUtf8".to_string(),
+        DataType::Utf8View => "Utf8View".to_string(),
         DataType::Boolean => "Boolean".to_string(),
         other => format!("{other:?}"),
     }
-}
-
-fn is_supported_vertex_dtype(data_type: &DataType) -> bool {
-    matches!(data_type, DataType::Int32 | DataType::Int64)
 }
 
 fn is_supported_weight_dtype(data_type: &DataType) -> bool {

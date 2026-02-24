@@ -110,6 +110,11 @@ impl CudfOptimizerConfig {
         self.native_execution_config.native_pipeline_execution_mode()
     }
 
+    /// Floating statistical aggregate execution contract used by native execution.
+    pub fn statistical_aggregate_execution_mode(&self) -> cudf_query_engine::StatisticalAggregateExecutionMode {
+        self.native_execution_config.statistical_aggregate_execution_mode()
+    }
+
     /// Replace the native execution config copied into accepted native plans.
     pub fn with_native_execution_config(mut self, execution_config: NativeCudfExecutionConfig) -> Self {
         self.native_execution_config = execution_config;
@@ -134,6 +139,17 @@ impl CudfOptimizerConfig {
     /// Set strict bounded or adaptive execution without rebuilding the rest of the config.
     pub fn with_native_pipeline_execution_mode(mut self, mode: cudf_query_engine::NativePipelineExecutionMode) -> Self {
         self.native_execution_config = self.native_execution_config.clone().with_native_pipeline_execution_mode(mode);
+        self
+    }
+
+    /// Set the floating statistical aggregate contract without rebuilding the
+    /// rest of the config.
+    pub fn with_statistical_aggregate_execution_mode(
+        mut self,
+        mode: cudf_query_engine::StatisticalAggregateExecutionMode,
+    ) -> Self {
+        self.native_execution_config =
+            self.native_execution_config.clone().with_statistical_aggregate_execution_mode(mode);
         self
     }
 

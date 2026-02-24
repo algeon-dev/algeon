@@ -284,7 +284,23 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
         }
         for expr in aggregate.aggr_expr() {
             let function = stable_identifier(expr.fun().name());
-            if !matches!(function.as_str(), "sum" | "min" | "max" | "count" | "avg" | "stddev" | "stddev_samp") {
+            if !matches!(
+                function.as_str(),
+                "sum"
+                    | "min"
+                    | "max"
+                    | "count"
+                    | "avg"
+                    | "stddev"
+                    | "stddev_samp"
+                    | "stddev_pop"
+                    | "var_samp"
+                    | "var_sample"
+                    | "var"
+                    | "variance"
+                    | "var_pop"
+                    | "var_population"
+            ) {
                 return Some(format!("aggregate_{function}"));
             }
             let expressions = expr.expressions();
@@ -387,7 +403,23 @@ fn single_window_expr_category(window_expr: &Arc<dyn WindowExpr>) -> Option<Stri
 
 fn aggregate_window_category(function: &str, frame: &WindowFrame) -> Option<String> {
     let function = stable_identifier(function);
-    if !matches!(function.as_str(), "sum" | "min" | "max" | "count" | "avg" | "stddev" | "stddev_samp") {
+    if !matches!(
+        function.as_str(),
+        "sum"
+            | "min"
+            | "max"
+            | "count"
+            | "avg"
+            | "stddev"
+            | "stddev_samp"
+            | "stddev_pop"
+            | "var_samp"
+            | "var_sample"
+            | "var"
+            | "variance"
+            | "var_pop"
+            | "var_population"
+    ) {
         return Some(format!("aggregate_{function}"));
     }
     unsupported_window_frame_category(frame, false)

@@ -7,7 +7,7 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray},
+    array::{Array, ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -21,10 +21,11 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
-    CUGRAPH_VALIDATE_CALL_FUNCTION, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
-    CugraphAlgorithmParams, CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy,
-    NativeCudfComposedExec, parse_cugraph_algorithm_spec, stable_result_schema,
+    CUGRAPH_BFS_PATH_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
+    CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION, CudfOptimizerConfig, CudfSessionStateBuilderExt,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSourceVertex,
+    CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy, NativeCudfComposedExec,
+    parse_cugraph_algorithm_spec, stable_result_schema,
 };
 
 #[tokio::test]
@@ -45,6 +46,7 @@ async fn cugraph_sql_planning_registers_udtfs_on_session_state_builder() {
     let mut registry_function_names: std::collections::BTreeSet<&str> =
         CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect();
     registry_function_names.extend([
+        CUGRAPH_BFS_PATH_FUNCTION,
         CUGRAPH_LIST_ALGORITHMS_FUNCTION,
         CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION,
         CUGRAPH_VALIDATE_CALL_FUNCTION,
@@ -327,6 +329,253 @@ async fn cugraph_sql_planning_exposes_stable_output_schemas() {
     .await;
 }
 
+#[tokio::test]
+async fn cugraph_bfs_path_table_function_exposes_path_schema() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let df = ctx
+        .sql(
+            "SELECT * FROM cugraph_bfs_path('graph_edges', 0, 'src', 'dst', NULL, \
+             '{\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex\"}')",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        df.schema().inner().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
+        vec![
+            Field::new("path_index", DataType::Int64, false),
+            Field::new("source", DataType::Int64, false),
+            Field::new("target", DataType::Int64, false),
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("distance", DataType::Int64, false),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn cugraph_bfs_path_table_function_requires_target_relation() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let error = ctx
+        .sql("SELECT * FROM cugraph_bfs_path('graph_edges', 0, 'src', 'dst', NULL, '{}')")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cugraph_bfs_path requires target_vertices_table and target_vertex_col options"));
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_accepts_bfs_path_function() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "targets", "vertex_id", DataType::Int64, false);
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, output_schema_json, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs_path',
+                 'raw_edges',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"target_vertices_table":"targets","target_vertex_col":"vertex_id"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(string_value(batch, 2, 0).contains(r#""path_index""#));
+    assert!(string_value(batch, 3, 0).contains(r#""mode":"path""#));
+}
+
+#[tokio::test]
+async fn cugraph_bfs_normalized_output_mode_is_opt_in() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    assert_sql_schema(&ctx, "SELECT * FROM cugraph_bfs('graph_edges', 0)", CugraphAlgorithm::Bfs).await;
+
+    let df = ctx
+        .sql(
+            "SELECT * FROM cugraph_bfs('graph_edges', 0, 'src', 'dst', NULL, \
+             '{\"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap();
+    let actual = df.schema().inner();
+    assert_eq!(
+        actual.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
+        vec![
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("distance", DataType::Int64, true),
+            Field::new("predecessor", DataType::Int64, true),
+            Field::new("reachable", DataType::Boolean, false),
+        ],
+    );
+}
+
+#[test]
+fn cugraph_bfs_string_source_vertex_uses_logical_output_schema() {
+    let config = CugraphSqlConfig::default();
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit("alice"),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"output_mode":"normalized"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    assert_eq!(params.source_vertex, CugraphBfsSourceVertex::Utf8("alice".to_string()));
+    assert_eq!(
+        spec.output_schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
+        vec![
+            Field::new("vertex", DataType::Utf8, false),
+            Field::new("distance", DataType::Int64, true),
+            Field::new("predecessor", DataType::Utf8, true),
+            Field::new("reachable", DataType::Boolean, false),
+        ],
+    );
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_accepts_utf8_bfs_logical_vertex_domain() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges(&ctx, "raw_edges");
+    register_string_allowed_bfs_edges(&ctx, "allowed_edges");
+    register_string_vertex_memtable(&ctx, "targets", "vertex_id", &["d"]);
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, src_dtype, dst_dtype, output_schema_json, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'raw_edges',
+                 '{"source_vertex":"a","src_col":"src","dst_col":"dst","options":{"output_mode":"normalized","target_vertices_table":"targets","target_vertex_col":"vertex_id","include_edges_table":"allowed_edges","include_edge_src_col":"allowed_src","include_edge_dst_col":"allowed_dst"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert_eq!(string_value(batch, 2, 0), "Utf8");
+    assert_eq!(string_value(batch, 3, 0), "Utf8");
+    assert!(string_value(batch, 4, 0).contains(r#""data_type":"Utf8""#));
+    assert!(string_value(batch, 5, 0).contains(r#""source_vertex":"a""#));
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_treats_arrow_string_variants_as_one_bfs_logical_domain() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_large_string_bfs_edges(&ctx, "large_edges");
+    register_string_vertex_memtable(&ctx, "targets", "vertex_id", &["d"]);
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, src_dtype, dst_dtype
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'large_edges',
+                 '{"source_vertex":"a","src_col":"src","dst_col":"dst","options":{"target_vertices_table":"targets","target_vertex_col":"vertex_id"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert_eq!(string_value(batch, 2, 0), "LargeUtf8");
+    assert_eq!(string_value(batch, 3, 0), "LargeUtf8");
+}
+
+#[tokio::test]
+async fn cugraph_validate_call_rejects_mixed_bfs_logical_vertex_domains() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "numeric_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_string_bfs_edges(&ctx, "string_edges");
+    register_vertex_memtable(&ctx, "numeric_targets", "vertex_id", DataType::Int64, false);
+    register_string_bfs_edges_with_edge_id(&ctx, "string_edges_with_ids");
+
+    assert_validate_error(
+        &ctx,
+        "cugraph_bfs",
+        "numeric_edges",
+        r#"{"source_vertex":"a","src_col":"src","dst_col":"dst","options":{"output_mode":"normalized"}}"#,
+        "vertex_dtype_mismatch",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_bfs",
+        "string_edges",
+        r#"{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"output_mode":"normalized"}}"#,
+        "vertex_dtype_mismatch",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_bfs",
+        "string_edges",
+        r#"{"source_vertex":"a","src_col":"src","dst_col":"dst","options":{"target_vertices_table":"numeric_targets","target_vertex_col":"vertex_id"}}"#,
+        "vertex_dtype_mismatch",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_bfs",
+        "string_edges_with_ids",
+        r#"{"source_vertex":"a","src_col":"src","dst_col":"dst","options":{"edge_id_col":"edge_id"}}"#,
+        "unsupported_option",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "numeric_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let df = ctx
+        .sql(
+            "SELECT * FROM cugraph_bfs('numeric_edges', 'a', 'src', 'dst', NULL, \
+             '{\"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap();
+    let error = df.create_physical_plan().await.unwrap_err().to_string();
+    assert!(
+        error.contains("string source_vertex requires a string source column"),
+        "unexpected planning error: {error}"
+    );
+}
+
 #[test]
 fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     let config = CugraphSqlConfig::default();
@@ -412,7 +661,140 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Bfs(datafusion_cudf::CugraphBfsParams { source_vertex: 42, depth_limit: Some(3) })
+        CugraphAlgorithmParams::Bfs(datafusion_cudf::CugraphBfsParams {
+            source_vertex: CugraphBfsSourceVertex::Int64(42),
+            depth_limit: Some(3),
+            ..Default::default()
+        })
+    );
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(42_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"output_mode":"normalized"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    assert_eq!(params.output.mode, CugraphBfsOutputMode::Normalized);
+    assert!(!params.output.return_target_info);
+    assert_eq!(spec.output_schema.field_with_name("distance").unwrap().is_nullable(), true);
+    assert!(spec.output_schema.field_with_name("reachable").is_ok());
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(42_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(
+                r#"{"output_mode":"normalized","target_vertices_table":"targets","target_vertex_col":"vertex_id","return_target_info":true}"#,
+            ),
+        ],
+        &config,
+    )
+    .unwrap();
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    assert_eq!(params.output.mode, CugraphBfsOutputMode::Normalized);
+    assert!(params.output.return_target_info);
+    assert!(spec.output_schema.field_with_name("target_found").is_ok());
+    assert_eq!(spec.output_schema.field_with_name("target_distance").unwrap().is_nullable(), true);
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(7_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{
+                  "edge_id_col":"edge_id",
+                  "include_edges_table":"allowed_edges",
+                  "include_edge_src_col":"src",
+                  "include_edge_dst_col":"dst",
+                  "include_edge_id_col":"edge_id",
+                  "exclude_vertices_table":"excluded_vertices",
+                  "exclude_vertex_col":"vertex_id",
+                  "target_vertices_table":"targets",
+                  "target_vertex_col":"vertex_id",
+                  "return_target_info":true
+                }"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(spec.edge_id_col, Some("edge_id".to_string()));
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    assert_eq!(params.predicates.exclude_vertices.as_ref().unwrap().table_name.to_string(), "excluded_vertices");
+    assert_eq!(params.predicates.exclude_vertices.as_ref().unwrap().column, "vertex_id");
+    assert_eq!(params.predicates.target_vertices.as_ref().unwrap().table_name.to_string(), "targets");
+    let include_edges = params.predicates.include_edges.as_ref().unwrap();
+    assert_eq!(include_edges.table_name.to_string(), "allowed_edges");
+    assert_eq!(include_edges.source_col, "src");
+    assert_eq!(include_edges.destination_col, "dst");
+    assert_eq!(include_edges.edge_id_col.as_deref(), Some("edge_id"));
+
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Bfs,
+            &[
+                lit("graph_edges"),
+                lit(0_i64),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(
+                    r#"{"include_vertices_table":"included","include_vertex_col":"vertex_id","exclude_vertices_table":"excluded","exclude_vertex_col":"vertex_id"}"#,
+                ),
+            ],
+            &config,
+        ),
+        "mutually exclusive",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Bfs,
+            &[
+                lit("graph_edges"),
+                lit(0_i64),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"include_edge_ids_table":"edge_ids","include_edge_ids_col":"edge_id"}"#),
+            ],
+            &config,
+        ),
+        "requires primary option 'edge_id_col'",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Bfs,
+            &[
+                lit("graph_edges"),
+                lit(0_i64),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"return_target_info":true}"#),
+            ],
+            &config,
+        ),
+        "return_target_info requires target_vertices_table",
     );
 
     let spec = parse_cugraph_algorithm_spec(
@@ -930,6 +1312,77 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     );
 }
 
+#[tokio::test]
+async fn cugraph_bfs_predicate_options_validate_predicate_relations() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "excluded_vertices", "vertex_id", DataType::Int64, false);
+    register_vertex_memtable(&ctx, "targets", "vertex_id", DataType::Int64, false);
+    register_edge_memtable(&ctx, "allowed_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, output_schema_json, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'raw_edges',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"output_mode":"normalized","exclude_vertices_table":"excluded_vertices","exclude_vertex_col":"vertex_id","target_vertices_table":"targets","target_vertex_col":"vertex_id","include_edges_table":"allowed_edges","include_edge_src_col":"src","include_edge_dst_col":"dst"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(string_value(batch, 2, 0).contains(r#""reachable""#));
+    let normalized = string_value(batch, 3, 0);
+    assert!(normalized.contains(r#""mode":"normalized""#), "{normalized}");
+    assert!(normalized.contains(r#""exclude_vertices""#), "{normalized}");
+    assert!(normalized.contains(r#""include_edges""#), "{normalized}");
+
+    register_vertex_memtable(&ctx, "bad_targets", "vertex_id", DataType::Int32, false);
+    assert_validate_error(
+        &ctx,
+        "cugraph_bfs",
+        "raw_edges",
+        r#"{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"target_vertices_table":"bad_targets","target_vertex_col":"vertex_id"}}"#,
+        "vertex_dtype_mismatch",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_vertex_memtable(&ctx, "excluded_vertices", "vertex_id", DataType::Int64, false);
+    register_edge_memtable(&ctx, "allowed_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+
+    let df = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor \
+             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+                  '{\"exclude_vertices_table\":\"excluded_vertices\",\"exclude_vertex_col\":\"vertex_id\",\
+                     \"include_edges_table\":\"allowed_edges\",\"include_edge_src_col\":\"src\",\"include_edge_dst_col\":\"dst\"}')",
+        )
+        .await
+        .unwrap();
+    let plan = df.create_physical_plan().await.unwrap();
+    let plan_display = displayable(plan.as_ref()).indent(false).to_string();
+    assert!(
+        plan_display.contains("predicate_source_count=2"),
+        "BFS predicate tables should be planned as cuGraph execution side inputs:\n{plan_display}"
+    );
+}
+
 #[test]
 fn cugraph_sql_planning_parses_construction_policy_options() {
     let config = CugraphSqlConfig::default();
@@ -1045,6 +1498,21 @@ fn cugraph_sql_planning_rejects_invalid_arguments() {
             &config,
         ),
         "depth_limit must be non-negative",
+    );
+    assert_error_contains(
+        parse_cugraph_algorithm_spec(
+            CugraphAlgorithm::Bfs,
+            &[
+                lit("graph_edges"),
+                lit(0_i64),
+                lit("src"),
+                lit("dst"),
+                datafusion::logical_expr::lit(ScalarValue::Null),
+                lit(r#"{"output_mode":"wide"}"#),
+            ],
+            &config,
+        ),
+        "unsupported BFS output_mode 'wide'",
     );
     assert_error_contains(
         parse_cugraph_algorithm_spec(
@@ -1377,7 +1845,6 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 // composition entry.
 
 #[tokio::test]
-#[ignore = "requires CUDA plus Python cudf/cugraph for the official oracle"]
 async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_collect() {
     let dir = unique_temp_dir("datafusion-cudf-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");
@@ -1470,6 +1937,106 @@ async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_col
         );
     }
     fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_allowed_bfs_edges(&ctx, "allowed_edges");
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor \
+             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"include_edges_table\":\"allowed_edges\",\
+                     \"include_edge_src_col\":\"allowed_src\",\
+                     \"include_edge_dst_col\":\"allowed_dst\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 1), None);
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges(&ctx, "raw_edges");
+    register_string_allowed_bfs_edges(&ctx, "allowed_edges");
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor, reachable \
+             FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"include_edges_table\":\"allowed_edges\",\
+                     \"include_edge_src_col\":\"allowed_src\",\
+                     \"include_edge_dst_col\":\"allowed_dst\",\
+                     \"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
+    assert_eq!(string_bfs_distance_for(batch, "b"), None);
+    assert_eq!(string_bfs_distance_for(batch, "c"), Some(1));
+    assert_eq!(string_bfs_distance_for(batch, "d"), Some(2));
+    assert_eq!(string_bfs_predecessor_for(batch, "d"), Some("c".to_string()));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges(&ctx, "raw_edges");
+    register_string_allowed_bfs_edges(&ctx, "allowed_edges");
+    register_string_vertex_memtable(&ctx, "targets", "vertex_id", &["d"]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs_path('raw_edges', 'a', 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\",\
+                     \"include_edges_table\":\"allowed_edges\",\
+                     \"include_edge_src_col\":\"allowed_src\",\
+                     \"include_edge_dst_col\":\"allowed_dst\"}') \
+             ORDER BY path_index",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(string_path_column(batch, 1), vec!["a", "a", "a"]);
+    assert_eq!(string_path_column(batch, 2), vec!["d", "d", "d"]);
+    assert_eq!(string_path_column(batch, 3), vec!["a", "c", "d"]);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
+    assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
 }
 
 fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
@@ -1670,6 +2237,161 @@ fn register_nullable_edge_memtable(
     .unwrap();
     let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
     ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_vertex_memtable(
+    ctx: &SessionContext,
+    table_name: &str,
+    column_name: &str,
+    data_type: DataType,
+    nullable: bool,
+) {
+    let schema = Arc::new(Schema::new(vec![Field::new(column_name, data_type.clone(), nullable)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![edge_column(&data_type)]).unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_directed_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 0, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 3, 3])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_allowed_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("allowed_src", DataType::Int64, false),
+        Field::new("allowed_dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64, 3])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_string_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["b", "c", "d", "d"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_large_string_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::LargeUtf8, false),
+        Field::new("dst", DataType::LargeUtf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(LargeStringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
+            Arc::new(LargeStringArray::from(vec!["b", "c", "d", "d"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_string_bfs_edges_with_edge_id(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("edge_id", DataType::Utf8, false),
+        Field::new("src", DataType::Utf8, false),
+        Field::new("dst", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec!["e0", "e1", "e2", "e3"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["b", "c", "d", "d"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_string_allowed_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("allowed_src", DataType::Utf8, false),
+        Field::new("allowed_dst", DataType::Utf8, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "c"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["c", "d"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_string_vertex_memtable(ctx: &SessionContext, table_name: &str, column_name: &str, values: &[&str]) {
+    let schema = Arc::new(Schema::new(vec![Field::new(column_name, DataType::Utf8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(values.to_vec())) as ArrayRef])
+            .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn bfs_distance_for(batch: &RecordBatch, vertex: i64) -> Option<i64> {
+    let vertices = batch.column(0).as_any().downcast_ref::<Int64Array>().unwrap();
+    let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    (0..batch.num_rows()).find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+}
+
+fn string_bfs_distance_for(batch: &RecordBatch, vertex: &str) -> Option<i64> {
+    let vertices = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    let distances = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    (0..batch.num_rows())
+        .find_map(|row| (vertices.value(row) == vertex && !distances.is_null(row)).then(|| distances.value(row)))
+}
+
+fn string_bfs_predecessor_for(batch: &RecordBatch, vertex: &str) -> Option<String> {
+    let vertices = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    let predecessors = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
+    (0..batch.num_rows()).find_map(|row| {
+        (vertices.value(row) == vertex && !predecessors.is_null(row)).then(|| predecessors.value(row).to_string())
+    })
+}
+
+fn int64_column(batch: &RecordBatch, index: usize) -> Vec<i64> {
+    let values = batch.column(index).as_any().downcast_ref::<Int64Array>().unwrap();
+    (0..batch.num_rows()).map(|row| values.value(row)).collect()
+}
+
+fn string_path_column(batch: &RecordBatch, index: usize) -> Vec<&str> {
+    let values = batch.column(index).as_any().downcast_ref::<StringArray>().unwrap();
+    (0..batch.num_rows()).map(|row| values.value(row)).collect()
 }
 
 fn edge_column(data_type: &DataType) -> ArrayRef {

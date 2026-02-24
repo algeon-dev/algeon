@@ -452,9 +452,19 @@ async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q6_sf1_matches_cpu() {
-    let root = std::env::var("CUDF_TPCH_PARQUET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("tests/data/tpch/sf1/parquet"));
+    let root = if let Ok(root) = std::env::var(CUDF_TPCH_PARQUET_DIR_ENV) {
+        std::path::PathBuf::from(root)
+    } else if let Some((root, _metadata)) =
+        default_nvme_tpch_dataset(default_tpch_parquet_root(TpchDefaultScale::Sf1), "sf1")
+    {
+        root
+    } else {
+        eprintln!(
+            "skipping external SF1 TPC-H Q6 parity: no complete default SF1 fixture at {}",
+            default_tpch_parquet_root(TpchDefaultScale::Sf1)
+        );
+        return;
+    };
     assert_tpch_q6_native_parity(&root.join("lineitem.parquet")).await;
 }
 

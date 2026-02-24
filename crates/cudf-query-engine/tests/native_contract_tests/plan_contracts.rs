@@ -299,7 +299,7 @@ fn aggregate_strategy_capability_rejects_partitioned_merge_for_unsupported_final
     for (spec, reason) in [
         (&scalar, "partitioned_merge_requires_grouped_aggregate"),
         (&distinct, "partitioned_merge_distinct_aggregate_unsupported"),
-        (&stddev, "partitioned_merge_stddev_samp_unsupported"),
+        (&stddev, "partitioned_merge_floating_statistical_aggregate_unsupported"),
     ] {
         let decision = aggregate_strategy_capability_decision(spec, &input_schema, AggregateExecutionStage::FinalMerge);
         assert_ne!(decision.selected_strategy, AggregateExecutionStrategy::PartitionedMerge);

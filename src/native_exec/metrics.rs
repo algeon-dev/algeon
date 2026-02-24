@@ -871,6 +871,25 @@ impl NativeCudfMetrics {
                 .with_new_label("group_key_exprs", aggregate_fact(facts, "group_key_exprs"))
                 .with_new_label("group_key_dtypes", aggregate_fact(facts, "group_key_dtypes"))
                 .with_new_label("aggregate_functions", aggregate_fact(facts, "aggregate_functions"))
+                .with_new_label(
+                    "floating_statistical_aggregate",
+                    aggregate_fact(facts, "floating_statistical_aggregate"),
+                )
+                .with_new_label(
+                    "statistical_aggregate_execution_mode",
+                    aggregate_fact(facts, "statistical_aggregate_execution_mode"),
+                )
+                .with_new_label(
+                    "statistical_aggregate_tolerance_contract",
+                    aggregate_fact(facts, "statistical_aggregate_tolerance_contract"),
+                )
+                .with_new_label(
+                    "statistical_aggregate_functions",
+                    aggregate_fact(facts, "statistical_aggregate_functions"),
+                )
+                .with_new_label("statistical_aggregate_ddof", aggregate_fact(facts, "statistical_aggregate_ddof"))
+                .with_new_label("stddev_samp_execution_mode", aggregate_fact(facts, "stddev_samp_execution_mode"))
+                .with_new_label("stddev_samp_ddof", aggregate_fact(facts, "stddev_samp_ddof"))
                 .with_new_label("aggregate_filter_count", aggregate_fact(facts, "aggregate_filter_count"))
                 .with_new_label("distinct_aggregate_count", aggregate_fact(facts, "distinct_aggregate_count"))
                 .with_new_label("input_rows", aggregate_fact(facts, "input_rows"))
@@ -1151,4 +1170,48 @@ fn summary_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str, partit
 
 fn summary_timer(metrics: &ExecutionPlanMetricsSet, name: &'static str, partition: usize) -> Time {
     MetricBuilder::new(metrics).with_type(MetricType::SUMMARY).subset_time(name, partition)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::native_report::NativeDataFusionExecutionMetrics;
+
+    #[test]
+    fn aggregate_strategy_rows_bridge_statistical_contract_labels() {
+        let metrics_set = ExecutionPlanMetricsSet::new();
+        let native_metrics = NativeCudfMetrics::new(&metrics_set, 0);
+        let mut query_metrics = QueryMetrics::default();
+        let mut facts = BTreeMap::new();
+        facts.insert("selected_strategy", "stddev_samp_gpu_native_tolerant".to_string());
+        facts.insert("execution_stage", "single".to_string());
+        facts.insert("memory_mode", "bounded".to_string());
+        facts.insert("group_key_count", "4".to_string());
+        facts.insert("group_key_exprs", "w_warehouse_name,w_warehouse_sk,i_item_sk,d_moy".to_string());
+        facts.insert("group_key_dtypes", "Utf8View,Int64,Int64,Int64".to_string());
+        facts.insert("aggregate_functions", "stddev_samp,avg".to_string());
+        facts.insert("floating_statistical_aggregate", "true".to_string());
+        facts.insert("statistical_aggregate_execution_mode", "gpu_native_tolerant".to_string());
+        facts.insert("statistical_aggregate_tolerance_contract", "float_tolerant".to_string());
+        facts.insert("statistical_aggregate_functions", "stddev_samp".to_string());
+        facts.insert("statistical_aggregate_ddof", "stddev_samp:1".to_string());
+        facts.insert("stddev_samp_execution_mode", "gpu_native_tolerant".to_string());
+        facts.insert("stddev_samp_ddof", "1".to_string());
+
+        query_metrics.record_aggregate_strategy_decision("n12", &facts);
+        native_metrics.record_query_metrics(&query_metrics);
+
+        let metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics_set.clone_inner());
+        assert_eq!(metrics.aggregate_strategy_rows.len(), 1);
+        let row = &metrics.aggregate_strategy_rows[0];
+        assert_eq!(row.node_id, "n12");
+        assert_eq!(row.selected_strategy, "stddev_samp_gpu_native_tolerant");
+        assert_eq!(row.floating_statistical_aggregate, "true");
+        assert_eq!(row.statistical_aggregate_execution_mode, "gpu_native_tolerant");
+        assert_eq!(row.statistical_aggregate_tolerance_contract, "float_tolerant");
+        assert_eq!(row.statistical_aggregate_functions, "stddev_samp");
+        assert_eq!(row.statistical_aggregate_ddof, "stddev_samp:1");
+        assert_eq!(row.stddev_samp_execution_mode, "gpu_native_tolerant");
+        assert_eq!(row.stddev_samp_ddof, "1");
+    }
 }

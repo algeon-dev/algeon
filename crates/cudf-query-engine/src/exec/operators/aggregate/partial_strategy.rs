@@ -1010,15 +1010,7 @@ pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
 }
 
 fn aggregate_function_structural_name(function: AggregateFunction) -> &'static str {
-    match function {
-        AggregateFunction::Sum => "sum",
-        AggregateFunction::Min => "min",
-        AggregateFunction::Max => "max",
-        AggregateFunction::Count => "count",
-        AggregateFunction::NUnique => "nunique",
-        AggregateFunction::Avg => "avg",
-        AggregateFunction::StddevSamp => "stddev_samp",
-    }
+    function.as_str()
 }
 
 fn aggregate_expr_structural_part(expr: &Expr, input_schema: &arrow::datatypes::Schema) -> String {

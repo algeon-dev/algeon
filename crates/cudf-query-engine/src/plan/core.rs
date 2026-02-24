@@ -274,8 +274,9 @@ pub enum PlanNode {
 impl PlanNode {
     /// Returns input node ids in the semantic order used by this operation.
     ///
-    /// Joins always return `[left, right]`; unary operators return their single
-    /// input; sources return an empty slice.
+    /// Joins always return `[left, right]`; graph algorithms return the primary
+    /// edge-list input followed by side inputs; unary operators return their
+    /// single input; sources return an empty slice.
     pub fn input_ids(&self) -> &[NodeId] {
         match self {
             Self::Source(_) => &[],
@@ -288,7 +289,7 @@ impl PlanNode {
             Self::Join(node) => &node.inputs,
             Self::Union(node) => &node.inputs,
             Self::EdgeNormalize(node) => std::slice::from_ref(&node.input),
-            Self::GraphAlgorithm(node) => std::slice::from_ref(&node.input),
+            Self::GraphAlgorithm(node) => &node.inputs,
         }
     }
 }

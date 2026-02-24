@@ -173,6 +173,10 @@ name = "cugraph_parity"
 required-features = ["cugraph"]
 
 [[test]]
+name = "cugraph_bfs_predicate_fixture"
+required-features = ["cugraph"]
+
+[[test]]
 name = "cugraph_contract"
 required-features = ["cugraph"]
 

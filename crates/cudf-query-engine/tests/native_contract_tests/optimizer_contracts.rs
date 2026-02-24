@@ -1399,6 +1399,44 @@ fn semijoin_reduction_pushes_to_deepest_safe_inner_join_subtree() {
 }
 
 #[test]
+fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filtering() {
+    let plan = root_semijoin_over_fact_date_dimension_plan();
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
+    assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
+    assert!(result.plan.unreachable_node_ids().is_empty());
+
+    let candidate = &result.diagnostics.semijoin_reduction.candidates[0];
+    assert!(candidate.applied);
+    assert_eq!(candidate.crossed_join_node_ids.len(), 1);
+    assert_eq!(candidate.key_mappings[0].before_column, "d_date");
+    assert_eq!(candidate.key_mappings[0].after_column.as_deref(), Some("d_date"));
+    assert!(matches!(
+        candidate.cost_gate.as_ref().map(|gate| &gate.signal),
+        Some(SemijoinReductionCostSignal::FilteredSourceKeysetShape {
+            filtered_source_count: 1,
+            target_rows: Some(73_049),
+            crossed_join_count: 1,
+            ..
+        })
+    ));
+
+    assert!(
+        result.plan.dynamic_filter_routes().iter().any(|route| {
+            matches!(&route.producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. })
+                && route.producer_columns == vec!["d_date_sk".to_string()]
+                && route.consumer_columns == vec!["ss_sold_date_sk".to_string()]
+                && matches!(&route.consumer, DynamicFilterConsumer::LocalParquetSource { .. })
+                && route.consumer_lowering == DynamicFilterConsumerLowering::ReaderPredicate
+        }),
+        "optimized dimension-side semijoin should expose a reusable date_sk dynamic-filter route to the fact source"
+    );
+}
+
+#[test]
 fn semijoin_reduction_rejects_unestimated_non_keyset_shape() {
     let plan = root_semijoin_over_inner_join_plan_with_raw_keyset(SemijoinTarget::Right);
 
@@ -2136,6 +2174,98 @@ fn root_semijoin_over_nested_inner_join_plan() -> cudf_query_engine::QueryPlan {
         abc_schema,
     );
     builder.finish_gpu_resident(semi)
+}
+
+fn root_semijoin_over_fact_date_dimension_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "store_sales",
+        &["ss_sold_date_sk", "ss_ext_sales_price"],
+        256 * 1024 * 1024,
+        10_000_000,
+    ));
+    let date_dim = builder.add_source(estimated_local_source_with_fields(
+        "date_dim",
+        &["d_date_sk", "d_date", "d_week_seq"],
+        1024 * 1024,
+        73_049,
+    ));
+
+    let sales_with_date_schema = schema(&["ss_sold_date_sk", "ss_ext_sales_price", "d_date_sk", "d_date"]);
+    let sales_with_date = builder.add_join(
+        fact,
+        date_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "ss_sold_date_sk", "ss_sold_date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "ss_sold_date_sk", "ss_sold_date_sk"), "ss_sold_date_sk"),
+            JoinOutputColumn::left(
+                ColumnRef::input(0, "ss_ext_sales_price", "ss_ext_sales_price"),
+                "ss_ext_sales_price",
+            ),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_date_sk", "d_date_sk"), "d_date_sk"),
+            JoinOutputColumn::right(ColumnRef::input(1, "d_date", "d_date"), "d_date"),
+        ]),
+        Arc::clone(&sales_with_date_schema),
+    );
+
+    let week_dates = week_dates_from_filtered_date_dimension(&mut builder, date_dim);
+    let semi = builder.add_join(
+        sales_with_date,
+        week_dates,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "d_date", "d_date"), ColumnRef::input(1, "d_date", "d_date"))],
+        )
+        .with_output_projection(left_projection(&[
+            "ss_sold_date_sk",
+            "ss_ext_sales_price",
+            "d_date_sk",
+            "d_date",
+        ])),
+        sales_with_date_schema,
+    );
+    builder.finish_gpu_resident(semi)
+}
+
+fn week_dates_from_filtered_date_dimension(
+    builder: &mut QueryPlanBuilder,
+    date_dim: cudf_query_engine::NodeId,
+) -> cudf_query_engine::NodeId {
+    let all_dates = builder.add_projection(
+        date_dim,
+        vec![
+            ProjectionOutput::new(Expr::column("d_date"), Field::new("d_date", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false)),
+        ],
+    );
+    let filtered_date = builder.add_filter(
+        date_dim,
+        Expr::binary(Expr::column("d_date"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(10_959))),
+        schema(&["d_date_sk", "d_date", "d_week_seq"]),
+    );
+    let filtered_week = builder.add_projection(
+        filtered_date,
+        vec![ProjectionOutput::new(Expr::column("d_week_seq"), Field::new("d_week_seq", DataType::Int32, false))],
+    );
+    builder.add_join(
+        all_dates,
+        filtered_week,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "d_week_seq", "d_week_seq"),
+                ColumnRef::input(1, "d_week_seq", "d_week_seq"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "d_date", "d_date"), "d_date")]),
+        schema(&["d_date"]),
+    )
 }
 
 fn inner_join_over_projected_left_join_right_key_plan() -> cudf_query_engine::QueryPlan {

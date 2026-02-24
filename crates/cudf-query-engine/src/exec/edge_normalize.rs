@@ -73,6 +73,9 @@ fn project_edge_columns(frame: DataFrame, spec: &EdgeNormalizeSpec, node_id: Nod
     if let Some(weight) = spec.edge_columns.weight.as_deref() {
         columns.push(weight);
     }
+    if let Some(edge_id) = spec.edge_columns.edge_id.as_deref() {
+        columns.push(edge_id);
+    }
     frame.select(columns).map_err(|error| {
         QueryError::from_cudf(
             "cudf_query_engine.edge_normalize.project",
@@ -83,6 +86,7 @@ fn project_edge_columns(frame: DataFrame, spec: &EdgeNormalizeSpec, node_id: Nod
         .with_fact("src_col", &spec.edge_columns.source)
         .with_fact("dst_col", &spec.edge_columns.destination)
         .with_fact("weight_col", spec.edge_columns.weight.as_deref().unwrap_or("<none>"))
+        .with_fact("edge_id_col", spec.edge_columns.edge_id.as_deref().unwrap_or("<none>"))
     })
 }
 
@@ -118,6 +122,18 @@ fn reverse_edges(frame: &DataFrame, spec: &EdgeNormalizeSpec, node_id: NodeId) -
             .with_fact("column", weight)
         })?;
         pairs.push((weight.clone(), series));
+    }
+    if let Some(edge_id) = &spec.edge_columns.edge_id {
+        let series = frame.series(edge_id).map_err(|error| {
+            QueryError::from_cudf(
+                "cudf_query_engine.edge_normalize.reverse_edge_id",
+                "failed to access edge-id column for native reverse-edge expansion",
+                error,
+            )
+            .with_fact("node_id", node_id)
+            .with_fact("column", edge_id)
+        })?;
+        pairs.push((edge_id.clone(), series));
     }
     DataFrame::from_series(pairs).map_err(|error| {
         QueryError::from_cudf(

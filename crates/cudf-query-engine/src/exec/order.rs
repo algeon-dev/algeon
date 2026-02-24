@@ -6,7 +6,6 @@ use cudf::{DataFrame, SortOptions as CudfSortOptions};
 use super::*;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    expr::AggregateFunction,
     plan::{JoinType, PlanNode, QueryPlan},
     runtime::ExecutionContext,
 };
@@ -44,10 +43,10 @@ pub(in crate::exec) fn datafusion_order_tracking_enabled() -> bool {
     DATAFUSION_ORDER_TRACKING_DEPTH.with(|depth| depth.get() > 0)
 }
 
-pub(in crate::exec) fn plan_requires_datafusion_exact_stddev_order(plan: &QueryPlan) -> bool {
+pub(in crate::exec) fn plan_requires_datafusion_exact_statistical_order(plan: &QueryPlan) -> bool {
     plan.nodes().iter().any(|node| match &node.kind {
         PlanNode::Aggregate(aggregate) => {
-            aggregate.spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp)
+            aggregate.spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
         },
         _ => false,
     })

@@ -355,7 +355,10 @@ pub(in crate::exec::bounded::aggregate) fn final_global_aggregate_spec(spec: &Ag
                         ),
                     ]
                 },
-                AggregateFunction::StddevSamp => vec![expr.clone()],
+                AggregateFunction::StddevSamp
+                | AggregateFunction::StddevPop
+                | AggregateFunction::VarSamp
+                | AggregateFunction::VarPop => vec![expr.clone()],
             })
             .collect(),
     )

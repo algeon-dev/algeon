@@ -10,6 +10,7 @@ use arrow::array::{
 use cudf::hash::{FastHashMap, fast_hash_map_with_capacity};
 
 use super::{
+    add_floating_statistical_aggregate_contract_facts,
     partial_strategy::{add_partial_aggregate_input_evidence_facts, reduction_ratio_ppm},
     *,
 };
@@ -73,7 +74,7 @@ enum HostAggregateState {
     Min { value: f64, seen: bool },
     Max { value: f64, seen: bool },
     Avg { sum: f64, count: u64 },
-    StddevSamp { count: u64, mean: f64, m2: f64 },
+    FloatingStatistical { function: AggregateFunction, count: u64, mean: f64, m2: f64 },
 }
 
 impl HostAggregateState {
@@ -84,7 +85,10 @@ impl HostAggregateState {
             AggregateFunction::Min => Self::Min { value: 0.0, seen: false },
             AggregateFunction::Max => Self::Max { value: 0.0, seen: false },
             AggregateFunction::Avg => Self::Avg { sum: 0.0, count: 0 },
-            AggregateFunction::StddevSamp => Self::StddevSamp { count: 0, mean: 0.0, m2: 0.0 },
+            function @ (AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop) => Self::FloatingStatistical { function, count: 0, mean: 0.0, m2: 0.0 },
         }
     }
 
@@ -123,7 +127,7 @@ impl HostAggregateState {
                     *count += 1;
                 }
             },
-            Self::StddevSamp { count, mean, m2 } => {
+            Self::FloatingStatistical { count, mean, m2, .. } => {
                 if let Some(value) = value {
                     let new_count = *count + 1;
                     let delta1 = value - *mean;
@@ -143,11 +147,17 @@ impl HostAggregateState {
             Self::Sum { sum, seen } => seen.then_some(*sum),
             Self::Min { value, seen } | Self::Max { value, seen } => seen.then_some(*value),
             Self::Avg { sum, count } => (*count > 0).then_some(*sum / *count as f64),
-            Self::StddevSamp { count, m2, .. } => {
-                if *count <= 1 {
+            Self::FloatingStatistical { function, count, m2, .. } => {
+                let ddof = function.statistical_ddof().expect("statistical state must carry ddof") as u64;
+                if *count <= ddof {
                     None
                 } else {
-                    Some((*m2 / (*count - 1) as f64).sqrt())
+                    let variance = *m2 / (*count - ddof) as f64;
+                    match function {
+                        AggregateFunction::StddevSamp | AggregateFunction::StddevPop => Some(variance.sqrt()),
+                        AggregateFunction::VarSamp | AggregateFunction::VarPop => Some(variance),
+                        _ => unreachable!("statistical state must carry a statistical aggregate function"),
+                    }
                 }
             },
         }
@@ -340,11 +350,14 @@ fn record_datafusion_exact_stddev_strategy_decision(
         ("strategy_operator_elapsed_ns", "0".to_string()),
         ("encoded_key_partial_cost_model", "none".to_string()),
         ("encoded_key_partial_cost_model_status", "not_applicable".to_string()),
-        ("encoded_key_partial_selection_reason", "stddev_exact_host_path".to_string()),
+        ("encoded_key_partial_selection_reason", "floating_statistical_exact_host_path".to_string()),
         ("encoded_key_partial_reduction_ratio_threshold_ppm", "0".to_string()),
         ("encoded_key_partial_prior_reduction_ratio_ppm", "0".to_string()),
         ("encoded_key_partial_prior_strategy", "none".to_string()),
-        ("prepared_sort_groupby_rejected_reason", "prepared_sort_groupby_stddev_samp_unsupported".to_string()),
+        (
+            "prepared_sort_groupby_rejected_reason",
+            "prepared_sort_groupby_floating_statistical_aggregate_unsupported".to_string(),
+        ),
         ("prepared_sort_groupby_contract_status", "blocked_by_shape_or_stage".to_string()),
         ("prepared_sort_groupby_required_contract", "prepared_sort_groupby_execution_contract".to_string()),
         ("prepared_sort_groupby_cost_model", "exact_grouped_key_facts_required".to_string()),
@@ -355,9 +368,14 @@ fn record_datafusion_exact_stddev_strategy_decision(
         ("prepared_sort_groupby_max_group_size", "unknown".to_string()),
         (
             "rejected_candidate_strategies",
-            "prepared_sort_groupby:prepared_sort_groupby_stddev_samp_unsupported".to_string(),
+            "prepared_sort_groupby:prepared_sort_groupby_floating_statistical_aggregate_unsupported".to_string(),
         ),
     ]);
+    add_floating_statistical_aggregate_contract_facts(
+        &mut facts,
+        spec,
+        StddevSampExecutionMode::DataFusionExactHostWelford,
+    );
     add_partial_aggregate_input_evidence_facts(&mut facts, None);
     metrics.record_aggregate_strategy_decision(
         node_id.unwrap_or_else(|| "aggregate.datafusion_exact_stddev".to_string()),
@@ -404,7 +422,7 @@ fn aggregate_function_list_for_metrics(spec: &AggregateSpec) -> String {
                 AggregateFunction::Count => "count",
                 AggregateFunction::NUnique => "nunique",
                 AggregateFunction::Avg => "avg",
-                AggregateFunction::StddevSamp => "stddev_samp",
+                function => function.as_str(),
             };
             if expr.distinct { format!("{label}_distinct") } else { label.to_string() }
         })

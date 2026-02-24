@@ -24,6 +24,19 @@ ORDER BY key ASC
 LIMIT 2
 ";
 
+pub(super) const SQL_NATIVE_STATISTICAL_AGGREGATE_QUERY: &str = "
+SELECT key,
+       STDDEV_POP(m00) AS stddev_pop_m00,
+       VAR_SAMP(m00) AS var_samp_m00,
+       VAR_POP(m00) AS var_pop_m00,
+       VAR(m01) AS var_m01
+FROM bench
+WHERE payload >= 10
+GROUP BY key
+ORDER BY key ASC
+LIMIT 2
+";
+
 pub(super) const SQL_COUNT_STAR_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00, COUNT(*) AS count_rows
 FROM bench

@@ -415,7 +415,8 @@ pub fn execute_query_plan_with_gpu_inputs(
     context.check_cancellation("cudf_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
     let _order_tracking = DataFusionOrderTrackingGuard::new(
-        context.stddev_samp_execution_mode().is_datafusion_exact() && plan_requires_datafusion_exact_stddev_order(plan),
+        context.stddev_samp_execution_mode().is_datafusion_exact()
+            && plan_requires_datafusion_exact_statistical_order(plan),
     );
     let mut metrics = QueryMetrics {
         phase_c_memory_control_policy: context.memory_control_policy(),
@@ -528,7 +529,15 @@ fn execute_node(
         },
         PlanNode::GraphAlgorithm(graph) => {
             let input = execute_node(context, plan, graph.input, gpu_inputs, scratch, metrics)?;
-            Ok(execute_graph_algorithm(context, node.id, graph, input, metrics)
+            let side_inputs = graph
+                .inputs
+                .iter()
+                .skip(1)
+                .map(|input_id| {
+                    execute_node(context, plan, *input_id, gpu_inputs, scratch, metrics).map(|frame| (*input_id, frame))
+                })
+                .collect::<Result<std::collections::BTreeMap<_, _>>>()?;
+            Ok(execute_graph_algorithm(context, node.id, graph, input, side_inputs, metrics)
                 .map_err(|error| error.with_fact("node_id", node.id))?)
         },
     }?;

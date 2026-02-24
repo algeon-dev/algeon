@@ -17,24 +17,34 @@ pub enum NativePipelineExecutionMode {
     Adaptive,
 }
 
-/// Execution contract for logical `STDDEV_SAMP` aggregates.
+/// Execution contract for floating statistical aggregates such as
+/// `STDDEV_SAMP`, `STDDEV_POP`, `VAR_SAMP`, and `VAR_POP`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum StddevSampExecutionMode {
+pub enum StatisticalAggregateExecutionMode {
     /// Preserve DataFusion's order-sensitive Welford accumulator bits by
     /// materializing to host and evaluating in DataFusion input order.
     #[default]
     DataFusionExactHostWelford,
-    /// Use libcudf's native grouped/scalar standard-deviation kernels with
-    /// `ddof=1`; floating-point bits may differ from DataFusion Welford order.
+    /// Use libcudf's native grouped/scalar statistical kernels with each
+    /// aggregate's declared degrees of freedom; floating-point bits may differ
+    /// from DataFusion Welford order.
     GpuNativeTolerant,
 }
 
-impl StddevSampExecutionMode {
+impl StatisticalAggregateExecutionMode {
     /// Stable snake-case mode label used in env vars and reports.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DataFusionExactHostWelford => "datafusion_exact_host_welford",
             Self::GpuNativeTolerant => "gpu_native_tolerant",
+        }
+    }
+
+    /// Floating parity contract required by this execution mode.
+    pub const fn tolerance_contract(self) -> StatisticalAggregateToleranceContract {
+        match self {
+            Self::DataFusionExactHostWelford => StatisticalAggregateToleranceContract::Exact,
+            Self::GpuNativeTolerant => StatisticalAggregateToleranceContract::FloatTolerant,
         }
     }
 
@@ -44,44 +54,71 @@ impl StddevSampExecutionMode {
     }
 }
 
-impl fmt::Display for StddevSampExecutionMode {
+impl fmt::Display for StatisticalAggregateExecutionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl FromStr for StddevSampExecutionMode {
-    type Err = StddevSampExecutionModeParseError;
+impl FromStr for StatisticalAggregateExecutionMode {
+    type Err = StatisticalAggregateExecutionModeParseError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_ascii_lowercase().as_str() {
             "datafusion_exact_host_welford" | "datafusion_exact" | "exact" => Ok(Self::DataFusionExactHostWelford),
             "gpu_native_tolerant" | "gpu_native" | "tolerant" => Ok(Self::GpuNativeTolerant),
-            other => Err(StddevSampExecutionModeParseError { value: other.to_string() }),
+            other => Err(StatisticalAggregateExecutionModeParseError { value: other.to_string() }),
         }
     }
 }
 
-/// Error returned when parsing a `STDDEV_SAMP` execution-mode label fails.
+/// Error returned when parsing a statistical aggregate execution-mode label
+/// fails.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StddevSampExecutionModeParseError {
+pub struct StatisticalAggregateExecutionModeParseError {
     value: String,
 }
 
-impl StddevSampExecutionModeParseError {
+impl StatisticalAggregateExecutionModeParseError {
     /// Returns the unrecognized label after ASCII-lowercase normalization.
     pub fn value(&self) -> &str {
         &self.value
     }
 }
 
-impl fmt::Display for StddevSampExecutionModeParseError {
+impl fmt::Display for StatisticalAggregateExecutionModeParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid stddev_samp execution mode: {}", self.value)
+        write!(f, "invalid statistical aggregate execution mode: {}", self.value)
     }
 }
 
-impl std::error::Error for StddevSampExecutionModeParseError {}
+impl std::error::Error for StatisticalAggregateExecutionModeParseError {}
+
+/// Tolerance contract declared by a floating statistical aggregate execution
+/// mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatisticalAggregateToleranceContract {
+    /// Results are expected to match the compatibility contract exactly.
+    Exact,
+    /// Results are floating-point equivalent under a declared tolerance.
+    FloatTolerant,
+}
+
+impl StatisticalAggregateToleranceContract {
+    /// Stable snake-case tolerance-contract label used in reports.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::FloatTolerant => "float_tolerant",
+        }
+    }
+}
+
+/// Backward-compatible alias for the original `STDDEV_SAMP` mode name.
+pub type StddevSampExecutionMode = StatisticalAggregateExecutionMode;
+
+/// Backward-compatible alias for the original `STDDEV_SAMP` parse error.
+pub type StddevSampExecutionModeParseError = StatisticalAggregateExecutionModeParseError;
 
 impl NativePipelineExecutionMode {
     /// Stable snake-case mode label used in env vars and reports.

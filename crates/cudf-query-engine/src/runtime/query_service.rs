@@ -113,7 +113,9 @@ pub struct QueryServiceConfig {
     pub source_scheduler_policy: SourceSchedulerPolicy,
     /// Strict bounded or adaptive execution mode copied into tenant contexts.
     pub native_pipeline_execution_mode: NativePipelineExecutionMode,
-    /// STDDEV_SAMP execution contract copied into tenant contexts.
+    /// Floating statistical aggregate execution contract copied into tenant
+    /// contexts. The field keeps its legacy STDDEV_SAMP name for source
+    /// compatibility.
     pub stddev_samp_execution_mode: StddevSampExecutionMode,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
@@ -618,9 +620,15 @@ impl QueryHandle {
         self.service.config.native_pipeline_execution_mode
     }
 
-    /// STDDEV_SAMP execution contract assigned to this admitted query.
-    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+    /// Floating statistical aggregate execution contract assigned to this admitted query.
+    pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
         self.service.config.stddev_samp_execution_mode
+    }
+
+    /// Floating statistical aggregate contract returned through the legacy
+    /// STDDEV_SAMP accessor.
+    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+        self.statistical_aggregate_execution_mode()
     }
 
     /// Acquires a tenant-bound execution context from the service stream pool.

@@ -1,6 +1,7 @@
 #![deny(missing_docs)]
 
 use super::*;
+use crate::StatisticalAggregateExecutionMode;
 
 /// In-memory fallback-pressure report.
 ///
@@ -206,13 +207,15 @@ pub struct NativeDataFusionExecutionReport {
     pub rows: Vec<NativeDataFusionExecutionRow>,
     /// Optional fixture metadata written as `# workload_*` TSV header lines.
     pub workload_dataset: Option<WorkloadDatasetMetadata>,
+    /// Floating statistical aggregate contract selected for native execution.
+    pub statistical_aggregate_execution_mode: Option<StatisticalAggregateExecutionMode>,
 }
 
 impl NativeDataFusionExecutionReport {
     /// Collects execution rows from captured planning/runtime workload items.
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionExecutionWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_execution_rows_for_item).collect();
-        Self { rows, workload_dataset: None }
+        Self { rows, workload_dataset: None, statistical_aggregate_execution_mode: None }
     }
 
     /// Attaches fixture metadata to comment lines before the TSV header.
@@ -221,6 +224,12 @@ impl NativeDataFusionExecutionReport {
     /// and line breaks with spaces.
     pub fn with_workload_dataset_metadata(mut self, metadata: WorkloadDatasetMetadata) -> Self {
         self.workload_dataset = Some(metadata);
+        self
+    }
+
+    /// Attaches the native floating statistical aggregate contract to TSV metadata.
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StatisticalAggregateExecutionMode) -> Self {
+        self.statistical_aggregate_execution_mode = Some(mode);
         self
     }
 
@@ -241,6 +250,12 @@ impl NativeDataFusionExecutionReport {
             output,
             "# native_datafusion_execution_tsv_schema_version={NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION}"
         );
+        if let Some(mode) = self.statistical_aggregate_execution_mode {
+            let _ = writeln!(output, "# statistical_aggregate_execution_mode={}", mode.as_str());
+            let _ =
+                writeln!(output, "# statistical_aggregate_tolerance_contract={}", mode.tolerance_contract().as_str());
+            let _ = writeln!(output, "# stddev_samp_execution_mode={}", mode.as_str());
+        }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
         output.push_str(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
         output.push('\n');

@@ -4,10 +4,12 @@ use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use cudf_query_engine::GraphAlgorithm as NativeGraphAlgorithm;
 use datafusion::common::{DataFusionError, Result};
 
+use super::plan_error;
 use crate::NativeCudfExecutionConfig;
 
 pub const CUGRAPH_PAGERANK_FUNCTION: &str = "cugraph_pagerank";
 pub const CUGRAPH_BFS_FUNCTION: &str = "cugraph_bfs";
+pub const CUGRAPH_BFS_PATH_FUNCTION: &str = "cugraph_bfs_path";
 pub const CUGRAPH_LOUVAIN_FUNCTION: &str = "cugraph_louvain";
 pub const CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION: &str = "cugraph_eigenvector_centrality";
 pub const CUGRAPH_KATZ_CENTRALITY_FUNCTION: &str = "cugraph_katz_centrality";
@@ -259,6 +261,7 @@ pub struct CugraphAlgorithmSpec {
     pub src_col: String,
     pub dst_col: String,
     pub weight_col: Option<String>,
+    pub edge_id_col: Option<String>,
     pub graph_options: CugraphGraphOptions,
     pub params: CugraphAlgorithmParams,
     pub output_schema: SchemaRef,
@@ -380,8 +383,228 @@ impl Default for CugraphPageRankParams {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CugraphBfsParams {
-    pub source_vertex: i64,
+    /// Root vertex for the SQL BFS traversal.
+    pub source_vertex: CugraphBfsSourceVertex,
+    /// Optional non-negative BFS depth limit. `None` means unbounded depth.
     pub depth_limit: Option<i64>,
+    /// Optional relation-backed predicate inputs.
+    pub predicates: CugraphBfsPredicateInputs,
+    /// SQL result-shape options. Defaults preserve the legacy raw BFS schema.
+    pub output: CugraphBfsOutputOptions,
+}
+
+/// SQL-visible BFS source vertex.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CugraphBfsSourceVertex {
+    /// Numeric source vertex. This preserves the legacy SQL contract.
+    Int64(i64),
+    /// Logical string source vertex. The SQL execution layer maps it to a
+    /// deterministic numeric cuGraph vertex id for one graph call.
+    Utf8(String),
+}
+
+impl Default for CugraphBfsSourceVertex {
+    fn default() -> Self {
+        Self::Int64(0)
+    }
+}
+
+impl CugraphBfsSourceVertex {
+    pub const fn is_utf8(&self) -> bool {
+        matches!(self, Self::Utf8(_))
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Int64(value) => Some(*value),
+            Self::Utf8(_) => None,
+        }
+    }
+}
+
+/// SQL graph vertex-id domain after applying the algorithm-specific logical-id
+/// policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CugraphVertexIdDomain {
+    Int32,
+    Int64,
+    StringLogical,
+}
+
+impl CugraphVertexIdDomain {
+    pub(crate) fn accepts(&self, data_type: &DataType) -> bool {
+        match self {
+            Self::Int32 => matches!(data_type, DataType::Int32),
+            Self::Int64 => matches!(data_type, DataType::Int64),
+            Self::StringLogical => is_string_vertex_dtype(data_type),
+        }
+    }
+
+    pub(crate) const fn is_string_logical(&self) -> bool {
+        matches!(self, Self::StringLogical)
+    }
+
+    pub(crate) const fn label(&self) -> &'static str {
+        match self {
+            Self::Int32 => "Int32",
+            Self::Int64 => "Int64",
+            Self::StringLogical => "Arrow string",
+        }
+    }
+}
+
+pub(crate) fn vertex_id_domain_for_call(
+    algorithm: CugraphAlgorithm,
+    params: &CugraphAlgorithmParams,
+    src_type: &DataType,
+    dst_type: &DataType,
+) -> Result<CugraphVertexIdDomain> {
+    let is_bfs_string_source = algorithm == CugraphAlgorithm::Bfs
+        && matches!(params, CugraphAlgorithmParams::Bfs(params) if params.source_vertex.is_utf8());
+    if is_bfs_string_source {
+        if !is_string_vertex_dtype(src_type) {
+            return Err(plan_error(format!(
+                "cuGraph BFS string source_vertex requires a string source column, found {src_type:?}"
+            )));
+        }
+        if !is_string_vertex_dtype(dst_type) {
+            return Err(plan_error(format!(
+                "cuGraph BFS string source_vertex requires a string destination column, found {dst_type:?}"
+            )));
+        }
+        return Ok(CugraphVertexIdDomain::StringLogical);
+    }
+
+    if algorithm == CugraphAlgorithm::Bfs && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type)) {
+        return Err(plan_error(format!(
+            "cuGraph BFS numeric source_vertex requires Int32 or Int64 edge columns, found source={src_type:?}, destination={dst_type:?}"
+        )));
+    }
+
+    if !is_numeric_vertex_dtype(src_type) {
+        return Err(plan_error(format!(
+            "cuGraph {} source column has unsupported dtype {src_type:?}",
+            algorithm.function_name()
+        )));
+    }
+    if !is_numeric_vertex_dtype(dst_type) {
+        return Err(plan_error(format!(
+            "cuGraph {} destination column has unsupported dtype {dst_type:?}",
+            algorithm.function_name()
+        )));
+    }
+    if src_type != dst_type {
+        return Err(plan_error("cuGraph source and destination columns must have the same numeric vertex dtype"));
+    }
+    match src_type {
+        DataType::Int32 => Ok(CugraphVertexIdDomain::Int32),
+        DataType::Int64 => Ok(CugraphVertexIdDomain::Int64),
+        _ => unreachable!("numeric vertex dtype checked above"),
+    }
+}
+
+pub(crate) fn is_numeric_vertex_dtype(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Int32 | DataType::Int64)
+}
+
+pub(crate) fn is_string_vertex_dtype(data_type: &DataType) -> bool {
+    matches!(data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View)
+}
+
+/// SQL-visible BFS output options.
+///
+/// `mode = Raw` preserves the stable legacy schema and cuGraph distance
+/// sentinel values. `mode = Normalized` adds `reachable` and converts
+/// unreachable distance / absent predecessor sentinels to nulls. `mode = Path`
+/// reconstructs one source-to-target path from the BFS predecessor output.
+/// `return_target_info = true` is an explicit schema-widening request that
+/// requires a target-vertex predicate and appends `target_found` plus nullable
+/// `target_distance` to every output row for raw / normalized output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CugraphBfsOutputOptions {
+    /// Result schema and sentinel-normalization mode.
+    pub mode: CugraphBfsOutputMode,
+    /// Whether target metadata is requested.
+    pub return_target_info: bool,
+}
+
+/// BFS SQL result-shape selector.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CugraphBfsOutputMode {
+    /// Preserve the raw `vertex`, `distance`, `predecessor` schema.
+    #[default]
+    Raw,
+    /// Return `vertex`, nullable `distance`, nullable `predecessor`, and
+    /// `reachable`.
+    Normalized,
+    /// Return one row per vertex on the reconstructed source-to-target path.
+    Path,
+}
+
+impl CugraphBfsOutputMode {
+    /// Stable JSON label used by `output_mode` and metadata UDTFs.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Normalized => "normalized",
+            Self::Path => "path",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CugraphBfsPredicateInputs {
+    pub include_vertices: Option<CugraphGraphPredicateTable>,
+    pub exclude_vertices: Option<CugraphGraphPredicateTable>,
+    pub target_vertices: Option<CugraphGraphPredicateTable>,
+    pub include_edge_ids: Option<CugraphGraphPredicateTable>,
+    pub include_edges: Option<CugraphGraphEdgePredicateTable>,
+}
+
+impl CugraphBfsPredicateInputs {
+    pub fn has_inputs(&self) -> bool {
+        self.include_vertices.is_some()
+            || self.exclude_vertices.is_some()
+            || self.target_vertices.is_some()
+            || self.include_edge_ids.is_some()
+            || self.include_edges.is_some()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphGraphPredicateTable {
+    pub table_name: CugraphTableReference,
+    pub column: String,
+}
+
+impl CugraphGraphPredicateTable {
+    pub fn new(table_name: CugraphTableReference, column: impl Into<String>) -> Self {
+        Self { table_name, column: column.into() }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphGraphEdgePredicateTable {
+    pub table_name: CugraphTableReference,
+    pub source_col: String,
+    pub destination_col: String,
+    pub edge_id_col: Option<String>,
+}
+
+impl CugraphGraphEdgePredicateTable {
+    pub fn new(
+        table_name: CugraphTableReference,
+        source_col: impl Into<String>,
+        destination_col: impl Into<String>,
+        edge_id_col: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            table_name,
+            source_col: source_col.into(),
+            destination_col: destination_col.into(),
+            edge_id_col: edge_id_col.map(Into::into),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -646,6 +869,48 @@ pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
         },
     };
     Arc::new(Schema::new(fields))
+}
+
+/// SQL output schema for one BFS call after applying output options.
+pub fn bfs_result_schema(params: &CugraphBfsParams) -> SchemaRef {
+    let vertex_type = if params.source_vertex.is_utf8() { DataType::Utf8 } else { DataType::Int64 };
+    let predecessor_type = vertex_type.clone();
+    let mut fields = match params.output.mode {
+        CugraphBfsOutputMode::Raw if params.source_vertex.is_utf8() => vec![
+            Field::new("vertex", vertex_type, false),
+            Field::new("distance", DataType::Int64, false),
+            Field::new("predecessor", predecessor_type, true),
+        ],
+        CugraphBfsOutputMode::Raw => {
+            stable_result_schema(CugraphAlgorithm::Bfs).fields().iter().map(|field| field.as_ref().clone()).collect()
+        },
+        CugraphBfsOutputMode::Normalized => vec![
+            Field::new("vertex", vertex_type, false),
+            Field::new("distance", DataType::Int64, true),
+            Field::new("predecessor", predecessor_type, true),
+            Field::new("reachable", DataType::Boolean, false),
+        ],
+        CugraphBfsOutputMode::Path => vec![
+            Field::new("path_index", DataType::Int64, false),
+            Field::new("source", vertex_type.clone(), false),
+            Field::new("target", vertex_type.clone(), false),
+            Field::new("vertex", vertex_type, false),
+            Field::new("distance", DataType::Int64, false),
+        ],
+    };
+    if params.output.mode != CugraphBfsOutputMode::Path && params.output.return_target_info {
+        fields.push(Field::new("target_found", DataType::Boolean, false));
+        fields.push(Field::new("target_distance", DataType::Int64, true));
+    }
+    Arc::new(Schema::new(fields))
+}
+
+/// SQL output schema for one parsed cuGraph algorithm call.
+pub fn result_schema_for_params(algorithm: CugraphAlgorithm, params: &CugraphAlgorithmParams) -> SchemaRef {
+    match (algorithm, params) {
+        (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => bfs_result_schema(params),
+        _ => stable_result_schema(algorithm),
+    }
 }
 
 fn is_simple_identifier(part: &str) -> bool {

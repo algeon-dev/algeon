@@ -6,8 +6,9 @@ use std::{
 
 use datafusion_cudf::{
     CudfOptimizerConfig, GpuFallbackPolicy, NativePipelineExecutionMode, NativeTpcdsParityReport, ParityFloatTolerance,
-    TpcdsDatasetMetadata, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, prepare_tpcds_report_dataset,
-    tpcds_native_optimizer_config, tpcds_parity_workload_items_with_external_oracles, tpcds_report_session_config,
+    StatisticalAggregateExecutionMode, TpcdsDatasetMetadata, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig,
+    prepare_tpcds_report_dataset, tpcds_native_optimizer_config, tpcds_parity_workload_items_with_external_oracles,
+    tpcds_report_session_config,
 };
 
 const CUDF_TPCDS_PARITY_QUERY_IDS_ENV: &str = "CUDF_TPCDS_PARITY_QUERY_IDS";
@@ -30,8 +31,11 @@ async fn main() {
 async fn parity_report(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadResult<TpcdsParityReport> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = native_optimizer_config_from_env();
+    let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
     let query_filter = query_filter_from_env();
     let external_oracles = external_oracle_config_from_env(dir.join("external_oracles"));
+    let tolerance = parity_float_tolerance_from_env();
+    validate_statistical_aggregate_parity_contract(statistical_aggregate_execution_mode, tolerance);
     let items = tpcds_parity_workload_items_with_external_oracles(
         &root,
         tpcds_report_session_config(),
@@ -40,8 +44,8 @@ async fn parity_report(dir: &std::path::Path) -> datafusion_cudf::TpcdsWorkloadR
         external_oracles,
     )
     .await?;
-    let tolerance = parity_float_tolerance_from_env();
-    let report = NativeTpcdsParityReport::collect(items, tolerance);
+    let report = NativeTpcdsParityReport::collect(items, tolerance)
+        .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode);
     Ok(TpcdsParityReport { report, metadata })
 }
 
@@ -99,6 +103,19 @@ fn parity_float_tolerance_from_env() -> ParityFloatTolerance {
         .and_then(|value| value.parse::<f64>().ok())
         .unwrap_or(0.0);
     ParityFloatTolerance::new(absolute, relative)
+}
+
+fn validate_statistical_aggregate_parity_contract(
+    mode: StatisticalAggregateExecutionMode,
+    tolerance: ParityFloatTolerance,
+) {
+    if mode.tolerance_contract() == datafusion_cudf::StatisticalAggregateToleranceContract::FloatTolerant
+        && !tolerance.is_enabled()
+    {
+        panic!(
+            "invalid TPC-DS parity configuration: {mode} requires non-zero {CUDF_TPCDS_PARITY_FLOAT_ABS_TOLERANCE_ENV} or {CUDF_TPCDS_PARITY_FLOAT_REL_TOLERANCE_ENV}"
+        );
+    }
 }
 
 fn external_oracle_config_from_env(scratch_dir: PathBuf) -> Option<TpcdsExternalOracleConfig> {

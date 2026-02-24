@@ -178,7 +178,22 @@ fn global_partial_aggregate_upper_bound_columns(
                     "global aggregate valid-count state",
                 )?));
             },
-            AggregateFunction::Count | AggregateFunction::NUnique | AggregateFunction::StddevSamp => {
+            AggregateFunction::Count | AggregateFunction::NUnique => {
+                columns.push(partial_column_for_field_and_optional_input(
+                    context,
+                    node_id,
+                    take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate state")?,
+                    None,
+                    input_schema,
+                    input,
+                    reservations,
+                    metrics,
+                )?);
+            },
+            AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop => {
                 columns.push(partial_column_for_field_and_optional_input(
                     context,
                     node_id,
@@ -286,10 +301,31 @@ fn grouped_partial_aggregate_upper_bound_columns(
                 })?;
                 columns.push(fixed_partial_column(field));
             },
-            AggregateFunction::Sum
-            | AggregateFunction::Min
-            | AggregateFunction::Max
-            | AggregateFunction::StddevSamp => {
+            AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
+                let field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "cudf_query_engine.bounded.aggregate.partial_sizing",
+                        "aggregate output field is missing from aggregate output schema",
+                    )
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("arrow_error", error.to_string())
+                })?;
+                columns.push(partial_column_for_field_and_optional_input(
+                    context,
+                    node_id,
+                    field,
+                    Some(&expr.expr),
+                    input_schema,
+                    input,
+                    reservations,
+                    metrics,
+                )?);
+            },
+            AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop => {
                 let field = aggregate_output_schema.field_with_name(expr.alias.as_str()).map_err(|error| {
                     QueryError::new(
                         QueryErrorCode::InvalidPlan,

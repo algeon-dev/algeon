@@ -228,12 +228,13 @@ impl QueryNode {
             ),
             PlanNode::EdgeNormalize(node) => writeln!(
                 f,
-                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} add_reverse={} dedup={} weight_combiner={} placement={} schema_behavior={}",
+                "{padding}{} EdgeNormalize input={} src_col={} dst_col={} weight_col={} edge_id_col={} add_reverse={} dedup={} weight_combiner={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
                 node.spec.edge_columns.source,
                 node.spec.edge_columns.destination,
                 node.spec.edge_columns.weight.as_deref().unwrap_or("none"),
+                node.spec.edge_columns.edge_id.as_deref().unwrap_or("none"),
                 node.spec.add_reverse,
                 node.spec.dedup,
                 node.spec.weight_combiner,
@@ -242,17 +243,20 @@ impl QueryNode {
             ),
             PlanNode::GraphAlgorithm(node) => writeln!(
                 f,
-                "{padding}{} GraphAlgorithm input={} algorithm={} src_col={} dst_col={} weight_col={} directed={} renumber={} construction_policy={} params={} output_schema_fields={} placement={} schema_behavior={}",
+                "{padding}{} GraphAlgorithm input={} side_inputs={} algorithm={} src_col={} dst_col={} weight_col={} edge_id_col={} directed={} renumber={} construction_policy={} params={} predicates={} output_schema_fields={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
+                format_node_ids(&node.inputs[1..]),
                 node.spec.algorithm,
                 node.spec.edge_columns.source,
                 node.spec.edge_columns.destination,
                 node.spec.edge_columns.weight.as_deref().unwrap_or("none"),
+                node.spec.edge_columns.edge_id.as_deref().unwrap_or("none"),
                 node.spec.graph_options.directed,
                 node.spec.graph_options.renumber,
                 node.spec.graph_options.policy,
                 format_graph_algorithm_params(&node.spec.params),
+                format_graph_algorithm_predicates(&node.spec.params),
                 node.output_schema().fields().len(),
                 self.facts.placement,
                 self.facts.schema_behavior
@@ -361,8 +365,12 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             format!("alpha={}:epsilon={}:max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
         },
         super::GraphAlgorithmParams::Bfs(params) => format!(
-            "source_vertex={}:depth_limit={}",
+            "source_vertex={}:source_vertices={}:depth_limit={}",
             params.source_vertex,
+            params
+                .source_vertices
+                .as_ref()
+                .map_or_else(|| "none".to_string(), |input| format!("{}:{}", input.input, input.column)),
             params.depth_limit.map_or_else(|| "none".to_string(), |depth| depth.to_string())
         ),
         super::GraphAlgorithmParams::Louvain(params) => format!("resolution={}", params.resolution),
@@ -429,6 +437,36 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.seed,
         ),
     }
+}
+
+fn format_graph_algorithm_predicates(params: &super::GraphAlgorithmParams) -> String {
+    let super::GraphAlgorithmParams::Bfs(params) = params else {
+        return "none".to_string();
+    };
+    let predicates = &params.predicates;
+    let mut labels = Vec::new();
+    if let Some(input) = &predicates.include_vertices {
+        labels.push(format!("include_vertices:{}:{}", input.input, input.column));
+    }
+    if let Some(input) = &predicates.exclude_vertices {
+        labels.push(format!("exclude_vertices:{}:{}", input.input, input.column));
+    }
+    if let Some(input) = &predicates.target_vertices {
+        labels.push(format!("target_vertices:{}:{}", input.input, input.column));
+    }
+    if let Some(input) = &predicates.include_edge_ids {
+        labels.push(format!("include_edge_ids:{}:{}", input.input, input.column));
+    }
+    if let Some(input) = &predicates.include_edges {
+        labels.push(format!(
+            "include_edges:{}:{}:{}:{}",
+            input.input,
+            input.source,
+            input.destination,
+            input.edge_id.as_deref().unwrap_or("none")
+        ));
+    }
+    if labels.is_empty() { "none".to_string() } else { labels.join("|") }
 }
 
 fn format_join_output_projection(projection: &[JoinOutputColumn]) -> String {

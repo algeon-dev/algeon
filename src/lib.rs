@@ -62,27 +62,28 @@ pub use clickbench::{
 pub use cudf_query_engine::{
     AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
     NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, SemijoinReductionOptions,
+    StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{
-    CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
-    CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_ECG_FUNCTION,
-    CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_HITS_FUNCTION, CUGRAPH_IN_DEGREES_ALL_FUNCTION,
-    CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_LEIDEN_FUNCTION,
-    CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
-    CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION, CUGRAPH_PAGERANK_FUNCTION,
-    CUGRAPH_PAGERANK_STRICT_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
-    CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
+    CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_BFS_PATH_FUNCTION,
+    CUGRAPH_CORE_NUMBER_FUNCTION, CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION,
+    CUGRAPH_ECG_FUNCTION, CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_HITS_FUNCTION,
+    CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION,
+    CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION,
+    CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION, CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION,
+    CUGRAPH_PAGERANK_FUNCTION, CUGRAPH_PAGERANK_STRICT_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION,
+    CUGRAPH_SSSP_FUNCTION, CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
     CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgoTableProvider,
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsParams, CugraphCoreNumberParams,
-    CugraphDegreesAllParams, CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphGraphConstructionPolicy,
-    CugraphGraphOptions, CugraphHitsParams, CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams,
-    CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
-    CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphSccParams,
-    CugraphSpectralClusteringParams, CugraphSqlConfig, CugraphSsspParams, CugraphTableReference,
-    CugraphTriangleCountAllParams, CugraphWccParams, cugraph_table_functions, parse_cugraph_algorithm_spec,
-    register_cugraph_udtfs, stable_result_schema,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
+    CugraphBfsParams, CugraphBfsSourceVertex, CugraphCoreNumberParams, CugraphDegreesAllParams, CugraphEcgParams,
+    CugraphEigenvectorCentralityParams, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphHitsParams,
+    CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams, CugraphKatzCentralityParams,
+    CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams, CugraphOperationDefinition,
+    CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphSccParams, CugraphSpectralClusteringParams,
+    CugraphSqlConfig, CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams,
+    cugraph_table_functions, parse_cugraph_algorithm_spec, register_cugraph_udtfs, stable_result_schema,
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::catalog::{
@@ -146,6 +147,7 @@ pub use tpcds::{
     CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
     CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
     CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+    CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
     CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR,
     DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, TpcdsDatasetMetadata,
     TpcdsExecutionProgressEvent, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsQuery,
@@ -156,9 +158,9 @@ pub use tpcds::{
     tpcds_datafusion_execution_workload_items_filtered,
     tpcds_datafusion_execution_workload_items_with_optimizer_config, tpcds_datafusion_planning_workload_items,
     tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_fallback_pressure_workload_items,
-    tpcds_native_optimizer_config, tpcds_native_report_session_config, tpcds_parity_workload_items,
-    tpcds_parity_workload_items_with_external_oracles, tpcds_query_ids, tpcds_report_session_config,
-    write_tiny_tpcds_parquet_dataset,
+    tpcds_native_analytics_optimizer_config, tpcds_native_optimizer_config, tpcds_native_report_session_config,
+    tpcds_parity_workload_items, tpcds_parity_workload_items_with_external_oracles, tpcds_query_ids,
+    tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
 };
 pub use tpch::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,

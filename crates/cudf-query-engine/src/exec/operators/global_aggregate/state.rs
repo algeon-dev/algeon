@@ -22,9 +22,13 @@ pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> Ag
                         global_valid_count_state_alias(expr.alias.as_str()),
                     ),
                 ],
-                AggregateFunction::Count | AggregateFunction::NUnique | AggregateFunction::StddevSamp => {
+                AggregateFunction::Count | AggregateFunction::NUnique => {
                     vec![expr.clone()]
                 },
+                AggregateFunction::StddevSamp
+                | AggregateFunction::StddevPop
+                | AggregateFunction::VarSamp
+                | AggregateFunction::VarPop => vec![expr.clone()],
             })
             .collect(),
     )
@@ -57,7 +61,10 @@ pub(in crate::exec) fn partial_global_aggregate_output_schema(
                     false,
                 ));
             },
-            AggregateFunction::StddevSamp => {
+            AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop => {
                 fields.push(global_aggregate_output_field(expr.alias.as_str(), aggregate_output_schema)?);
             },
         }

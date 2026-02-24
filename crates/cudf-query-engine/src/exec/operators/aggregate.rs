@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::BTreeMap, time::Duration};
 
 use super::*;
 use crate::{
@@ -7,6 +7,7 @@ use crate::{
         AggregateStrategyCapabilityDecision, aggregate_strategy_capability_decision,
     },
     chunk::SourceChunk,
+    mode::StddevSampExecutionMode,
 };
 
 mod filter_inputs;
@@ -79,6 +80,34 @@ pub(in crate::exec) fn partial_aggregate_source_chunk_fingerprint(chunks: &[Sour
     }
     let signature = chunks.iter().map(source_chunk_structural_part).collect::<Vec<_>>().join("|");
     Some(stable_fnv1a64(signature.as_bytes()))
+}
+
+pub(in crate::exec::operators::aggregate) fn add_floating_statistical_aggregate_contract_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    spec: &AggregateSpec,
+    mode: StddevSampExecutionMode,
+) {
+    let statistical_functions = spec
+        .aggr_exprs
+        .iter()
+        .filter(|expr| expr.function.is_floating_statistical())
+        .map(|expr| expr.function.as_str())
+        .collect::<Vec<_>>();
+    let statistical_ddof = spec
+        .aggr_exprs
+        .iter()
+        .filter(|expr| expr.function.is_floating_statistical())
+        .filter_map(|expr| expr.function.statistical_ddof().map(|ddof| format!("{}:{ddof}", expr.function.as_str())))
+        .collect::<Vec<_>>();
+    facts.insert("floating_statistical_aggregate", "true".to_string());
+    facts.insert("statistical_aggregate_execution_mode", mode.as_str().to_string());
+    facts.insert("statistical_aggregate_tolerance_contract", mode.tolerance_contract().as_str().to_string());
+    facts.insert("statistical_aggregate_functions", statistical_functions.join(","));
+    facts.insert("statistical_aggregate_ddof", statistical_ddof.join(","));
+    if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::StddevSamp) {
+        facts.insert("stddev_samp_execution_mode", mode.as_str().to_string());
+        facts.insert("stddev_samp_ddof", "1".to_string());
+    }
 }
 
 pub(in crate::exec) fn execute_aggregate(
@@ -322,7 +351,8 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
 }
 
 fn should_execute_datafusion_exact_stddev(context: &ExecutionContext, spec: &AggregateSpec) -> bool {
-    aggregate_spec_has_stddev_samp(spec) && context.stddev_samp_execution_mode().is_datafusion_exact()
+    aggregate_spec_has_floating_statistical_aggregate(spec)
+        && context.stddev_samp_execution_mode().is_datafusion_exact()
 }
 
 fn record_single_grouped_aggregate_strategy_decision(
@@ -370,10 +400,20 @@ pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_str
     decode_elapsed: Duration,
     elapsed: Duration,
 ) {
-    if aggregate_spec_has_stddev_samp(spec) {
+    if aggregate_spec_has_floating_statistical_aggregate(spec) {
         let mode = context.stddev_samp_execution_mode();
-        decision.facts.insert("selected_strategy", format!("stddev_samp_{}", mode.as_str()));
-        decision.facts.insert("stddev_samp_execution_mode", mode.as_str().to_string());
+        let selected_strategy = if spec
+            .aggr_exprs
+            .iter()
+            .filter(|expr| expr.function.is_floating_statistical())
+            .all(|expr| expr.function == AggregateFunction::StddevSamp)
+        {
+            format!("stddev_samp_{}", mode.as_str())
+        } else {
+            format!("floating_statistical_{}", mode.as_str())
+        };
+        decision.facts.insert("selected_strategy", selected_strategy);
+        add_floating_statistical_aggregate_contract_facts(&mut decision.facts, spec, mode);
     }
     record_grouped_aggregate_strategy_decision(
         metrics,

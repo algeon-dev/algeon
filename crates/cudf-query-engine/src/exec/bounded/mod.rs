@@ -186,7 +186,7 @@ fn execute_bounded_aggregate_to_frame(
     }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
 
-    if aggregate_spec_has_stddev_samp(&bounded.aggregate.0.spec)
+    if aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
         || aggregate_spec_has_distinct(&bounded.aggregate.0.spec)
     {
         return execute_bounded_whole_input_aggregate_from_raw_chunks(
@@ -219,7 +219,7 @@ fn should_execute_partitioned_source_adjacent_grouped_aggregate(
 ) -> bool {
     bounded.has_source_adjacent_stages()
         && !bounded.aggregate.0.spec.group_exprs.is_empty()
-        && !aggregate_spec_has_stddev_samp(&bounded.aggregate.0.spec)
+        && !aggregate_spec_has_floating_statistical_aggregate(&bounded.aggregate.0.spec)
         && bounded.aggregate.0.spec.grouping_sets.is_none()
         && chunk_plan.chunks.len() > 1
         && source_adjacent_partitioned_chunks_are_row_group_morsels(&chunk_plan.chunks)

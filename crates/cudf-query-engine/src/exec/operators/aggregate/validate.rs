@@ -7,12 +7,12 @@ pub(in crate::exec) fn validate_aggregate_capability(
     if node.spec.group_exprs.is_empty() {
         return validate_global_aggregate_capability(&node.spec, output_schema);
     }
-    if aggregate_spec_has_stddev_samp(&node.spec) {
+    if aggregate_spec_has_floating_statistical_aggregate(&node.spec) {
         if aggregate_spec_has_distinct(&node.spec) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedOperator,
-                "cudf_query_engine.aggregate.validate_stddev_exact",
-                "DataFusion-exact stddev aggregate path does not support distinct aggregate expressions",
+                "cudf_query_engine.aggregate.validate_statistical_exact",
+                "DataFusion-exact statistical aggregate path does not support distinct aggregate expressions",
             ));
         }
         let expected_output_names = node
@@ -26,8 +26,8 @@ pub(in crate::exec) fn validate_aggregate_capability(
         if expected_output_names != schema_output_names {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
-                "cudf_query_engine.aggregate.validate_stddev_exact",
-                "DataFusion-exact stddev aggregate output names must match output schema fields",
+                "cudf_query_engine.aggregate.validate_statistical_exact",
+                "DataFusion-exact statistical aggregate output names must match output schema fields",
             )
             .with_fact("aggregate_output_names", expected_output_names.join(","))
             .with_fact("schema_output_names", schema_output_names.join(",")));
@@ -69,12 +69,12 @@ pub(in crate::exec) fn validate_final_aggregate_capability(
     if node.spec.group_exprs.is_empty() {
         return validate_global_aggregate_capability(&node.spec, output_schema);
     }
-    if aggregate_spec_has_stddev_samp(&node.spec) {
+    if aggregate_spec_has_floating_statistical_aggregate(&node.spec) {
         if aggregate_spec_has_distinct(&node.spec) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedOperator,
-                "cudf_query_engine.final_merge.validate_stddev_exact",
-                "DataFusion-exact stddev aggregate path does not support distinct aggregate expressions",
+                "cudf_query_engine.final_merge.validate_statistical_exact",
+                "DataFusion-exact statistical aggregate path does not support distinct aggregate expressions",
             ));
         }
         return validate_aggregate_capability(node, output_schema);
@@ -115,30 +115,31 @@ pub(in crate::exec) fn validate_global_aggregate_capability(
         if expr.function == AggregateFunction::Avg {
             validate_avg_output_fields(spec, output_schema)?;
         }
-        if expr.function == AggregateFunction::StddevSamp {
+        if expr.function.is_floating_statistical() {
             if expr.distinct {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedOperator,
-                    "cudf_query_engine.global_aggregate.validate_stddev_exact",
-                    "DataFusion-exact stddev aggregate path does not support distinct aggregate expressions",
+                    "cudf_query_engine.global_aggregate.validate_statistical_exact",
+                    "DataFusion-exact statistical aggregate path does not support distinct aggregate expressions",
                 )
                 .with_fact("alias", expr.alias.as_str()));
             }
             let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
-                    "cudf_query_engine.global_aggregate.validate_stddev_exact",
-                    "stddev_samp aggregate output field is missing from output schema",
+                    "cudf_query_engine.global_aggregate.validate_statistical_exact",
+                    "floating statistical aggregate output field is missing from output schema",
                 )
                 .with_fact("alias", expr.alias.as_str())
             })?;
             if !matches!(field.data_type(), ArrowDataType::Float64) {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedType,
-                    "cudf_query_engine.global_aggregate.validate_stddev_exact",
-                    "stddev_samp aggregate output must be Float64",
+                    "cudf_query_engine.global_aggregate.validate_statistical_exact",
+                    "floating statistical aggregate output must be Float64",
                 )
                 .with_fact("alias", expr.alias.as_str())
+                .with_fact("function", expr.function.as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type())));
             }
         }

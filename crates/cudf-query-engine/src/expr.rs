@@ -683,6 +683,45 @@ pub enum AggregateFunction {
     Avg,
     /// SQL sample standard deviation.
     StddevSamp,
+    /// SQL population standard deviation.
+    StddevPop,
+    /// SQL sample variance.
+    VarSamp,
+    /// SQL population variance.
+    VarPop,
+}
+
+impl AggregateFunction {
+    /// Returns true for floating statistical aggregates whose SQL result is
+    /// governed by the statistical aggregate execution contract.
+    pub const fn is_floating_statistical(self) -> bool {
+        matches!(self, Self::StddevSamp | Self::StddevPop | Self::VarSamp | Self::VarPop)
+    }
+
+    /// Degrees-of-freedom correction for floating statistical aggregates.
+    pub const fn statistical_ddof(self) -> Option<u32> {
+        match self {
+            Self::StddevSamp | Self::VarSamp => Some(1),
+            Self::StddevPop | Self::VarPop => Some(0),
+            _ => None,
+        }
+    }
+
+    /// Stable lower-case function label used in native diagnostics.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Sum => "sum",
+            Self::Min => "min",
+            Self::Max => "max",
+            Self::Count => "count",
+            Self::NUnique => "nunique",
+            Self::Avg => "avg",
+            Self::StddevSamp => "stddev_samp",
+            Self::StddevPop => "stddev_pop",
+            Self::VarSamp => "var_samp",
+            Self::VarPop => "var_pop",
+        }
+    }
 }
 
 /// Ordered list of sort keys for a native sort node.

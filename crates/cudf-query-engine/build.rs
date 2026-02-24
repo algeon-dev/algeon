@@ -14,6 +14,7 @@ fn main() {
         Ok(dirs) => {
             for dir in std::env::split_paths(&dirs) {
                 let dir = dir.display().to_string();
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
                 println!("cargo:rustc-link-arg-tests=-Wl,-rpath,{dir}");
             }
         },

@@ -221,7 +221,7 @@ pub struct ExecutionContext {
     cancellation: ExecutionCancellation,
     /// Selected native bounded-pipeline execution mode.
     native_pipeline_execution_mode: NativePipelineExecutionMode,
-    /// Selected execution contract for logical STDDEV_SAMP aggregates.
+    /// Selected execution contract for floating statistical aggregates.
     stddev_samp_execution_mode: StddevSampExecutionMode,
     /// Optional adaptive-only memory history store.
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
@@ -527,9 +527,15 @@ impl ExecutionContext {
         self.native_pipeline_execution_mode
     }
 
-    /// Returns the selected execution contract for logical STDDEV_SAMP aggregates.
-    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+    /// Returns the selected execution contract for floating statistical aggregates.
+    pub fn statistical_aggregate_execution_mode(&self) -> StddevSampExecutionMode {
         self.stddev_samp_execution_mode
+    }
+
+    /// Returns the selected execution contract through the legacy STDDEV_SAMP
+    /// accessor.
+    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+        self.statistical_aggregate_execution_mode()
     }
 
     /// Returns the adaptive-only memory history store, when configured.
@@ -590,7 +596,7 @@ pub struct ExecutionContextBuilder {
     cancellation: ExecutionCancellation,
     /// Native bounded-pipeline execution mode.
     native_pipeline_execution_mode: NativePipelineExecutionMode,
-    /// Execution contract for logical STDDEV_SAMP aggregates.
+    /// Execution contract for floating statistical aggregates.
     stddev_samp_execution_mode: StddevSampExecutionMode,
     /// Optional adaptive-only memory history store.
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
@@ -725,10 +731,15 @@ impl ExecutionContextBuilder {
         self
     }
 
-    /// Selects the execution contract for logical STDDEV_SAMP aggregates.
-    pub fn with_stddev_samp_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
+    /// Selects the execution contract for floating statistical aggregates.
+    pub fn with_statistical_aggregate_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
         self.stddev_samp_execution_mode = mode;
         self
+    }
+
+    /// Selects the execution contract through the legacy STDDEV_SAMP builder.
+    pub fn with_stddev_samp_execution_mode(self, mode: StddevSampExecutionMode) -> Self {
+        self.with_statistical_aggregate_execution_mode(mode)
     }
 
     /// Provides the adaptive-only memory history store.

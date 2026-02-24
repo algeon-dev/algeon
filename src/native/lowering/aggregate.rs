@@ -368,6 +368,16 @@ pub(super) fn lower_native_aggregate_function(name: &str) -> Result<NativeAggreg
         Ok(NativeAggregateFunction::Avg)
     } else if name.eq_ignore_ascii_case("stddev") || name.eq_ignore_ascii_case("stddev_samp") {
         Ok(NativeAggregateFunction::StddevSamp)
+    } else if name.eq_ignore_ascii_case("stddev_pop") {
+        Ok(NativeAggregateFunction::StddevPop)
+    } else if name.eq_ignore_ascii_case("var_samp")
+        || name.eq_ignore_ascii_case("var_sample")
+        || name.eq_ignore_ascii_case("var")
+        || name.eq_ignore_ascii_case("variance")
+    {
+        Ok(NativeAggregateFunction::VarSamp)
+    } else if name.eq_ignore_ascii_case("var_pop") || name.eq_ignore_ascii_case("var_population") {
+        Ok(NativeAggregateFunction::VarPop)
     } else {
         Err(FallbackReason::UnsupportedOperator)
     }

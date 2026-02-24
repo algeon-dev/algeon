@@ -134,6 +134,10 @@ impl QueryPlanBuilder {
     /// Adds a graph algorithm node over an edge-list input.
     pub fn add_graph_algorithm(&mut self, input: NodeId, mut spec: GraphAlgorithmSpec) -> NodeId {
         self.assert_input_exists(input);
+        let side_inputs = graph_algorithm_side_inputs(&spec);
+        for side_input in &side_inputs {
+            self.assert_input_exists(*side_input);
+        }
         let input = if spec.graph_options.policy == GraphConstructionPolicy::PythonCugraph {
             let normalize_spec = EdgeNormalizeSpec::python_cugraph(spec.edge_columns.clone(), &spec.graph_options);
             spec.graph_options.policy = GraphConstructionPolicy::RawLibcugraph;
@@ -142,9 +146,12 @@ impl QueryPlanBuilder {
         } else {
             input
         };
+        let mut inputs = Vec::with_capacity(1 + side_inputs.len());
+        inputs.push(input);
+        inputs.extend(side_inputs);
         let output_schema = Arc::clone(&spec.output_schema);
         self.push(
-            PlanNode::GraphAlgorithm(GraphAlgorithmNode { input, spec }),
+            PlanNode::GraphAlgorithm(GraphAlgorithmNode { input, inputs, spec }),
             PlanFacts::device(output_schema, SchemaBehavior::GraphAlgorithm),
         )
     }
@@ -190,8 +197,17 @@ impl QueryPlanBuilder {
     }
 }
 
+fn graph_algorithm_side_inputs(spec: &GraphAlgorithmSpec) -> Vec<NodeId> {
+    match &spec.params {
+        GraphAlgorithmParams::Bfs(params) => params.side_input_node_ids().collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn edge_normalize_output_schema(input_schema: &SchemaRef, spec: &EdgeNormalizeSpec) -> SchemaRef {
-    let mut fields = Vec::with_capacity(2 + usize::from(spec.edge_columns.weight.is_some()));
+    let mut fields = Vec::with_capacity(
+        2 + usize::from(spec.edge_columns.weight.is_some()) + usize::from(spec.edge_columns.edge_id.is_some()),
+    );
     fields.push(
         input_schema
             .field_with_name(&spec.edge_columns.source)
@@ -206,6 +222,9 @@ fn edge_normalize_output_schema(input_schema: &SchemaRef, spec: &EdgeNormalizeSp
     );
     if let Some(weight) = &spec.edge_columns.weight {
         fields.push(input_schema.field_with_name(weight).expect("edge normalize weight column must exist").clone());
+    }
+    if let Some(edge_id) = &spec.edge_columns.edge_id {
+        fields.push(input_schema.field_with_name(edge_id).expect("edge normalize edge-id column must exist").clone());
     }
     Arc::new(Schema::new(fields))
 }

@@ -58,6 +58,31 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
 }
 
 #[tokio::test]
+async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
+    let dir = unique_temp_dir("datafusion-cudf-native-lowering-statistical-aggregates");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NATIVE_STATISTICAL_AGGREGATE_QUERY).await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    assert_eq!(
+        native_aggregate_functions(&result.plans[0]),
+        vec![
+            AggregateFunction::StddevPop,
+            AggregateFunction::VarSamp,
+            AggregateFunction::VarPop,
+            AggregateFunction::VarSamp,
+        ]
+    );
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
     let dir = unique_temp_dir("datafusion-cudf-native-lowering-count-distinct-nunique");
     let path = dir.join("input.parquet");

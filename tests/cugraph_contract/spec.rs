@@ -27,7 +27,7 @@ use datafusion_cudf::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_resul
 pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
     match algorithm {
         GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
-        GraphAlgorithm::Bfs => GraphAlgorithmParams::Bfs(GraphBfsParams { source_vertex: 0, depth_limit: None }),
+        GraphAlgorithm::Bfs => GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
         GraphAlgorithm::Louvain => GraphAlgorithmParams::Louvain(GraphLouvainParams::default()),
         GraphAlgorithm::EigenvectorCentrality => {
             GraphAlgorithmParams::EigenvectorCentrality(GraphEigenvectorCentralityParams::default())

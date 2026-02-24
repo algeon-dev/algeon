@@ -54,7 +54,10 @@ pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NAT
 pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
 /// Minimum row-group granularity used when retrying with smaller chunks.
 pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
-/// Execution contract for native `STDDEV_SAMP` aggregates.
+/// Execution contract for native floating statistical aggregates.
+pub const CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
+    "CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
+/// Migration alias for [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`].
 pub const CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
 /// Temporarily ignored. Native planning must not prefer CPU for conservative
 /// small/selective shapes while SQL may include GPU-only `cugraph_*` table
@@ -188,6 +191,28 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 /// dormant until the native SQL surface can distinguish ordinary TPC-DS shapes
 /// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
+    tpcds_native_optimizer_config_with_statistical_aggregate_default(
+        cudf_query_engine::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+    )
+}
+
+/// Native optimizer config for TPC-DS analytics/performance report surfaces.
+///
+/// The analytics default uses GPU-native tolerant floating statistical
+/// aggregate kernels. Set
+/// [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`] or the
+/// migration [`CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV`] to
+/// `datafusion_exact_host_welford` when a run intentionally needs bit-exact
+/// DataFusion compatibility.
+pub fn tpcds_native_analytics_optimizer_config() -> CudfOptimizerConfig {
+    tpcds_native_optimizer_config_with_statistical_aggregate_default(
+        cudf_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+    )
+}
+
+fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
+    statistical_aggregate_execution_mode_default: cudf_query_engine::StatisticalAggregateExecutionMode,
+) -> CudfOptimizerConfig {
     let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV)
         .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
     let max_source_chunk_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)
@@ -198,8 +223,8 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
         .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
     let min_retry_chunk_row_groups = optional_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV)
         .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
-    let stddev_samp_execution_mode =
-        optional_env_stddev_samp_execution_mode(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV).unwrap_or_default();
+    let statistical_aggregate_execution_mode =
+        optional_env_statistical_aggregate_execution_mode().unwrap_or(statistical_aggregate_execution_mode_default);
     // Keep CPU preference disabled for now: users can submit SQL containing
     // `cugraph_*` table functions, and those plans must stay on the GPU rather
     // than being routed through DataFusion CPU fallback as a small/selective
@@ -215,7 +240,7 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
             )
-            .with_stddev_samp_execution_mode(stddev_samp_execution_mode),
+            .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode),
         )
         .with_native_plan_preference_options(preference_options)
 }
@@ -236,9 +261,18 @@ fn optional_env_usize(name: &'static str) -> Option<usize> {
     })
 }
 
-fn optional_env_stddev_samp_execution_mode(name: &'static str) -> Option<cudf_query_engine::StddevSampExecutionMode> {
+fn optional_env_statistical_aggregate_execution_mode() -> Option<cudf_query_engine::StatisticalAggregateExecutionMode> {
+    optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
+        .or_else(|| {
+            optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV)
+        })
+}
+
+fn optional_env_statistical_aggregate_execution_mode_for(
+    name: &'static str,
+) -> Option<cudf_query_engine::StatisticalAggregateExecutionMode> {
     std::env::var(name).ok().map(|value| {
-        value.parse::<cudf_query_engine::StddevSampExecutionMode>().unwrap_or_else(|error| {
+        value.parse::<cudf_query_engine::StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
             panic!("unsupported {name}={value}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}")
         })
     })

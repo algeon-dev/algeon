@@ -96,7 +96,10 @@ fn execute_global_aggregate_impl(
             AggregateFunction::Sum
             | AggregateFunction::Min
             | AggregateFunction::Max
-            | AggregateFunction::StddevSamp => {
+            | AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop => {
                 columns.push((
                     expr.alias.clone(),
                     reduce_global_aggregate_column_impl(
@@ -165,7 +168,13 @@ fn reduce_global_aggregate_column_impl(
     })?;
     if matches!(
         function,
-        AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max | AggregateFunction::StddevSamp
+        AggregateFunction::Sum
+            | AggregateFunction::Min
+            | AggregateFunction::Max
+            | AggregateFunction::StddevSamp
+            | AggregateFunction::StddevPop
+            | AggregateFunction::VarSamp
+            | AggregateFunction::VarPop
     ) && series.len() == series.null_count()
         && let Some(output_type) = output_type
     {
@@ -266,6 +275,9 @@ fn execute_scalar_reduction(
         AggregateFunction::Min => series.min_in(overrides),
         AggregateFunction::Max => series.max_in(overrides),
         AggregateFunction::StddevSamp => series.std_in(1, overrides),
+        AggregateFunction::StddevPop => series.std_in(0, overrides),
+        AggregateFunction::VarSamp => series.var_in(1, overrides),
+        AggregateFunction::VarPop => series.var_in(0, overrides),
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
         AggregateFunction::Count | AggregateFunction::NUnique => {
             unreachable!("global count-like aggregates are not scalar reductions")
@@ -294,6 +306,9 @@ fn execute_scalar_reduction_with_budget(
         AggregateFunction::Min => ReduceAgg::Min,
         AggregateFunction::Max => ReduceAgg::Max,
         AggregateFunction::StddevSamp => ReduceAgg::Std { ddof: 1 },
+        AggregateFunction::StddevPop => ReduceAgg::Std { ddof: 0 },
+        AggregateFunction::VarSamp => ReduceAgg::Variance { ddof: 1 },
+        AggregateFunction::VarPop => ReduceAgg::Variance { ddof: 0 },
         AggregateFunction::Avg => unreachable!("global AVG is lowered through explicit sum/count state"),
         AggregateFunction::Count | AggregateFunction::NUnique => {
             unreachable!("global count-like aggregates are not scalar reductions")
