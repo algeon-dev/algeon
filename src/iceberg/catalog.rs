@@ -201,16 +201,20 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
         Ok(Some(provider))
     }
 
-    /// Returns `TableType::Base` for any known or seeded table without loading
-    /// the full Iceberg metadata.  All Iceberg tables are base tables; this
-    /// override avoids the backend round-trip that the default `table_type()`
-    /// implementation would trigger via `table()`.
+    /// Returns the table type without loading the full Iceberg metadata.
+    ///
+    /// Startup-discovered names always resolve to `TableType::Base`: the
+    /// Iceberg backend only enumerates physical Iceberg tables, so this
+    /// shortcut avoids the round-trip the default `table_type()` would do via
+    /// `table()`. For seeded providers we defer to `TableProvider::table_type()`
+    /// so callers that seed a view (or anything else non-base) are reported
+    /// honestly.
     async fn table_type(&self, name: &str) -> datafusion::common::Result<Option<datafusion::datasource::TableType>> {
         if self.table_exist(name) {
             return Ok(Some(datafusion::datasource::TableType::Base));
         }
         let cache = self.table_cache.read().await;
-        if cache.contains_key(name) { Ok(Some(datafusion::datasource::TableType::Base)) } else { Ok(None) }
+        Ok(cache.get(name).map(|provider| provider.table_type()))
     }
 
     fn table_exist(&self, name: &str) -> bool {

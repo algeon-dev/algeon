@@ -4,22 +4,27 @@ use std::{
     time::{Duration, Instant},
 };
 
+use arrow::datatypes::Schema;
 use arrow_flight::{
     FlightDescriptor, FlightEndpoint, FlightInfo, HandshakeRequest, HandshakeResponse, Ticket,
     encode::FlightDataEncoderBuilder,
     error::FlightError,
     flight_service_server::FlightService,
     sql::{
-        ActionCancelQueryRequest, ActionCancelQueryResult, CommandGetSqlInfo, CommandPreparedStatementQuery,
-        CommandStatementQuery, ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
-        SqlSupportedCaseSensitivity, SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType,
-        SqlSupportedTransaction, SqlSupportedUnions, SqlTransactionIsolationLevel, SupportedSqlGrammar,
-        TicketStatementQuery, metadata::SqlInfoDataBuilder, server::FlightSqlService,
+        ActionCancelQueryRequest, ActionCancelQueryResult, CommandGetCatalogs, CommandGetDbSchemas, CommandGetSqlInfo,
+        CommandGetTableTypes, CommandGetTables, CommandPreparedStatementQuery, CommandStatementQuery,
+        ProstMessageExt, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel, SqlSupportedCaseSensitivity,
+        SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
+        SqlSupportedUnions, SqlTransactionIsolationLevel, SupportedSqlGrammar, TicketStatementQuery,
+        metadata::{GetDbSchemasBuilder, GetTablesBuilder, SqlInfoDataBuilder},
+        server::FlightSqlService,
     },
 };
 use cudf_query_engine::ExecutionCancellation;
 use dashmap::DashMap;
-use datafusion::{error::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext};
+use datafusion::{
+    datasource::TableType, error::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext,
+};
 use futures::{Stream, StreamExt, TryStreamExt};
 use prost::Message;
 use tokio::sync::OwnedSemaphorePermit;
@@ -29,6 +34,7 @@ use uuid::Uuid;
 
 use super::{
     admission::QueryAdmission,
+    auth::{AuthInterceptor, handle_handshake},
     cancel::QueryCancellation,
     config::ServerSessionProfile,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
@@ -59,6 +65,11 @@ pub struct DatafusionCudfFlightSqlService {
     /// has been admitted but not yet registered (or any statement still to
     /// register) sees a pre-cancelled token and stops at the first await.
     shutdown_token: CancellationToken,
+    /// Bearer-token validator + handshake credential store. Cloned into
+    /// the service from [`crate::server::serve`] so the same
+    /// [`TokenStore`] is shared between the handshake mint path and the
+    /// per-RPC validate path.
+    auth: AuthInterceptor,
 }
 
 /// Per-statement session context paired with the retained native rule that
@@ -87,6 +98,7 @@ impl DatafusionCudfFlightSqlService {
         session_profile: ServerSessionProfile,
         max_in_flight: usize,
         statement_ticket_ttl: Duration,
+        auth: AuthInterceptor,
     ) -> Self {
         Self {
             ctx,
@@ -97,7 +109,16 @@ impl DatafusionCudfFlightSqlService {
             tickets: Arc::default(),
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
+            auth,
         }
+    }
+
+    /// Validate the bearer token on a tonic request. Returns the
+    /// authenticated [`super::auth::Principal`] when auth is enabled,
+    /// or `None` when the server is running in
+    /// [`AuthMode::Disabled`]. Errors as `Status::unauthenticated`.
+    fn check_auth<T>(&self, request: &Request<T>) -> Result<Option<super::auth::Principal>, Status> {
+        self.auth.check(request.metadata())
     }
 
     pub(crate) fn admission(&self) -> &Arc<QueryAdmission> {
@@ -415,10 +436,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
 
     async fn do_handshake(
         &self,
-        _request: Request<Streaming<HandshakeRequest>>,
+        request: Request<Streaming<HandshakeRequest>>,
     ) -> Result<Response<Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>>, Status> {
-        let output = futures::stream::iter([Ok(HandshakeResponse { protocol_version: 0, payload: vec![].into() })]);
-        Ok(Response::new(Box::pin(output)))
+        handle_handshake(self.auth.mode(), self.auth.tokens(), request).await
     }
 
     async fn get_flight_info_statement(
@@ -426,6 +446,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         query: CommandStatementQuery,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         let query_id = Uuid::new_v4().hyphenated().to_string();
         let sql = query.query;
         let planning_started_at = Instant::now();
@@ -470,8 +491,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     async fn do_get_statement(
         &self,
         ticket: TicketStatementQuery,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         let query_id = std::str::from_utf8(&ticket.statement_handle)
             .map_err(|error| Status::invalid_argument(error.to_string()))?
             .to_string();
@@ -483,6 +505,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         query: CommandGetSqlInfo,
         request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         let descriptor = request.into_inner();
         let ticket = Ticket { ticket: query.as_any().encode_to_vec().into() };
         let endpoint = FlightEndpoint::new().with_ticket(ticket);
@@ -498,8 +521,9 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
     async fn do_get_sql_info(
         &self,
         query: CommandGetSqlInfo,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         let sql_info = sql_info_data()?;
         let builder = query.into_builder(&sql_info);
         let schema = builder.schema();
@@ -511,27 +535,177 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         Ok(Response::new(Box::pin(stream)))
     }
 
+    async fn get_flight_info_catalogs(
+        &self,
+        query: CommandGetCatalogs,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let descriptor = request.into_inner();
+        // `CommandGetCatalogs` is a unit message; the builder produces a
+        // static schema, and we echo the (Copy) command back as the ticket.
+        let schema = arrow_flight::sql::metadata::GetCatalogsBuilder::new().schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_catalogs(
+        &self,
+        query: CommandGetCatalogs,
+        _request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let mut builder = query.into_builder();
+        for name in self.ctx.catalog_names() {
+            builder.append(name);
+        }
+        let schema = builder.schema();
+        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(schema, batch)))
+    }
+
+    async fn get_flight_info_schemas(
+        &self,
+        query: CommandGetDbSchemas,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let descriptor = request.into_inner();
+        let schema = GetDbSchemasBuilder::from(query.clone()).schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_schemas(
+        &self,
+        query: CommandGetDbSchemas,
+        _request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let mut builder = GetDbSchemasBuilder::from(query);
+        for catalog_name in self.ctx.catalog_names() {
+            let Some(catalog) = self.ctx.catalog(&catalog_name) else {
+                continue;
+            };
+            for schema_name in catalog.schema_names() {
+                builder.append(&catalog_name, &schema_name);
+            }
+        }
+        let schema = builder.schema();
+        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(schema, batch)))
+    }
+
+    async fn get_flight_info_tables(
+        &self,
+        query: CommandGetTables,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let descriptor = request.into_inner();
+        let schema = GetTablesBuilder::from(query.clone()).schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_tables(
+        &self,
+        query: CommandGetTables,
+        _request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let include_schema = query.include_schema;
+        let mut builder = GetTablesBuilder::from(query);
+        let empty_schema = Schema::empty();
+        for catalog_name in self.ctx.catalog_names() {
+            let Some(catalog) = self.ctx.catalog(&catalog_name) else {
+                continue;
+            };
+            for schema_name in catalog.schema_names() {
+                let Some(schema_provider) = catalog.schema(&schema_name) else {
+                    continue;
+                };
+                for table_name in schema_provider.table_names() {
+                    // For `include_schema=true` we materialize the provider to
+                    // read its Arrow schema; this also exposes the canonical
+                    // `TableProvider::table_type()`. For Iceberg/Glue that
+                    // round-trip hits Glue + S3, so the cheaper path below
+                    // uses `SchemaProvider::table_type()` (which the Iceberg
+                    // provider implements without touching the backend).
+                    let (table_schema, resolved_type) = if include_schema {
+                        match schema_provider.table(&table_name).await {
+                            Ok(Some(table)) => (Some(table.schema()), Some(table.table_type())),
+                            Ok(None) => (None, None),
+                            Err(error) => {
+                                tracing::warn!(
+                                    catalog = %catalog_name,
+                                    schema = %schema_name,
+                                    table = %table_name,
+                                    error = %error,
+                                    "failed to load table for Flight SQL GetTables"
+                                );
+                                (None, None)
+                            },
+                        }
+                    } else {
+                        let table_type =
+                            schema_provider.table_type(&table_name).await.map_err(datafusion_error_to_status)?;
+                        (None, table_type)
+                    };
+                    // A `None` here means the table vanished between
+                    // `table_names()` and the type lookup (TOCTOU race) or the
+                    // provider deliberately rejected it. Skip so the response
+                    // does not include a ghost row whose type would have to be
+                    // a guess.
+                    let Some(table_type_str) = resolved_type.map(table_type_to_flight_sql) else {
+                        continue;
+                    };
+                    let table_schema_ref: &Schema = table_schema.as_deref().unwrap_or(&empty_schema);
+                    builder
+                        .append(&catalog_name, &schema_name, &table_name, table_type_str, table_schema_ref)
+                        .map_err(arrow_flight_error_to_status)?;
+                }
+            }
+        }
+        let schema = builder.schema();
+        let batch = builder.build().map_err(arrow_flight_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(schema, batch)))
+    }
+
+    async fn get_flight_info_table_types(
+        &self,
+        query: CommandGetTableTypes,
+        request: Request<FlightDescriptor>,
+    ) -> Result<Response<FlightInfo>, Status> {
+        let descriptor = request.into_inner();
+        let schema = flight_sql_table_types_schema();
+        Ok(Response::new(metadata_flight_info(query, descriptor, schema.as_ref())?))
+    }
+
+    async fn do_get_table_types(
+        &self,
+        _query: CommandGetTableTypes,
+        _request: Request<Ticket>,
+    ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        let batch = build_table_types_batch().map_err(arrow_error_to_status)?;
+        Ok(Response::new(metadata_record_batch_stream(batch.schema(), batch)))
+    }
+
     async fn get_flight_info_prepared_statement(
         &self,
         _query: CommandPreparedStatementQuery,
-        _request: Request<FlightDescriptor>,
+        request: Request<FlightDescriptor>,
     ) -> Result<Response<FlightInfo>, Status> {
+        self.check_auth(&request)?;
         Err(Status::unimplemented("prepared statement execution is not implemented"))
     }
 
     async fn do_get_prepared_statement(
         &self,
         _query: CommandPreparedStatementQuery,
-        _request: Request<Ticket>,
+        request: Request<Ticket>,
     ) -> Result<Response<<Self as FlightService>::DoGetStream>, Status> {
+        self.check_auth(&request)?;
         Err(Status::unimplemented("prepared statement execution is not implemented"))
     }
 
     async fn do_action_cancel_query(
         &self,
         query: ActionCancelQueryRequest,
-        _request: Request<arrow_flight::Action>,
+        request: Request<arrow_flight::Action>,
     ) -> Result<ActionCancelQueryResult, Status> {
+        self.check_auth(&request)?;
         let result = if self.cancel_from_flight_info(&query.info)? {
             FLIGHT_SQL_CANCEL_RESULT_CANCELLING
         } else {
@@ -619,6 +793,87 @@ fn datafusion_error_to_flight_error(error: DataFusionError, query_id: &str, life
 
 fn arrow_error_to_status(error: arrow::error::ArrowError) -> Status {
     Status::internal(error.to_string())
+}
+
+fn arrow_flight_error_to_status(error: arrow_flight::error::FlightError) -> Status {
+    Status::from(error)
+}
+
+/// Flight SQL / ODBC / JDBC standard catalog `table_type` string for an ordinary
+/// physical table. Matches the upstream `arrow-flight` builder examples and the
+/// SQL standard `INFORMATION_SCHEMA.TABLES.TABLE_TYPE` values consumed by
+/// arrow_cli, the ADBC driver, and the Flight SQL JDBC driver.
+const FLIGHT_SQL_TABLE_TYPE_TABLE: &str = "TABLE";
+/// Flight SQL standard `table_type` string for a view.
+const FLIGHT_SQL_TABLE_TYPE_VIEW: &str = "VIEW";
+
+/// The set advertised by `CommandGetTableTypes`. Stored sorted lexicographically
+/// as required by the Flight SQL protobuf contract for `GetTableTypes`.
+const FLIGHT_SQL_TABLE_TYPES: &[&str] = &[FLIGHT_SQL_TABLE_TYPE_TABLE, FLIGHT_SQL_TABLE_TYPE_VIEW];
+
+/// Schema for `CommandGetTableTypes` responses. Pinned to `table_type: utf8 not
+/// null` to match the Flight SQL protobuf contract. This duplicates the schema
+/// defined inside `arrow_flight::sql::metadata::table_types`, which is
+/// crate-private in arrow-rs 58.3 (and on main). Once arrow-rs re-exports
+/// `GetTableTypesBuilder`, switch both this helper and `do_get_table_types` to
+/// use it directly.
+fn flight_sql_table_types_schema() -> Arc<Schema> {
+    use arrow::datatypes::{DataType, Field};
+    static SCHEMA: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    SCHEMA
+        .get_or_init(|| Arc::new(Schema::new(vec![Field::new("table_type", DataType::Utf8, false)])))
+        .clone()
+}
+
+/// Build the single-batch response for `CommandGetTableTypes`. Asserts the
+/// sorted invariant defensively because `FLIGHT_SQL_TABLE_TYPES` is the source
+/// of truth and re-sorting at runtime would hide a future authoring mistake.
+fn build_table_types_batch() -> Result<arrow::record_batch::RecordBatch, arrow::error::ArrowError> {
+    debug_assert!(FLIGHT_SQL_TABLE_TYPES.windows(2).all(|w| w[0] < w[1]), "FLIGHT_SQL_TABLE_TYPES must be sorted");
+    let column = arrow::array::StringArray::from_iter_values(FLIGHT_SQL_TABLE_TYPES.iter().copied());
+    arrow::record_batch::RecordBatch::try_new(flight_sql_table_types_schema(), vec![Arc::new(column)])
+}
+
+/// Map DataFusion's `TableType` to the Flight SQL wire string. `Temporary` has
+/// no dedicated Flight SQL value, so it surfaces as `"TABLE"` (matching how
+/// `information_schema.tables` reports temp tables).
+fn table_type_to_flight_sql(table_type: TableType) -> &'static str {
+    match table_type {
+        TableType::View => FLIGHT_SQL_TABLE_TYPE_VIEW,
+        TableType::Base | TableType::Temporary => FLIGHT_SQL_TABLE_TYPE_TABLE,
+    }
+}
+
+/// Build a `FlightInfo` for a Flight SQL metadata command whose `do_get` echoes
+/// the original command back as the ticket payload (matching how
+/// `get_flight_info_sql_info` is wired).
+fn metadata_flight_info<C>(command: C, descriptor: FlightDescriptor, schema: &Schema) -> Result<FlightInfo, Status>
+where
+    C: ProstMessageExt,
+{
+    let ticket = Ticket { ticket: command.as_any().encode_to_vec().into() };
+    let endpoint = FlightEndpoint::new().with_ticket(ticket);
+    let info = FlightInfo::new()
+        .try_with_schema(schema)
+        .map_err(arrow_error_to_status)?
+        .with_descriptor(descriptor)
+        .with_endpoint(endpoint)
+        .with_ordered(false);
+    Ok(info)
+}
+
+/// Wrap a single pre-built `RecordBatch` as a Flight `DoGetStream`. Used by the
+/// metadata RPCs where the entire response fits in one batch produced by the
+/// arrow-flight metadata builders.
+fn metadata_record_batch_stream(
+    schema: Arc<Schema>,
+    batch: arrow::record_batch::RecordBatch,
+) -> Pin<Box<dyn Stream<Item = Result<arrow_flight::FlightData, Status>> + Send>> {
+    let stream = FlightDataEncoderBuilder::new()
+        .with_schema(schema)
+        .build(futures::stream::once(async move { Ok(batch) }))
+        .map_err(Status::from);
+    Box::pin(stream)
 }
 
 fn server_error_to_status(error: ServerError) -> Status {

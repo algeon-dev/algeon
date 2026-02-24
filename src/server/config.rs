@@ -1,6 +1,11 @@
-use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
+use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
-use super::error::{Result, ServerError};
+use serde::Deserialize;
+
+use super::{
+    auth::AuthConfig,
+    error::{Result, ServerError},
+};
 use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
 #[cfg(feature = "cugraph")]
 use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOptions};
@@ -29,6 +34,12 @@ pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
 pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+/// Path to a TOML file that supplies the `[auth]` block (and may
+/// supply other future sections). Env vars still override scalar
+/// fields where they exist; TOML is the only way to configure the
+/// `auth` section because it carries a nested user list.
+pub const DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV: &str = "DATAFUSION_CUDF_SERVER_CONFIG_FILE";
+
 pub const DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED";
 pub const DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS";
 pub const DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED";
@@ -69,10 +80,25 @@ pub struct ServerConfig {
     /// See [`DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV`] and
     /// [`ServerSessionProfile`].
     pub session_profile: ServerSessionProfile,
+    /// Authentication mode applied to incoming Flight SQL RPCs. Loaded
+    /// from the TOML overlay pointed to by
+    /// [`DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV`]; defaults to
+    /// [`super::auth::AuthMode::Disabled`] when no file is provided.
+    pub auth: AuthConfig,
     #[cfg(feature = "iceberg")]
     pub iceberg: Option<IcebergServerConfig>,
     #[cfg(feature = "cugraph")]
     pub cugraph: Option<CugraphServerConfig>,
+}
+
+/// Raw shape of the optional TOML overlay loaded from
+/// [`DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV`]. Currently only carries
+/// the `[auth]` section; expand here when other sections need
+/// TOML-driven config.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct ServerFileOverlay {
+    auth: AuthConfig,
 }
 
 /// DataFusion physical-plan profile applied to the Flight SQL session.
@@ -218,6 +244,13 @@ impl ServerConfig {
         let default_profile = ServerSessionProfile::CpuFallback;
         let session_profile = explicit_profile.unwrap_or(default_profile);
 
+        let overlay_path = values.string(DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
+        let overlay = match overlay_path {
+            Some(path) => load_overlay(&path)?,
+            None => ServerFileOverlay::default(),
+        };
+        overlay.auth.mode.validate()?;
+
         Ok(Self {
             bind_addr,
             log_filter,
@@ -225,12 +258,25 @@ impl ServerConfig {
             statement_ticket_ttl,
             native_optimizer_config,
             session_profile,
+            auth: overlay.auth,
             #[cfg(feature = "iceberg")]
             iceberg,
             #[cfg(feature = "cugraph")]
             cugraph,
         })
     }
+}
+
+fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
+    let raw = fs::read_to_string(path).map_err(|error| {
+        ServerError::configuration_with_source(format!("failed to read server config file `{}`", path.display()), error)
+    })?;
+    toml::from_str::<ServerFileOverlay>(&raw).map_err(|error| {
+        ServerError::configuration_with_source(
+            format!("failed to parse server config file `{}`", path.display()),
+            error,
+        )
+    })
 }
 
 fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerConfig> {

@@ -6,8 +6,9 @@ use arrow::array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UIn
 use arrow_flight::{
     error::FlightError,
     sql::{
-        SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel, SqlSupportedGroupBy, SqlSupportedResultSetConcurrency,
-        SqlSupportedResultSetType, SqlSupportedTransaction, SqlSupportedUnions, client::FlightSqlServiceClient,
+        CommandGetDbSchemas, CommandGetTables, SqlInfo, SqlNullOrdering, SqlOuterJoinsSupportLevel,
+        SqlSupportedGroupBy, SqlSupportedResultSetConcurrency, SqlSupportedResultSetType, SqlSupportedTransaction,
+        SqlSupportedUnions, client::FlightSqlServiceClient,
     },
 };
 use datafusion_cudf::server::{
@@ -254,6 +255,239 @@ async fn get_sql_info_advertises_core_server_capabilities() {
         sql_info_i32(batch, SqlInfo::SqlSupportedConcurrenciesForResultSetForwardOnly),
         sql_info_bitmask([SqlSupportedResultSetConcurrency::SqlResultSetConcurrencyReadOnly as i32])
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_catalogs_lists_default_catalog() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client.get_catalogs().await.unwrap();
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    let names = collect_string_column(&batches, "catalog_name");
+    assert!(names.contains(&"datafusion".to_string()), "expected default catalog, got {names:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_db_schemas_lists_default_schemas() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client
+        .get_db_schemas(CommandGetDbSchemas { catalog: Some("datafusion".into()), db_schema_filter_pattern: None })
+        .await
+        .unwrap();
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    // `information_schema` is exposed by `SessionState`, not by the catalog
+    // provider, so it does not surface here. The default `public` schema does.
+    let schemas = collect_string_column(&batches, "db_schema_name");
+    assert!(schemas.contains(&"public".to_string()), "missing public: {schemas:?}");
+    let catalogs = collect_string_column(&batches, "catalog_name");
+    assert!(catalogs.iter().all(|c| c == "datafusion"), "filter leaked: {catalogs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    // Seed both a real base table and a view so we can assert that the
+    // metadata layer reports each with the correct Flight SQL table_type.
+    let _ = execute_batches(
+        &mut client,
+        "CREATE TABLE metadata_probe_base AS \
+         SELECT * FROM (VALUES (1::INT, 'a'), (2::INT, 'b')) AS t(id, label)",
+    )
+    .await;
+    let _ = execute_batches(
+        &mut client,
+        "CREATE VIEW metadata_probe_view AS SELECT id FROM metadata_probe_base",
+    )
+    .await;
+
+    let flight_info = client
+        .get_tables(CommandGetTables {
+            catalog: Some("datafusion".into()),
+            db_schema_filter_pattern: Some("public".into()),
+            table_name_filter_pattern: Some("metadata_probe%".into()),
+            table_types: vec![],
+            include_schema: false,
+        })
+        .await
+        .unwrap();
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    let pairs = collect_name_and_type(&batches);
+    assert!(
+        pairs.contains(&("metadata_probe_base".to_string(), "TABLE".to_string())),
+        "missing seeded base table or wrong type: {pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("metadata_probe_view".to_string(), "VIEW".to_string())),
+        "missing seeded view or wrong type: {pairs:?}"
+    );
+    let catalogs = collect_string_column(&batches, "catalog_name");
+    assert!(catalogs.iter().all(|c| c == "datafusion"), "catalog filter leaked: {catalogs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_tables_respects_table_types_filter() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let _ = execute_batches(
+        &mut client,
+        "CREATE TABLE table_types_filter_base AS SELECT 1 AS x",
+    )
+    .await;
+    let _ = execute_batches(
+        &mut client,
+        "CREATE VIEW table_types_filter_view AS SELECT x FROM table_types_filter_base",
+    )
+    .await;
+
+    let flight_info = client
+        .get_tables(CommandGetTables {
+            catalog: Some("datafusion".into()),
+            db_schema_filter_pattern: Some("public".into()),
+            table_name_filter_pattern: Some("table_types_filter%".into()),
+            table_types: vec!["VIEW".into()],
+            include_schema: false,
+        })
+        .await
+        .unwrap();
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    let pairs = collect_name_and_type(&batches);
+    assert_eq!(pairs, vec![("table_types_filter_view".to_string(), "VIEW".to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let _ = execute_batches(
+        &mut client,
+        "CREATE TABLE include_schema_probe AS \
+         SELECT 1::INT AS id, 'a' AS label",
+    )
+    .await;
+
+    let flight_info = client
+        .get_tables(CommandGetTables {
+            catalog: Some("datafusion".into()),
+            db_schema_filter_pattern: Some("public".into()),
+            table_name_filter_pattern: Some("include_schema_probe".into()),
+            table_types: vec![],
+            include_schema: true,
+        })
+        .await
+        .unwrap();
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    let pairs = collect_name_and_type(&batches);
+    assert_eq!(pairs, vec![("include_schema_probe".to_string(), "TABLE".to_string())]);
+
+    let schemas: Vec<arrow::datatypes::Schema> = batches
+        .iter()
+        .filter_map(|batch| {
+            let index = batch.schema().index_of("table_schema").ok()?;
+            let bytes = batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<arrow::array::BinaryArray>()
+                .expect("table_schema column must be Binary");
+            (0..bytes.len())
+                .map(|i| arrow::ipc::convert::try_schema_from_ipc_buffer(bytes.value(i)).unwrap())
+                .next()
+        })
+        .collect();
+    assert_eq!(schemas.len(), 1, "expected exactly one table_schema row");
+    let field_names: Vec<String> = schemas[0].fields().iter().map(|f| f.name().clone()).collect();
+    assert_eq!(field_names, vec!["id".to_string(), "label".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn flight_sql_get_table_types_returns_table_and_view() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let flight_info = client.get_table_types().await.unwrap();
+    let batches = collect_metadata_batches(&mut client, &flight_info).await;
+
+    server.abort();
+
+    let types = collect_string_column(&batches, "table_type");
+    assert_eq!(types, vec!["TABLE".to_string(), "VIEW".to_string()]);
+}
+
+async fn collect_metadata_batches(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    flight_info: &arrow_flight::FlightInfo,
+) -> Vec<arrow::record_batch::RecordBatch> {
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
+}
+
+fn collect_name_and_type(batches: &[arrow::record_batch::RecordBatch]) -> Vec<(String, String)> {
+    let names = collect_string_column(batches, "table_name");
+    let types = collect_string_column(batches, "table_type");
+    assert_eq!(names.len(), types.len(), "GetTables name/type columns desynced");
+    names.into_iter().zip(types).collect()
+}
+
+fn collect_string_column(batches: &[arrow::record_batch::RecordBatch], column: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for batch in batches {
+        let Some(index) = batch.schema().index_of(column).ok() else {
+            continue;
+        };
+        let array =
+            batch.column(index).as_any().downcast_ref::<StringArray>().expect("metadata column must be Utf8");
+        for i in 0..array.len() {
+            if array.is_valid(i) {
+                out.push(array.value(i).to_string());
+            }
+        }
+    }
+    out
 }
 
 fn free_local_addr() -> std::net::SocketAddr {

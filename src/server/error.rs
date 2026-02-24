@@ -22,6 +22,17 @@ impl ServerError {
         Self { message: format!("invalid server configuration: {field} {}", reason.into()), source: None }
     }
 
+    pub fn configuration(message: impl Into<String>) -> Self {
+        Self { message: format!("invalid server configuration: {}", message.into()), source: None }
+    }
+
+    pub fn configuration_with_source(
+        message: impl Into<String>,
+        source: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        Self { message: format!("invalid server configuration: {}", message.into()), source: Some(Box::new(source)) }
+    }
+
     pub fn session(message: impl Into<String>, source: impl StdError + Send + Sync + 'static) -> Self {
         Self { message: message.into(), source: Some(Box::new(source)) }
     }
