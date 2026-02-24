@@ -61,7 +61,7 @@ pub use clickbench::{
 };
 pub use cudf_query_engine::{
     AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
-    NativePipelineExecutionMode, SemijoinReductionOptions,
+    NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, SemijoinReductionOptions,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
@@ -110,11 +110,13 @@ pub use native_report::{
     NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
     NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadInput, NativeDataFusionPlanningWorkloadItem,
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureRow,
-    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeGraphRuntimeMetricRow,
-    NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary,
-    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome,
-    NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
+    NativeDynamicFilterMeasuredReductionStatus, NativeDynamicFilterPostDecodeReductionStage,
+    NativeDynamicFilterRuntimeMetricRow, NativeDynamicFilterWorkAvoidanceStatus, NativeFallbackPressureOutcome,
+    NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadInput,
+    NativeFallbackPressureWorkloadItem, NativeGraphRuntimeMetricRow, NativeJoinDiagnosticSummary,
+    NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
+    NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
+    NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
     NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
     NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
     ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata,
@@ -154,8 +156,9 @@ pub use tpcds::{
     tpcds_datafusion_execution_workload_items_filtered,
     tpcds_datafusion_execution_workload_items_with_optimizer_config, tpcds_datafusion_planning_workload_items,
     tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_fallback_pressure_workload_items,
-    tpcds_native_optimizer_config, tpcds_parity_workload_items, tpcds_parity_workload_items_with_external_oracles,
-    tpcds_query_ids, tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
+    tpcds_native_optimizer_config, tpcds_native_report_session_config, tpcds_parity_workload_items,
+    tpcds_parity_workload_items_with_external_oracles, tpcds_query_ids, tpcds_report_session_config,
+    write_tiny_tpcds_parquet_dataset,
 };
 pub use tpch::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,

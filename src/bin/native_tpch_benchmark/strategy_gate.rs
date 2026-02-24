@@ -13,17 +13,21 @@ pub(super) struct LargeKeyedJoinStrategyGateSummary {
     pub(super) large_fallback_one_shot_sites: usize,
     pub(super) large_reusable_sites: usize,
     pub(super) reservation_denied_count: u64,
+    pub(super) dynamic_filter_evidence: DynamicFilterGateEvidenceSummary,
 }
 
 impl LargeKeyedJoinStrategyGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} reservation_denied_count={}",
+            "[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} reservation_denied_count={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.large_partitioned_sites,
             self.large_fallback_one_shot_sites,
             self.large_reusable_sites,
             self.reservation_denied_count,
+            format_status_counts(&self.dynamic_filter_evidence.measured_reduction_statuses),
+            format_status_counts(&self.dynamic_filter_evidence.work_avoidance_statuses),
+            self.dynamic_filter_evidence.applied_without_work_avoidance_count,
         )
     }
 }
@@ -34,16 +38,20 @@ pub(super) struct Sf100BoundedReservationGateSummary {
     pub(super) reservation_denied_count: u64,
     pub(super) reservation_live_peak_bytes: u64,
     pub(super) device_budget_bytes: u64,
+    pub(super) dynamic_filter_evidence: DynamicFilterGateEvidenceSummary,
 }
 
 impl Sf100BoundedReservationGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=sf100_bounded_reservation_gate outcome=passed scope=q09_q18_q19_subset query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={}",
+            "[native_tpch_benchmark] phase=sf100_bounded_reservation_gate outcome=passed scope=q09_q18_q19_subset query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.reservation_denied_count,
             self.reservation_live_peak_bytes,
             self.device_budget_bytes,
+            format_status_counts(&self.dynamic_filter_evidence.measured_reduction_statuses),
+            format_status_counts(&self.dynamic_filter_evidence.work_avoidance_statuses),
+            self.dynamic_filter_evidence.applied_without_work_avoidance_count,
         )
     }
 }
@@ -54,18 +62,29 @@ pub(super) struct Sf100FullReservationHealthGateSummary {
     pub(super) reservation_denied_count: u64,
     pub(super) reservation_live_peak_bytes: u64,
     pub(super) device_budget_bytes: u64,
+    pub(super) dynamic_filter_evidence: DynamicFilterGateEvidenceSummary,
 }
 
 impl Sf100FullReservationHealthGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=sf100_full_reservation_health_gate outcome=passed scope=full_selected query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={}",
+            "[native_tpch_benchmark] phase=sf100_full_reservation_health_gate outcome=passed scope=full_selected query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.reservation_denied_count,
             self.reservation_live_peak_bytes,
             self.device_budget_bytes,
+            format_status_counts(&self.dynamic_filter_evidence.measured_reduction_statuses),
+            format_status_counts(&self.dynamic_filter_evidence.work_avoidance_statuses),
+            self.dynamic_filter_evidence.applied_without_work_avoidance_count,
         )
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct DynamicFilterGateEvidenceSummary {
+    pub(super) measured_reduction_statuses: BTreeMap<String, usize>,
+    pub(super) work_avoidance_statuses: BTreeMap<String, usize>,
+    pub(super) applied_without_work_avoidance_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +193,7 @@ pub(super) fn validate_large_keyed_join_strategy_gate_tsv(
         large_fallback_one_shot_sites: large_fallback_one_shot_sites.len(),
         large_reusable_sites: large_reusable_sites.len(),
         reservation_denied_count,
+        dynamic_filter_evidence: dynamic_filter_gate_evidence_summary(&rows),
     })
 }
 
@@ -213,6 +233,7 @@ pub(super) fn validate_sf100_bounded_reservation_gate_tsv(
         reservation_denied_count,
         reservation_live_peak_bytes,
         device_budget_bytes,
+        dynamic_filter_evidence: dynamic_filter_gate_evidence_summary_refs(&rows),
     })
 }
 
@@ -244,6 +265,7 @@ pub(super) fn validate_sf100_full_reservation_health_gate_tsv(
         reservation_denied_count,
         reservation_live_peak_bytes,
         device_budget_bytes,
+        dynamic_filter_evidence: dynamic_filter_gate_evidence_summary_refs(&rows),
     })
 }
 
@@ -364,6 +386,11 @@ impl ParsedBenchmarkTsv {
         let parity_status_index = header_index(&header_fields, "parity_status")?;
         let reservation_live_peak_bytes_index = header_index(&header_fields, "reservation_live_peak_bytes")?;
         let reservation_denied_count_index = header_index(&header_fields, "reservation_denied_count")?;
+        let dynamic_filter_applied_count_index = header_index(&header_fields, "dynamic_filter_applied_count")?;
+        let dynamic_filter_measured_reduction_status_index =
+            header_index(&header_fields, "dynamic_filter_measured_reduction_status")?;
+        let dynamic_filter_work_avoidance_status_index =
+            header_index(&header_fields, "dynamic_filter_work_avoidance_status")?;
         let join_strategy_rows_index = header_index(&header_fields, "join_strategy_rows")?;
 
         let mut rows = Vec::new();
@@ -389,6 +416,13 @@ impl ParsedBenchmarkTsv {
                     "reservation_denied_count",
                     fields[reservation_denied_count_index],
                 )?,
+                dynamic_filter_applied_count: parse_u64_field(
+                    "dynamic_filter_applied_count",
+                    fields[dynamic_filter_applied_count_index],
+                )?,
+                dynamic_filter_measured_reduction_status: fields[dynamic_filter_measured_reduction_status_index]
+                    .to_string(),
+                dynamic_filter_work_avoidance_status: fields[dynamic_filter_work_avoidance_status_index].to_string(),
                 join_strategy_rows: parse_join_strategy_rows(fields[join_strategy_rows_index])?,
             });
         }
@@ -427,6 +461,9 @@ struct ParsedBenchmarkRow {
     parity_status: String,
     reservation_live_peak_bytes: u64,
     reservation_denied_count: u64,
+    dynamic_filter_applied_count: u64,
+    dynamic_filter_measured_reduction_status: String,
+    dynamic_filter_work_avoidance_status: String,
     join_strategy_rows: Vec<ParsedJoinStrategyRow>,
 }
 
@@ -528,6 +565,51 @@ fn parse_bool_field(name: &str, value: &str) -> DataFusionResult<bool> {
         "false" => Ok(false),
         other => Err(plan_error(format!("invalid {name} value {other}: expected true or false"))),
     }
+}
+
+fn dynamic_filter_gate_evidence_summary(rows: &[ParsedBenchmarkRow]) -> DynamicFilterGateEvidenceSummary {
+    let mut summary = DynamicFilterGateEvidenceSummary::default();
+    for row in rows {
+        record_dynamic_filter_gate_evidence(&mut summary, row);
+    }
+    summary
+}
+
+fn dynamic_filter_gate_evidence_summary_refs(rows: &[&ParsedBenchmarkRow]) -> DynamicFilterGateEvidenceSummary {
+    let mut summary = DynamicFilterGateEvidenceSummary::default();
+    for row in rows {
+        record_dynamic_filter_gate_evidence(&mut summary, row);
+    }
+    summary
+}
+
+fn record_dynamic_filter_gate_evidence(summary: &mut DynamicFilterGateEvidenceSummary, row: &ParsedBenchmarkRow) {
+    *summary.measured_reduction_statuses.entry(row.dynamic_filter_measured_reduction_status.clone()).or_default() += 1;
+    *summary.work_avoidance_statuses.entry(row.dynamic_filter_work_avoidance_status.clone()).or_default() += 1;
+    if row.dynamic_filter_applied_count > 0
+        && !dynamic_filter_work_avoidance_status_demonstrates_reduction(&row.dynamic_filter_work_avoidance_status)
+    {
+        summary.applied_without_work_avoidance_count += 1;
+    }
+}
+
+fn dynamic_filter_work_avoidance_status_demonstrates_reduction(status: &str) -> bool {
+    matches!(
+        status,
+        "source_read_pruned"
+            | "source_reader_rows_reduced"
+            | "source_post_decode_rows_reduced"
+            | "filter_post_decode_rows_reduced"
+            | "join_probe_post_decode_rows_reduced"
+            | "mixed_post_decode_rows_reduced"
+    )
+}
+
+fn format_status_counts(counts: &BTreeMap<String, usize>) -> String {
+    if counts.is_empty() {
+        return "none".to_string();
+    }
+    counts.iter().map(|(status, count)| format!("{status}:{count}")).collect::<Vec<_>>().join(",")
 }
 
 fn gate_error(message: impl Into<String>) -> DataFusionError {

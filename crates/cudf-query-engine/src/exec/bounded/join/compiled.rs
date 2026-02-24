@@ -545,6 +545,19 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
+    if stream.chunk_count() == 0 {
+        let input = materialize_bounded_join_leaf_local_parquet_source_stream(context, stream, reservations, metrics)?;
+        return execute_bounded_compiled_join_probe_from_resident_frame(
+            context,
+            node_id,
+            node,
+            build,
+            input,
+            reservations,
+            metrics,
+        );
+    }
+
     match build {
         BoundedCompiledJoinBuildState::Hash(build) => {
             let mut outputs = Vec::new();

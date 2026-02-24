@@ -20,8 +20,8 @@ use datafusion::{
 use datafusion_cudf::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
-    NativePipelineExecutionMode, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, TPCH_QUERIES,
-    cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+    NativePipelineExecutionMode, NativePlanPreferenceOptions, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
+    TPCH_QUERIES, cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
 };
 
 #[path = "native_exec_tests/bounded_join.rs"]
@@ -256,6 +256,58 @@ fn native_optimizer_rule_obeys_cpu_only_policy_for_supported_plan() {
         report.outcomes()[0],
         CandidateOutcome::Rejected { reason: FallbackReason::ExplicitCpuPolicy, .. }
     ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_prefers_cpu_for_small_selective_topk_join_when_enabled() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-preference-topk");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    let config = native_optimizer_config().with_native_plan_preference_options(NativePlanPreferenceOptions::default());
+    let rule = CudfNativePhysicalOptimizerRule::new(config);
+
+    let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
+
+    assert!(
+        optimized.as_any().downcast_ref::<NativeCudfExec>().is_none(),
+        "CPU-preferred plan should not be replaced by a native execution boundary"
+    );
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.rewritten_count(), 0);
+    assert_eq!(report.rejected_count(), 1);
+    assert!(matches!(
+        report.outcomes()[0],
+        CandidateOutcome::Rejected { reason: FallbackReason::NativeSmallSelectiveTopkCpuPreferred, .. }
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_optimizer_rule_errors_for_cpu_preferred_plan_under_gpu_only_policy() {
+    let dir = unique_temp_dir("datafusion-cudf-native-exec-preference-gpu-only");
+    let left = dir.join("left.parquet");
+    let right = dir.join("right.parquet");
+    write_parquet_file(&left);
+    write_parquet_file(&right);
+    let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuOnly)
+        .with_native_execution_config(bounded_config())
+        .with_native_plan_preference_options(NativePlanPreferenceOptions::default());
+    let rule = CudfNativePhysicalOptimizerRule::new(config);
+
+    let error = rule
+        .optimize(plan, &ConfigOptions::default())
+        .expect_err("GpuOnly native optimizer must fail when preference rejects a supported candidate");
+    let adapter_error = adapter_error(&error);
+
+    assert_eq!(adapter_error.code(), ErrorCode::NativeCandidateRejected);
+    assert_eq!(adapter_error.fact_value("fallback_reason"), Some("native_small_selective_topk_cpu_preferred"));
 
     fs::remove_dir_all(dir).unwrap();
 }

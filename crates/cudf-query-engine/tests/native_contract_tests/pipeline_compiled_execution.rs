@@ -15,14 +15,15 @@ use cudf_query_engine::{
     ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON, AdaptiveCandidateStatus, AdaptiveExecutionMode,
     AdaptiveMemoryHistory, AdaptiveMemoryHistoryEvidence, AdaptiveMemoryHistoryKey, AdaptiveMemoryObservation,
     AdaptivePipelineReport, AdaptiveStrategy, AdaptiveTaskMemoryHistoryKey, AggregateExpr, AggregateFunction,
-    AggregateSpec, BinaryOp, ColumnRef, CompiledPipeline, ExecutionContext, Expr, JoinKey, JoinOutputColumn, JoinSide,
-    JoinSpec, JoinType, LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
-    MemoryReservationEventAction, MemoryReservationRequest, NativePipelineExecutionMode, NodeId, PipelineBarrier,
+    AggregateSpec, BinaryOp, CaseWhen, ColumnRef, CompiledPipeline, DynamicFilterProducer, ExecutionContext, Expr,
+    GroupingSetsSpec, JoinBuildSideSelectionOptions, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType,
+    LimitSpec, LiteralValue, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction,
+    MemoryReservationRequest, NativeOptimizerOptions, NativePipelineExecutionMode, NodeId, PipelineBarrier,
     PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask,
-    PipelineTaskId, PipelineTaskKind, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan, QueryPlanBuilder,
-    ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime, ResidentResource,
-    ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode, StrictBoundedContractGateId,
-    StrictBoundedContractGateRow, StrictBoundedContractOwner, WindowFunction, WindowSpec,
+    PipelineTaskId, PipelineTaskKind, PlanNode, ProjectionOutput, QueryMetrics, QueryOutputMode, QueryPlan,
+    QueryPlanBuilder, ReservationGate, ReservationGateId, ReservationGateOwner, ReservationKind, ResidentLifetime,
+    ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind, SortExpr, SortSpec, SourceNode,
+    StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, WindowFunction, WindowSpec,
     adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history,
     capability::{
         CapabilityDecision, ContractQuality, ContractStatus, ReservationRequirementScope,
@@ -35,7 +36,7 @@ use cudf_query_engine::{
         CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, compiled_bounded_pipeline_support,
         compiled_bounded_query_plan_support,
     },
-    execute_query_plan, strict_bounded_pipeline_admission,
+    execute_query_plan, optimize_query_plan, strict_bounded_pipeline_admission,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 

@@ -867,9 +867,7 @@ fn planned_row_groups(
     file_index: usize,
     metadata: Option<&RowGroupMetadata>,
 ) -> Result<Option<Vec<usize>>> {
-    if let Some(row_groups) = &file.row_groups
-        && !row_groups.is_empty()
-    {
+    if let Some(row_groups) = &file.row_groups {
         validate_selected_row_groups(file, file_index, row_groups, metadata)?;
         return Ok(Some(row_groups.clone()));
     }

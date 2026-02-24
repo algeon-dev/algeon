@@ -53,6 +53,15 @@ fn query_metrics_phase_c_memory_control_defaults_are_zero() {
     assert_eq!(metrics.compiled_pipeline_attempts, 0);
     assert_eq!(metrics.compiled_pipeline_tasks_executed, 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 0);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 0);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 0);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
+    assert_eq!(metrics.dynamic_filter_post_decode_rows_before, 0);
+    assert_eq!(metrics.dynamic_filter_post_decode_rows_after, 0);
+    assert_eq!(metrics.dynamic_filter_post_decode_rows_filtered, 0);
+    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
+    assert_eq!(metrics.dynamic_filter_filter_post_decode_rows_filtered, 0);
+    assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 0);
 }
 
 #[test]
@@ -417,6 +426,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "native_graph_runtime_rows",
         "native_task_operator_rows",
         "native_task_runtime_rows",
+        "native_dynamic_filter_runtime_rows",
         "compiled_pipeline_attempts",
         "compiled_pipeline_tasks_executed",
         "compiled_pipeline_host_arrow_sinks",
@@ -428,6 +438,20 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "adaptive_memory_history_lookup_count",
         "adaptive_memory_history_hit_count",
         "adaptive_memory_history_miss_count",
+        "dynamic_filter_produced_count",
+        "dynamic_filter_skipped_count",
+        "dynamic_filter_applied_count",
+        "dynamic_filter_row_groups_pruned",
+        "dynamic_filter_source_bytes_pruned",
+        "dynamic_filter_reader_predicate_rows_before",
+        "dynamic_filter_reader_predicate_rows_after",
+        "dynamic_filter_reader_predicate_rows_filtered",
+        "dynamic_filter_post_decode_rows_before",
+        "dynamic_filter_post_decode_rows_after",
+        "dynamic_filter_post_decode_rows_filtered",
+        "dynamic_filter_source_post_decode_rows_filtered",
+        "dynamic_filter_filter_post_decode_rows_filtered",
+        "dynamic_filter_join_probe_post_decode_rows_filtered",
         "hash_join_build_count",
         "filtered_join_build_count",
         "one_shot_join_count",

@@ -75,7 +75,9 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(rejected_query_ids.is_empty(), "all TPC-H planning rows should now be native-admitted");
 
     let text = report.to_tsv();
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=11\n"));
+    assert!(text.starts_with(&format!(
+        "# native_datafusion_planning_tsv_schema_version={NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION}\n"
+    )));
     assert!(text.contains("# workload=tpch\n"));
     assert!(text.contains("# dataset_scale_factor=tiny\n"));
     assert!(text.contains(&format!("# dataset_metadata_fingerprint={metadata_fingerprint}\n")));

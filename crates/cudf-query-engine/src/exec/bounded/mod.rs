@@ -51,7 +51,7 @@ use strict::try_execute_strict_bounded_pipeline;
 
 use crate::mode::NativePipelineExecutionMode;
 
-const SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
 
 pub(super) fn execute_bounded_query_plan(
@@ -138,13 +138,16 @@ fn aggregate_source_chunk_planning_policy(
         context.memory_control_policy(),
         SourceTaskMemoryModel::aggregate_pipeline(bounded.has_source_adjacent_stages()),
     );
-    if is_source_adjacent_grouped_aggregate(bounded) {
+    if bounded.has_source_adjacent_stages() {
         policy.max_source_chunk_bytes = Some(
             policy
                 .max_source_chunk_bytes
-                .unwrap_or(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
-                .min(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES),
+                .unwrap_or(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES)
+                .min(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES),
         );
+    }
+    if is_source_adjacent_grouped_aggregate(bounded) {
+        policy.max_row_groups_per_chunk = 64;
     }
     policy
 }
@@ -183,8 +186,10 @@ fn execute_bounded_aggregate_to_frame(
     }
     record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
 
-    if aggregate_spec_has_distinct(&bounded.aggregate.0.spec) {
-        return execute_bounded_distinct_aggregate_from_raw_chunks(
+    if aggregate_spec_has_stddev_samp(&bounded.aggregate.0.spec)
+        || aggregate_spec_has_distinct(&bounded.aggregate.0.spec)
+    {
+        return execute_bounded_whole_input_aggregate_from_raw_chunks(
             context,
             bounded,
             &chunk_plan.chunks,
@@ -217,8 +222,13 @@ fn should_execute_partitioned_source_adjacent_grouped_aggregate(
         && !aggregate_spec_has_stddev_samp(&bounded.aggregate.0.spec)
         && bounded.aggregate.0.spec.grouping_sets.is_none()
         && chunk_plan.chunks.len() > 1
+        && source_adjacent_partitioned_chunks_are_row_group_morsels(&chunk_plan.chunks)
         && source_adjacent_partitioned_raw_retention_fits_budget(context, &chunk_plan.chunks)
         && source_adjacent_group_key_partitioning_fits_rows(bounded, &chunk_plan.chunks)
+}
+
+fn source_adjacent_partitioned_chunks_are_row_group_morsels(chunks: &[SourceChunk]) -> bool {
+    chunks.iter().all(|chunk| chunk.row_group_count() <= 1)
 }
 
 fn source_adjacent_partitioned_raw_retention_fits_budget(context: &ExecutionContext, chunks: &[SourceChunk]) -> bool {
@@ -246,12 +256,9 @@ fn source_adjacent_group_key_partitioning_fits_rows(bounded: &BoundedPlan<'_>, c
     if !source_adjacent_grouped_aggregate_has_string_key(bounded) {
         return true;
     }
-    let Some(input_rows) =
-        chunks.iter().try_fold(0u64, |total, chunk| chunk.known_row_count.and_then(|rows| total.checked_add(rows)))
-    else {
-        return false;
-    };
-    input_rows <= SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS
+    chunks.iter().all(|chunk| {
+        chunk.known_row_count.is_some_and(|rows| rows <= SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS)
+    })
 }
 
 fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -> bool {

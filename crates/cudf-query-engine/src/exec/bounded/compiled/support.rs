@@ -53,6 +53,7 @@ pub fn compiled_bounded_pipeline_support(pipeline: &CompiledPipeline) -> Result<
         return Ok(CompiledBoundedPipelineSupport::Unsupported);
     }
     if task_kind_count(pipeline, PipelineTaskKind::SourceRead)
+        + task_kind_count(pipeline, PipelineTaskKind::GpuResidentSource)
         + task_kind_count(pipeline, PipelineTaskKind::LiteralBatchSource)
         < 1
     {
@@ -250,6 +251,7 @@ fn task_kinds_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
         matches!(
             task.kind(),
             PipelineTaskKind::SourceRead
+                | PipelineTaskKind::GpuResidentSource
                 | PipelineTaskKind::LiteralBatchSource
                 | PipelineTaskKind::Unary
                 | PipelineTaskKind::Aggregate
@@ -271,7 +273,7 @@ fn task_resource_shapes_are_in_d2_envelope(
     sink_materialize: &PipelineTask,
 ) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::SourceRead | PipelineTaskKind::LiteralBatchSource => {
+        PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => {
             task.input_resources().is_empty() && task.output_resources().len() == 1
         },
         PipelineTaskKind::Unary
@@ -285,7 +287,6 @@ fn task_resource_shapes_are_in_d2_envelope(
         },
         PipelineTaskKind::JoinMaterialize => task.input_resources().is_empty() && task.output_resources().len() == 1,
         PipelineTaskKind::SinkMaterialize => task.input_resources().len() == 1 && task.output_resources().is_empty(),
-        PipelineTaskKind::GpuResidentSource => false,
     }) && join_groups.iter().all(|group| {
         group.build.plan_node() == Some(group.plan_node)
             && group.probe.plan_node() == Some(group.plan_node)
@@ -883,7 +884,7 @@ fn downstream_sink_path_union_tasks(pipeline: &CompiledPipeline, task: PipelineT
 
 fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::SourceRead | PipelineTaskKind::LiteralBatchSource => {
+        PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => {
             matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Source(_)))
         },
         PipelineTaskKind::Unary => matches!(
@@ -909,7 +910,6 @@ fn task_plan_nodes_match_kinds(plan: &QueryPlan, pipeline: &CompiledPipeline) ->
             matches!(task.plan_node().and_then(|node_id| plan.node(node_id)), Some(node) if matches!(&node.kind, PlanNode::Limit(_)))
         },
         PipelineTaskKind::SinkMaterialize => task.plan_node().is_none(),
-        PipelineTaskKind::GpuResidentSource => false,
     })
 }
 

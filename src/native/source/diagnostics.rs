@@ -263,6 +263,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
         ranged_file_count,
         known_bytes,
         selected_row_groups,
+        selected_row_group_stats: None,
         predicate_disposition,
         byte_range_disposition,
         partition_column_disposition,

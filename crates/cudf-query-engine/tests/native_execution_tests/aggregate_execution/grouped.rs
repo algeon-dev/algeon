@@ -52,6 +52,105 @@ fn encoded_key_partial_contract_decodes_grouped_string_keys_before_merge() {
 }
 
 #[test]
+fn bounded_single_grouped_aggregate_uses_prepared_sort_groupby_after_exact_cardinality_probe() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let row_count = 600_000usize;
+    let groups = ["13", "31", "23", "29", "30", "18", "17"];
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("cntrycode", DataType::Utf8, false),
+        Field::new("acctbal", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from_iter_values((0..row_count).map(|row| groups[row % groups.len()]))),
+            Arc::new(Int64Array::from_iter_values((0..row_count).map(|_| 1i64))),
+        ],
+    )
+    .unwrap();
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("cntrycode", DataType::Utf8, false),
+        Field::new("numcust", DataType::Int64, false),
+        Field::new("totacctbal", DataType::Int64, true),
+    ]));
+    let aggregate_spec = AggregateSpec::new(
+        vec![Expr::column("cntrycode")],
+        vec![
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("acctbal"), "numcust"),
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("acctbal"), "totacctbal"),
+        ],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let aggregate = builder.add_aggregate(source, aggregate_spec, aggregate_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let single_strategy = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("single"))
+        .expect("single aggregate should record a strategy decision");
+    assert_eq!(single_strategy.node_id, aggregate.to_string());
+    assert_eq!(single_strategy.facts.get("selected_strategy").map(String::as_str), Some("prepared_sort_groupby"));
+    assert_eq!(single_strategy.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str), Some("none"));
+    assert_eq!(
+        single_strategy.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_exact_cardinality_low_cardinality")
+    );
+    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_status").map(String::as_str), Some("measured"));
+    assert_eq!(single_strategy.facts.get("exact_cardinality_probe_num_groups").map(String::as_str), Some("7"));
+    assert_eq!(single_strategy.facts.get("prepared_sort_groupby_num_groups").map(String::as_str), Some("7"));
+    assert!(
+        !single_strategy
+            .facts
+            .get("rejected_candidate_strategies")
+            .is_some_and(|strategies| strategies.contains("prepared_sort_groupby:")),
+        "selected prepared strategy should not remain rejected"
+    );
+
+    let probe_events =
+        budgeted_events(metrics, "cudf_query_engine.aggregate.exact_single_key_cardinality_probe.nunique");
+    assert!(!probe_events.is_empty(), "single aggregate should record the exact-cardinality probe event");
+    let prepare_events = budgeted_events(metrics, "cudf_query_engine.aggregate.prepare_single.prepared_sort_groupby");
+    assert!(!prepare_events.is_empty(), "single aggregate should record prepared groupby preparation");
+    let aggregate_events = budgeted_events(metrics, "cudf_query_engine.aggregate.execute_single.prepared_sort_groupby");
+    assert!(!aggregate_events.is_empty(), "single aggregate should record prepared groupby execution");
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), groups.len());
+    let output_keys = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
+    let output_counts = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    let output_sums = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
+    let mut actual = (0..batch.num_rows())
+        .map(|row| (output_keys.value(row).to_string(), output_counts.value(row), output_sums.value(row)))
+        .collect::<Vec<_>>();
+    actual.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut expected_counts = std::collections::BTreeMap::<String, i64>::new();
+    for row in 0..row_count {
+        *expected_counts.entry(groups[row % groups.len()].to_string()).or_insert(0) += 1;
+    }
+    let expected = expected_counts.into_iter().map(|(key, count)| (key, count, count)).collect::<Vec<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-native-execution");
     let path = dir.join("input.parquet");
@@ -68,7 +167,13 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 3])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 3], vec![2 * 1024 * 1024; 3])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
     );
@@ -203,7 +308,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         assert_eq!(
             partial_strategy.facts.get("rejected_candidate_strategies").map(String::as_str),
             Some(
-                "encoded_key_partial:encoded_key_partial_requires_string_group_key;prepared_sort_groupby:prepared_sort_groupby_requires_runtime_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
+                "encoded_key_partial:encoded_key_partial_requires_string_group_key;prepared_sort_groupby:prepared_sort_groupby_requires_group_key_source_partition;partitioned_merge:partitioned_merge_requires_final_merge_stage"
             )
         );
         assert!(
@@ -541,7 +646,13 @@ fn bounded_native_query_uses_group_key_source_adjacent_partitions_for_string_key
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 3])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 3], vec![2 * 1024 * 1024; 3])
+                .with_row_group_rows(vec![40, 40, 40]),
+        ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "value".to_string()],
     );
@@ -798,7 +909,13 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
         Arc::new(Schema::new(vec![Field::new("URL", DataType::Utf8, false), Field::new("c", DataType::Int64, false)]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 13])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 13], vec![2 * 1024 * 1024; 13])
+                .with_row_group_rows([vec![64; 12], vec![52]].concat()),
+        ],
         Arc::clone(&input_schema),
         vec!["URL".to_string()],
     );
@@ -877,7 +994,7 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
 }
 
 #[test]
-fn bounded_native_query_decodes_encoded_string_partials_before_final_merge() {
+fn bounded_native_query_keeps_small_nullable_string_partials_on_libcudf_before_final_merge() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-encoded-string-aggregate");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -935,56 +1052,25 @@ fn bounded_native_query_decodes_encoded_string_partials_before_final_merge() {
         .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
         .collect::<Vec<_>>();
     assert_eq!(partial_strategy_rows.len(), 3);
-    let first_decision = partial_strategy_rows[0];
-    assert_eq!(first_decision.node_id, aggregate.to_string());
-    assert_eq!(first_decision.facts.get("selected_strategy").map(String::as_str), Some("libcudf_groupby"));
-    assert_eq!(first_decision.facts.get("source_adjacent_partial").map(String::as_str), Some("false"));
-    assert_eq!(first_decision.facts.get("source_chunk_row_group_count").map(String::as_str), Some("1"));
-    assert_eq!(first_decision.facts.get("source_chunk_known_row_count").map(String::as_str), Some("40"));
-    assert_eq!(
-        first_decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
-        Some("encoded_key_partial_cost_model_no_prior_cardinality_evidence")
-    );
-    assert_eq!(
-        first_decision.facts.get("encoded_key_partial_selection_reason").map(String::as_str),
-        Some("no_prior_cardinality_evidence")
-    );
-    assert_eq!(
-        first_decision.facts.get("encoded_key_partial_cost_model_status").map(String::as_str),
-        Some("rejected_by_cost_model")
-    );
-    assert_eq!(first_decision.facts.get("encode_elapsed_ns").map(String::as_str), Some("0"));
-    assert_eq!(first_decision.facts.get("decode_elapsed_ns").map(String::as_str), Some("0"));
-
-    for decision in &partial_strategy_rows[1..] {
+    for decision in &partial_strategy_rows {
         assert_eq!(decision.node_id, aggregate.to_string());
-        assert_eq!(decision.facts.get("selected_strategy").map(String::as_str), Some("encoded_key_partial"));
+        assert_eq!(decision.facts.get("selected_strategy").map(String::as_str), Some("libcudf_groupby"));
         assert_eq!(decision.facts.get("source_adjacent_partial").map(String::as_str), Some("false"));
         assert_eq!(decision.facts.get("source_chunk_row_group_count").map(String::as_str), Some("1"));
         assert_eq!(decision.facts.get("source_chunk_known_row_count").map(String::as_str), Some("40"));
-        assert_eq!(decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str), Some("none"));
-        assert_eq!(decision.facts.get("encoded_key_partial_contract_status").map(String::as_str), Some("available"));
+        assert_eq!(
+            decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str),
+            Some("encoded_key_partial_cost_model_small_input")
+        );
+        assert_eq!(
+            decision.facts.get("encoded_key_partial_selection_reason").map(String::as_str),
+            Some("input_rows_below_encoded_key_partial_minimum")
+        );
         assert_eq!(
             decision.facts.get("encoded_key_partial_cost_model_status").map(String::as_str),
-            Some("selected_low_cardinality")
+            Some("rejected_by_cost_model")
         );
-        assert_eq!(
-            decision.facts.get("encoded_key_partial_prior_reduction_ratio_ppm").map(String::as_str),
-            Some("75000")
-        );
-        assert_eq!(
-            decision.facts.get("rejected_candidate_strategies").map(String::as_str),
-            Some(
-                "prepared_sort_groupby:prepared_sort_groupby_requires_source_adjacent_partial;partitioned_merge:partitioned_merge_requires_final_merge_stage"
-            )
-        );
-        assert!(
-            decision
-                .facts
-                .get("encode_elapsed_ns")
-                .and_then(|value| value.parse::<u64>().ok())
-                .is_some_and(|value| value > 0)
-        );
+        assert_eq!(decision.facts.get("encode_elapsed_ns").map(String::as_str), Some("0"));
         assert!(
             decision
                 .facts
@@ -992,13 +1078,7 @@ fn bounded_native_query_decodes_encoded_string_partials_before_final_merge() {
                 .and_then(|value| value.parse::<u64>().ok())
                 .is_some_and(|value| value > 0)
         );
-        assert!(
-            decision
-                .facts
-                .get("decode_elapsed_ns")
-                .and_then(|value| value.parse::<u64>().ok())
-                .is_some_and(|value| value > 0)
-        );
+        assert_eq!(decision.facts.get("decode_elapsed_ns").map(String::as_str), Some("0"));
     }
 
     let final_strategy = metrics
@@ -1201,7 +1281,13 @@ fn bounded_native_query_executes_min_max_count_and_final_merge() {
     ]));
 
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        vec![
+            LocalParquetFile::new(&path)
+                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                .with_row_group_bytes(vec![2 * 1024 * 1024; 3])
+                .with_projected_row_group_bytes(vec![2 * 1024 * 1024; 3], vec![2 * 1024 * 1024; 3])
+                .with_row_group_rows(vec![2, 2, 2]),
+        ],
         Arc::clone(&input_schema),
         vec!["key".to_string(), "payload".to_string(), "m00".to_string(), "m01".to_string()],
     );

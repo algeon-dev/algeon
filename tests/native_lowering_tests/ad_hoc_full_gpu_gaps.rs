@@ -250,10 +250,7 @@ const EXISTING_COVERAGE_CASES: &[AdHocSqlCase] = &[
         id: "regexp_replace",
         feature: AdHocSqlFeature::ExistingCoverage,
         sql: "SELECT id, regexp_replace(name, 'a', 'x') AS rewritten_name FROM bench",
-        expected: ExpectedAdHocOutcome::Rejected {
-            reason: FallbackReason::UnsupportedExpression,
-            unsupported_category: "expression_scalar_function_regexp_replace",
-        },
+        expected: ExpectedAdHocOutcome::Rewritten,
     },
     AdHocSqlCase {
         id: "order_limit_offset",

@@ -193,6 +193,67 @@ fn native_query_executes_bitwise_scalar_expressions() {
 }
 
 #[test]
+fn native_query_executes_regexp_replace_projection_with_backrefs() {
+    let dir = unique_temp_dir("cudf-query-engine-native-execution-regexp-replace");
+    let path = dir.join("referers.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("referer", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&input_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3, 4])),
+            Arc::new(StringArray::from(vec![
+                Some("https://www.example.com/path"),
+                Some("http://rapids.ai/docs"),
+                Some("mailto:plain"),
+                None,
+            ])),
+        ],
+    )
+    .unwrap();
+    let file = File::create(&path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, Arc::clone(&input_schema), None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("domain", DataType::Utf8, true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["id".to_string(), "referer".to_string()],
+    );
+    let projection = vec![
+        Expr::column("id"),
+        Expr::regexp_replace(Expr::column("referer"), r"^https?://(?:www\.)?([^/]+)/.*$", "\\1", DataType::Utf8)
+            .alias("domain"),
+    ];
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
+    let plan = builder.finish_with_host_sink(projection);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int64_array(batch, 0).values().as_ref(), &[1, 2, 3, 4]);
+    assert_eq!(string_array(batch, 1).value(0), "example.com");
+    assert_eq!(string_array(batch, 1).value(1), "rapids.ai");
+    assert_eq!(string_array(batch, 1).value(2), "mailto:plain");
+    assert!(string_array(batch, 1).is_null(3));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
     let dir = unique_temp_dir("cudf-query-engine-native-execution-phase2-type-reject");
     let path = dir.join("tpch-like.parquet");

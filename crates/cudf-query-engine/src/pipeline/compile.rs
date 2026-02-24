@@ -9,6 +9,7 @@ use crate::{
         CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
         NodeCapability, ReservationRequirement, ResultSinkKind, SubgraphInvariantKind,
     },
+    dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterReadiness},
     error::{QueryError, QueryErrorCode},
     pipeline::model::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
@@ -44,6 +45,7 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crat
         build_tasks(plan, analysis, &node_order, &dependencies, &task_ids, &resource_ids, &mut gate_builder)?;
     let mut edges = build_plan_edges(plan, analysis, &dependencies, &task_ids, &resource_ids, &mut gate_builder)?;
     append_join_internal_edges(plan, &node_order, analysis, &task_ids, &mut edges)?;
+    append_dynamic_filter_control_edges(plan, &task_ids, &mut edges)?;
 
     let sink_compilation =
         append_sink_task(plan, analysis, &task_ids, &resource_ids, &mut tasks, &mut edges, &mut gate_builder)?;
@@ -601,6 +603,64 @@ fn append_join_internal_edges(
     Ok(())
 }
 
+fn append_dynamic_filter_control_edges(
+    plan: &QueryPlan,
+    task_ids: &BTreeMap<NodeId, NodeTasks>,
+    edges: &mut Vec<PipelineEdge>,
+) -> crate::Result<()> {
+    for route in plan.dynamic_filter_routes() {
+        if route.readiness != DynamicFilterReadiness::ProducerCompleteBeforeConsumer {
+            continue;
+        }
+        let Some(producer) = dynamic_filter_producer_task(task_ids, &route.producer)? else {
+            continue;
+        };
+        let Some(consumer) = dynamic_filter_consumer_task(task_ids, &route.consumer)? else {
+            continue;
+        };
+        if producer == consumer || edges.iter().any(|edge| edge.from() == producer && edge.to() == consumer) {
+            continue;
+        }
+        edges.push(PipelineEdge::new(PipelineEdgeId::new(edges.len()), producer, consumer, PipelineEdgeKind::Control));
+    }
+    Ok(())
+}
+
+fn dynamic_filter_producer_task(
+    task_ids: &BTreeMap<NodeId, NodeTasks>,
+    producer: &DynamicFilterProducer,
+) -> crate::Result<Option<PipelineTaskId>> {
+    match producer {
+        DynamicFilterProducer::HashJoinBuild { join_node_id, .. } => tasks_for(task_ids, *join_node_id)
+            .and_then(|tasks| {
+                tasks.join_build().ok_or_else(|| invalid("dynamic-filter hash-join producer is missing a build task"))
+            })
+            .map(Some),
+        DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id } => {
+            tasks_for(task_ids, *aggregate_node_id).map(|tasks| Some(tasks.output_task()))
+        },
+    }
+}
+
+fn dynamic_filter_consumer_task(
+    task_ids: &BTreeMap<NodeId, NodeTasks>,
+    consumer: &DynamicFilterConsumer,
+) -> crate::Result<Option<PipelineTaskId>> {
+    match consumer {
+        DynamicFilterConsumer::LocalParquetSource { source_node_id } => {
+            tasks_for(task_ids, *source_node_id).map(|tasks| Some(tasks.output_task()))
+        },
+        DynamicFilterConsumer::HashJoinProbe { join_node_id, .. } => tasks_for(task_ids, *join_node_id)
+            .and_then(|tasks| {
+                tasks.join_probe().ok_or_else(|| invalid("dynamic-filter hash-join consumer is missing a probe task"))
+            })
+            .map(Some),
+        DynamicFilterConsumer::Filter { filter_node_id } => {
+            tasks_for(task_ids, *filter_node_id).map(|tasks| Some(tasks.output_task()))
+        },
+    }
+}
+
 fn append_sink_task(
     plan: &QueryPlan,
     analysis: &CapabilityAnalysis,
@@ -971,6 +1031,7 @@ fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
         SubgraphInvariantKind::ProjectionTransparentResidency => "projection_transparent_residency",
         SubgraphInvariantKind::ResidentUnaryChainPreservesResidency => "resident_unary_chain_preserves_residency",
         SubgraphInvariantKind::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
+        SubgraphInvariantKind::BlockingRollupRankTopKFullScan => "blocking_rollup_rank_topk_full_scan",
         SubgraphInvariantKind::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
     }
 }

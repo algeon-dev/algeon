@@ -190,24 +190,33 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 groupby_elapsed_ns: 123456789,
                 decode_elapsed_ns: 0,
                 strategy_operator_elapsed_ns: 123456789,
+                aggregate_structural_key: "agg-v1-fnv64-0123456789abcdef".to_string(),
+                prior_cardinality_evidence_scope: "absent".to_string(),
                 encoded_key_partial_cost_model: "prior_partial_reduction_ratio".to_string(),
                 encoded_key_partial_cost_model_status: "rejected_by_cost_model".to_string(),
                 encoded_key_partial_selection_reason: "no_prior_cardinality_evidence".to_string(),
                 encoded_key_partial_reduction_ratio_threshold_ppm: 100000,
                 encoded_key_partial_prior_reduction_ratio_ppm: 0,
                 encoded_key_partial_prior_strategy: "".to_string(),
-                prepared_sort_groupby_rejected_reason: "prepared_sort_groupby_cost_model_no_prior_cardinality_evidence"
-                    .to_string(),
+                exact_cardinality_probe_status: "not_attempted".to_string(),
+                exact_cardinality_probe_key: "none".to_string(),
+                exact_cardinality_probe_input_rows: 0,
+                exact_cardinality_probe_non_null_distinct_count: "unknown".to_string(),
+                exact_cardinality_probe_null_count: "unknown".to_string(),
+                exact_cardinality_probe_num_groups: "unknown".to_string(),
+                exact_cardinality_probe_reduction_ratio_ppm: "unknown".to_string(),
+                exact_cardinality_probe_elapsed_ns: 0,
+                prepared_sort_groupby_rejected_reason: "none".to_string(),
                 prepared_sort_groupby_contract_status: "available".to_string(),
                 prepared_sort_groupby_required_contract: "prepared_sort_groupby_execution_contract".to_string(),
                 prepared_sort_groupby_cost_model: "exact_grouped_key_facts_required".to_string(),
-                prepared_sort_groupby_cost_model_status: "rejected_by_cost_model".to_string(),
-                prepared_sort_groupby_selection_reason: "no_prior_cardinality_evidence".to_string(),
+                prepared_sort_groupby_cost_model_status: "selected_libcudf_runtime_probe".to_string(),
+                prepared_sort_groupby_selection_reason: "runtime_cardinality_probe_required".to_string(),
                 prepared_sort_groupby_num_groups: "unknown".to_string(),
                 prepared_sort_groupby_grouped_key_output_bytes: "unknown".to_string(),
                 prepared_sort_groupby_max_group_size: "unknown".to_string(),
                 rejected_candidate_strategies:
-                    "encoded_key_partial:encoded_key_partial_cost_model_no_prior_cardinality_evidence;prepared_sort_groupby:prepared_sort_groupby_cost_model_no_prior_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
+                    "encoded_key_partial:encoded_key_partial_cost_model_no_prior_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
                         .to_string(),
             }],
             join_strategy_rows: vec![NativeJoinStrategyMetricRow {
@@ -251,6 +260,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
             source_fetch_concurrency_wait_time_ns: Some(6_000_000),
             source_fetch_time_ns: Some(7_000_000),
             source_decode_time_ns: Some(8_000_000),
+            ..Default::default()
         },
         timing_metrics: NativeTpchTimingMetrics {
             parquet_read_time_ms: Some(1.0),
@@ -296,6 +306,14 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert_eq!(fields[header_index(&header_fields, "source_fetch_count")], "34");
     assert_eq!(fields[header_index(&header_fields, "row_groups_planned")], "35");
     assert_eq!(fields[header_index(&header_fields, "row_groups_committed")], "36");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_count")], "1");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_elapsed_ns")], "123456789");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_libcudf_runtime_probe_input_rows")], "6001215");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_count")], "0");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_elapsed_ns")], "0");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_input_rows")], "0");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_prepared_sort_groupby_elapsed_ns")], "0");
+    assert_eq!(fields[header_index(&header_fields, "aggregate_encoded_key_partial_elapsed_ns")], "0");
     assert!(
         fields[header_index(&header_fields, "task_high_water_rows")]
             .contains("operator_class=source,task_count=3,max_task_reservation_bytes=64")

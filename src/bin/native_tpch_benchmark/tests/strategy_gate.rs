@@ -16,8 +16,11 @@ fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {
     assert_eq!(summary.large_fallback_one_shot_sites, 0);
     assert_eq!(summary.large_reusable_sites, 0);
     assert_eq!(summary.reservation_denied_count, 0);
+    assert_eq!(summary.dynamic_filter_evidence.work_avoidance_statuses.get("unknown").copied(), Some(3));
+    assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 0);
     assert_eq!(summary.query_ids, vec!["q03", "q04", "q07"]);
     assert!(summary.progress_line().contains("phase=large_keyed_join_strategy_gate outcome=passed"));
+    assert!(summary.progress_line().contains("dynamic_filter_work_avoidance_statuses=unknown:3"));
     assert!(text.contains("\tcpu_failed\t"));
 }
 
@@ -121,8 +124,11 @@ fn sf100_bounded_reservation_gate_accepts_q09_q18_q19_skip_cpu_success() {
     assert_eq!(summary.reservation_denied_count, 0);
     assert_eq!(summary.reservation_live_peak_bytes, 84_000_000_000);
     assert_eq!(summary.device_budget_bytes, 94_489_280_512);
+    assert_eq!(summary.dynamic_filter_evidence.measured_reduction_statuses.get("unknown").copied(), Some(3));
+    assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 0);
     assert!(summary.progress_line().contains("phase=sf100_bounded_reservation_gate outcome=passed"));
     assert!(summary.progress_line().contains("scope=q09_q18_q19_subset"));
+    assert!(summary.progress_line().contains("dynamic_filter_measured_reduction_statuses=unknown:3"));
 }
 
 #[test]
@@ -191,8 +197,61 @@ fn sf100_full_reservation_health_gate_accepts_all_zero_selected_workload() {
     assert_eq!(summary.reservation_denied_count, 0);
     assert_eq!(summary.reservation_live_peak_bytes, 84_000_000_000);
     assert_eq!(summary.device_budget_bytes, 94_489_280_512);
+    assert_eq!(summary.dynamic_filter_evidence.work_avoidance_statuses.get("unknown").copied(), Some(4));
+    assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 0);
     assert!(summary.progress_line().contains("phase=sf100_full_reservation_health_gate outcome=passed"));
     assert!(summary.progress_line().contains("scope=full_selected"));
+}
+
+#[test]
+fn sf100_full_reservation_health_gate_reports_applied_without_work_avoidance() {
+    let config = NativeTpchBenchmarkConfig {
+        query_ids: vec!["q09".to_string(), "q18".to_string()],
+        dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
+        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
+            device_budget_bytes: 94_489_280_512,
+            max_source_chunk_bytes: 34_359_738_368,
+            max_row_groups_per_chunk: 1024,
+            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+        },
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let rows = vec![
+        skip_cpu_accepted_row(
+            "q09",
+            NativeDataFusionExecutionMetrics {
+                reservation_live_peak_bytes: 82_000_000_000,
+                dynamic_filter_applied_count: 1,
+                ..Default::default()
+            },
+        ),
+        skip_cpu_accepted_row(
+            "q18",
+            NativeDataFusionExecutionMetrics {
+                reservation_live_peak_bytes: 83_000_000_000,
+                dynamic_filter_applied_count: 1,
+                dynamic_filter_reader_predicate_rows_before: 1_000,
+                dynamic_filter_reader_predicate_rows_after: 100,
+                dynamic_filter_reader_predicate_rows_filtered: 900,
+                ..Default::default()
+            },
+        ),
+    ];
+    let report = NativeTpchBenchmarkReport { metadata: benchmark_sf100_metadata(), config, rows };
+
+    let summary =
+        strategy_gate::validate_sf100_full_reservation_health_gate_for_config(&report.to_tsv(), &report.config)
+            .expect("full gate should parse")
+            .expect("sf100 bounded run should enable full reservation health gate");
+
+    assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 1);
+    assert_eq!(
+        summary.dynamic_filter_evidence.work_avoidance_statuses.get("source_reader_rows_reduced").copied(),
+        Some(1)
+    );
+    assert_eq!(summary.dynamic_filter_evidence.work_avoidance_statuses.get("measured_no_reduction").copied(), Some(1));
+    assert!(summary.progress_line().contains("dynamic_filter_applied_without_work_avoidance_count=1"));
 }
 
 #[test]

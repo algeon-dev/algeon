@@ -21,9 +21,9 @@ use cudf_query_engine::{
     JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue, LocalParquetFile,
     LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId, MissingColumn,
     PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
-    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, WindowFunction, WindowSpec,
-    ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
-    plan_local_parquet_source_chunks,
+    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode,
+    WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
@@ -33,6 +33,8 @@ mod aggregate_test_support;
 mod bounded_budgeting;
 #[path = "native_execution_tests/bounded_joins.rs"]
 mod bounded_joins;
+#[path = "native_execution_tests/dimension_pruning.rs"]
+mod dimension_pruning;
 #[path = "native_execution_tests/join_test_support.rs"]
 mod join_test_support;
 #[path = "native_execution_tests/metrics_assertions.rs"]

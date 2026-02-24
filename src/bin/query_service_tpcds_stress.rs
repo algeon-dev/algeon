@@ -19,7 +19,7 @@ use datafusion_cudf::{
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
     NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath, TPCDS_QUERIES, TPCDS_TABLES,
     TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
-    discover_tpcds_table_layout, tpcds_report_session_config,
+    discover_tpcds_table_layout, tpcds_native_report_session_config, tpcds_report_session_config,
 };
 use tokio::{sync::Barrier, time::timeout};
 
@@ -542,7 +542,7 @@ async fn collect_native_with_handle(
     );
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(tpcds_report_session_config())
+        .with_config(tpcds_native_report_session_config())
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);

@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 use cudf_query_engine::{
     AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
     GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
-    ServiceStreamPool, SourceSchedulerPolicy, TenantQueryContext,
+    ServiceStreamPool, SourceSchedulerPolicy, StddevSampExecutionMode, TenantQueryContext,
 };
 
 use crate::error::Error;
@@ -34,6 +34,7 @@ pub struct NativeCudfExecutionConfig {
     service_stream_pool_size: Option<usize>,
     cancellation: ExecutionCancellation,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
+    stddev_samp_execution_mode: StddevSampExecutionMode,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
@@ -94,6 +95,7 @@ impl NativeCudfExecutionConfig {
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
+            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -163,6 +165,7 @@ impl NativeCudfExecutionConfig {
             service_stream_pool_size: None,
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
+            stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -245,6 +248,12 @@ impl NativeCudfExecutionConfig {
         self
     }
 
+    /// Select the execution contract for logical STDDEV_SAMP aggregates.
+    pub fn with_stddev_samp_execution_mode(mut self, mode: StddevSampExecutionMode) -> Self {
+        self.stddev_samp_execution_mode = mode;
+        self
+    }
+
     /// Attach an adaptive-only memory-history store for adaptive admission/execution.
     ///
     /// Strict bounded admission does not read this store. Supplying it while strict mode is selected
@@ -283,6 +292,7 @@ impl NativeCudfExecutionConfig {
         self.boundary_policy = handle.boundary_policy();
         self.source_scheduler_policy = handle.source_scheduler_policy();
         self.native_pipeline_execution_mode = handle.native_pipeline_execution_mode();
+        self.stddev_samp_execution_mode = handle.stddev_samp_execution_mode();
         self.query_service_handle = Some(handle);
         self
     }
@@ -305,6 +315,11 @@ impl NativeCudfExecutionConfig {
     /// Strict bounded or adaptive pipeline execution mode.
     pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
         self.native_pipeline_execution_mode
+    }
+
+    /// Execution contract for logical STDDEV_SAMP aggregates.
+    pub fn stddev_samp_execution_mode(&self) -> StddevSampExecutionMode {
+        self.stddev_samp_execution_mode
     }
 
     /// Adaptive-only memory history store, if configured.
@@ -331,7 +346,8 @@ impl NativeCudfExecutionConfig {
             .with_boundary_policy(self.boundary_policy)
             .with_source_scheduler_policy(self.source_scheduler_policy)
             .with_cancellation(self.cancellation.clone())
-            .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode);
+            .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
+            .with_stddev_samp_execution_mode(self.stddev_samp_execution_mode);
         if let Some(pool) = &self.service_stream_pool {
             builder = builder.with_service_stream_pool(pool.clone());
         }

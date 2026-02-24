@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 use super::*;
+use crate::dynamic_filter::DynamicFilterRoute;
 
 /// DataFusion-free query plan consumed by the native cuDF execution engine.
 ///
@@ -22,6 +23,7 @@ pub struct QueryPlan {
     pub(super) nodes: Vec<QueryNode>,
     pub(super) root: NodeId,
     pub(super) sink: ResultSink,
+    pub(super) dynamic_filter_routes: Vec<DynamicFilterRoute>,
 }
 
 impl QueryPlan {
@@ -32,7 +34,7 @@ impl QueryPlan {
     pub(crate) fn from_rewritten_parts(nodes: Vec<QueryNode>, root: NodeId, sink: ResultSink) -> Self {
         assert!(nodes.get(root.index()).is_some(), "query plan root node must exist");
         assert_eq!(sink.input(), root, "query plan sink must consume the root node");
-        Self { nodes, root, sink }
+        Self { nodes, root, sink, dynamic_filter_routes: Vec::new() }
     }
 
     /// Returns the node consumed by the plan sink.
@@ -52,13 +54,29 @@ impl QueryPlan {
         &self.sink
     }
 
+    /// Dynamic-filter producer/consumer routes attached to this plan.
+    pub fn dynamic_filter_routes(&self) -> &[DynamicFilterRoute] {
+        &self.dynamic_filter_routes
+    }
+
+    /// Returns this plan with a replacement dynamic-filter route list.
+    pub(crate) fn with_dynamic_filter_routes(mut self, routes: Vec<DynamicFilterRoute>) -> Self {
+        self.dynamic_filter_routes = routes;
+        self
+    }
+
     /// Return a copy of this plan with the same root and a GPU-resident sink.
     ///
     /// This is used by embedding frontends that need to feed a native plan's
     /// output into another GPU consumer instead of materializing the existing
     /// host-arrow boundary.
     pub fn clone_with_gpu_resident_sink(&self) -> Self {
-        Self { nodes: self.nodes.clone(), root: self.root, sink: ResultSink::GpuResident { input: self.root } }
+        Self {
+            nodes: self.nodes.clone(),
+            root: self.root,
+            sink: ResultSink::GpuResident { input: self.root },
+            dynamic_filter_routes: self.dynamic_filter_routes.clone(),
+        }
     }
 
     /// Returns all nodes in append order.

@@ -25,6 +25,7 @@ mod facts;
 mod graph_algorithm;
 mod join;
 mod nodes;
+mod preference;
 mod sink;
 
 pub use core::{NodeId, PlanNode, QueryNode, QueryPlan};
@@ -50,5 +51,9 @@ pub use join::{
 pub use nodes::{
     AggregateNode, EdgeNormalizeNode, FilterNode, LimitNode, ProjectionNode, ProjectionOutput, ShiftDirection,
     SortNode, UnionNode, WindowFrame, WindowFunction, WindowNode, WindowSpec,
+};
+pub use preference::{
+    NativePlanCpuPreferenceReason, NativePlanPreferenceDecision, NativePlanPreferenceFacts,
+    NativePlanPreferenceOptions, native_plan_preference_decision,
 };
 pub use sink::ResultSink;

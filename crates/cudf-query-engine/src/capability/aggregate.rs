@@ -280,8 +280,8 @@ fn prepared_sort_groupby_rejected_reason(
     input_schema: &Schema,
     stage: AggregateExecutionStage,
 ) -> Option<&'static str> {
-    if stage != AggregateExecutionStage::Partial {
-        return Some("prepared_sort_groupby_requires_partial_stage");
+    if !matches!(stage, AggregateExecutionStage::Partial | AggregateExecutionStage::Single) {
+        return Some("prepared_sort_groupby_requires_partial_or_single_stage");
     }
     if spec.grouping_sets.is_some() {
         return Some("prepared_sort_groupby_grouping_sets_unsupported");

@@ -17,6 +17,11 @@ fn fallback_reason_codes_are_stable_manifest_values() {
         (FallbackReason::NativePartitionPreservingSortUnsupported, "native_partition_preserving_sort_unsupported"),
         (FallbackReason::NativeBoundedJoinUnsupported, "native_bounded_join_unsupported"),
         (FallbackReason::NativeAdaptivePipelineUnsupported, "native_adaptive_pipeline_unsupported"),
+        (FallbackReason::NativeSmallSelectiveTopkCpuPreferred, "native_small_selective_topk_cpu_preferred"),
+        (
+            FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred,
+            "native_small_selective_residual_join_cpu_preferred",
+        ),
         (FallbackReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
         (FallbackReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
         (FallbackReason::NativeSourceExprAdapter, "native_source_expr_adapter"),

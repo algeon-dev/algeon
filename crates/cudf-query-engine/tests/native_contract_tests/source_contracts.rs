@@ -36,6 +36,11 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     assert_eq!(source.diagnostics.ranged_file_count, 0);
     assert_eq!(source.diagnostics.known_bytes, Some(3_235_196_281));
     assert_eq!(source.diagnostics.selected_row_groups, Some(3));
+    let stats = source.diagnostics.selected_row_group_stats.as_ref().expect("row-group stats should be known");
+    assert_eq!(stats.selected_row_groups, 3);
+    assert_eq!(stats.total_row_groups, 5);
+    assert_eq!(stats.selected_compressed_bytes, Some(90));
+    assert_eq!(stats.total_compressed_bytes, Some(150));
     assert_eq!(source.diagnostics.read_column_count, 2);
     assert_eq!(source.diagnostics.projected_output_column_count, 1);
     assert_eq!(source.diagnostics.pure_filter_column_count, 1);

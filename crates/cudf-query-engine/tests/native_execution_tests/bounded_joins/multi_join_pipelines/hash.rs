@@ -89,7 +89,7 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
     assert_eq!(metrics.hash_join_build_count, 2);
     assert_eq!(metrics.operators.iter().filter(|operator| operator.join.is_some()).count(), 2);
     assert!(metrics.operators.iter().filter_map(|operator| operator.join.as_ref()).all(|join| {
-        join.execution_strategy == "bounded_reusable_hash_join"
+        join.execution_strategy == "bounded_reusable_hash_join_single_pass_probe"
             && join.key_count == 1
             && !join.residual_predicate
             && join.gather_map_bytes > 0

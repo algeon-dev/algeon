@@ -449,10 +449,7 @@ mod tests {
             "cpu_fallback + iceberg + iceberg-cpu is production-supported via iceberg-datafusion",
         );
         #[cfg(not(feature = "iceberg-cpu"))]
-        assert!(
-            is_testing_profile_active(&config),
-            "cpu_fallback + iceberg without iceberg-cpu must arm the WARN",
-        );
+        assert!(is_testing_profile_active(&config), "cpu_fallback + iceberg without iceberg-cpu must arm the WARN",);
 
         let mut config = base_config(ServerSessionProfile::Native);
         config.iceberg = Some(iceberg);

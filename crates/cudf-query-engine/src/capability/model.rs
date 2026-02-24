@@ -133,6 +133,12 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
     },
     StrictUnresolvedPreflightGap {
         kind: ReservationKind::OperatorOutput,
+        required_contract: "regexp_replace_expression_output_contract",
+        unresolved_gap: "libcudf_regexp_replace_output_preflight_unavailable",
+        retirement_requirement: "cudf-rs/libcudf regexp_replace output and temporary-workspace preflight",
+    },
+    StrictUnresolvedPreflightGap {
+        kind: ReservationKind::OperatorOutput,
         required_contract: "edge_normalize_output_size_preflight",
         unresolved_gap: "libcudf_edge_normalize_output_preflight_unavailable",
         retirement_requirement: "cudf-rs/libcudf edge normalization output and temporary-workspace preflight",
@@ -150,6 +156,12 @@ pub const STRICT_UNRESOLVED_PREFLIGHT_GAPS: &[StrictUnresolvedPreflightGap] = &[
         retirement_requirement: "cudf-rs/libcudf exact output row-count preflight for keyed inner/left/full equality join indices",
     },
 ];
+
+/// Rejection code for large grouping-set/rank-window scans whose blocking
+/// aggregate, rank-sort, window, and optional final top-k stages still rely on
+/// unresolved hard-budget contracts.
+pub const BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS: &str =
+    "blocking_rollup_rank_full_scan_requires_exact_contracts";
 
 impl ReservationRequirement {
     /// Creates an admitted strict-bounded reservation requirement.
@@ -654,6 +666,10 @@ pub enum SubgraphInvariantKind {
         /// Join whose residual predicate is being checked.
         join_id: NodeId,
     },
+    /// A large full-source scan feeds grouping sets and a rank window while
+    /// blocking-stage exact preflight/progress contracts are not modeled.
+    /// A downstream final top-k may exist but is not required for the guard.
+    BlockingRollupRankTopKFullScan,
     /// Every reachable resident producer remains valid for all of its admitted
     /// consumers, and no rejected producer-consumer edge is hidden by the
     /// broader compiled subgraph admission.

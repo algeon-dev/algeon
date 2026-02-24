@@ -2,7 +2,7 @@
 
 use std::{net::TcpListener, time::Duration};
 
-use arrow::array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UInt32Array, UInt8Array, UnionArray};
+use arrow::array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UInt8Array, UInt32Array, UnionArray};
 use arrow_flight::{
     error::FlightError,
     sql::{
@@ -318,11 +318,7 @@ async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
          SELECT * FROM (VALUES (1::INT, 'a'), (2::INT, 'b')) AS t(id, label)",
     )
     .await;
-    let _ = execute_batches(
-        &mut client,
-        "CREATE VIEW metadata_probe_view AS SELECT id FROM metadata_probe_base",
-    )
-    .await;
+    let _ = execute_batches(&mut client, "CREATE VIEW metadata_probe_view AS SELECT id FROM metadata_probe_base").await;
 
     let flight_info = client
         .get_tables(CommandGetTables {
@@ -360,16 +356,10 @@ async fn flight_sql_get_tables_respects_table_types_filter() {
     let server = tokio::spawn(async move { serve(config).await });
     let mut client = connect_with_retry(addr).await;
 
-    let _ = execute_batches(
-        &mut client,
-        "CREATE TABLE table_types_filter_base AS SELECT 1 AS x",
-    )
-    .await;
-    let _ = execute_batches(
-        &mut client,
-        "CREATE VIEW table_types_filter_view AS SELECT x FROM table_types_filter_base",
-    )
-    .await;
+    let _ = execute_batches(&mut client, "CREATE TABLE table_types_filter_base AS SELECT 1 AS x").await;
+    let _ =
+        execute_batches(&mut client, "CREATE VIEW table_types_filter_view AS SELECT x FROM table_types_filter_base")
+            .await;
 
     let flight_info = client
         .get_tables(CommandGetTables {
@@ -431,9 +421,7 @@ async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
                 .as_any()
                 .downcast_ref::<arrow::array::BinaryArray>()
                 .expect("table_schema column must be Binary");
-            (0..bytes.len())
-                .map(|i| arrow::ipc::convert::try_schema_from_ipc_buffer(bytes.value(i)).unwrap())
-                .next()
+            (0..bytes.len()).map(|i| arrow::ipc::convert::try_schema_from_ipc_buffer(bytes.value(i)).unwrap()).next()
         })
         .collect();
     assert_eq!(schemas.len(), 1, "expected exactly one table_schema row");
@@ -554,11 +542,7 @@ async fn flight_sql_get_primary_keys_returns_empty_with_schema() {
     let server = tokio::spawn(async move { serve(config).await });
     let mut client = connect_with_retry(addr).await;
 
-    let cmd = CommandGetPrimaryKeys {
-        catalog: None,
-        db_schema: None,
-        table: "any_table".to_string(),
-    };
+    let cmd = CommandGetPrimaryKeys { catalog: None, db_schema: None, table: "any_table".to_string() };
     let flight_info = client.get_primary_keys(cmd).await.unwrap();
     let (schema, batches) = collect_metadata_schema_and_batches(&mut client, &flight_info).await;
 
@@ -686,8 +670,7 @@ fn collect_string_column(batches: &[arrow::record_batch::RecordBatch], column: &
         let Some(index) = batch.schema().index_of(column).ok() else {
             continue;
         };
-        let array =
-            batch.column(index).as_any().downcast_ref::<StringArray>().expect("metadata column must be Utf8");
+        let array = batch.column(index).as_any().downcast_ref::<StringArray>().expect("metadata column must be Utf8");
         for i in 0..array.len() {
             if array.is_valid(i) {
                 out.push(array.value(i).to_string());

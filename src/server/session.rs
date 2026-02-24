@@ -291,9 +291,10 @@ async fn build_alias_provider(
         },
         #[cfg(feature = "iceberg-cpu")]
         IcebergProviderKind::Cpu => {
-            let provider = iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table).await.map_err(
-                |error| ServerError::session("failed to build iceberg-datafusion CPU table provider", error),
-            )?;
+            let provider =
+                iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table).await.map_err(|error| {
+                    ServerError::session("failed to build iceberg-datafusion CPU table provider", error)
+                })?;
             Ok(Arc::new(provider))
         },
         #[cfg(not(feature = "iceberg-cpu"))]

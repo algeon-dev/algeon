@@ -48,14 +48,15 @@ use datafusion_cudf::{
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
     NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativeCudfComposedExec,
-    NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec, NativeDataFusionExecutionReport,
-    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-    NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntime,
-    NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
-    NativeFallbackPressureWorkloadItem, NativePipelineExecutionMode, NativePlanningDiagnostics,
-    NativeStrictBoundedAcceptedCandidateDiagnostics, NativeStrictBoundedCompiledGraphDiagnostics,
-    NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport,
-    TPCH_QUERY_COUNT, TPCH_TABLES, ad_hoc_olap_datafusion_planning_workload_items,
+    NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec, NativeDataFusionExecutionMetrics,
+    NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome,
+    NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem, NativeDataFusionPostNativeExecutionPath,
+    NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
+    NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+    NativePipelineExecutionMode, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
+    NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
+    NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport, TPCH_QUERY_COUNT, TPCH_TABLES,
+    ad_hoc_olap_datafusion_planning_workload_items,
     ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config, ad_hoc_olap_fallback_pressure_workload_items,
     describe_tpch_dataset_with_content_fingerprint, tiny_tpch_dataset_metadata,
     tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_native_optimizer_config,
@@ -238,12 +239,14 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(planning_failure.rejected_before_execution);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 6);
+    assert_eq!(NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION, 7);
     assert_eq!(
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
         "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tadaptive_pipeline_rows\tjoin_diagnostics\tsource_diagnostics\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_fallback_pressure_tsv_schema_version=6\n"));
+    assert!(text.starts_with(&format!(
+        "# native_fallback_pressure_tsv_schema_version={NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION}\n"
+    )));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains("sum_rewrite\tSortExec"));
     assert!(text.contains("not_rewrite\tSortExec"));
@@ -456,12 +459,14 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(planning_failure_row.rejected_before_execution);
 
     let text = accepted.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 11);
+    assert_eq!(NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION, 12);
     assert_eq!(
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
         "query_id\tphysical_root\tphysical_shape\tnative_candidate_shape\tnative_candidate_shape_family\toutcome\treason_code\tunsupported_category\tstrict_bounded_contract_rows\tstrict_bounded_compiled_graphs\tadaptive_pipeline_rows\tnative_optimizer\tedge_normalize_inserted\tjoin_diagnostics\tsource_diagnostics\tpost_native_plan_root\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\trejected_before_execution"
     );
-    assert!(text.starts_with("# native_datafusion_planning_tsv_schema_version=11\n"));
+    assert!(text.starts_with(&format!(
+        "# native_datafusion_planning_tsv_schema_version={NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION}\n"
+    )));
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(text.contains("sum_session\t"));
     assert!(text.contains("\taccepted_replaced\tnone\tnone\t"));

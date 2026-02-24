@@ -54,6 +54,26 @@ pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NAT
 pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
 /// Minimum row-group granularity used when retrying with smaller chunks.
 pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+/// Execution contract for native `STDDEV_SAMP` aggregates.
+pub const CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
+/// Temporarily ignored. Native planning must not prefer CPU for conservative
+/// small/selective shapes while SQL may include GPU-only `cugraph_*` table
+/// functions.
+pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE";
+/// Row-group threshold for small/selective CPU preference.
+pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
+    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS";
+/// Source-read byte threshold for small/selective CPU preference.
+pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
+    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
+/// Row-group threshold for residual-join CPU preference.
+pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
+    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS";
+/// Source-read byte threshold for residual-join CPU preference.
+pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
+    "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
+/// Top-k fetch threshold for small/selective CPU preference.
+pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
 
 /// Result type used by TPC-DS fixture and workload helpers.
 pub type TpcdsWorkloadResult<T> = std::result::Result<T, TpcdsWorkloadError>;
@@ -144,11 +164,29 @@ pub fn tpcds_report_session_config() -> SessionConfig {
     config
 }
 
+/// Session config used for native TPC-DS planning and execution contexts.
+///
+/// This starts from [`tpcds_report_session_config`] but disables DataFusion
+/// table-statistics collection. SF100 multi-join shapes can overflow
+/// DataFusion's table-level cardinality estimates during physical
+/// optimization; native source planning reads row-group metadata directly from
+/// Parquet footers instead of relying on those estimates.
+pub fn tpcds_native_report_session_config() -> SessionConfig {
+    native_tpcds_session_config(tpcds_report_session_config())
+}
+
+fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
+    config.options_mut().execution.collect_statistics = false;
+    config
+}
+
 /// Native optimizer config used by TPC-DS report surfaces.
 ///
-/// All env vars parse unsigned integers. Source chunk bytes and row-group
+/// Numeric env vars parse unsigned integers. Source chunk bytes, row-group
 /// limits are planning targets; positive-value validation happens when the
-/// native execution context is built.
+/// native execution context is built. CPU-preference knobs are intentionally
+/// dormant until the native SQL surface can distinguish ordinary TPC-DS shapes
+/// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
     let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV)
         .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
@@ -160,15 +198,26 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
         .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
     let min_retry_chunk_row_groups = optional_env_usize(CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV)
         .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
-    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
-        NativeCudfExecutionConfig::bounded(
-            device_budget_bytes,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-        ),
-    )
+    let stddev_samp_execution_mode =
+        optional_env_stddev_samp_execution_mode(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV).unwrap_or_default();
+    // Keep CPU preference disabled for now: users can submit SQL containing
+    // `cugraph_*` table functions, and those plans must stay on the GPU rather
+    // than being routed through DataFusion CPU fallback as a small/selective
+    // preference. Leave the env constants above in place so the old benchmark
+    // gate can be restored once graph SQL has an explicit GPU-only boundary.
+    let preference_options = cudf_query_engine::NativePlanPreferenceOptions::disabled();
+    CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+        .with_native_execution_config(
+            NativeCudfExecutionConfig::bounded(
+                device_budget_bytes,
+                max_source_chunk_bytes,
+                max_row_groups_per_chunk,
+                max_retry_attempts,
+                min_retry_chunk_row_groups,
+            )
+            .with_stddev_samp_execution_mode(stddev_samp_execution_mode),
+        )
+        .with_native_plan_preference_options(preference_options)
 }
 
 fn optional_env_u64(name: &'static str) -> Option<u64> {
@@ -184,6 +233,14 @@ fn optional_env_usize(name: &'static str) -> Option<usize> {
         value
             .parse::<usize>()
             .unwrap_or_else(|error| panic!("unsupported {name}={value}; expected unsigned integer: {error}"))
+    })
+}
+
+fn optional_env_stddev_samp_execution_mode(name: &'static str) -> Option<cudf_query_engine::StddevSampExecutionMode> {
+    std::env::var(name).ok().map(|value| {
+        value.parse::<cudf_query_engine::StddevSampExecutionMode>().unwrap_or_else(|error| {
+            panic!("unsupported {name}={value}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}")
+        })
     })
 }
 
@@ -246,7 +303,7 @@ pub async fn tpcds_datafusion_planning_workload_items_with_optimizer_config(
 ) -> TpcdsWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(session_config)
+        .with_config(native_tpcds_session_config(session_config))
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -352,7 +409,7 @@ pub async fn tpcds_datafusion_execution_workload_items_filtered(
 ) -> TpcdsWorkloadResult<Vec<NativeDataFusionExecutionWorkloadItem>> {
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(session_config)
+        .with_config(native_tpcds_session_config(session_config))
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);

@@ -1,4 +1,7 @@
-use crate::plan::{JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows};
+use crate::{
+    expr::{ColumnRef, Expr},
+    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows},
+};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const JOIN_BUILD_SIDE_SELECTION_RULE_NAME: &str = "join_build_side_selection";
@@ -130,8 +133,8 @@ pub(crate) fn optimize_join_build_side_selection(
         }
 
         diagnostics.considered_count += 1;
-        let left = SideEstimate::for_node(&plan, join.inputs[0]);
-        let right = SideEstimate::for_node(&plan, join.inputs[1]);
+        let left = SideEstimate::for_join_side(&plan, join, JoinSide::Left);
+        let right = SideEstimate::for_join_side(&plan, join, JoinSide::Right);
         let before = join.spec.build_side;
         let selected = select_build_side(before, left, right, options);
         let mut candidate = JoinBuildSideSelectionCandidateDiagnostics {
@@ -178,7 +181,6 @@ pub(crate) fn optimize_join_build_side_selection(
 fn join_build_side_selection_supported(join: &crate::plan::JoinNode) -> bool {
     join.spec.join_type == JoinType::Inner
         && !join.spec.keys.is_empty()
-        && join.spec.residual_predicate.is_none()
         && !join.spec.output_projection.is_empty()
         && join.spec.build_artifact_id.is_none()
 }
@@ -195,6 +197,9 @@ fn select_build_side(
     if let Some(side) = smaller_known_side(left.rows, right.rows) {
         return Some(side);
     }
+    if let Some(side) = grouped_aggregate_keyset_side(left, right) {
+        return Some(side);
+    }
 
     let other = opposite_side(current);
     let other_estimate = match other {
@@ -202,6 +207,14 @@ fn select_build_side(
         JoinSide::Right => right,
     };
     if other_estimate.is_small(options) { Some(other) } else { None }
+}
+
+fn grouped_aggregate_keyset_side(left: SideEstimate, right: SideEstimate) -> Option<JoinSide> {
+    match (left.has_grouped_aggregate_keyset, right.has_grouped_aggregate_keyset) {
+        (true, false) => Some(JoinSide::Left),
+        (false, true) => Some(JoinSide::Right),
+        _ => None,
+    }
 }
 
 fn smaller_known_side(left: Option<u64>, right: Option<u64>) -> Option<JoinSide> {
@@ -223,15 +236,98 @@ fn opposite_side(side: JoinSide) -> JoinSide {
 struct SideEstimate {
     rows: Option<u64>,
     bytes: Option<u64>,
+    has_grouped_aggregate_keyset: bool,
 }
 
 impl SideEstimate {
-    fn for_node(plan: &QueryPlan, node_id: NodeId) -> Self {
-        Self { rows: estimated_output_rows(plan, node_id), bytes: estimated_output_bytes(plan, node_id) }
+    fn for_join_side(plan: &QueryPlan, join: &JoinNode, side: JoinSide) -> Self {
+        let node_id = join.inputs[join_side_index(side)];
+        Self {
+            rows: estimated_output_rows(plan, node_id),
+            bytes: estimated_output_bytes(plan, node_id),
+            has_grouped_aggregate_keyset: join_side_keys_are_grouped_aggregate_keyset(plan, join, side),
+        }
     }
 
     fn is_small(self, options: &JoinBuildSideSelectionOptions) -> bool {
         self.bytes.is_some_and(|bytes| bytes <= options.small_build_side_bytes)
             || self.rows.is_some_and(|rows| rows <= options.small_build_side_rows)
+    }
+}
+
+fn join_side_keys_are_grouped_aggregate_keyset(plan: &QueryPlan, join: &JoinNode, side: JoinSide) -> bool {
+    !join.spec.keys.is_empty()
+        && join.spec.keys.iter().all(|key| {
+            let input_id = join.inputs[join_side_index(side)];
+            let column = match side {
+                JoinSide::Left => &key.left,
+                JoinSide::Right => &key.right,
+            };
+            output_column_is_grouped_aggregate_key(plan, input_id, column)
+        })
+}
+
+fn output_column_is_grouped_aggregate_key(plan: &QueryPlan, node_id: NodeId, column: &ColumnRef) -> bool {
+    resolve_column_field_index(plan, node_id, column)
+        .is_some_and(|field_index| output_field_is_grouped_aggregate_key(plan, node_id, field_index))
+}
+
+fn output_field_is_grouped_aggregate_key(plan: &QueryPlan, node_id: NodeId, field_index: usize) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    if field_index >= node.output_schema().fields().len() {
+        return false;
+    }
+    match &node.kind {
+        PlanNode::Source(_) => false,
+        PlanNode::Filter(filter) => output_field_is_grouped_aggregate_key(plan, filter.input, field_index),
+        PlanNode::Sort(sort) => output_field_is_grouped_aggregate_key(plan, sort.input, field_index),
+        PlanNode::Limit(limit) => output_field_is_grouped_aggregate_key(plan, limit.input, field_index),
+        PlanNode::Projection(projection) => projection
+            .outputs
+            .get(field_index)
+            .is_some_and(|output| expr_is_grouped_aggregate_key(plan, projection.input, &output.expr)),
+        PlanNode::Aggregate(aggregate) => {
+            aggregate.spec.grouping_sets.is_none() && field_index < aggregate.spec.group_exprs.len()
+        },
+        PlanNode::Join(join) => join.spec.output_projection.get(field_index).is_some_and(|output| {
+            let input_id = join.inputs[join_side_index(output.side)];
+            resolve_column_field_index(plan, input_id, &output.column).is_some_and(|input_field_index| {
+                output_field_is_grouped_aggregate_key(plan, input_id, input_field_index)
+            })
+        }),
+        PlanNode::Window(window) => plan.node(window.input).is_some_and(|input| {
+            field_index < input.output_schema().fields().len()
+                && output_field_is_grouped_aggregate_key(plan, window.input, field_index)
+        }),
+        PlanNode::Union(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => false,
+    }
+}
+
+fn expr_is_grouped_aggregate_key(plan: &QueryPlan, input_id: NodeId, expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(column) => output_column_is_grouped_aggregate_key(plan, input_id, column),
+        Expr::Alias { expr, .. } => expr_is_grouped_aggregate_key(plan, input_id, expr),
+        _ => false,
+    }
+}
+
+fn resolve_column_field_index(plan: &QueryPlan, input_id: NodeId, column: &ColumnRef) -> Option<usize> {
+    let node = plan.node(input_id)?;
+    let mut matches = node
+        .output_schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| (field.name() == column.name()).then_some(index));
+    let index = matches.next()?;
+    matches.next().is_none().then_some(index)
+}
+
+const fn join_side_index(side: JoinSide) -> usize {
+    match side {
+        JoinSide::Left => 0,
+        JoinSide::Right => 1,
     }
 }

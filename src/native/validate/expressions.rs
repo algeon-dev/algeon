@@ -299,11 +299,20 @@ fn validate_regexp_replace_function(
     function: &ScalarFunctionExpr,
     input_schema: &SchemaRef,
 ) -> Result<(), FallbackReason> {
-    // libcudf regex replacement can expand string output by data-dependent
-    // amounts. Until strict bounded execution has a preflight/output contract
-    // for that expansion, do not admit it into native runtime.
-    let _ = (function, input_schema);
-    Err(FallbackReason::UnsupportedExpression)
+    let [expr, pattern, replacement] = function.args() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    validate_physical_expr(expr, input_schema)?;
+    validate_string_expr(expr, input_schema)?;
+    validate_literal_string(pattern)?;
+    validate_literal_string(replacement)?;
+    let output_type =
+        function.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_supported_native_type(&output_type) && is_string_data_type(&output_type) {
+        Ok(())
+    } else {
+        Err(FallbackReason::UnsupportedType)
+    }
 }
 
 fn validate_concat_function(function: &ScalarFunctionExpr, input_schema: &SchemaRef) -> Result<(), FallbackReason> {

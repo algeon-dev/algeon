@@ -111,6 +111,7 @@ fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<Nati
 }
 
 pub(super) fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics) -> NativeSourceDiagnosticSummary {
+    let stats = diagnostics.selected_row_group_stats.as_ref();
     NativeSourceDiagnosticSummary {
         format: format!("{:?}", diagnostics.format),
         direct_device_read: diagnostics.direct_device_read,
@@ -118,6 +119,11 @@ pub(super) fn summarize_source_diagnostics(diagnostics: &NativeSourceDiagnostics
         ranged_file_count: diagnostics.ranged_file_count,
         known_bytes: diagnostics.known_bytes,
         selected_row_groups: diagnostics.selected_row_groups,
+        total_row_groups: stats.map(|stats| stats.total_row_groups),
+        selected_source_bytes: stats.and_then(|stats| stats.selected_source_bytes()),
+        total_source_bytes: stats.and_then(|stats| stats.total_source_bytes()),
+        selected_rows: stats.and_then(|stats| stats.selected_rows),
+        total_rows: stats.and_then(|stats| stats.total_rows),
         predicate_disposition: diagnostics.predicate_disposition.as_str().to_string(),
         byte_range_disposition: diagnostics.byte_range_disposition.as_str().to_string(),
         partition_column_disposition: diagnostics.partition_column_disposition.as_str().to_string(),
@@ -194,7 +200,9 @@ pub(super) fn unsupported_category(
         FallbackReason::NativeBoundedJoinUnsupported | FallbackReason::NativeAdaptivePipelineUnsupported => {
             first_join_operator_category(plan).or_else(|| Some("operator_join".to_string()))
         },
-        FallbackReason::ExplicitCpuPolicy => None,
+        FallbackReason::ExplicitCpuPolicy
+        | FallbackReason::NativeSmallSelectiveTopkCpuPreferred
+        | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred => None,
     }
 }
 

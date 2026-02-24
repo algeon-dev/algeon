@@ -281,6 +281,16 @@ pub struct NativeSourceDiagnosticSummary {
     /// Selected row-group count; `None` means "all row groups" and serializes
     /// as `all` in nested TSV cells.
     pub selected_row_groups: Option<usize>,
+    /// Total row groups represented by selection stats, when known.
+    pub total_row_groups: Option<usize>,
+    /// Selected source-read bytes from row-group stats, when known.
+    pub selected_source_bytes: Option<u64>,
+    /// Total source-read bytes from row-group stats, when known.
+    pub total_source_bytes: Option<u64>,
+    /// Selected source rows from row-group stats, when known.
+    pub selected_rows: Option<u64>,
+    /// Total source rows from row-group stats, when known.
+    pub total_rows: Option<u64>,
     /// Predicate support/disposition label.
     pub predicate_disposition: String,
     /// Byte-range support/disposition label.

@@ -52,12 +52,13 @@ pub(crate) use join::{
     multi_join_subtree_join_execution_capability, one_shot_equi_join_supported,
 };
 pub use model::{
-    AggregateGrouping, CapabilityAnalysis, CapabilityDecision, CapabilityRejectionOwner, CapabilityRejectionProjection,
-    ConstraintRef, ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer, EdgeContract, EdgeContractKind,
-    InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty, RequiredProperty,
-    ReservationRequirement, ReservationRequirementScope, ResidentResource, ResidualRequirement, ResultSinkKind,
-    STRICT_UNRESOLVED_PREFLIGHT_GAPS, ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability,
-    StrictUnresolvedPreflightGap, SubgraphInvariant, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
-    lower_level_unresolved_preflight_gap_for_contract, strict_unresolved_preflight_gap,
+    AggregateGrouping, BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS, CapabilityAnalysis, CapabilityDecision,
+    CapabilityRejectionOwner, CapabilityRejectionProjection, ConstraintRef, ConstraintScope, ContractQuality,
+    ContractStatus, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, InvariantId, NodeCapability, NodeOperator,
+    OrderingRequirement, ProducedProperty, RequiredProperty, ReservationRequirement, ReservationRequirementScope,
+    ResidentResource, ResidualRequirement, ResultSinkKind, STRICT_UNRESOLVED_PREFLIGHT_GAPS, ScheduleConstraint,
+    SharedProducerIdentity, SourceFormatCapability, StrictUnresolvedPreflightGap, SubgraphInvariant,
+    SubgraphInvariantKind, lower_level_unresolved_preflight_gap, lower_level_unresolved_preflight_gap_for_contract,
+    strict_unresolved_preflight_gap,
 };
 pub use requirements::reservation_requirement_scope;

@@ -9,13 +9,22 @@
 use std::fmt;
 
 use super::{HashJoinBuildArtifactId, JoinOutputColumn, PlanNode, QueryNode, QueryPlan, ResultSink, SortExpr};
-use crate::{expr::Expr, source::SourceNode};
+use crate::{dynamic_filter::DynamicFilterRoute, expr::Expr, source::SourceNode};
 
 impl fmt::Display for QueryPlan {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "QueryPlan root={} sink={}", self.root, self.sink.kind_name())?;
+        writeln!(
+            f,
+            "QueryPlan root={} sink={} dynamic_filter_routes={}",
+            self.root,
+            self.sink.kind_name(),
+            self.dynamic_filter_routes.len()
+        )?;
         for node in &self.nodes {
             node.fmt_with_indent(f, 1)?;
+        }
+        for route in &self.dynamic_filter_routes {
+            format_dynamic_filter_route(route, f, 1)?;
         }
         match &self.sink {
             ResultSink::GpuResident { input } => {
@@ -30,15 +39,50 @@ impl fmt::Display for QueryPlan {
     }
 }
 
+fn format_dynamic_filter_route(route: &DynamicFilterRoute, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
+    let padding = "  ".repeat(indent);
+    writeln!(
+        f,
+        "{padding}{} DynamicFilterRoute producer_kind={} producer_node={} consumer_kind={} consumer_node={} producer_columns={} consumer_columns={} filter_kinds={} consumer_lowering={} consumer_reduction_stage={} readiness={}",
+        route.id,
+        route.producer.kind(),
+        route.producer.node_id(),
+        route.consumer.kind(),
+        route.consumer.node_id(),
+        format_strings(&route.producer_columns),
+        format_strings(&route.consumer_columns),
+        route.filter_kinds.iter().map(ToString::to_string).collect::<Vec<_>>().join(","),
+        route.consumer_lowering,
+        route.consumer_reduction_stage(),
+        route.readiness,
+    )
+}
+
 impl QueryNode {
     fn fmt_with_indent(&self, f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
         let padding = "  ".repeat(indent);
         match &self.kind {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source) => {
+                    let row_group_stats = source.diagnostics.selected_row_group_stats.as_ref().map_or_else(
+                        || "unknown".to_string(),
+                        |stats| {
+                            format!(
+                                "{}/{} selected_bytes={} total_bytes={}",
+                                stats.selected_row_groups,
+                                stats.total_row_groups,
+                                stats
+                                    .selected_source_bytes()
+                                    .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),
+                                stats
+                                    .total_source_bytes()
+                                    .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string())
+                            )
+                        },
+                    );
                     writeln!(
                         f,
-                        "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
+                        "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} row_group_stats={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
                         self.id,
                         source.diagnostics.file_count,
                         source.files.first().map_or_else(|| "none".to_string(), |file| file.location.reader_path()),
@@ -49,6 +93,7 @@ impl QueryNode {
                             .diagnostics
                             .selected_row_groups
                             .map_or_else(|| "all".to_string(), |row_groups| row_groups.to_string()),
+                        row_group_stats,
                         source.diagnostics.read_column_count,
                         source.diagnostics.projected_output_column_count,
                         source.diagnostics.pure_filter_column_count,
@@ -106,11 +151,17 @@ impl QueryNode {
             ),
             PlanNode::Aggregate(node) => writeln!(
                 f,
-                "{padding}{} Aggregate input={} group_count={} aggr_count={} groups={} aggrs={} placement={} schema_behavior={}",
+                "{padding}{} Aggregate input={} group_count={} aggr_count={} grouping_set_count={} grouping_id_alias={} grouping_sets={} groups={} aggrs={} placement={} schema_behavior={}",
                 self.id,
                 node.input,
                 node.spec.group_exprs.len(),
                 node.spec.aggr_exprs.len(),
+                node.spec.grouping_sets.as_ref().map_or(0, |grouping_sets| grouping_sets.groups.len()),
+                node.spec
+                    .grouping_sets
+                    .as_ref()
+                    .map_or("none", |grouping_sets| grouping_sets.grouping_id_alias.as_str()),
+                format_grouping_sets(node.spec.grouping_sets.as_ref()),
                 format_exprs(&node.spec.group_exprs),
                 format_aggregate_exprs(&node.spec.aggr_exprs),
                 self.facts.placement,
@@ -214,6 +265,10 @@ fn format_node_ids(ids: &[super::NodeId]) -> String {
     if ids.is_empty() { "none".to_string() } else { ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(",") }
 }
 
+fn format_strings(values: &[String]) -> String {
+    if values.is_empty() { "none".to_string() } else { values.join(",") }
+}
+
 fn format_exprs(expressions: &[Expr]) -> String {
     if expressions.is_empty() {
         "none".to_string()
@@ -236,6 +291,21 @@ fn format_aggregate_exprs(expressions: &[crate::expr::AggregateExpr]) -> String 
             .collect::<Vec<_>>()
             .join(",")
     }
+}
+
+fn format_grouping_sets(grouping_sets: Option<&crate::expr::GroupingSetsSpec>) -> String {
+    let Some(grouping_sets) = grouping_sets else {
+        return "none".to_string();
+    };
+    if grouping_sets.groups.is_empty() {
+        return "empty".to_string();
+    }
+    grouping_sets
+        .groups
+        .iter()
+        .map(|group| group.iter().map(|masked| if *masked { "1" } else { "0" }).collect::<Vec<_>>().join(""))
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 fn format_window_functions(functions: &[super::WindowFunction]) -> String {
