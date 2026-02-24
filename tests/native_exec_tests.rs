@@ -1,7 +1,7 @@
 use std::{fs, sync::Arc};
 
 use cudf_query_engine::{
-    BoundedJoinReservationContract, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
+    BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
     capability::ContractQuality, compile_pipeline,
 };
 use datafusion::{
@@ -78,11 +78,43 @@ fn native_exec_rejects_gpu_resident_sink_for_datafusion_output() {
 
 #[test]
 fn native_exec_accepts_unbounded_memory_control_policy() {
+    // Unbounded mode remains part of the public API for explicit diagnostic and
+    // regression coverage even though production defaults are bounded.
     let exec = NativeCudfExec::try_new(host_sink_plan(), NativeCudfExecutionConfig::unbounded()).unwrap();
 
     let display = displayable(&exec).one_line().to_string();
     assert!(display.contains("NativeCudfExec"));
     assert!(display.contains("memory_control_policy=unbounded"));
+}
+
+#[test]
+fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
+    let config = NativeCudfExecutionConfig::bounded_auto_sized();
+
+    let MemoryControlPolicy::Bounded {
+        device_budget_bytes,
+        max_source_chunk_bytes,
+        max_row_groups_per_chunk,
+        max_retry_attempts,
+        min_retry_chunk_row_groups,
+    } = config.memory_control_policy()
+    else {
+        panic!("bounded_auto_sized must create a bounded memory-control policy");
+    };
+    assert!(device_budget_bytes > 0);
+    assert_eq!(max_source_chunk_bytes, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(max_row_groups_per_chunk, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(max_retry_attempts, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+    assert_eq!(min_retry_chunk_row_groups, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
+    assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
+}
+
+#[test]
+fn optimizer_config_default_uses_bounded_native_execution() {
+    let config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+
+    assert!(config.native_execution_config().memory_control_policy().is_bounded());
+    assert_eq!(config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 
 #[test]
@@ -92,6 +124,8 @@ fn native_composed_exec_hands_gpu_result_between_fragments_without_host_material
     write_parquet_file(&path);
     let schema = parquet_file_schema();
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    // This test isolates GPU-resident fragment handoff semantics from bounded
+    // source scheduling and reservation behavior.
     let config = NativeCudfExecutionConfig::unbounded().with_shared_runtime(Arc::clone(&runtime));
 
     let producer_plan = local_parquet_gpu_resident_plan(&path, Arc::clone(&schema));

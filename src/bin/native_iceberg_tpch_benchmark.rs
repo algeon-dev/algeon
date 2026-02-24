@@ -36,14 +36,14 @@ const DEFAULT_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 async fn main() {
     match run_from_env_with_config().await {
         Ok((config, report)) => {
-            let gate_result = validate_full_sf1_direct_s3_gate_for_config(&report, &config);
+            let gate_result = validate_full_sf1_staged_s3_gate_for_config(&report, &config);
             print!("{}", report.to_tsv());
             match gate_result {
                 Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
                 Ok(None) => {},
                 Err(error) => {
                     eprintln!(
-                        "[native_iceberg_tpch_benchmark] phase=full_sf1_direct_s3_gate outcome=failed error={}",
+                        "[native_iceberg_tpch_benchmark] phase=full_sf1_staged_s3_gate outcome=failed error={}",
                         stable_tsv_field(&error.to_string())
                     );
                     std::process::exit(1);
@@ -202,7 +202,7 @@ pub(crate) fn set_iteration_report_elapsed_ms(
 #[allow(dead_code)]
 pub(crate) enum BenchmarkTimeoutCategory {
     IcebergMetadata,
-    NativeDirectS3Runtime,
+    NativeRuntime,
     CpuS3Baseline,
     ParityCollection,
     Iteration,
@@ -212,7 +212,7 @@ impl BenchmarkTimeoutCategory {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::IcebergMetadata => "iceberg_metadata_timeout",
-            Self::NativeDirectS3Runtime => "native_direct_s3_runtime_timeout",
+            Self::NativeRuntime => "native_runtime_timeout",
             Self::CpuS3Baseline => "cpu_s3_baseline_timeout",
             Self::ParityCollection => "parity_collection_timeout",
             Self::Iteration => "iteration_timeout",
@@ -307,12 +307,12 @@ fn query_timeout_for_iteration(
             QueryTimeout { duration: Some(iteration_remaining), category: BenchmarkTimeoutCategory::Iteration }
         },
         (Some(query_timeout), _) => {
-            QueryTimeout { duration: Some(query_timeout), category: BenchmarkTimeoutCategory::NativeDirectS3Runtime }
+            QueryTimeout { duration: Some(query_timeout), category: BenchmarkTimeoutCategory::NativeRuntime }
         },
         (None, Some(iteration_remaining)) => {
             QueryTimeout { duration: Some(iteration_remaining), category: BenchmarkTimeoutCategory::Iteration }
         },
-        (None, None) => QueryTimeout { duration: None, category: BenchmarkTimeoutCategory::NativeDirectS3Runtime },
+        (None, None) => QueryTimeout { duration: None, category: BenchmarkTimeoutCategory::NativeRuntime },
     };
     Ok(timeout)
 }
@@ -513,7 +513,7 @@ pub(crate) struct FullSf1DirectS3GateSummary {
 impl FullSf1DirectS3GateSummary {
     fn progress_line(&self) -> String {
         format!(
-            "[native_iceberg_tpch_benchmark] phase=full_sf1_direct_s3_gate outcome=passed query_count={} measured_iterations={} native_runtime_elapsed_ms_total={} cpu_runtime_elapsed_ms_total={} report_elapsed_ms={}",
+            "[native_iceberg_tpch_benchmark] phase=full_sf1_staged_s3_gate outcome=passed query_count={} measured_iterations={} native_runtime_elapsed_ms_total={} cpu_runtime_elapsed_ms_total={} report_elapsed_ms={}",
             self.query_count,
             self.measured_iterations,
             self.native_runtime_elapsed_ms_total,
@@ -523,11 +523,11 @@ impl FullSf1DirectS3GateSummary {
     }
 }
 
-pub(crate) fn validate_full_sf1_direct_s3_gate_for_config(
+pub(crate) fn validate_full_sf1_staged_s3_gate_for_config(
     report: &IcebergTpchBenchmarkReport,
     config: &IcebergTpchBenchmarkConfig,
 ) -> BenchmarkResult<Option<FullSf1DirectS3GateSummary>> {
-    if !full_sf1_direct_s3_gate_applies(config) {
+    if !full_sf1_staged_s3_gate_applies(config) {
         return Ok(None);
     }
 
@@ -559,7 +559,7 @@ pub(crate) fn validate_full_sf1_direct_s3_gate_for_config(
             timeout_failures.push(format!("{query_id}:{}", category.as_str()));
         }
         let diagnostics = &row.smoke_row.diagnostics;
-        if diagnostics.native_source_read_capability != "object_store:s3" {
+        if diagnostics.native_source_read_capability != "local_file_system" {
             failures.push(format!(
                 "{query_id}:native_source_read_capability={}",
                 empty_as_none(&diagnostics.native_source_read_capability)
@@ -571,13 +571,13 @@ pub(crate) fn validate_full_sf1_direct_s3_gate_for_config(
                 diagnostics.direct_device_read_disposition.code()
             ));
         }
-        if row.smoke_row.staging_summary.status != ObjectStoreStagingStatus::DirectNative {
+        if row.smoke_row.staging_summary.status != ObjectStoreStagingStatus::StagedLocal {
             failures.push(format!(
                 "{query_id}:object_store_staging_status={}",
                 object_store_staging_status_code(row.smoke_row.staging_summary.status)
             ));
         }
-        if row.smoke_row.staging_summary.staged_data_file_count != 0 {
+        if row.smoke_row.staging_summary.staged_data_file_count == 0 {
             failures.push(format!(
                 "{query_id}:staged_data_file_count={}",
                 row.smoke_row.staging_summary.staged_data_file_count
@@ -605,14 +605,14 @@ pub(crate) fn validate_full_sf1_direct_s3_gate_for_config(
     if !timeout_failures.is_empty() {
         let semantic = if failures.is_empty() { "none".to_string() } else { failures.join(",") };
         return Err(benchmark_error(format!(
-            "full SF1 direct-S3 gate timeout failures={}; semantic_failures={semantic}",
+            "full SF1 staged-S3 gate timeout failures={}; semantic_failures={semantic}",
             timeout_failures.join(",")
         )));
     }
 
     if !failures.is_empty() {
         return Err(benchmark_error(format!(
-            "full SF1 direct-S3 gate requires direct native S3 execution and CPU parity; failures={}",
+            "full SF1 staged-S3 gate requires required staging, native execution, and CPU parity; failures={}",
             failures.join(",")
         )));
     }
@@ -626,7 +626,7 @@ pub(crate) fn validate_full_sf1_direct_s3_gate_for_config(
     }))
 }
 
-fn full_sf1_direct_s3_gate_applies(config: &IcebergTpchBenchmarkConfig) -> bool {
+fn full_sf1_staged_s3_gate_applies(config: &IcebergTpchBenchmarkConfig) -> bool {
     matches!(config.smoke_config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. })
         && config.smoke_config.tpch_scale_factor == "sf1"
         && config.query_ids.iter().map(String::as_str).collect::<BTreeSet<_>>()

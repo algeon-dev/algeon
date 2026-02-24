@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use cudf_query_engine::MemoryControlPolicy;
 use datafusion_cudf::server::{
     DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
     DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV, DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
@@ -19,6 +20,10 @@ fn server_config_defaults_to_single_flight_sql_admission() {
     assert_eq!(config.max_in_flight, 1);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
     assert_eq!(config.log_filter, "info");
+    assert!(
+        config.native_optimizer_config.native_execution_config().memory_control_policy().is_bounded(),
+        "server production default must be bounded when no native budget env vars are supplied"
+    );
 }
 
 #[test]
@@ -61,7 +66,18 @@ fn server_config_accepts_bounded_native_profile() {
         (DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
     ]);
 
-    ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(
+        config.native_optimizer_config.native_execution_config().memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 512,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        }
+    );
 }
 
 #[cfg(not(feature = "iceberg"))]

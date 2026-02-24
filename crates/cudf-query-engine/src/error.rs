@@ -65,6 +65,9 @@ pub enum QueryErrorCode {
     /// This is a temporary resource condition, separate from a cuDF allocator
     /// failure, and is intended to drive retry/backoff decisions.
     MemoryReservationFailed,
+    /// The service admission layer rejected the query because shared
+    /// multi-tenant capacity is saturated.
+    ServiceOverloaded,
     /// An internal native-engine bug or unreachable condition.
     Internal,
 }
@@ -87,6 +90,7 @@ impl QueryErrorCode {
             Self::CudfDependencyFailure => "cudf_dependency_failure",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
+            Self::ServiceOverloaded => "service_overloaded",
             Self::Internal => "internal",
         }
     }
@@ -199,9 +203,9 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         QueryErrorCode::InvalidPlan => QueryErrorKind::Planning,
         QueryErrorCode::CudfInvalidInput => QueryErrorKind::InvalidInput,
         QueryErrorCode::CudfUnsupported => QueryErrorKind::Unsupported,
-        QueryErrorCode::CudfResourceExhausted | QueryErrorCode::MemoryReservationFailed => {
-            QueryErrorKind::ResourceExhausted
-        },
+        QueryErrorCode::CudfResourceExhausted
+        | QueryErrorCode::MemoryReservationFailed
+        | QueryErrorCode::ServiceOverloaded => QueryErrorKind::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
         | QueryErrorCode::CudfDependencyFailure => QueryErrorKind::DependencyFailure,
@@ -221,7 +225,8 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
         QueryErrorCode::CudfResourceExhausted
         | QueryErrorCode::CudfTemporaryFailure
-        | QueryErrorCode::MemoryReservationFailed => QueryErrorStatus::Temporary,
+        | QueryErrorCode::MemoryReservationFailed
+        | QueryErrorCode::ServiceOverloaded => QueryErrorStatus::Temporary,
         QueryErrorCode::CudfPersistentFailure => QueryErrorStatus::Persistent,
         QueryErrorCode::UnsupportedPlanShape
         | QueryErrorCode::UnsupportedOperator

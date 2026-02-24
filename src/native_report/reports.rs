@@ -18,10 +18,13 @@ pub struct NativeFallbackPressureReport {
 }
 
 impl NativeFallbackPressureReport {
-    /// Collects fallback-pressure rows using the unbounded native execution config.
+    /// Collects diagnostic fallback-pressure rows using the unbounded native
+    /// execution config.
     ///
-    /// Use [`Self::collect_with_native_execution_config`] when bounded or
-    /// adaptive diagnostics should affect fallback-pressure rows.
+    /// This convenience path is for legacy shape-pressure diagnostics only.
+    /// Production report surfaces should use
+    /// [`Self::collect_with_native_execution_config`] with an explicit bounded
+    /// or adaptive config so bounded diagnostics affect fallback-pressure rows.
     pub fn collect(items: impl IntoIterator<Item = NativeFallbackPressureWorkloadItem>) -> Self {
         let execution_config = NativeCudfExecutionConfig::unbounded();
         Self::collect_with_native_execution_config(items, &execution_config)
@@ -339,10 +342,20 @@ impl NativeDataFusionExecutionReport {
                 row.metrics.join_gather_map_bytes.to_string(),
                 format_aggregate_strategy_rows(&row.metrics.aggregate_strategy_rows),
                 format_join_strategy_rows(&row.metrics.join_strategy_rows),
+                row.metrics.source_fetch_bytes.to_string(),
+                row.metrics.source_fetch_count.to_string(),
+                optional_duration_ms_text(row.metrics.host_fetch_budget_wait_time_ns),
+                optional_duration_ms_text(row.metrics.source_fetch_concurrency_wait_time_ns),
+                optional_duration_ms_text(row.metrics.source_fetch_time_ns),
+                optional_duration_ms_text(row.metrics.source_decode_time_ns),
                 format_source_diagnostics(&row.source_diagnostics),
             ];
             let _ = writeln!(output, "{}", fields.join("\t"));
         }
         output
     }
+}
+
+fn optional_duration_ms_text(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| format!("{:.3}", value as f64 / 1_000_000.0))
 }

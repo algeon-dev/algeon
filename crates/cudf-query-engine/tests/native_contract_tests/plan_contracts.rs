@@ -376,6 +376,40 @@ fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
 }
 
 #[test]
+fn regexp_replace_projection_requires_bounded_output_contract() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("referer", DataType::Utf8, true)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("domain", DataType::Utf8, true)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("hits", Arc::clone(&input_schema))));
+    let projection = builder.add_projection(
+        source,
+        projection_outputs(
+            vec![
+                Expr::regexp_replace(
+                    Expr::column("referer"),
+                    "^https?://(?:www\\.)?([^/]+)/.*$",
+                    "\\1",
+                    DataType::Utf8,
+                )
+                .alias("domain"),
+            ],
+            output_schema,
+        ),
+    );
+    let plan = builder.finish_gpu_resident(projection);
+    let analysis = plan.capability_analysis();
+    let node = analysis.nodes.iter().find(|node| node.node_id == projection).expect("projection node capability");
+    let CapabilityDecision::Rejected { reason, facts } = &node.executable else {
+        panic!("regexp_replace projection should be rejected until a bounded output contract exists");
+    };
+
+    assert_eq!(*reason, "unsupported_projection_expression_capability");
+    assert_eq!(facts.get("reason").map(String::as_str), Some("regexp_replace_requires_bounded_output_contract"));
+    assert_eq!(facts.get("expression_family").map(String::as_str), Some("regexp_replace"));
+}
+
+#[test]
 fn native_plan_can_represent_ordered_union() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),

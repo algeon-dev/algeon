@@ -282,7 +282,7 @@ fn append_task_facts(plan: &mut TableFormatScanPlan, task_index: usize, task: Fi
         ));
     }
 
-    if !read_capability.is_direct_native_parquet_capable() {
+    if !read_capability.is_native_parquet_capable() {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergObjectStoreReadUnsupported,
             file_id.clone(),

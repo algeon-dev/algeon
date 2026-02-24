@@ -78,6 +78,8 @@ impl NativeTpchBenchmarkConfig {
         resources: &NativeTpchRuntimeResources,
     ) -> NativeCudfExecutionConfig {
         let config = match self.native_memory_policy {
+            // Explicit benchmark override used to compare legacy whole-plan
+            // execution against the bounded production profile.
             NativeTpchMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
             NativeTpchMemoryPolicy::Bounded {
                 device_budget_bytes,

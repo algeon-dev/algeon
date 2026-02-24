@@ -128,8 +128,11 @@ pub(super) fn validate_general_expr_capability(expr: &Expr) -> Result<(), Expres
         | Expr::DateTrunc { expr, .. }
         | Expr::Lower(expr)
         | Expr::Upper(expr)
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. } => validate_general_expr_capability(expr),
+        | Expr::StringLength { expr, .. } => validate_general_expr_capability(expr),
+        Expr::RegexpReplace { .. } => Err(ExpressionCapabilityRejection {
+            reason: "regexp_replace_requires_bounded_output_contract",
+            expression_family: "regexp_replace",
+        }),
         Expr::Abs(expr) => validate_general_expr_capability(expr),
         Expr::Sqrt { expr, .. } => validate_general_expr_capability(expr),
         Expr::Concat(exprs) => {

@@ -1,9 +1,12 @@
+use std::collections::VecDeque;
+
 use super::*;
 
 mod validate;
 
 mod cudf_contract;
 mod gpu_resident;
+mod host_buffer;
 mod metrics;
 mod partition;
 mod predicate;
@@ -14,6 +17,10 @@ mod zero_column_count;
 
 use cudf_contract::{cudf_local_parquet_source_chunk, cudf_local_parquet_source_file_selection};
 pub use gpu_resident::read_gpu_resident_source;
+use host_buffer::{
+    ScheduledHostParquetFetch, finish_object_store_parquet_file_fetch, read_object_store_parquet_chunk,
+    read_object_store_parquet_file, start_object_store_parquet_file_fetch,
+};
 pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metrics};
 use partition::inject_partition_columns;
 use read::read_local_parquet_file;
@@ -136,6 +143,10 @@ fn read_local_parquet_source_uncached(
     }
 
     let columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    if should_pipeline_object_store_file_fetches(context, source, &columns) {
+        return read_object_store_parquet_source_with_fetch_pipeline(context, source, metrics);
+    }
+
     let mut frames = Vec::with_capacity(source.files.len());
     let mut remaining_rows = source.scan_limit;
     for (file_index, file) in source.files.iter().enumerate() {
@@ -143,14 +154,22 @@ fn read_local_parquet_source_uncached(
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
+        } else if matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+            read_object_store_parquet_file(context, source, file, file_index, file_index, metrics)?
         } else {
             let (cudf_source, _cudf_chunk) =
                 cudf_local_parquet_source_file_selection(context, source, file, file_index, file_index)?;
             let reader_predicate = cudf_source.reader_predicate().cloned();
             read_local_parquet_file(context, file, &columns, reader_predicate.clone(), metrics)?
         };
-        let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
-        let frame = materialize_missing_columns(context, source, frame, row_count_override, metrics)?;
+        let frame = if matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. })
+            && !columns.is_empty()
+        {
+            frame
+        } else {
+            let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
+            materialize_missing_columns(context, source, frame, row_count_override, metrics)?
+        };
         let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
         let (frame, remaining) = apply_source_scan_limit_to_frame(context, frame, remaining_rows, metrics)?;
         let frame = append_source_order_columns(context, frame, file_index)?;
@@ -169,6 +188,102 @@ fn read_local_parquet_source_uncached(
     }
 
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
+    let overrides = execution_overrides(context);
+    let timer = Instant::now();
+    let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
+        QueryError::from_cudf(
+            "cudf_query_engine.local_parquet_source.concat",
+            "failed to concatenate native local parquet files",
+            error,
+        )
+        .with_fact("file_count", source.file_count())
+        .with_fact("read_columns", source.read_column_count())
+    })?;
+    metrics.operator_time += timer.elapsed();
+
+    Ok(GpuDataFrame::new(output))
+}
+
+fn should_pipeline_object_store_file_fetches(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    columns: &[&str],
+) -> bool {
+    object_store_file_fetch_pipeline_enabled(
+        context.source_scheduler_policy().max_source_reads_in_flight(),
+        source,
+        columns,
+    )
+}
+
+fn object_store_file_fetch_pipeline_enabled(
+    max_source_reads_in_flight: usize,
+    source: &LocalParquetSource,
+    columns: &[&str],
+) -> bool {
+    !columns.is_empty()
+        && source.scan_limit.is_none()
+        && source.files.len() > 1
+        && max_source_reads_in_flight > 1
+        && source
+            .files
+            .iter()
+            .all(|file| matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }))
+}
+
+fn read_object_store_parquet_source_with_fetch_pipeline(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let max_in_flight = context.source_scheduler_policy().max_source_reads_in_flight();
+    let mut next_file_index = 0usize;
+    let mut pending = VecDeque::new();
+    let mut frames = Vec::with_capacity(source.files.len());
+
+    start_object_store_file_fetches(context, source, max_in_flight, &mut next_file_index, &mut pending)?;
+    while let Some((file_index, fetch)) = pending.pop_front() {
+        context.check_cancellation("cudf_query_engine.local_parquet_source.object_store_fetch_pipeline")?;
+        let file = &source.files[file_index];
+        let frame =
+            finish_object_store_parquet_file_fetch(context, source, file, file_index, file_index, fetch, metrics)?;
+        let frame = coerce_local_parquet_source_schema(frame, source, None, metrics)?;
+        let frame = append_source_order_columns(context, frame, file_index)?;
+        frames.push(frame);
+        start_object_store_file_fetches(context, source, max_in_flight, &mut next_file_index, &mut pending)?;
+    }
+
+    concatenate_local_parquet_source_frames(context, source, frames, metrics)
+}
+
+fn start_object_store_file_fetches(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    max_in_flight: usize,
+    next_file_index: &mut usize,
+    pending: &mut VecDeque<(usize, ScheduledHostParquetFetch)>,
+) -> Result<()> {
+    while pending.len() < max_in_flight && *next_file_index < source.files.len() {
+        let file_index = *next_file_index;
+        let fetch = start_object_store_parquet_file_fetch(context, &source.files[file_index])?;
+        pending.push_back((file_index, fetch));
+        *next_file_index += 1;
+    }
+    Ok(())
+}
+
+fn concatenate_local_parquet_source_frames(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    mut frames: Vec<DataFrame>,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    let frame = frames.remove(0);
+    if frames.is_empty() {
+        return Ok(GpuDataFrame::new(frame));
+    }
+
+    let other_frame_refs = frames.iter().collect::<Vec<_>>();
     let overrides = execution_overrides(context);
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
@@ -284,25 +399,29 @@ pub(super) fn read_local_parquet_chunk(
             .with_fact("row_groups", format_row_groups(chunk))
         })?;
     let read_timer = Instant::now();
-    let outcome = DataFrame::read_parquet_source_chunk_with_budget(
-        context.runtime(),
-        &cudf_source,
-        &cudf_chunk,
-        SourceReadMode::ExecutionFrame,
-        &token,
-    )
-    .map_err(|error| {
-        QueryError::from_cudf_with_budget_details(
-            "cudf_query_engine.local_parquet_chunk.read",
-            "failed to read bounded native local parquet source chunk with cudf",
-            error,
+    let outcome = if matches!(chunk.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+        read_object_store_parquet_chunk(context, chunk, &cudf_source, &cudf_chunk, &token, metrics)?
+    } else {
+        DataFrame::read_parquet_source_chunk_with_budget(
+            context.runtime(),
+            &cudf_source,
+            &cudf_chunk,
+            SourceReadMode::ExecutionFrame,
+            &token,
         )
-        .with_fact("path", chunk.path.display())
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("read_columns", chunk.read_columns.len())
-        .with_fact("row_groups", format_row_groups(chunk))
-    })?;
+        .map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                "cudf_query_engine.local_parquet_chunk.read",
+                "failed to read bounded native local parquet source chunk with cudf",
+                error,
+            )
+            .with_fact("path", chunk.path.display())
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("read_columns", chunk.read_columns.len())
+            .with_fact("row_groups", format_row_groups(chunk))
+        })?
+    };
     metrics.record_budgeted_execution("cudf_query_engine.local_parquet_chunk.read", outcome.report());
     let read_elapsed = read_timer.elapsed();
     metrics.parquet_read_time += read_elapsed;
@@ -376,4 +495,49 @@ fn apply_source_chunk_scan_limit(
     })?;
     metrics.operator_time += timer.elapsed();
     Ok(frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {
+        let schema = Arc::new(Schema::new(vec![Field::new("c1", ArrowDataType::Int32, true)]));
+        LocalParquetSource::from_files(files, schema, read_columns)
+    }
+
+    #[test]
+    fn object_store_file_fetch_pipeline_requires_multiple_object_store_files_without_scan_limit() {
+        let files = vec![
+            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap(),
+            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap(),
+        ];
+        let source = test_source(files, vec!["c1".to_string()]);
+
+        assert!(object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
+        assert!(!object_store_file_fetch_pipeline_enabled(1, &source, &["c1"]));
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &[]));
+
+        let mut limited = source.clone();
+        limited.scan_limit = Some(1);
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &limited, &["c1"]));
+    }
+
+    #[test]
+    fn object_store_file_fetch_pipeline_rejects_mixed_or_single_file_sources() {
+        let mixed = test_source(
+            vec![
+                LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap(),
+                LocalParquetFile::new("/tmp/b.parquet"),
+            ],
+            vec!["c1".to_string()],
+        );
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &mixed, &["c1"]));
+
+        let single = test_source(
+            vec![LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap()],
+            vec!["c1".to_string()],
+        );
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &single, &["c1"]));
+    }
 }

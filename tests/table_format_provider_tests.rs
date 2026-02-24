@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use arrow::datatypes::{DataType, Field, Schema};
-use cudf_query_engine::{ParquetSourceLocation, PlanNode, SourceNode};
+use cudf_query_engine::{PlanNode, SourceNode};
 use datafusion::{
     common::ScalarValue,
     datasource::TableProvider,
@@ -184,7 +184,7 @@ fn native_lowering_lowers_table_format_scan_to_local_parquet_source() {
 }
 
 #[test]
-fn native_lowering_lowers_s3_table_format_scan_to_object_store_location() {
+fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() {
     let schema = iceberg_test_schema();
     let mut plan = native_admissible_scan_plan(Arc::clone(&schema));
     plan.data_files = vec![
@@ -201,14 +201,19 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_location() {
     let result = lower_physical_plan_to_native(scan);
 
     assert_eq!(result.rewritten_count(), 1);
+    assert_eq!(result.rejected_count(), 0);
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("expected S3 table-format scan to be rewritten through SourceFetch lowering");
+    };
+    assert_eq!(candidate.shape, "TableFormatScan(iceberg)");
     let source = native_local_parquet_source(&result.plans[0]);
     assert_eq!(source.files.len(), 1);
+    assert_eq!(source.files[0].location.read_capability(), "object_store:s3");
+    assert_eq!(source.files[0].stable_id, "table-format:iceberg:s3-data-0001");
     assert_eq!(
         source.files[0].path.to_string_lossy(),
         "https://bucket.s3.us-east-1.amazonaws.com/table/data-0001.parquet"
     );
-    assert_eq!(source.files[0].location.read_capability(), "object_store:s3");
-    assert!(matches!(source.files[0].location, ParquetSourceLocation::ObjectStoreUri { .. }));
 }
 
 #[test]

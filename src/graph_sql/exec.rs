@@ -245,17 +245,18 @@ impl ExecutionPlan for CugraphAlgoExec {
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
         let output = futures::stream::once(async move {
             let execution_config = edge_execution_config(edge_source.as_ref());
-            let context = execution_config.execution_context().map_err(|error| {
+            let context_lease = execution_config.execution_context().map_err(|error| {
                 DataFusionError::from(
                     error
                         .with_fact("cugraph_sql_phase", "runtime_context")
                         .with_fact("cpu_fallback_after_native_start", false),
                 )
             })?;
+            let context = context_lease.context();
             let edge_schema = edge_source.schema();
-            let edge_frame = execute_edge_source_to_gpu(&context, Arc::clone(&edge_source), task_context).await?;
+            let edge_frame = execute_edge_source_to_gpu(context, Arc::clone(&edge_source), task_context).await?;
             let (batch, query_metrics) = execute_cugraph_query_to_host(
-                &context,
+                context,
                 &spec,
                 edge_schema,
                 edge_frame,
@@ -300,7 +301,7 @@ fn edge_execution_config(plan: &dyn ExecutionPlan) -> NativeCudfExecutionConfig 
     if let Some(native) = as_native_cudf_composed_exec(plan) {
         return native.execution_config().clone();
     }
-    NativeCudfExecutionConfig::unbounded()
+    NativeCudfExecutionConfig::bounded_auto_sized()
 }
 
 fn as_native_cudf_exec(plan: &dyn ExecutionPlan) -> Option<&NativeCudfExec> {

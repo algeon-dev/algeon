@@ -81,12 +81,11 @@ pub(super) fn validate_expr(
             require_integral_type(output_type, "string length output")?;
             Ok(output_type.clone())
         },
-        Expr::RegexpReplace { expr, output_type, .. } => {
-            let data_type = validate_expr(expr, input_schema, available_columns)?;
-            require_string(&data_type, "REGEXP_REPLACE input")?;
-            require_string(output_type, "REGEXP_REPLACE output")?;
-            Ok(output_type.clone())
-        },
+        Expr::RegexpReplace { .. } => Err(QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            "cudf_query_engine.expr.validate_regexp_replace",
+            "REGEXP_REPLACE requires a bounded output-size contract before native execution",
+        )),
         Expr::Concat(exprs) => validate_concat_expr(exprs, input_schema, available_columns),
         Expr::Abs(expr) => {
             let data_type = validate_expr(expr, input_schema, available_columns)?;

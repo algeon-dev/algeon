@@ -500,3 +500,8 @@ pub(super) fn optional_observed_metric_count(metrics: &MetricsSet, name: &str) -
     let observed = metrics.sum_by_name(&observed_name).map(|value| value.as_usize()).unwrap_or(0);
     (observed > 0).then(|| metric_count(metrics, name))
 }
+
+pub(super) fn metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    let nanos = metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0);
+    (nanos > 0).then_some(nanos)
+}

@@ -15,7 +15,11 @@ workspace = true
 
 [dependencies]
 arrow = { workspace = true }
+bytes = "1"
 cudf = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
+nvml-wrapper = "0.12.1"
+object_store = { version = "0.13", default-features = false, features = ["aws"] }
 parquet = { workspace = true }
+tokio = { version = "1.52", features = ["rt-multi-thread"] }

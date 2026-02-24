@@ -265,20 +265,29 @@ fn execution_boundary_policy_defaults_to_native_gpu_direct_contract() {
 }
 
 #[test]
-fn source_scheduler_policy_defaults_to_serialized_and_rejects_zero_in_flight() {
+fn source_scheduler_policy_defaults_to_prefetch_and_rejects_zero_in_flight() {
     let policy = SourceSchedulerPolicy::default();
-    assert_eq!(policy.max_source_reads_in_flight(), 1);
-    assert!(!policy.enables_prefetch());
+    assert_eq!(policy.max_source_reads_in_flight(), 2);
+    assert!(policy.enables_prefetch());
 
-    let prefetch = SourceSchedulerPolicy::new(2);
-    assert_eq!(prefetch.max_source_reads_in_flight(), 2);
-    assert!(prefetch.enables_prefetch());
+    let serialized = SourceSchedulerPolicy::serialized();
+    assert_eq!(serialized.max_source_reads_in_flight(), 1);
+    assert!(!serialized.enables_prefetch());
 
     let error =
         ExecutionContext::builder().with_source_scheduler_policy(SourceSchedulerPolicy::new(0)).build().unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
     assert_eq!(error.operation(), "cudf_query_engine.source_scheduler_policy.validate");
     assert_eq!(error.fact_value("field"), Some("max_source_reads_in_flight"));
+    assert_eq!(error.fact_value("reason"), Some("zero"));
+}
+
+#[test]
+fn service_stream_pool_rejects_zero_capacity_before_runtime_initialization() {
+    let error = ExecutionContext::builder().with_service_stream_pool_size(0).build().unwrap_err();
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "cudf_query_engine.service_stream_pool.validate");
+    assert_eq!(error.fact_value("field"), Some("service_stream_pool_size"));
     assert_eq!(error.fact_value("reason"), Some("zero"));
 }
 

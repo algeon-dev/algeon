@@ -82,9 +82,9 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
     println!("# cugraph_sql_construction_report_tsv_schema_version={SCHEMA_VERSION}");
     println!(
         "# rows={rows}\tmemory_policy={}\tdevice_budget_bytes={}\tmax_source_chunk_bytes={}",
-        std::env::var(MEMORY_POLICY_ENV).unwrap_or_else(|_| "unbounded".to_string()),
-        env_u64(DEVICE_BUDGET_BYTES_ENV, 2 * 1024 * 1024 * 1024),
-        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 128 * 1024 * 1024),
+        std::env::var(MEMORY_POLICY_ENV).unwrap_or_else(|_| "bounded".to_string()),
+        env_u64(DEVICE_BUDGET_BYTES_ENV, NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),),
+        env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
     );
     println!("{HEADER}");
 
@@ -327,15 +327,17 @@ fn direct_friendly_session_config() -> SessionConfig {
 
 fn native_execution_config() -> NativeCudfExecutionConfig {
     match std::env::var(MEMORY_POLICY_ENV).as_deref() {
-        Ok("bounded") => NativeCudfExecutionConfig::bounded(
-            env_u64(DEVICE_BUDGET_BYTES_ENV, 2 * 1024 * 1024 * 1024),
-            env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, 128 * 1024 * 1024),
+        Ok("bounded") | Err(_) => NativeCudfExecutionConfig::bounded(
+            env_u64(DEVICE_BUDGET_BYTES_ENV, NativeCudfExecutionConfig::auto_sized_device_budget_bytes()),
+            env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES),
             1024,
             3,
             1,
         )
         .with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded),
-        Ok("unbounded") | Err(_) => NativeCudfExecutionConfig::unbounded(),
+        // Explicit diagnostic opt-in for comparing legacy whole-source graph
+        // construction against the bounded production default.
+        Ok("unbounded") => NativeCudfExecutionConfig::unbounded(),
         Ok(value) => {
             panic!("unsupported {MEMORY_POLICY_ENV}={value}; expected unbounded or bounded");
         },

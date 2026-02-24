@@ -493,17 +493,11 @@ fn source_adjacent_partitioned_aggregate_input_evidence(
 }
 
 fn source_adjacent_aggregate_partitioner(
-    context: &ExecutionContext,
+    _context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
-    estimated_input_bytes: u64,
-    chunk_count: usize,
+    _estimated_input_bytes: u64,
+    _chunk_count: usize,
 ) -> SourceAdjacentAggregatePartitioner {
-    if chunk_count > source_adjacent_group_key_partition_max_chunk_fan_in() {
-        return SourceAdjacentAggregatePartitioner::RowBalanced;
-    }
-    if estimated_input_bytes > source_adjacent_group_key_partition_max_input_bytes(context) {
-        return SourceAdjacentAggregatePartitioner::RowBalanced;
-    }
     let Ok(lowered_keys) = lower_aggregate_spec_keys(&bounded.aggregate.0.spec) else {
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     };
@@ -522,17 +516,6 @@ fn source_adjacent_aggregate_partitioner(
         return SourceAdjacentAggregatePartitioner::RowBalanced;
     }
     SourceAdjacentAggregatePartitioner::GroupKey { key_columns: lowered_keys.key_columns }
-}
-
-fn source_adjacent_group_key_partition_max_input_bytes(context: &ExecutionContext) -> u64 {
-    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
-        return u64::MAX;
-    };
-    partitioned_aggregate_target_partition_bytes(device_budget_bytes).saturating_mul(4)
-}
-
-fn source_adjacent_group_key_partition_max_chunk_fan_in() -> usize {
-    64
 }
 
 fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64> {

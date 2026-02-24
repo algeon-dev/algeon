@@ -15,6 +15,7 @@ use crate::capability::{
 };
 
 const ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
+const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN: u64 = 64;
 
 /// Source/chunk evidence available at a partial aggregate strategy decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -538,10 +539,18 @@ fn select_partial_aggregate_strategy_decision(
         decision.facts.insert("encoded_key_partial_selection_reason", "capability_rejected".to_string());
         return decision;
     }
-    if input_evidence.is_some_and(|evidence| evidence.source_adjacent_partial)
+    if let Some(evidence) = input_evidence
+        && evidence.source_adjacent_partial
         && prepared_sort_groupby_contract_available(&decision)
     {
-        return select_prepared_sort_groupby_for_source_adjacent(decision);
+        if source_adjacent_prepared_sort_groupby_allowed(evidence) {
+            return select_prepared_sort_groupby_for_source_adjacent(decision);
+        }
+        decision = reject_prepared_sort_groupby_for_cost_model(
+            decision,
+            "prepared_sort_groupby_requires_group_key_source_partition",
+            "source_adjacent_row_balanced_partition",
+        );
     }
 
     let Some(evidence) = prior_partial_cardinality_evidence(metrics, node_id) else {
@@ -690,6 +699,13 @@ fn add_prepared_sort_groupby_gate_facts(decision: &mut AggregateStrategyCapabili
 
 fn prepared_sort_groupby_contract_available(decision: &AggregateStrategyCapabilityDecision) -> bool {
     decision.facts.get("prepared_sort_groupby_contract_status").map(String::as_str) == Some("available")
+}
+
+fn source_adjacent_prepared_sort_groupby_allowed(evidence: PartialAggregateInputEvidence) -> bool {
+    evidence.source_adjacent_partition_strategy == "group_key"
+        && evidence
+            .source_adjacent_max_partition_fan_in
+            .is_some_and(|fan_in| fan_in <= SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN)
 }
 
 fn select_prepared_sort_groupby_for_source_adjacent(
