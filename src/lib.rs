@@ -67,20 +67,22 @@ pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{
     CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
-    CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_ECG_FUNCTION, CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_HITS_FUNCTION,
-    CUGRAPH_IN_DEGREES_ALL_FUNCTION, CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION,
-    CUGRAPH_LEIDEN_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
+    CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_ECG_FUNCTION,
+    CUGRAPH_EIGENVECTOR_CENTRALITY_FUNCTION, CUGRAPH_HITS_FUNCTION, CUGRAPH_IN_DEGREES_ALL_FUNCTION,
+    CUGRAPH_K_CORE_FUNCTION, CUGRAPH_KATZ_CENTRALITY_FUNCTION, CUGRAPH_LEIDEN_FUNCTION,
+    CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LOUVAIN_FUNCTION, CUGRAPH_MINIMUM_SPANNING_TREE_FUNCTION,
     CUGRAPH_OPERATION_REGISTRY, CUGRAPH_OUT_DEGREES_ALL_FUNCTION, CUGRAPH_PAGERANK_FUNCTION,
     CUGRAPH_PAGERANK_STRICT_FUNCTION, CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION, CUGRAPH_SSSP_FUNCTION,
     CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_FUNCTION, CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION,
-    CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgoTableProvider, CugraphAlgorithm, CugraphAlgorithmParams,
-    CugraphAlgorithmSpec, CugraphBfsParams, CugraphCoreNumberParams, CugraphDegreesAllParams, CugraphEcgParams,
-    CugraphEigenvectorCentralityParams, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphHitsParams,
-    CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams, CugraphKatzCentralityParams,
-    CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams, CugraphOperationDefinition,
-    CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphSccParams, CugraphSpectralClusteringParams,
-    CugraphSqlConfig, CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphWccParams,
-    cugraph_table_functions, parse_cugraph_algorithm_spec, register_cugraph_udtfs, stable_result_schema,
+    CUGRAPH_VALIDATE_CALL_FUNCTION, CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION, CugraphAlgoTableProvider,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsParams, CugraphCoreNumberParams,
+    CugraphDegreesAllParams, CugraphEcgParams, CugraphEigenvectorCentralityParams, CugraphGraphConstructionPolicy,
+    CugraphGraphOptions, CugraphHitsParams, CugraphInDegreesAllParams, CugraphKCoreDegreeType, CugraphKCoreParams,
+    CugraphKatzCentralityParams, CugraphLeidenParams, CugraphLouvainParams, CugraphMstParams,
+    CugraphOperationDefinition, CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphSccParams,
+    CugraphSpectralClusteringParams, CugraphSqlConfig, CugraphSsspParams, CugraphTableReference,
+    CugraphTriangleCountAllParams, CugraphWccParams, cugraph_table_functions, parse_cugraph_algorithm_spec,
+    register_cugraph_udtfs, stable_result_schema,
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::catalog::{

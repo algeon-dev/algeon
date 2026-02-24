@@ -11,19 +11,42 @@ use super::{
     error::ServerError,
 };
 use crate::CudfSessionStateBuilderExt;
+#[cfg(feature = "cugraph")]
+use crate::CugraphSqlConfig;
 
 pub async fn build_session_context(config: &ServerConfig) -> super::error::Result<SessionContext> {
     let session_config = build_session_config(config)?;
-    let state = SessionStateBuilder::new_with_default_features()
+    let builder = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native(config.native_optimizer_config.clone())
-        .build();
+        .with_cudf_native(config.native_optimizer_config.clone());
+    #[cfg(feature = "cugraph")]
+    let builder = match &config.cugraph {
+        Some(cugraph) => builder.with_cugraph_sql(cugraph_sql_config(
+            cugraph,
+            config.native_optimizer_config.native_execution_config().clone(),
+        )),
+        None => builder,
+    };
+    let state = builder.build();
     let ctx = SessionContext::new_with_state(state);
 
     #[cfg(feature = "iceberg")]
     register_iceberg_catalog(&ctx, config).await?;
 
     Ok(ctx)
+}
+
+#[cfg(feature = "cugraph")]
+fn cugraph_sql_config(
+    config: &super::config::CugraphServerConfig,
+    native_execution_config: crate::NativeCudfExecutionConfig,
+) -> CugraphSqlConfig {
+    let mut sql = match &config.allowed_algorithms {
+        Some(algorithms) => CugraphSqlConfig::default().with_allowed_algorithms(algorithms.iter().copied()),
+        None => CugraphSqlConfig::default(),
+    };
+    sql.default_graph_options = config.default_graph_options.clone();
+    sql.with_native_execution_config(native_execution_config)
 }
 
 /// Build the `SessionConfig` for the Flight SQL server, honoring the

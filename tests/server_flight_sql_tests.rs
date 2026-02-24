@@ -42,6 +42,31 @@ async fn flight_sql_client_can_run_select_one() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn create_view_statement_executes_once_and_persists_across_statements() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+
+    let batches = execute_batches(
+        &mut client,
+        "CREATE VIEW target_edges AS \
+         SELECT * FROM (VALUES (0::BIGINT, 1::BIGINT), (1::BIGINT, 2::BIGINT)) AS t(src, dst)",
+    )
+    .await;
+    assert_eq!(batches.iter().map(|batch| batch.num_rows()).sum::<usize>(), 0);
+
+    let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM target_edges").await;
+
+    server.abort();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_planning_errors_include_query_id_metadata() {
     let addr = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
@@ -249,6 +274,15 @@ async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClien
         }
     }
     panic!("Flight SQL server did not accept connections at {addr}: {last_error:?}");
+}
+
+async fn execute_batches(
+    client: &mut FlightSqlServiceClient<tonic::transport::Channel>,
+    sql: &str,
+) -> Vec<arrow::record_batch::RecordBatch> {
+    let flight_info = client.execute(sql.to_string(), None).await.unwrap();
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap()
 }
 
 fn int_value(array: &arrow::array::ArrayRef) -> Option<i64> {

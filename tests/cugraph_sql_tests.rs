@@ -7,12 +7,13 @@ use std::{
 };
 
 use arrow::{
-    array::{ArrayRef, BooleanArray, Float64Array, Int64Array},
+    array::{ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::{
     common::ScalarValue,
+    datasource::MemTable,
     execution::SessionStateBuilder,
     logical_expr::{col, lit},
     parquet::{arrow::ArrowWriter, file::properties::WriterProperties},
@@ -20,7 +21,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
-    CUGRAPH_OPERATION_REGISTRY, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
+    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
+    CUGRAPH_VALIDATE_CALL_FUNCTION, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphAlgorithm,
     CugraphAlgorithmParams, CugraphGraphConstructionPolicy, CugraphSqlConfig, GpuFallbackPolicy,
     NativeCudfComposedExec, parse_cugraph_algorithm_spec, stable_result_schema,
 };
@@ -40,13 +42,201 @@ async fn cugraph_sql_planning_registers_udtfs_on_session_state_builder() {
 
     let registered_cugraph_udtfs: std::collections::BTreeSet<&str> =
         functions.keys().filter_map(|name| name.strip_prefix("cugraph_").map(|_| name.as_str())).collect();
-    let registry_function_names: std::collections::BTreeSet<&str> =
+    let mut registry_function_names: std::collections::BTreeSet<&str> =
         CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.sql_function_name).collect();
+    registry_function_names.extend([
+        CUGRAPH_LIST_ALGORITHMS_FUNCTION,
+        CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION,
+        CUGRAPH_VALIDATE_CALL_FUNCTION,
+    ]);
     assert_eq!(
         registered_cugraph_udtfs, registry_function_names,
-        "every `cugraph_*` UDTF on the session must come from the registry; \
-         add a registry entry rather than registering a function out of band",
+        "every `cugraph_*` UDTF on the session must come from the algorithm registry or metadata surface",
     );
+}
+
+#[tokio::test]
+async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cugraph_sql(CugraphSqlConfig::default().with_allowed_algorithms([CugraphAlgorithm::PageRank]))
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let batches = ctx
+        .sql(
+            "SELECT function_name, enabled, requires_source_vertex, output_schema_json \
+             FROM cugraph_list_algorithms() \
+             WHERE function_name IN ('cugraph_pagerank', 'cugraph_bfs') \
+             ORDER BY function_name",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+
+    assert_eq!(string_value(batch, 0, 0), "cugraph_bfs");
+    assert!(!bool_value(batch, 1, 0), "BFS is registered but disabled by the allowlist");
+    assert!(bool_value(batch, 2, 0), "BFS must advertise its source_vertex requirement");
+    assert_eq!(string_value(batch, 0, 1), "cugraph_pagerank");
+    assert!(bool_value(batch, 1, 1));
+    assert!(string_value(batch, 3, 1).contains(r#""vertex""#));
+}
+
+#[tokio::test]
+async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+
+    let batches = ctx
+        .sql("SELECT valid, error_code, requires_source_vertex, argument_descriptions_json FROM cugraph_describe_algorithm('cugraph_bfs')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(bool_value(batch, 2, 0));
+    assert!(string_value(batch, 3, 0).contains("source_vertex"));
+
+    let batches = ctx
+        .sql("SELECT valid, error_code, message FROM cugraph_describe_algorithm('cugraph_missing')")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(!bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "unknown_algorithm");
+    assert!(string_value(batch, 2, 0).contains("cugraph_missing"));
+}
+
+#[tokio::test]
+async fn cugraph_metadata_validate_call_checks_temp_view_schema_without_gpu_execution() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    ctx.sql("CREATE VIEW target_edges AS SELECT src, dst, weight FROM raw_edges")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu, normalized_options_json
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'target_edges',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","options":{"depth_limit":2}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(bool_value(batch, 2, 0));
+    assert_eq!(string_value(batch, 3, 0), "Int64");
+    assert_eq!(string_value(batch, 4, 0), "Int64");
+    assert_eq!(string_value(batch, 5, 0), "Float64");
+    assert!(bool_value(batch, 6, 0));
+    assert!(string_value(batch, 7, 0).contains(r#""depth_limit":2"#));
+}
+
+#[tokio::test]
+async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cugraph_sql(CugraphSqlConfig::default().with_allowed_algorithms([CugraphAlgorithm::PageRank]))
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "bad_edges", DataType::Utf8, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "mismatch_edges", DataType::Int32, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "bad_weight_edges", DataType::Int64, DataType::Int64, DataType::Utf8);
+    register_nullable_edge_memtable(&ctx, "nullable_edges", true, false, false);
+
+    assert_validate_error(
+        &ctx,
+        "cugraph_missing",
+        "bad_edges",
+        r#"{"src_col":"src","dst_col":"dst"}"#,
+        "unknown_algorithm",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_bfs",
+        "bad_edges",
+        r#"{"source_vertex":0,"src_col":"src","dst_col":"dst"}"#,
+        "algorithm_disabled",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "missing_edges",
+        r#"{"src_col":"src","dst_col":"dst"}"#,
+        "table_not_found",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "bad_edges",
+        r#"{"src_col":"missing","dst_col":"dst"}"#,
+        "column_not_found",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "nullable_edges",
+        r#"{"src_col":"src","dst_col":"dst","weight_col":"weight"}"#,
+        "nullable_edge_column",
+    )
+    .await;
+    let unsupported = assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "bad_edges",
+        r#"{"src_col":"src","dst_col":"dst"}"#,
+        "unsupported_vertex_dtype",
+    )
+    .await;
+    assert_eq!(string_value(&unsupported, 2, 0), "Utf8");
+    assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "mismatch_edges",
+        r#"{"src_col":"src","dst_col":"dst"}"#,
+        "vertex_dtype_mismatch",
+    )
+    .await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "bad_weight_edges",
+        r#"{"src_col":"src","dst_col":"dst","weight_col":"weight"}"#,
+        "unsupported_weight_dtype",
+    )
+    .await;
+    assert_validate_error(&ctx, "cugraph_pagerank", "bad_edges", r#"{"src_col":"#, "invalid_call_json").await;
+    assert_validate_error(
+        &ctx,
+        "cugraph_pagerank",
+        "bad_edges",
+        r#"{"src_col":"src","dst_col":"dst","options":{"bogus":1}}"#,
+        "unsupported_option",
+    )
+    .await;
 }
 
 #[test]
@@ -1434,6 +1624,93 @@ fn write_tiny_communities(path: &Path) {
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
+}
+
+fn register_edge_memtable(
+    ctx: &SessionContext,
+    table_name: &str,
+    src_type: DataType,
+    dst_type: DataType,
+    weight_type: DataType,
+) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", src_type.clone(), false),
+        Field::new("dst", dst_type.clone(), false),
+        Field::new("weight", weight_type.clone(), false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![edge_column(&src_type), edge_column(&dst_type), edge_column(&weight_type)],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_nullable_edge_memtable(
+    ctx: &SessionContext,
+    table_name: &str,
+    src_nullable: bool,
+    dst_nullable: bool,
+    weight_nullable: bool,
+) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, src_nullable),
+        Field::new("dst", DataType::Int64, dst_nullable),
+        Field::new("weight", DataType::Float64, weight_nullable),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn edge_column(data_type: &DataType) -> ArrayRef {
+    match data_type {
+        DataType::Int32 => Arc::new(Int32Array::from(vec![0_i32, 1])) as ArrayRef,
+        DataType::Int64 => Arc::new(Int64Array::from(vec![0_i64, 1])) as ArrayRef,
+        DataType::Float64 => Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
+        DataType::Utf8 => Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+        other => panic!("test helper does not support {other:?}"),
+    }
+}
+
+async fn assert_validate_error(
+    ctx: &SessionContext,
+    function_name: &str,
+    table_name: &str,
+    call_json: &str,
+    expected_code: &str,
+) -> RecordBatch {
+    let sql = format!(
+        "SELECT valid, error_code, src_dtype, dst_dtype, weight_dtype \
+         FROM cugraph_validate_call('{function_name}', '{table_name}', '{call_json}')"
+    );
+    let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    let batch = single_batch(&batches).clone();
+    assert!(!bool_value(&batch, 0, 0), "validation should fail for {sql}");
+    assert_eq!(string_value(&batch, 1, 0), expected_code, "unexpected validation error for {sql}");
+    batch
+}
+
+fn single_batch(batches: &[RecordBatch]) -> &RecordBatch {
+    assert_eq!(batches.len(), 1, "expected one RecordBatch");
+    &batches[0]
+}
+
+fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {
+    batch.column(column).as_any().downcast_ref::<StringArray>().unwrap().value(row)
+}
+
+fn bool_value(batch: &RecordBatch, column: usize, row: usize) -> bool {
+    batch.column(column).as_any().downcast_ref::<BooleanArray>().unwrap().value(row)
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

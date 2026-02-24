@@ -14,16 +14,20 @@ use super::{
     CugraphAlgorithm, CugraphAlgorithmSpec, CugraphSqlConfig, CugraphTableReference, parse_cugraph_algorithm_spec,
     plan_error,
 };
-use crate::graph_sql::CugraphAlgoExec;
+use crate::{
+    NativeCudfExecutionConfig,
+    graph_sql::{CugraphAlgoExec, metadata::cugraph_metadata_table_functions},
+};
 
 #[derive(Debug)]
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
+    native_execution_config: NativeCudfExecutionConfig,
 }
 
 impl CugraphAlgoTableProvider {
-    pub fn new(spec: CugraphAlgorithmSpec) -> Self {
-        Self { spec }
+    pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NativeCudfExecutionConfig) -> Self {
+        Self { spec, native_execution_config }
     }
 
     pub fn spec(&self) -> &CugraphAlgorithmSpec {
@@ -67,7 +71,13 @@ impl TableProvider for CugraphAlgoTableProvider {
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&self.spec))?.build()?;
         let edge_source = state.create_physical_plan(&edge_source_plan).await?;
-        Ok(Arc::new(CugraphAlgoExec::try_new(self.spec.clone(), edge_source, projection.cloned(), limit)?))
+        Ok(Arc::new(CugraphAlgoExec::try_new(
+            self.spec.clone(),
+            edge_source,
+            projection.cloned(),
+            limit,
+            self.native_execution_config.clone(),
+        )?))
     }
 }
 
@@ -80,20 +90,21 @@ struct CugraphTableFunction {
 impl TableFunctionImpl for CugraphTableFunction {
     fn call(&self, args: &[Expr]) -> Result<Arc<dyn TableProvider>> {
         let spec = parse_cugraph_algorithm_spec(self.algorithm, args, &self.config)?;
-        Ok(Arc::new(CugraphAlgoTableProvider::new(spec)))
+        Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
     }
 }
 
 pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
-    CugraphAlgorithm::all()
-        .filter(|algorithm| config.allows(*algorithm))
+    let mut functions: Vec<_> = CugraphAlgorithm::all()
         .map(|algorithm| {
             Arc::new(TableFunction::new(
                 algorithm.function_name().to_string(),
                 Arc::new(CugraphTableFunction { algorithm, config: config.clone() }),
             ))
         })
-        .collect()
+        .collect();
+    functions.extend(cugraph_metadata_table_functions(config));
+    functions
 }
 
 pub fn register_cugraph_udtfs(ctx: &SessionContext, config: CugraphSqlConfig) {

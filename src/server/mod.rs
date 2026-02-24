@@ -14,19 +14,25 @@ pub mod error;
 mod flight;
 mod session;
 
+#[cfg(feature = "cugraph")]
+pub use config::CugraphServerConfig;
 pub use config::{
     DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
     DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
     DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
     DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, DATAFUSION_CUDF_ICEBERG_TABLES_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
-    DATAFUSION_CUDF_SERVER_LOG_ENV, DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV,
-    DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV,
-    DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig, ServerSessionProfile,
+    DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+    DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
+    DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV, DATAFUSION_CUDF_SERVER_LOG_ENV,
+    DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV, DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
+    DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV, DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
+    ServerSessionProfile,
 };
 pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report};
 pub use error::{Result, ServerError};
-pub use session::{apply_session_profile, build_session_config};
+pub use session::{apply_session_profile, build_session_config, build_session_context};
 
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
 ///
@@ -119,6 +125,10 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
             native_boundary_policy = %native_execution.boundary_policy(),
             native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
+            cugraph_enabled = cugraph_enabled(config),
+            cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+            cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
+            cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
             iceberg_enabled = true,
             iceberg_catalog_name = %iceberg.catalog_name,
             iceberg_glue_catalog_handle = %iceberg.glue_catalog_handle,
@@ -145,6 +155,10 @@ fn log_server_config_snapshot(config: &ServerConfig) {
             native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
             native_boundary_policy = %native_execution.boundary_policy(),
             native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
+            cugraph_enabled = cugraph_enabled(config),
+            cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+            cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
+            cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
             iceberg_enabled = false,
             "server config snapshot"
         ),
@@ -171,8 +185,60 @@ fn log_server_config_snapshot(config: &ServerConfig) {
         native_min_retry_chunk_row_groups = %native_memory.min_retry_chunk_row_groups,
         native_boundary_policy = %native_execution.boundary_policy(),
         native_max_source_reads_in_flight = source_scheduler.max_source_reads_in_flight(),
+        cugraph_enabled = cugraph_enabled(config),
+        cugraph_registry_algorithm_count = cugraph_registry_algorithm_count(),
+        cugraph_allowed_algorithm_count = cugraph_allowed_algorithm_count(config),
+        cugraph_allowed_algorithms = %cugraph_allowed_algorithms(config),
         "server config snapshot"
     );
+}
+
+#[cfg(feature = "cugraph")]
+fn cugraph_enabled(config: &ServerConfig) -> bool {
+    config.cugraph.is_some()
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn cugraph_enabled(_config: &ServerConfig) -> bool {
+    false
+}
+
+#[cfg(feature = "cugraph")]
+fn cugraph_registry_algorithm_count() -> usize {
+    crate::CUGRAPH_OPERATION_REGISTRY.len()
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn cugraph_registry_algorithm_count() -> usize {
+    0
+}
+
+#[cfg(feature = "cugraph")]
+fn cugraph_allowed_algorithm_count(config: &ServerConfig) -> usize {
+    match config.cugraph.as_ref().and_then(|cugraph| cugraph.allowed_algorithms.as_ref()) {
+        Some(algorithms) => algorithms.len(),
+        None if config.cugraph.is_some() => crate::CUGRAPH_OPERATION_REGISTRY.len(),
+        None => 0,
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn cugraph_allowed_algorithm_count(_config: &ServerConfig) -> usize {
+    0
+}
+
+#[cfg(feature = "cugraph")]
+fn cugraph_allowed_algorithms(config: &ServerConfig) -> String {
+    match config.cugraph.as_ref().and_then(|cugraph| cugraph.allowed_algorithms.as_ref()) {
+        Some(algorithms) => algorithms.iter().map(|algorithm| algorithm.function_name()).collect::<Vec<_>>().join(","),
+        None if config.cugraph.is_some() => "all".to_string(),
+        None => "none".to_string(),
+    }
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn cugraph_allowed_algorithms(_config: &ServerConfig) -> String {
+    "unavailable".to_string()
 }
 
 struct NativeMemorySnapshot {
@@ -294,6 +360,8 @@ mod tests {
             session_profile: profile,
             #[cfg(feature = "iceberg")]
             iceberg: None,
+            #[cfg(feature = "cugraph")]
+            cugraph: None,
         }
     }
 

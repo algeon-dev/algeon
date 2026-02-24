@@ -109,6 +109,16 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 # ── Pipeline execution mode ──────────────────────────────────────────────────
 #   CUDF_NATIVE_PIPELINE_EXECUTION_MODE           strict_bounded | adaptive
 #
+# ── cuGraph SQL DSL (binary must be built with cugraph support) ─────────────
+#   DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED        true | false
+#   DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS     optional allowlist by SQL
+#                                                 function name, e.g.
+#                                                 cugraph_pagerank,cugraph_bfs
+#   DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED       default graph direction
+#   DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER       default renumber flag
+#   DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY
+#                                                 python_cugraph | raw_libcugraph
+#
 # ===========================================================================
 
 EXPOSE 50051

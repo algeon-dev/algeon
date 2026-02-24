@@ -2,6 +2,8 @@ use std::{collections::BTreeMap, net::SocketAddr, time::Duration};
 
 use super::error::{Result, ServerError};
 use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
+#[cfg(feature = "cugraph")]
+use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOptions};
 
 pub const DATAFUSION_CUDF_SERVER_BIND_ENV: &str = "DATAFUSION_CUDF_SERVER_BIND";
 pub const DATAFUSION_CUDF_SERVER_LOG_ENV: &str = "DATAFUSION_CUDF_SERVER_LOG";
@@ -22,10 +24,17 @@ pub const DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str =
 pub const DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV: &str = "DATAFUSION_CUDF_SERVER_SESSION_PROFILE";
 pub const DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES";
+pub const DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV: &str = "DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY";
 pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
 pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
     "DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub const DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED";
+pub const DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS";
+pub const DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED";
+pub const DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER";
+pub const DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str =
+    "DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY";
 
 // Backend-neutral Iceberg env vars (preferred for new deployments).
 pub const DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEBERG_CATALOG_NAME";
@@ -62,6 +71,8 @@ pub struct ServerConfig {
     pub session_profile: ServerSessionProfile,
     #[cfg(feature = "iceberg")]
     pub iceberg: Option<IcebergServerConfig>,
+    #[cfg(feature = "cugraph")]
+    pub cugraph: Option<CugraphServerConfig>,
 }
 
 /// DataFusion physical-plan profile applied to the Flight SQL session.
@@ -158,6 +169,17 @@ pub struct IcebergTableRegistrationConfig {
     pub alias: String,
 }
 
+#[cfg(feature = "cugraph")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphServerConfig {
+    /// Optional SQL-function allowlist. `None` means all registry algorithms
+    /// are registered; `Some` registers only the named algorithms.
+    pub allowed_algorithms: Option<std::collections::BTreeSet<CugraphAlgorithm>>,
+    /// Operator-level graph construction defaults used by cuGraph SQL UDTFs.
+    /// Per-call `options_json` still overrides these values.
+    pub default_graph_options: CugraphGraphOptions,
+}
+
 impl ServerConfig {
     pub fn from_env() -> Result<Self> {
         Self::from_env_get(|name| std::env::var(name).ok())
@@ -182,6 +204,12 @@ impl ServerConfig {
         #[cfg(not(feature = "iceberg"))]
         reject_iceberg_env_without_feature(&mut values)?;
 
+        #[cfg(feature = "cugraph")]
+        let cugraph = cugraph_config(&mut values)?;
+
+        #[cfg(not(feature = "cugraph"))]
+        reject_cugraph_env_without_feature(&mut values)?;
+
         let explicit_profile = values.optional_session_profile(DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV)?;
         #[cfg(feature = "iceberg")]
         let default_profile =
@@ -199,47 +227,82 @@ impl ServerConfig {
             session_profile,
             #[cfg(feature = "iceberg")]
             iceberg,
+            #[cfg(feature = "cugraph")]
+            cugraph,
         })
     }
 }
 
 fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerConfig> {
+    let memory_policy = values
+        .string(DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV)
+        .map(|raw| parse_native_memory_policy(&raw))
+        .transpose()?
+        .unwrap_or(ServerNativeMemoryPolicy::Bounded);
     let device_budget = values.optional_u64(DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV)?;
     let max_source_chunk = values.optional_u64(DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?;
     let max_row_groups = values.optional_usize(DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?;
 
-    let execution_config = match (device_budget, max_source_chunk, max_row_groups) {
-        (None, None, None) => NativeCudfExecutionConfig::bounded_auto_sized(),
-        (Some(device_budget), Some(max_source_chunk), Some(max_row_groups)) => {
-            if device_budget == 0 {
+    let execution_config = match memory_policy {
+        ServerNativeMemoryPolicy::Unbounded => {
+            if device_budget.is_some() || max_source_chunk.is_some() || max_row_groups.is_some() {
+                return Err(ServerError::invalid_config(
+                    DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
+                    "unbounded native execution cannot be combined with bounded native budget env vars",
+                ));
+            }
+            NativeCudfExecutionConfig::unbounded()
+        },
+        ServerNativeMemoryPolicy::Bounded => match (device_budget, max_source_chunk, max_row_groups) {
+            (None, None, None) => NativeCudfExecutionConfig::bounded_auto_sized(),
+            (Some(device_budget), Some(max_source_chunk), Some(max_row_groups)) => {
+                if device_budget == 0 {
+                    return Err(ServerError::invalid_config(
+                        DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+                        "must be greater than zero",
+                    ));
+                }
+                if max_source_chunk == 0 {
+                    return Err(ServerError::invalid_config(
+                        DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+                        "must be greater than zero",
+                    ));
+                }
+                if max_row_groups == 0 {
+                    return Err(ServerError::invalid_config(
+                        DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+                        "must be greater than zero",
+                    ));
+                }
+                NativeCudfExecutionConfig::bounded(device_budget, max_source_chunk, max_row_groups, 1, 1)
+            },
+            _ => {
                 return Err(ServerError::invalid_config(
                     DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-                    "must be greater than zero",
+                    "bounded native execution requires device budget, max source chunk bytes, and max row groups per chunk",
                 ));
-            }
-            if max_source_chunk == 0 {
-                return Err(ServerError::invalid_config(
-                    DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-                    "must be greater than zero",
-                ));
-            }
-            if max_row_groups == 0 {
-                return Err(ServerError::invalid_config(
-                    DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-                    "must be greater than zero",
-                ));
-            }
-            NativeCudfExecutionConfig::bounded(device_budget, max_source_chunk, max_row_groups, 1, 1)
-        },
-        _ => {
-            return Err(ServerError::invalid_config(
-                DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-                "bounded native execution requires device budget, max source chunk bytes, and max row groups per chunk",
-            ));
+            },
         },
     };
 
     Ok(CudfOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerNativeMemoryPolicy {
+    Bounded,
+    Unbounded,
+}
+
+fn parse_native_memory_policy(raw: &str) -> Result<ServerNativeMemoryPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bounded" => Ok(ServerNativeMemoryPolicy::Bounded),
+        "unbounded" => Ok(ServerNativeMemoryPolicy::Unbounded),
+        other => Err(ServerError::invalid_config(
+            DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
+            format!("must be `bounded` or `unbounded`, got `{other}`"),
+        )),
+    }
 }
 
 #[cfg(feature = "iceberg")]
@@ -341,6 +404,75 @@ fn parse_iceberg_tables(env_name: &'static str, raw: &str) -> Result<Vec<Iceberg
     Ok(tables)
 }
 
+#[cfg(feature = "cugraph")]
+fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConfig>> {
+    let requested = values.any_present([
+        DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+    ]);
+    let enabled = values.optional_bool(DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV)?;
+    if enabled != Some(true) {
+        if requested {
+            return Err(ServerError::invalid_config(
+                DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
+                "must be true when cuGraph server settings are provided",
+            ));
+        }
+        return Ok(None);
+    }
+
+    let allowed_algorithms = values
+        .string(DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV)
+        .map(|raw| parse_cugraph_algorithms(DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV, &raw))
+        .transpose()?;
+    let mut default_graph_options = CugraphGraphOptions::default();
+    if let Some(directed) = values.optional_bool(DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV)? {
+        default_graph_options.directed = directed;
+    }
+    if let Some(renumber) = values.optional_bool(DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV)? {
+        default_graph_options.renumber = renumber;
+    }
+    if let Some(raw) = values.string(DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV) {
+        default_graph_options.construction_policy =
+            parse_cugraph_construction_policy(DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, &raw)?;
+    }
+
+    Ok(Some(CugraphServerConfig { allowed_algorithms, default_graph_options }))
+}
+
+#[cfg(feature = "cugraph")]
+fn parse_cugraph_algorithms(env_name: &'static str, raw: &str) -> Result<std::collections::BTreeSet<CugraphAlgorithm>> {
+    let mut algorithms = std::collections::BTreeSet::new();
+    for entry in raw.split(',').map(str::trim).filter(|entry| !entry.is_empty()) {
+        let algorithm =
+            CugraphAlgorithm::all().find(|algorithm| algorithm.function_name() == entry).ok_or_else(|| {
+                ServerError::invalid_config(
+                    env_name,
+                    format!("unknown cuGraph algorithm `{entry}`; use SQL function names such as `cugraph_pagerank`"),
+                )
+            })?;
+        algorithms.insert(algorithm);
+    }
+    if algorithms.is_empty() {
+        return Err(ServerError::invalid_config(env_name, "must contain at least one SQL function name"));
+    }
+    Ok(algorithms)
+}
+
+#[cfg(feature = "cugraph")]
+fn parse_cugraph_construction_policy(env_name: &'static str, raw: &str) -> Result<CugraphGraphConstructionPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "python_cugraph" => Ok(CugraphGraphConstructionPolicy::PythonCugraph),
+        "raw_libcugraph" => Ok(CugraphGraphConstructionPolicy::RawLibcugraph),
+        other => Err(ServerError::invalid_config(
+            env_name,
+            format!("must be `python_cugraph` or `raw_libcugraph`, got `{other}`"),
+        )),
+    }
+}
+
 #[cfg(not(feature = "iceberg"))]
 fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
     if values.any_present([
@@ -356,6 +488,23 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         return Err(ServerError::invalid_config(
             DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
             "Iceberg server registration requires building with --features server,iceberg",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn reject_cugraph_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
+    if values.any_present([
+        DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
+        DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+    ]) {
+        return Err(ServerError::invalid_config(
+            DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
+            "cuGraph server registration requires building with --features server,cugraph or --features server-cugraph",
         ));
     }
     Ok(())
@@ -440,6 +589,19 @@ impl<'a> EnvValues<'a> {
     fn optional_session_profile(&mut self, name: &'static str) -> Result<Option<ServerSessionProfile>> {
         self.string(name)
             .map(|raw| ServerSessionProfile::parse(&raw).map_err(|reason| ServerError::invalid_config(name, reason)))
+            .transpose()
+    }
+
+    #[cfg(feature = "cugraph")]
+    fn optional_bool(&mut self, name: &'static str) -> Result<Option<bool>> {
+        self.string(name)
+            .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
+                "1" | "true" | "yes" | "on" => Ok(true),
+                "0" | "false" | "no" | "off" => Ok(false),
+                other => {
+                    Err(ServerError::invalid_config(name, format!("must be a boolean (`true`/`false`), got `{other}`")))
+                },
+            })
             .transpose()
     }
 }

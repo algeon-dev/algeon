@@ -149,14 +149,15 @@ impl DatafusionCudfFlightSqlService {
         let native_cancellation = ExecutionCancellation::new();
         let planning = self.query_planning(native_cancellation.clone());
         let query_ctx = &planning.ctx;
-        let df = tokio::select! {
-            result = query_ctx.sql(&sql) => result.map_err(datafusion_error_to_status)?,
+        let query_state = query_ctx.state();
+        let logical_plan = tokio::select! {
+            result = query_state.create_logical_plan(&sql) => result.map_err(datafusion_error_to_status)?,
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
                 return Err(server_shutdown_status(&query_id));
             }
         };
-        let schema = df.schema().as_arrow().clone();
+        let schema = logical_plan.schema().as_arrow().clone();
 
         let ticket = TicketStatementQuery { statement_handle: query_id.as_bytes().to_vec().into() };
         let endpoint = FlightEndpoint::new().with_ticket(Ticket { ticket: ticket.as_any().encode_to_vec().into() });
