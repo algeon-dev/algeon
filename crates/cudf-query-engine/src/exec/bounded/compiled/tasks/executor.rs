@@ -279,7 +279,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             ))
                         },
                         CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                            let frame = self.apply_dynamic_filters_to_filter_frame(node_id, filter, frame)?;
+                            let frame = self.apply_dynamic_filters_to_filter_frame(node_id, filter, *frame)?;
                             execute_bounded_generic_unary(
                                 self.context,
                                 node_id,
@@ -385,7 +385,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                             node_id,
                             "compiled_projection",
                             "compiled_projection_output",
-                            frame,
+                            *frame,
                             &mut self.reservations,
                             self.metrics,
                             true,
@@ -471,7 +471,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
             let input_frame = match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
-                    let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
+                    let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
                     materialize_bounded_join_leaf_local_parquet_source_stream(
                         self.context,
                         stream,
@@ -479,7 +479,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         self.metrics,
                     )
                 },
-                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => Ok(frame),
+                CompiledGpuResourcePayload::ResidentFrame { frame, .. } => Ok(*frame),
                 CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                     Err(invalid("compiled join build task cannot consume a resident frame stream")
                         .with_fact("compiled_task_id", task.id())
@@ -593,7 +593,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             self.reservations.set_diagnostic_context(Some(task.id()), Some(input));
             match input_payload.payload {
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
-                    let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, stream)?;
+                    let stream = self.apply_dynamic_filters_to_join_leaf_stream(node_id, *stream)?;
                     execute_bounded_compiled_join_probe_from_stream(
                         self.context,
                         node_id,
@@ -605,7 +605,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     )
                 },
                 CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                    let frame = self.apply_dynamic_filters_to_join_probe_frame(node_id, node, frame)?;
+                    let frame = self.apply_dynamic_filters_to_join_probe_frame(node_id, node, *frame)?;
                     execute_bounded_compiled_join_probe_from_resident_frame(
                         self.context,
                         node_id,
@@ -821,7 +821,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             let CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) = input_payload.payload else {
                 unreachable!("join leaf source payload was checked above")
             };
-            let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
+            let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
             let input_frame = materialize_bounded_join_leaf_local_parquet_source_stream(
                 self.context,
                 stream,
@@ -945,7 +945,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         node_id,
                         &sort,
                         Some(&limit),
-                        input_frame,
+                        *input_frame,
                         &mut self.reservations,
                         self.metrics,
                     )
@@ -1041,7 +1041,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("compiled_task_id", task.id())
                     .with_fact("plan_node_id", node_id));
             };
-            return Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]));
+            return Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(*frame))]));
         }
 
         let input_payload = state.resource_payload(input)?;
@@ -1123,7 +1123,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         inputs: &mut Vec<ResidentGpuFrame>,
     ) -> Result<()> {
         match payload.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => inputs.push(frame),
+            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => inputs.push(*frame),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                 inputs.extend(stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?)
             },
@@ -1134,7 +1134,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         .with_fact("plan_node_id", node_id)
                         .with_fact("resident_resource_id", resource));
                 }
-                let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
+                let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
                 inputs.push(materialize_bounded_join_leaf_local_parquet_source_stream(
                     self.context,
                     stream,

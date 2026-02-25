@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use cudf_query_engine::MemoryControlPolicy;
+use cudf_query_engine::{MemoryControlPolicy, S3SourceStorageCredential};
 use datafusion_cudf::server::{
     DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_CUDF_SERVER_BIND_ENV,
     DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV,
@@ -320,6 +320,16 @@ fn server_config_rejects_malformed_bind_address() {
 }
 
 #[cfg(feature = "iceberg")]
+fn expect_glue_backend(
+    iceberg: &datafusion_cudf::server::IcebergServerConfig,
+) -> &datafusion_cudf::server::GlueServerBackendConfig {
+    match &iceberg.backend {
+        datafusion_cudf::server::IcebergCatalogBackendConfig::Glue(glue) => glue,
+        other => panic!("expected Glue backend, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "iceberg")]
 #[test]
 fn server_iceberg_config_ignores_aws_env_without_catalog_request() {
     let env = BTreeMap::from([(datafusion_cudf::iceberg::AWS_REGION_ENV, "us-east-1".to_string())]);
@@ -360,8 +370,8 @@ fn server_iceberg_config_accepts_backend_neutral_namespace_env() {
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert_eq!(iceberg.catalog_name, "iceberg");
-    // glue_catalog_handle is independent of catalog_name; defaults to "glue"
-    assert_eq!(iceberg.glue_catalog_handle, "glue");
+    // Glue catalog handle is independent of catalog_name; defaults to "glue"
+    assert_eq!(expect_glue_backend(&iceberg).catalog_handle, "glue");
     assert_eq!(iceberg.namespace, "analytics");
     assert_eq!(iceberg.tables.len(), 2);
     assert_eq!(iceberg.tables[0].alias, "orders");
@@ -391,7 +401,7 @@ fn server_iceberg_config_catalog_name_does_not_affect_glue_catalog_handle() {
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert_eq!(iceberg.catalog_name, "iceberg", "DataFusion connector name");
-    assert_eq!(iceberg.glue_catalog_handle, "my_glue_handle", "Glue catalog handle is independent");
+    assert_eq!(expect_glue_backend(&iceberg).catalog_handle, "my_glue_handle", "Glue catalog handle is independent");
 }
 
 #[test]
@@ -532,5 +542,168 @@ fn server_iceberg_config_backward_compat_glue_database_maps_to_namespace() {
 
     assert_eq!(iceberg.namespace, "demo_db", "GLUE_DATABASE must map to namespace field");
     assert_eq!(iceberg.catalog_name, "glue", "default catalog name must be glue");
-    assert_eq!(iceberg.glue_catalog_handle, "glue", "default glue catalog handle must be glue");
+    assert_eq!(expect_glue_backend(&iceberg).catalog_handle, "glue", "default glue catalog handle must be glue");
+}
+
+#[cfg(feature = "iceberg")]
+fn expect_rest_backend(
+    iceberg: &datafusion_cudf::server::IcebergServerConfig,
+) -> &datafusion_cudf::iceberg::catalog::RestIcebergCatalogConfig {
+    match &iceberg.backend {
+        datafusion_cudf::server::IcebergCatalogBackendConfig::Rest(rest) => rest,
+        other => panic!("expected REST backend, got {other:?}"),
+    }
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
+    use datafusion_cudf::server::{
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, "demo_db".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (datafusion_cudf::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+        (datafusion_cudf::iceberg::AWS_ACCESS_KEY_ID_ENV, "AKIA_GLUE".to_string()),
+        (datafusion_cudf::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "glue-secret".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].id(), "table_format_s3");
+    assert_eq!(profiles[0].s3_profile().region.as_deref(), Some("us-east-1"));
+    match &profiles[0].s3_profile().credential {
+        S3SourceStorageCredential::Static { access_key_id, secret_access_key, session_token } => {
+            assert_eq!(access_key_id, "AKIA_GLUE");
+            assert_eq!(secret_access_key, "glue-secret");
+            assert_eq!(session_token, &None);
+        },
+        other => panic!("expected Glue static source profile credentials, got {other:?}"),
+    }
+    let iceberg = config.iceberg.expect("iceberg config must be present");
+
+    assert_eq!(expect_glue_backend(&iceberg).region, "us-east-1");
+    assert_eq!(iceberg.catalog_name, "glue", "default catalog name for glue kind");
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_invalid_kind_is_rejected() {
+    use datafusion_cudf::server::{DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV};
+    let env = BTreeMap::from([
+        (DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, "delta".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, "demo_db".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert!(error.to_string().contains("glue"), "error should name the accepted kinds: {error}");
+    assert!(error.to_string().contains("rest"), "error should name the accepted kinds: {error}");
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_kind_rest_happy_path() {
+    use datafusion_cudf::server::{
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
+        (datafusion_cudf::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_REST".to_string()),
+        (datafusion_cudf::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "rest-secret".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
+    assert_eq!(profiles.len(), 1);
+    assert_eq!(profiles[0].id(), "table_format_s3");
+    let s3_profile = profiles[0].s3_profile();
+    assert_eq!(s3_profile.region.as_deref(), Some("us-east-1"));
+    assert_eq!(s3_profile.endpoint.as_deref(), Some("http://localhost:9000"));
+    assert_eq!(s3_profile.virtual_hosted_style_request, Some(false));
+    match &s3_profile.credential {
+        S3SourceStorageCredential::Static { access_key_id, secret_access_key, session_token } => {
+            assert_eq!(access_key_id, "AKIA_REST");
+            assert_eq!(secret_access_key, "rest-secret");
+            assert_eq!(session_token, &None);
+        },
+        other => panic!("expected REST static source profile credentials, got {other:?}"),
+    }
+    let iceberg = config.iceberg.expect("iceberg config must be present");
+
+    assert_eq!(iceberg.namespace, "tpch_sf1");
+    // REST kind defaults the DataFusion catalog name to "rest".
+    assert_eq!(iceberg.catalog_name, "rest");
+    let rest = expect_rest_backend(&iceberg);
+    assert_eq!(rest.uri, "http://localhost:8181");
+    assert_eq!(rest.warehouse, "s3://lakehouse/warehouse");
+    assert_eq!(rest.s3_endpoint.as_deref(), Some("http://localhost:9000"));
+    assert_eq!(rest.s3_region.as_deref(), Some("us-east-1"));
+    assert_eq!(rest.s3_path_style_access, Some(true));
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_kind_rest_does_not_require_region() {
+    use datafusion_cudf::server::{
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
+    };
+    // No AWS_REGION_ENV present — REST must still succeed.
+    let env = BTreeMap::from([
+        (DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let iceberg = config.iceberg.expect("iceberg config must be present");
+    assert_eq!(expect_rest_backend(&iceberg).uri, "http://localhost:8181");
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_kind_rest_requires_uri() {
+    use datafusion_cudf::server::{
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert!(
+        error.to_string().contains(datafusion_cudf::server::DATAFUSION_CUDF_ICEBERG_REST_URI_ENV),
+        "error should name the missing REST URI env var: {error}"
+    );
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_kind_rest_requires_warehouse() {
+    use datafusion_cudf::server::{
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
+    };
+    let env = BTreeMap::from([
+        (DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (DATAFUSION_CUDF_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+    assert!(
+        error.to_string().contains(datafusion_cudf::server::DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV),
+        "error should name the missing warehouse env var: {error}"
+    );
 }

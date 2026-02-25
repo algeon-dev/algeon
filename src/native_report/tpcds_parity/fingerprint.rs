@@ -18,7 +18,7 @@ pub(super) fn fingerprint_batches(schema: &Schema, batches: &[RecordBatch]) -> S
 pub(super) fn fingerprint_rows(schema: &Schema, rows: &[CanonicalRow]) -> String {
     let mut hasher = StableFnv1a64::new();
     hasher.update_field("native-tpcds-parity-v1");
-    hash_schema(&mut hasher, schema);
+    hash_comparison_schema(&mut hasher, schema);
     hasher.update_field(&format!("rows={}", rows.len()));
     for row in rows {
         for field in &row.fields {
@@ -38,6 +38,23 @@ pub(super) fn hash_schema(hasher: &mut StableFnv1a64, schema: &Schema) {
         hasher.update_field(&format!("{:?}", field.data_type()));
         hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
         hash_metadata(hasher, field.metadata());
+    }
+}
+
+pub(super) fn hash_comparison_schema(hasher: &mut StableFnv1a64, schema: &Schema) {
+    hasher.update_field("comparison_schema");
+    hasher.update_field(&schema.fields().len().to_string());
+    for field in schema.fields() {
+        hasher.update_field("field");
+        hasher.update_field(&comparison_data_type_key(field.data_type()));
+    }
+}
+
+fn comparison_data_type_key(data_type: &DataType) -> String {
+    match data_type {
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => "utf8".to_string(),
+        DataType::Binary | DataType::LargeBinary | DataType::BinaryView => "binary".to_string(),
+        other => format!("{other:?}"),
     }
 }
 

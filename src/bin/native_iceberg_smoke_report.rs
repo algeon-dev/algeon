@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeSet, HashMap, HashSet},
     error::Error as StdError,
     fmt, fs,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Instant,
@@ -13,34 +14,39 @@ use arrow::{
 };
 use aws_config::BehaviorVersion;
 use aws_credential_types::provider::ProvideCredentials;
+use cudf_query_engine::{ParquetReadStrategy, SourceSchedulerPolicy};
 use datafusion::{
     datasource::{
         file_format::parquet::ParquetFormat,
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     execution::SessionStateBuilder,
-    physical_plan::collect,
+    physical_plan::{collect, metrics::MetricsSet},
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_cudf::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativePipelineExecutionMode,
-    ParityComparisonMode, ParityFloatTolerance, ParityStatus, TPCDS_QUERIES, TPCDS_TABLES, TPCH_QUERIES, TPCH_TABLES,
-    TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition, TableFormatPlanner, TableFormatReadCapability,
-    TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
-    compare_record_batches,
+    ParityComparisonMode, ParityFloatTolerance, ParityStatus, StatisticalAggregateExecutionMode, TPCDS_QUERIES,
+    TPCDS_TABLES, TPCH_QUERIES, TPCH_TABLES, TableFormatDataFileFormat, TableFormatDirectDeviceReadDisposition,
+    TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPlanner,
+    TableFormatReadCapability, TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest,
+    TableFormatUnsupportedFeatureCode, compare_record_batches,
     iceberg::{
         AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
         CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, CUDF_ICEBERG_GLUE_DATABASE_ENV, CUDF_ICEBERG_GLUE_TABLE_ENV,
         CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig,
-        IcebergTableFormatPlanner, load_glue_table,
+        IcebergTableFormatPlanner,
+        catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
+        iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
     },
-    sql_has_top_level_order_by,
+    resolve_table_format_parquet_source_with_metadata, sql_has_top_level_order_by,
+    sql_top_level_order_by_covers_output_columns, tpch_tuned_cpu_session_config,
 };
 use futures::future::BoxFuture;
 use iceberg::{
-    TableIdent,
+    NamespaceIdent, TableIdent,
     io::FileIO,
     table::{StaticTable, Table},
 };
@@ -48,8 +54,8 @@ use object_store::aws::AmazonS3Builder;
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
-const REPORT_SCHEMA_VERSION: u32 = 5;
-const REPORT_HEADER: &str = "query_id\tfixture_mode\tcatalog_type\ttable_ident\tsql\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_delete_file_count\tplanned_bytes\tadmitted_native_source_file_count\trejected_feature_list\tnative_source_read_capability\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_reason_code\tpost_native_execution_path\tcpu_arrow_reader_fallback\tnative_runtime_started\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\texpected_count\tnative_count_value\tcpu_runtime_started\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tparity_status\tparity_detail\tcredential_source";
+const REPORT_SCHEMA_VERSION: u32 = 6;
+const REPORT_HEADER: &str = "query_id\tfixture_mode\tcatalog_type\ttable_ident\tsql\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_delete_file_count\tplanned_bytes\tadmitted_native_source_file_count\trejected_feature_list\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_reason_code\tpost_native_execution_path\tcpu_arrow_reader_fallback\tnative_runtime_started\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\texpected_count\tnative_count_value\tcpu_runtime_started\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tparity_status\tparity_detail\tcredential_source";
 
 const FIXTURE_MODE_ENV: &str = "CUDF_ICEBERG_SMOKE_FIXTURE_MODE";
 const LOCAL_METADATA_LOCATION_ENV: &str = "CUDF_ICEBERG_METADATA_LOCATION";
@@ -60,9 +66,32 @@ const QUERY_IDS_ENV: &str = "CUDF_ICEBERG_SMOKE_QUERY_IDS";
 const TPCDS_QUERY_IDS_ENV: &str = "CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS";
 const CUSTOM_WORKLOAD_ENV: &str = "CUDF_ICEBERG_CUSTOM_WORKLOAD";
 const CUSTOM_QUERY_FILE_ENV: &str = "CUDF_ICEBERG_CUSTOM_QUERY_FILE";
+const STREAM_TSV_ENV: &str = "CUDF_ICEBERG_SMOKE_STREAM_TSV";
+const CONTINUE_ON_QUERY_ERROR_ENV: &str = "CUDF_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR";
+const SMOKE_EXECUTION_MODE_ENV: &str = "CUDF_ICEBERG_SMOKE_EXECUTION_MODE";
+const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_SMOKE_CPU_BASELINE_TIMEOUT_SECS";
+const NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_ICEBERG_NATIVE_DEVICE_BUDGET_BYTES";
+const NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+const NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+const NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_RETRY_ATTEMPTS";
+const NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_ICEBERG_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_SOURCE_READS_IN_FLIGHT";
+const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
+    "CUDF_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
+const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_ICEBERG_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
 const TPCH_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCH_SCALE_FACTOR";
 const TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCDS_SCALE_FACTOR";
 const OBJECT_STORE_STAGING_ENV: &str = "CUDF_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
+const REST_URI_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_URI";
+const REST_WAREHOUSE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_WAREHOUSE";
+const REST_NAMESPACE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_NAMESPACE";
+const REST_TABLE_ENV: &str = "CUDF_ICEBERG_REST_TABLE";
+const REST_S3_ENDPOINT_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT";
+const REST_S3_REGION_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_REGION";
+const REST_S3_PATH_STYLE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE";
+const REST_S3_ACCESS_KEY_ID_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ACCESS_KEY_ID";
+const REST_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_SECRET_ACCESS_KEY";
+const REST_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_SESSION_TOKEN";
 const DEFAULT_TPCH_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 const DEFAULT_SMOKE_GLUE_CATALOG_NAME: &str = "glue";
 const DEFAULT_SMOKE_GLUE_DATABASE: &str = "demo_db";
@@ -70,30 +99,73 @@ const DEFAULT_SMOKE_GLUE_TABLE: &str = "tpch_sf1_lineitem";
 const DEFAULT_SMOKE_GLUE_WAREHOUSE: &str = "s3://example-warehouse/demo_db/";
 const DEFAULT_SMOKE_GLUE_CATALOG_ID: &str = "123456789012";
 const DEFAULT_SMOKE_GLUE_REGION: &str = "us-east-1";
+const DEFAULT_REST_URI: &str = "http://localhost:8181";
+const DEFAULT_REST_WAREHOUSE: &str = "s3://lakehouse/warehouse";
+const DEFAULT_REST_NAMESPACE: &str = "tpch_sf1";
+const DEFAULT_REST_TABLE: &str = "lineitem";
+const TPCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_DEFAULT: u64 = 32 * 1024 * 1024 * 1024;
+const TPCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_DEFAULT: usize = 1024;
+const TPCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_DEFAULT: usize = 2;
 #[tokio::main]
 async fn main() {
-    match run_from_env().await {
-        Ok(report) => print!("{}", report.to_tsv()),
+    let config = match IcebergNativeSmokeConfig::from_env() {
+        Ok(config) => config,
         Err(error) => {
             eprintln!("[native_iceberg_smoke_report] error={}", stable_tsv_field(&error.to_string()));
             std::process::exit(1);
         },
-    }
+    };
+    if config.stream_tsv_rows {
+        let stdout = io::stdout();
+        let mut stdout = stdout.lock();
+        match run_report_streaming(config, &mut stdout).await {
+            Ok(_report) => {},
+            Err(error) => {
+                eprintln!("[native_iceberg_smoke_report] error={}", stable_tsv_field(&error.to_string()));
+                std::process::exit(1);
+            },
+        }
+    } else {
+        match run_report(config).await {
+            Ok(report) => print!("{}", report.to_tsv()),
+            Err(error) => {
+                eprintln!("[native_iceberg_smoke_report] error={}", stable_tsv_field(&error.to_string()));
+                std::process::exit(1);
+            },
+        }
+    };
 }
 
+#[allow(dead_code)]
 pub(crate) async fn run_from_env() -> SmokeResult<IcebergNativeSmokeReport> {
     run_report(IcebergNativeSmokeConfig::from_env()?).await
 }
 
 pub(crate) async fn run_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
+    run_report_with_optional_stream(config, None).await
+}
+
+pub(crate) async fn run_report_streaming(
+    config: IcebergNativeSmokeConfig,
+    writer: &mut dyn Write,
+) -> SmokeResult<IcebergNativeSmokeReport> {
+    write_smoke_tsv_header(writer)?;
+    run_report_with_optional_stream(config, Some(writer)).await
+}
+
+async fn run_report_with_optional_stream(
+    config: IcebergNativeSmokeConfig,
+    mut stream: Option<&mut dyn Write>,
+) -> SmokeResult<IcebergNativeSmokeReport> {
     if config.custom_query_file.is_some() {
-        return run_custom_subset_report(config).await;
+        return run_custom_subset_report(config, stream).await;
     }
     if !config.tpch_query_ids.is_empty() {
-        return run_tpch_subset_report(config).await;
+        let execution_mode = config.execution_mode;
+        return run_tpch_subset_report_with_execution_mode(config, execution_mode, stream).await;
     }
     if !config.tpcds_query_ids.is_empty() {
-        return run_tpcds_subset_report(config).await;
+        return run_tpcds_subset_report(config, stream).await;
     }
     eprintln!(
         "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
@@ -110,7 +182,9 @@ pub(crate) async fn run_report(config: IcebergNativeSmokeConfig) -> SmokeResult<
     let file_io = table.file_io().clone();
     let catalog_type = config.fixture.catalog_type().to_string();
     let logical_schema = iceberg_table_arrow_schema(&table)?;
-    let planner = IcebergTableFormatPlanner::new(table).with_catalog_type(catalog_type.clone());
+    let planner = IcebergTableFormatPlanner::new(table)
+        .with_catalog_type(catalog_type.clone())
+        .with_parquet_read_strategy_config(config.fixture.parquet_read_strategy_config());
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-stage-").tempdir()?);
     let planner = Arc::new(StagingTableFormatPlanner::new(
@@ -126,7 +200,8 @@ pub(crate) async fn run_report(config: IcebergNativeSmokeConfig) -> SmokeResult<
         CudfIcebergTableProvider::from_table_format_planner(logical_schema, planner)
             .with_catalog_type(catalog_type.clone()),
     );
-    let (ctx, native_rule) = native_session_context();
+    let (ctx, native_rule) =
+        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke)?;
     ctx.register_table(config.table_alias.as_str(), provider)?;
     let mut row = run_query_with_registered_native_tables(
         config.query_id.clone(),
@@ -139,28 +214,55 @@ pub(crate) async fn run_report(config: IcebergNativeSmokeConfig) -> SmokeResult<
         Arc::clone(&staging_records),
         false,
         config.fixture.credential_source().to_string(),
+        config.cpu_baseline_timeout_secs,
+        CpuBaselineSessionProfile::Smoke,
+        SmokeQueryExecutionMode::NativeOnly,
     )
     .await?;
     row.expected_count = staging_records_snapshot(&staging_records)
         .first()
         .and_then(|record| expected_count_from_scan_plan(&record.scan_plan));
     row.finalize_count_parity_if_needed();
+    if let Some(writer) = stream.as_deref_mut() {
+        write_smoke_tsv_row(writer, &row)?;
+    }
     Ok(IcebergNativeSmokeReport { rows: vec![row] })
 }
 
-async fn run_tpch_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
-    let IcebergNativeSmokeFixture::GlueS3 { .. } = &config.fixture else {
-        return Err(smoke_error("TPC-H Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3"));
+#[allow(dead_code)]
+pub(crate) async fn run_single_tpch_query_report_with_execution_mode(
+    mut config: IcebergNativeSmokeConfig,
+    query_id: impl Into<String>,
+    execution_mode: SmokeQueryExecutionMode,
+) -> SmokeResult<IcebergNativeSmokeReportRow> {
+    config.tpch_query_ids = vec![query_id.into()];
+    let mut report = run_tpch_subset_report_with_execution_mode(config, execution_mode, None).await?;
+    let row = report.rows.pop().ok_or_else(|| smoke_error("single TPC-H Iceberg report produced no rows"))?;
+    if !report.rows.is_empty() {
+        return Err(smoke_error("single TPC-H Iceberg report produced multiple rows"));
+    }
+    Ok(row)
+}
+
+async fn run_tpch_subset_report_with_execution_mode(
+    config: IcebergNativeSmokeConfig,
+    execution_mode: SmokeQueryExecutionMode,
+    mut stream: Option<&mut dyn Write>,
+) -> SmokeResult<IcebergNativeSmokeReport> {
+    if !matches!(config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }) {
+        return Err(smoke_error(
+            "TPC-H Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+        ));
     };
 
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-tpch-stage-").tempdir()?);
-    let (ctx, native_rule) = native_session_context();
+    let (ctx, native_rule) =
+        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpchBenchmark)?;
 
     for table_name in TPCH_TABLES {
-        let table_fixture =
-            config.fixture.with_glue_table(tpch_glue_table_name(table_name, &config.tpch_scale_factor))?;
+        let table_fixture = config.fixture.with_tpch_table(table_name, &config.tpch_scale_factor)?;
         eprintln!(
             "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
             table_fixture.mode_code(),
@@ -175,7 +277,9 @@ async fn run_tpch_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult
         );
         let logical_schema = iceberg_table_arrow_schema(&table)?;
         let file_io = table.file_io().clone();
-        let planner = IcebergTableFormatPlanner::new(table).with_catalog_type(catalog_type.clone());
+        let planner = IcebergTableFormatPlanner::new(table)
+            .with_catalog_type(catalog_type.clone())
+            .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
         let staging_planner = Arc::new(StagingTableFormatPlanner::new(
             planner,
             file_io,
@@ -198,37 +302,72 @@ async fn run_tpch_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult
             .iter()
             .find(|query| query.id == query_id)
             .ok_or_else(|| smoke_error(format!("unknown TPC-H query id {query_id:?}")))?;
-        let row = run_query_with_registered_native_tables(
-            query.id.to_string(),
+        let table_ident = config.fixture.tpch_all_tables_ident_display(&config.tpch_scale_factor);
+        let query_id = query.id.to_string();
+        let sql = query.sql.to_string();
+        let row = match run_query_with_registered_native_tables(
+            query_id.clone(),
             config.fixture.mode_code().to_string(),
             catalog_type.clone(),
-            config.fixture.tpch_all_tables_ident_display(&config.tpch_scale_factor),
-            query.sql.to_string(),
+            table_ident.clone(),
+            sql.clone(),
             &ctx,
             native_rule.as_ref(),
             Arc::clone(&staging_records),
-            true,
+            execution_mode.runs_cpu_baseline(),
             config.fixture.credential_source().to_string(),
+            config.cpu_baseline_timeout_secs,
+            CpuBaselineSessionProfile::TpchTuned,
+            execution_mode,
         )
-        .await?;
+        .await
+        {
+            Ok(row) => row,
+            Err(error) if config.continue_on_query_error => {
+                eprintln!(
+                    "[native_iceberg_smoke_report] phase=query_error query_id={} error={}",
+                    query_id,
+                    stable_tsv_field(&error.to_string()),
+                );
+                query_error_report_row(
+                    query_id,
+                    config.fixture.mode_code().to_string(),
+                    catalog_type.clone(),
+                    table_ident,
+                    sql,
+                    &staging_records,
+                    config.fixture.credential_source().to_string(),
+                    error.as_ref(),
+                )
+            },
+            Err(error) => return Err(error),
+        };
+        if let Some(writer) = stream.as_deref_mut() {
+            write_smoke_tsv_row(writer, &row)?;
+        }
         rows.push(row);
     }
     Ok(IcebergNativeSmokeReport { rows })
 }
 
-async fn run_tpcds_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
-    let IcebergNativeSmokeFixture::GlueS3 { .. } = &config.fixture else {
-        return Err(smoke_error("TPC-DS Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3"));
+async fn run_tpcds_subset_report(
+    config: IcebergNativeSmokeConfig,
+    mut stream: Option<&mut dyn Write>,
+) -> SmokeResult<IcebergNativeSmokeReport> {
+    if !matches!(config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }) {
+        return Err(smoke_error(
+            "TPC-DS Iceberg smoke query ids require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+        ));
     };
 
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-tpcds-stage-").tempdir()?);
-    let (ctx, native_rule) = native_session_context();
+    let (ctx, native_rule) =
+        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark)?;
 
     for table_name in TPCDS_TABLES {
-        let table_fixture =
-            config.fixture.with_glue_table(tpcds_glue_table_name(table_name, &config.tpcds_scale_factor))?;
+        let table_fixture = config.fixture.with_tpcds_table(table_name, &config.tpcds_scale_factor)?;
         eprintln!(
             "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
             table_fixture.mode_code(),
@@ -243,7 +382,9 @@ async fn run_tpcds_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResul
         );
         let logical_schema = iceberg_table_arrow_schema(&table)?;
         let file_io = table.file_io().clone();
-        let planner = IcebergTableFormatPlanner::new(table).with_catalog_type(catalog_type.clone());
+        let planner = IcebergTableFormatPlanner::new(table)
+            .with_catalog_type(catalog_type.clone())
+            .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
         let staging_planner = Arc::new(StagingTableFormatPlanner::new(
             planner,
             file_io,
@@ -266,27 +407,62 @@ async fn run_tpcds_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResul
             .iter()
             .find(|query| query.id == query_id)
             .ok_or_else(|| smoke_error(format!("unknown TPC-DS query id {query_id:?}")))?;
-        let row = run_query_with_registered_native_tables(
-            query.id.to_string(),
+        let table_ident = config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor);
+        let query_id = query.id.to_string();
+        let sql = query.sql.to_string();
+        let row = match run_query_with_registered_native_tables(
+            query_id.clone(),
             config.fixture.mode_code().to_string(),
             catalog_type.clone(),
-            config.fixture.tpcds_all_tables_ident_display(&config.tpcds_scale_factor),
-            query.sql.to_string(),
+            table_ident.clone(),
+            sql.clone(),
             &ctx,
             native_rule.as_ref(),
             Arc::clone(&staging_records),
-            true,
+            config.execution_mode.runs_cpu_baseline(),
             config.fixture.credential_source().to_string(),
+            config.cpu_baseline_timeout_secs,
+            CpuBaselineSessionProfile::Smoke,
+            config.execution_mode,
         )
-        .await?;
+        .await
+        {
+            Ok(row) => row,
+            Err(error) if config.continue_on_query_error => {
+                eprintln!(
+                    "[native_iceberg_smoke_report] phase=query_error query_id={} error={}",
+                    query_id,
+                    stable_tsv_field(&error.to_string()),
+                );
+                query_error_report_row(
+                    query_id,
+                    config.fixture.mode_code().to_string(),
+                    catalog_type.clone(),
+                    table_ident,
+                    sql,
+                    &staging_records,
+                    config.fixture.credential_source().to_string(),
+                    error.as_ref(),
+                )
+            },
+            Err(error) => return Err(error),
+        };
+        if let Some(writer) = stream.as_deref_mut() {
+            write_smoke_tsv_row(writer, &row)?;
+        }
         rows.push(row);
     }
     Ok(IcebergNativeSmokeReport { rows })
 }
 
-async fn run_custom_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResult<IcebergNativeSmokeReport> {
-    let IcebergNativeSmokeFixture::GlueS3 { .. } = &config.fixture else {
-        return Err(smoke_error("custom Iceberg SQL probes require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3"));
+async fn run_custom_subset_report(
+    config: IcebergNativeSmokeConfig,
+    mut stream: Option<&mut dyn Write>,
+) -> SmokeResult<IcebergNativeSmokeReport> {
+    if !matches!(config.fixture, IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }) {
+        return Err(smoke_error(
+            "custom Iceberg SQL probes require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+        ));
     };
     let workload = config
         .custom_workload
@@ -298,13 +474,16 @@ async fn run_custom_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResu
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-cudf-iceberg-custom-stage-").tempdir()?);
-    let (ctx, native_rule) = native_session_context();
+    let native_execution_profile = match workload {
+        CustomWorkload::Tpch => NativeExecutionProfile::TpchBenchmark,
+        CustomWorkload::Tpcds => NativeExecutionProfile::TpcdsBenchmark,
+    };
+    let (ctx, native_rule) = native_session_context(config.fixture.source_storage_profile(), native_execution_profile)?;
 
     match workload {
         CustomWorkload::Tpch => {
             for table_name in TPCH_TABLES {
-                let table_fixture =
-                    config.fixture.with_glue_table(tpch_glue_table_name(table_name, &config.tpch_scale_factor))?;
+                let table_fixture = config.fixture.with_tpch_table(table_name, &config.tpch_scale_factor)?;
                 register_custom_probe_table(
                     &ctx,
                     &table_fixture,
@@ -318,9 +497,16 @@ async fn run_custom_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResu
             }
         },
         CustomWorkload::Tpcds => {
+            if !matches!(
+                config.fixture,
+                IcebergNativeSmokeFixture::GlueS3 { .. } | IcebergNativeSmokeFixture::RestS3 { .. }
+            ) {
+                return Err(smoke_error(
+                    "custom TPC-DS probes require CUDF_ICEBERG_SMOKE_FIXTURE_MODE=glue_s3 or rest_s3",
+                ));
+            }
             for table_name in TPCDS_TABLES {
-                let table_fixture =
-                    config.fixture.with_glue_table(tpcds_glue_table_name(table_name, &config.tpcds_scale_factor))?;
+                let table_fixture = config.fixture.with_tpcds_table(table_name, &config.tpcds_scale_factor)?;
                 register_custom_probe_table(
                     &ctx,
                     &table_fixture,
@@ -342,19 +528,51 @@ async fn run_custom_subset_report(config: IcebergNativeSmokeConfig) -> SmokeResu
     let mut rows = Vec::new();
     for probe in probes {
         clear_staging_records(&staging_records);
-        let row = run_query_with_registered_native_tables(
-            probe.id,
+        let query_id = probe.id;
+        let sql = probe.sql;
+        let row = match run_query_with_registered_native_tables(
+            query_id.clone(),
             config.fixture.mode_code().to_string(),
             catalog_type.clone(),
             table_ident.clone(),
-            probe.sql,
+            sql.clone(),
             &ctx,
             native_rule.as_ref(),
             Arc::clone(&staging_records),
-            true,
+            config.execution_mode.runs_cpu_baseline(),
             config.fixture.credential_source().to_string(),
+            config.cpu_baseline_timeout_secs,
+            match workload {
+                CustomWorkload::Tpch => CpuBaselineSessionProfile::TpchTuned,
+                CustomWorkload::Tpcds => CpuBaselineSessionProfile::Smoke,
+            },
+            config.execution_mode,
         )
-        .await?;
+        .await
+        {
+            Ok(row) => row,
+            Err(error) if config.continue_on_query_error => {
+                eprintln!(
+                    "[native_iceberg_smoke_report] phase=query_error query_id={} error={}",
+                    query_id,
+                    stable_tsv_field(&error.to_string()),
+                );
+                query_error_report_row(
+                    query_id,
+                    config.fixture.mode_code().to_string(),
+                    catalog_type.clone(),
+                    table_ident.clone(),
+                    sql,
+                    &staging_records,
+                    config.fixture.credential_source().to_string(),
+                    error.as_ref(),
+                )
+            },
+            Err(error) => return Err(error),
+        };
+        if let Some(writer) = stream.as_deref_mut() {
+            write_smoke_tsv_row(writer, &row)?;
+        }
         rows.push(row);
     }
     Ok(IcebergNativeSmokeReport { rows })
@@ -383,7 +601,9 @@ async fn register_custom_probe_table(
     );
     let logical_schema = iceberg_table_arrow_schema(&table)?;
     let file_io = table.file_io().clone();
-    let planner = IcebergTableFormatPlanner::new(table).with_catalog_type(catalog_type.to_string());
+    let planner = IcebergTableFormatPlanner::new(table)
+        .with_catalog_type(catalog_type.to_string())
+        .with_parquet_read_strategy_config(table_fixture.parquet_read_strategy_config());
     let staging_planner = Arc::new(StagingTableFormatPlanner::new(
         planner,
         file_io,
@@ -413,6 +633,61 @@ pub(crate) struct IcebergNativeSmokeConfig {
     pub tpcds_scale_factor: String,
     pub custom_workload: Option<CustomWorkload>,
     pub custom_query_file: Option<PathBuf>,
+    pub stream_tsv_rows: bool,
+    pub continue_on_query_error: bool,
+    pub execution_mode: SmokeQueryExecutionMode,
+    pub cpu_baseline_timeout_secs: Option<u64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SmokeQueryExecutionMode {
+    NativeAndCpu,
+    NativeOnly,
+    CpuOnly,
+}
+
+impl SmokeQueryExecutionMode {
+    fn from_env_value(value: &str) -> SmokeResult<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "native_and_cpu" | "native+cpu" | "all" => Ok(Self::NativeAndCpu),
+            "native_only" | "native" => Ok(Self::NativeOnly),
+            "cpu_only" | "cpu" => Ok(Self::CpuOnly),
+            other => Err(smoke_error(format!(
+                "unsupported {SMOKE_EXECUTION_MODE_ENV}={other}; expected native_and_cpu, native_only, or cpu_only"
+            ))),
+        }
+    }
+
+    const fn runs_native(self) -> bool {
+        matches!(self, Self::NativeAndCpu | Self::NativeOnly)
+    }
+
+    const fn runs_cpu_baseline(self) -> bool {
+        matches!(self, Self::NativeAndCpu | Self::CpuOnly)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpuBaselineSessionProfile {
+    Smoke,
+    TpchTuned,
+}
+
+impl CpuBaselineSessionProfile {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+            Self::TpchTuned => "tpch_tuned",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeExecutionProfile {
+    Smoke,
+    TpchBenchmark,
+    TpcdsBenchmark,
 }
 
 impl IcebergNativeSmokeConfig {
@@ -470,9 +745,41 @@ impl IcebergNativeSmokeConfig {
                     credential_source,
                 }
             },
+            "rest_s3" => {
+                explicit_glue_table = get(REST_TABLE_ENV).is_some();
+                let catalog_handle = "lake".to_string();
+                let uri = get(REST_URI_ENV).unwrap_or_else(|| DEFAULT_REST_URI.to_string());
+                let warehouse = get(REST_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_REST_WAREHOUSE.to_string());
+                let namespace = get(REST_NAMESPACE_ENV).unwrap_or_else(|| DEFAULT_REST_NAMESPACE.to_string());
+                let table = get(REST_TABLE_ENV).unwrap_or_else(|| DEFAULT_REST_TABLE.to_string());
+                let s3_endpoint = get(REST_S3_ENDPOINT_ENV).filter(|value| !value.trim().is_empty());
+                let s3_region = get(REST_S3_REGION_ENV).filter(|value| !value.trim().is_empty());
+                let s3_path_style_access = get(REST_S3_PATH_STYLE_ENV)
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"));
+                let credential_source =
+                    if get(REST_S3_ACCESS_KEY_ID_ENV).filter(|value| !value.trim().is_empty()).is_some()
+                        && get(REST_S3_SECRET_ACCESS_KEY_ENV).filter(|value| !value.trim().is_empty()).is_some()
+                    {
+                        "static"
+                    } else {
+                        "default_chain"
+                    };
+                IcebergNativeSmokeFixture::RestS3 {
+                    catalog_handle,
+                    uri,
+                    namespace,
+                    table,
+                    warehouse,
+                    s3_endpoint,
+                    s3_region,
+                    s3_path_style_access,
+                    credential_source,
+                }
+            },
             other => {
                 return Err(smoke_error(format!(
-                    "unsupported {FIXTURE_MODE_ENV}={other}; expected local_metadata or glue_s3"
+                    "unsupported {FIXTURE_MODE_ENV}={other}; expected local_metadata, glue_s3, or rest_s3"
                 )));
             },
         };
@@ -527,6 +834,16 @@ impl IcebergNativeSmokeConfig {
         if custom_query_file.is_none() && custom_workload.is_some() {
             return Err(smoke_error(format!("{CUSTOM_QUERY_FILE_ENV} is required with {CUSTOM_WORKLOAD_ENV}")));
         }
+        let execution_mode = get(SMOKE_EXECUTION_MODE_ENV)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| SmokeQueryExecutionMode::from_env_value(&value))
+            .transpose()?
+            .unwrap_or(SmokeQueryExecutionMode::NativeAndCpu);
+        let stream_tsv_rows = parse_optional_bool(get(STREAM_TSV_ENV), STREAM_TSV_ENV)?;
+        let continue_on_query_error =
+            parse_optional_bool(get(CONTINUE_ON_QUERY_ERROR_ENV), CONTINUE_ON_QUERY_ERROR_ENV)?;
+        let cpu_baseline_timeout_secs =
+            parse_optional_timeout_secs(get(CPU_BASELINE_TIMEOUT_SECS_ENV), CPU_BASELINE_TIMEOUT_SECS_ENV)?;
         Ok(Self {
             query_id: "iceberg_smoke".to_string(),
             table_alias,
@@ -539,6 +856,10 @@ impl IcebergNativeSmokeConfig {
             tpcds_scale_factor,
             custom_workload,
             custom_query_file,
+            stream_tsv_rows,
+            continue_on_query_error,
+            execution_mode,
+            cpu_baseline_timeout_secs,
         })
     }
 }
@@ -603,6 +924,17 @@ pub(crate) enum IcebergNativeSmokeFixture {
         profile: Option<String>,
         credential_source: GlueIcebergCredentialSource,
     },
+    RestS3 {
+        catalog_handle: String,
+        uri: String,
+        namespace: String,
+        table: String,
+        warehouse: String,
+        s3_endpoint: Option<String>,
+        s3_region: Option<String>,
+        s3_path_style_access: Option<bool>,
+        credential_source: &'static str,
+    },
 }
 
 impl IcebergNativeSmokeFixture {
@@ -610,6 +942,7 @@ impl IcebergNativeSmokeFixture {
         match self {
             Self::LocalMetadata { .. } => "local_metadata",
             Self::GlueS3 { .. } => "glue_s3",
+            Self::RestS3 { .. } => "rest_s3",
         }
     }
 
@@ -617,6 +950,7 @@ impl IcebergNativeSmokeFixture {
         match self {
             Self::LocalMetadata { .. } => "local",
             Self::GlueS3 { .. } => "glue",
+            Self::RestS3 { .. } => "rest",
         }
     }
 
@@ -626,6 +960,7 @@ impl IcebergNativeSmokeFixture {
                 table_ident.last().cloned().unwrap_or_else(|| "iceberg_t".to_string())
             },
             Self::GlueS3 { table, .. } => table.clone(),
+            Self::RestS3 { table, .. } => table.clone(),
         }
     }
 
@@ -633,6 +968,7 @@ impl IcebergNativeSmokeFixture {
         match self {
             Self::LocalMetadata { table_ident, .. } => table_ident.join("."),
             Self::GlueS3 { database, table, .. } => format!("{database}.{table}"),
+            Self::RestS3 { namespace, table, .. } => format!("{namespace}.{table}"),
         }
     }
 
@@ -640,30 +976,96 @@ impl IcebergNativeSmokeFixture {
         match self {
             Self::LocalMetadata { .. } => "not_applicable",
             Self::GlueS3 { credential_source, .. } => credential_source.code(),
+            Self::RestS3 { credential_source, .. } => credential_source,
         }
     }
 
-    fn with_glue_table(&self, table: String) -> SmokeResult<Self> {
-        let Self::GlueS3 { catalog_name, database, warehouse, catalog_id, region, profile, credential_source, .. } =
-            self
-        else {
-            return Err(smoke_error("only glue_s3 fixtures can be rewritten to another Glue table"));
-        };
-        Ok(Self::GlueS3 {
-            catalog_name: catalog_name.clone(),
-            database: database.clone(),
-            table,
-            warehouse: warehouse.clone(),
-            catalog_id: catalog_id.clone(),
-            region: region.clone(),
-            profile: profile.clone(),
-            credential_source: *credential_source,
-        })
+    fn with_tpch_table(&self, table_name: &str, scale_factor: &str) -> SmokeResult<Self> {
+        match self {
+            Self::GlueS3 {
+                catalog_name, database, warehouse, catalog_id, region, profile, credential_source, ..
+            } => Ok(Self::GlueS3 {
+                catalog_name: catalog_name.clone(),
+                database: database.clone(),
+                table: tpch_glue_table_name(table_name, scale_factor),
+                warehouse: warehouse.clone(),
+                catalog_id: catalog_id.clone(),
+                region: region.clone(),
+                profile: profile.clone(),
+                credential_source: *credential_source,
+            }),
+            Self::RestS3 {
+                catalog_handle,
+                uri,
+                namespace,
+                warehouse,
+                s3_endpoint,
+                s3_region,
+                s3_path_style_access,
+                credential_source,
+                ..
+            } => Ok(Self::RestS3 {
+                catalog_handle: catalog_handle.clone(),
+                uri: uri.clone(),
+                namespace: namespace.clone(),
+                table: table_name.to_string(),
+                warehouse: warehouse.clone(),
+                s3_endpoint: s3_endpoint.clone(),
+                s3_region: s3_region.clone(),
+                s3_path_style_access: *s3_path_style_access,
+                credential_source: *credential_source,
+            }),
+            Self::LocalMetadata { .. } => {
+                Err(smoke_error("only glue_s3/rest_s3 fixtures can be rewritten to another TPC-H table"))
+            },
+        }
+    }
+
+    pub(crate) fn with_tpcds_table(&self, table_name: &str, scale_factor: &str) -> SmokeResult<Self> {
+        match self {
+            Self::GlueS3 {
+                catalog_name, database, warehouse, catalog_id, region, profile, credential_source, ..
+            } => Ok(Self::GlueS3 {
+                catalog_name: catalog_name.clone(),
+                database: database.clone(),
+                table: tpcds_glue_table_name(table_name, scale_factor),
+                warehouse: warehouse.clone(),
+                catalog_id: catalog_id.clone(),
+                region: region.clone(),
+                profile: profile.clone(),
+                credential_source: *credential_source,
+            }),
+            Self::RestS3 {
+                catalog_handle,
+                uri,
+                namespace,
+                warehouse,
+                s3_endpoint,
+                s3_region,
+                s3_path_style_access,
+                credential_source,
+                ..
+            } => Ok(Self::RestS3 {
+                catalog_handle: catalog_handle.clone(),
+                uri: uri.clone(),
+                namespace: namespace.clone(),
+                table: table_name.to_string(),
+                warehouse: warehouse.clone(),
+                s3_endpoint: s3_endpoint.clone(),
+                s3_region: s3_region.clone(),
+                s3_path_style_access: *s3_path_style_access,
+                credential_source: *credential_source,
+            }),
+            Self::LocalMetadata { .. } => {
+                Err(smoke_error("only glue_s3/rest_s3 fixtures can be rewritten to another TPC-DS table"))
+            },
+        }
     }
 
     pub(crate) fn tpch_all_tables_ident_display(&self, scale_factor: &str) -> String {
         match self {
             Self::GlueS3 { database, .. } => format!("{database}_tpch_{scale_factor}_all_tables"),
+            Self::RestS3 { namespace, .. } => format!("{namespace}_tpch_{scale_factor}_all_tables"),
             Self::LocalMetadata { table_ident, .. } => table_ident.join("."),
         }
     }
@@ -671,7 +1073,62 @@ impl IcebergNativeSmokeFixture {
     pub(crate) fn tpcds_all_tables_ident_display(&self, scale_factor: &str) -> String {
         match self {
             Self::GlueS3 { database, .. } => format!("{database}_tpcds_{scale_factor}_all_tables"),
+            Self::RestS3 { namespace, .. } => format!("{namespace}_tpcds_{scale_factor}_all_tables"),
             Self::LocalMetadata { table_ident, .. } => table_ident.join("."),
+        }
+    }
+
+    fn rest_config(&self) -> Option<RestIcebergCatalogConfig> {
+        let Self::RestS3 { catalog_handle, uri, warehouse, s3_endpoint, s3_region, s3_path_style_access, .. } = self
+        else {
+            return None;
+        };
+        let mut config = RestIcebergCatalogConfig::new(catalog_handle.clone(), uri.clone(), warehouse.clone());
+        if let Some(endpoint) = s3_endpoint.as_ref() {
+            config = config.with_s3_endpoint(endpoint.clone());
+        }
+        if let Some(region) = s3_region.as_ref() {
+            config = config.with_s3_region(region.clone());
+        }
+        if let Some(path_style) = s3_path_style_access {
+            config = config.with_s3_path_style_access(*path_style);
+        }
+        Some(config)
+    }
+
+    fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
+        match self {
+            Self::LocalMetadata { .. } => TableFormatParquetReadStrategyConfig::from_env(),
+            Self::GlueS3 { catalog_name, warehouse, region, catalog_id, profile, .. } => {
+                let mut config =
+                    datafusion_cudf::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
+                if let Some(catalog_id) = catalog_id.as_ref() {
+                    config = config.with_catalog_id(catalog_id.clone());
+                }
+                if let Some(profile) = profile.as_ref() {
+                    config = config.with_profile(profile.clone());
+                }
+                config.parquet_read_strategy_config()
+            },
+            Self::RestS3 { .. } => self.rest_config().expect("rest config").parquet_read_strategy_config(),
+        }
+    }
+
+    fn source_storage_profile(&self) -> Option<datafusion_cudf::SourceStorageProfile> {
+        match self {
+            Self::LocalMetadata { .. } => None,
+            Self::GlueS3 { catalog_name, warehouse, region, catalog_id, profile, .. } => {
+                let mut config =
+                    datafusion_cudf::iceberg::catalog::GlueIcebergCatalogConfig::new(catalog_name, warehouse, region);
+                if let Some(catalog_id) = catalog_id.as_ref() {
+                    config = config.with_catalog_id(catalog_id.clone());
+                }
+                if let Some(profile) = profile.as_ref() {
+                    config = config.with_profile(profile.clone());
+                }
+                Some(config.source_storage_profile_from_env())
+            },
+            Self::RestS3 { .. } => Some(self.rest_config().expect("rest config").source_storage_profile_from_env()),
         }
     }
 }
@@ -694,6 +1151,19 @@ impl IcebergNativeSmokeReport {
         let rows = self.rows.iter().map(IcebergNativeSmokeReportRow::to_tsv_row).collect::<Vec<_>>().join("\n");
         format!("# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}\n{REPORT_HEADER}\n{rows}\n",)
     }
+}
+
+pub(crate) fn write_smoke_tsv_header(writer: &mut dyn Write) -> SmokeResult<()> {
+    writeln!(writer, "# native_iceberg_smoke_report_tsv_schema_version={REPORT_SCHEMA_VERSION}")?;
+    writeln!(writer, "{REPORT_HEADER}")?;
+    writer.flush()?;
+    Ok(())
+}
+
+pub(crate) fn write_smoke_tsv_row(writer: &mut dyn Write, row: &IcebergNativeSmokeReportRow) -> SmokeResult<()> {
+    writeln!(writer, "{}", row.to_tsv_row())?;
+    writer.flush()?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -842,6 +1312,10 @@ impl IcebergNativeSmokeReportRow {
             self.diagnostics.admitted_native_source_file_count.to_string(),
             list_or_none(&self.diagnostics.rejected_feature_list),
             empty_as_none(&self.diagnostics.native_source_read_capability),
+            empty_as_none(&self.diagnostics.source_read_strategy),
+            empty_as_none(&self.diagnostics.source_decode_input),
+            empty_as_none(&self.diagnostics.credential_mode),
+            empty_as_none(&self.diagnostics.lakehouse_cache_status),
             self.diagnostics.direct_device_read_disposition.code().to_string(),
             self.staging_summary.mode.code().to_string(),
             self.staging_summary.status.code().to_string(),
@@ -1013,6 +1487,36 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
     }
 }
 
+fn query_error_report_row(
+    query_id: String,
+    fixture_mode: String,
+    catalog_type: String,
+    table_ident: String,
+    sql: String,
+    staging_records: &Arc<Mutex<Vec<StagingRecord>>>,
+    credential_source: String,
+    error: &(dyn StdError + Send + Sync),
+) -> IcebergNativeSmokeReportRow {
+    let records = staging_records_snapshot(staging_records);
+    let mut row = IcebergNativeSmokeReportRow::new(
+        query_id,
+        fixture_mode,
+        catalog_type,
+        table_ident,
+        sql,
+        aggregate_scan_diagnostics(&records),
+        NativeDataFusionPlanningOutcome::RejectedBeforeExecution,
+        Some("query_error".to_string()),
+        NativeDataFusionPostNativeExecutionPath::Cpu,
+        None,
+        aggregate_staging_summary(&records),
+        credential_source,
+    );
+    row.parity_status = ParityStatus::NativeRejected;
+    row.parity_detail = Some(stable_tsv_field(&error.to_string()));
+    row
+}
+
 async fn run_query_with_registered_native_tables(
     query_id: String,
     fixture_mode: String,
@@ -1024,6 +1528,9 @@ async fn run_query_with_registered_native_tables(
     staging_records: Arc<Mutex<Vec<StagingRecord>>>,
     run_cpu_parity: bool,
     credential_source: String,
+    cpu_baseline_timeout_secs: Option<u64>,
+    cpu_baseline_session_profile: CpuBaselineSessionProfile,
+    execution_mode: SmokeQueryExecutionMode,
 ) -> SmokeResult<IcebergNativeSmokeReportRow> {
     eprintln!(
         "[native_iceberg_smoke_report] phase=query_planning_start query_id={} run_cpu_parity={} credential_source={}",
@@ -1069,9 +1576,18 @@ async fn run_query_with_registered_native_tables(
         row.diagnostics.planned_data_file_count,
         empty_as_none(&row.diagnostics.native_source_read_capability),
     );
+    eprintln!(
+        "[native_iceberg_smoke_report] phase=native_optimizer_diagnostics query_id={} shared_subplan_considered_count={} shared_subplan_candidate_count={} shared_subplan_applied_count={} local_source_reuse_considered_count={} local_source_reuse_applied_count={}",
+        row.query_id,
+        planning_row.native_optimizer.shared_subplan_materialization.considered_count,
+        planning_row.native_optimizer.shared_subplan_materialization.candidate_count,
+        planning_row.native_optimizer.shared_subplan_materialization.applied_count,
+        planning_row.native_optimizer.local_parquet_source_reuse.considered_count,
+        planning_row.native_optimizer.local_parquet_source_reuse.applied_count,
+    );
     let mut native_batches = None;
     let native_schema = physical_plan.schema();
-    if should_execute_native {
+    if execution_mode.runs_native() && should_execute_native {
         row.native_runtime_started = true;
         eprintln!(
             "[native_iceberg_smoke_report] phase=native_runtime_start query_id={} native_source_read_capability={} direct_device_read_disposition={}",
@@ -1087,6 +1603,9 @@ async fn run_query_with_registered_native_tables(
                 row.native_output_batches = Some(batches.len());
                 row.native_output_rows = Some(batches.iter().map(RecordBatch::num_rows).sum());
                 row.native_count_value = count_value_from_batches(&batches);
+                let fingerprint = fingerprint_output_batches(native_schema.as_ref(), &batches, &sql);
+                row.native_output_fingerprint = Some(fingerprint.native_fingerprint);
+                row.comparison_mode = fingerprint.mode;
                 native_batches = Some(batches);
                 eprintln!(
                     "[native_iceberg_smoke_report] phase=native_runtime_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
@@ -1111,24 +1630,81 @@ async fn run_query_with_registered_native_tables(
             },
         }
         if let Some(metrics) = physical_plan.metrics() {
-            row.record_native_metrics(NativeDataFusionExecutionMetrics::from_metrics(&metrics));
+            let native_metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics);
+            eprintln!(
+                "[native_iceberg_smoke_report] phase=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} source_cache_hits={} source_cache_misses={} source_cache_inserts={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
+                row.query_id,
+                native_metrics.parquet_files,
+                native_metrics.row_groups_selected,
+                native_metrics.read_columns,
+                native_metrics.source_chunks_planned,
+                native_metrics.source_chunks_committed,
+                native_metrics.source_cache_hits,
+                native_metrics.source_cache_misses,
+                native_metrics.source_cache_inserts,
+                native_metrics.hash_join_build_count,
+                native_metrics.one_shot_join_count,
+                native_metrics.task_runtime_rows.len(),
+                native_metrics.task_operator_rows.len(),
+                native_metrics.aggregate_strategy_rows.len(),
+                native_metrics.join_strategy_rows.len(),
+                metric_duration_ms_text(&metrics, "parquet_read_time"),
+                metric_duration_ms_text(&metrics, "source_read_time"),
+                metric_duration_ms_text(&metrics, "operator_time"),
+                metric_duration_ms_text(&metrics, "chunk_operator_time"),
+                metric_duration_ms_text(&metrics, "final_merge_time"),
+                metric_duration_ms_text(&metrics, "final_sort_time"),
+                metric_duration_ms_text(&metrics, "materialization_time"),
+            );
+            eprintln!(
+                "[native_iceberg_smoke_report] phase=native_task_operator_rows query_id={} rows={}",
+                row.query_id,
+                format_task_operator_rows(&native_metrics),
+            );
+            eprintln!(
+                "[native_iceberg_smoke_report] phase=native_task_runtime_rows query_id={} rows={}",
+                row.query_id,
+                format_task_runtime_rows(&native_metrics),
+            );
+            eprintln!(
+                "[native_iceberg_smoke_report] phase=native_source_read_runtime_rows query_id={} rows={}",
+                row.query_id,
+                format_source_read_runtime_rows(&native_metrics),
+            );
+            eprintln!(
+                "[native_iceberg_smoke_report] phase=native_aggregate_strategy_rows query_id={} rows={}",
+                row.query_id,
+                format_aggregate_strategy_rows(&native_metrics),
+            );
+            eprintln!(
+                "[native_iceberg_smoke_report] phase=native_join_strategy_rows query_id={} rows={}",
+                row.query_id,
+                format_join_strategy_rows(&native_metrics),
+            );
+            row.record_native_metrics(native_metrics);
         }
     }
 
-    if run_cpu_parity && should_execute_native {
+    if execution_mode.runs_cpu_baseline() && run_cpu_parity && should_execute_native {
         row.cpu_runtime_started = true;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=cpu_s3_baseline_start query_id={} table_count={}",
+            "[native_iceberg_smoke_report] phase=cpu_s3_baseline_start query_id={} table_count={} session_profile={}",
             row.query_id,
             records.iter().map(|record| record.table_name.as_str()).collect::<HashSet<_>>().len(),
+            cpu_baseline_session_profile.code(),
         );
         let started = Instant::now();
-        match collect_cpu_baseline(&sql, &records).await {
+        match collect_cpu_baseline_with_timeout(&sql, &records, cpu_baseline_timeout_secs, cpu_baseline_session_profile)
+            .await
+        {
             Ok((cpu_schema, cpu_batches)) => {
                 row.cpu_runtime_elapsed_ms = Some(started.elapsed().as_millis());
                 row.cpu_runtime_outcome = NativeDataFusionRuntimeOutcome::Succeeded;
                 row.cpu_output_batches = Some(cpu_batches.len());
                 row.cpu_output_rows = Some(cpu_batches.iter().map(RecordBatch::num_rows).sum());
+                let cpu_fingerprint = fingerprint_output_batches(cpu_schema.as_ref(), &cpu_batches, &sql);
+                row.cpu_output_fingerprint = Some(cpu_fingerprint.cpu_fingerprint);
+                row.comparison_mode = cpu_fingerprint.mode;
                 if let Some(native_batches) = native_batches.as_ref() {
                     eprintln!(
                         "[native_iceberg_smoke_report] phase=parity_collection_start query_id={} cpu_output_rows={} native_output_rows={}",
@@ -1141,7 +1717,7 @@ async fn run_query_with_registered_native_tables(
                         &cpu_batches,
                         native_schema.as_ref(),
                         native_batches,
-                        sql_has_top_level_order_by(&sql),
+                        smoke_parity_uses_ordered_rows(&sql, cpu_schema.as_ref()),
                         ParityFloatTolerance::exact(),
                     );
                     row.parity_status = comparison.status;
@@ -1199,9 +1775,15 @@ async fn run_query_with_registered_native_tables(
     Ok(row)
 }
 
-fn native_session_context() -> (SessionContext, Arc<CudfNativePhysicalOptimizerRule>) {
-    let execution_config = NativeCudfExecutionConfig::bounded_auto_sized()
-        .with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded);
+fn native_session_context(
+    source_storage_profile: Option<datafusion_cudf::SourceStorageProfile>,
+    native_execution_profile: NativeExecutionProfile,
+) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
+    let mut execution_config =
+        native_execution_config_for_profile_with_env(native_execution_profile, |name| std::env::var(name).ok())?;
+    if let Some(profile) = source_storage_profile {
+        execution_config = execution_config.with_source_storage_profile(profile);
+    }
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
         CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(execution_config),
     ));
@@ -1209,7 +1791,73 @@ fn native_session_context() -> (SessionContext, Arc<CudfNativePhysicalOptimizerR
         .with_config(smoke_session_config())
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
-    (SessionContext::new_with_state(state), native_rule)
+    Ok((SessionContext::new_with_state(state), native_rule))
+}
+
+pub(crate) fn native_execution_config_for_profile_with_env(
+    profile: NativeExecutionProfile,
+    mut get: impl FnMut(&str) -> Option<String>,
+) -> SmokeResult<NativeCudfExecutionConfig> {
+    let mut config = match profile {
+        NativeExecutionProfile::Smoke => NativeCudfExecutionConfig::bounded_auto_sized(),
+        NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark => {
+            let device_budget_bytes = optional_env_u64_get(&mut get, NATIVE_DEVICE_BUDGET_BYTES_ENV)?
+                .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
+            let max_source_chunk_bytes = optional_env_u64_get(&mut get, NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?
+                .unwrap_or(TPCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_DEFAULT);
+            let max_row_groups_per_chunk = optional_env_usize_get(&mut get, NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?
+                .unwrap_or(TPCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_DEFAULT);
+            let max_retry_attempts = optional_env_usize_get(&mut get, NATIVE_MAX_RETRY_ATTEMPTS_ENV)?
+                .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+            let min_retry_chunk_row_groups = optional_env_usize_get(&mut get, NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV)?
+                .unwrap_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS);
+            let max_source_reads_in_flight = optional_env_usize_get(&mut get, NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV)?
+                .unwrap_or(TPCH_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_DEFAULT);
+            let statistical_aggregate_execution_mode =
+                native_statistical_aggregate_execution_mode_for_profile_with_env(profile, &mut get)?;
+            NativeCudfExecutionConfig::bounded(
+                device_budget_bytes,
+                max_source_chunk_bytes,
+                max_row_groups_per_chunk,
+                max_retry_attempts,
+                min_retry_chunk_row_groups,
+            )
+            .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
+            .with_source_scheduler_policy(SourceSchedulerPolicy::new(max_source_reads_in_flight))
+        },
+    };
+    config = config.with_native_pipeline_execution_mode(NativePipelineExecutionMode::StrictBounded);
+    Ok(config)
+}
+
+fn native_statistical_aggregate_execution_mode_for_profile_with_env(
+    profile: NativeExecutionProfile,
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> SmokeResult<StatisticalAggregateExecutionMode> {
+    let default = match profile {
+        NativeExecutionProfile::TpcdsBenchmark => StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        NativeExecutionProfile::Smoke | NativeExecutionProfile::TpchBenchmark => {
+            StatisticalAggregateExecutionMode::DataFusionExactHostWelford
+        },
+    };
+    optional_env_statistical_aggregate_execution_mode_get(get)?.map_or(Ok(default), Ok)
+}
+
+fn optional_env_statistical_aggregate_execution_mode_get(
+    get: &mut impl FnMut(&str) -> Option<String>,
+) -> SmokeResult<Option<StatisticalAggregateExecutionMode>> {
+    match get(NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
+        .or_else(|| get(NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV))
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(value) => value.trim().parse::<StatisticalAggregateExecutionMode>().map(Some).map_err(|error| {
+            smoke_error(format!(
+                "unsupported Iceberg native statistical aggregate execution mode={}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}",
+                value.trim()
+            ))
+        }),
+        None => Ok(None),
+    }
 }
 
 async fn stage_object_store_data_files(
@@ -1287,6 +1935,13 @@ pub(crate) fn rewrite_scan_plan_for_staged_object_store_files(
         if let Some(staged) = staged_by_id.get(file.id.as_str()) {
             file.location = staged.local_path.to_string_lossy().into_owned();
             file.read_capability = TableFormatReadCapability::local_file_system();
+            file.resolved_parquet_source = resolve_table_format_parquet_source_with_metadata(
+                &file.location,
+                &file.read_capability,
+                &TableFormatParquetReadStrategyConfig::default(),
+                &TableFormatParquetSourceMetadata::from_size_and_row_count(Some(staged.staged_bytes), file.row_count),
+            )
+            .ok();
             file.size_bytes = Some(staged.staged_bytes);
         }
     }
@@ -1345,6 +2000,34 @@ fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableFormatScanDiagn
         .collect::<Vec<_>>();
     capabilities.sort();
     capabilities.dedup();
+    let source_read_strategy = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.source_read_strategy.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
+    let source_decode_input = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.source_decode_input.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
+    let credential_mode = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.credential_mode.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
+    let lakehouse_cache_status = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.lakehouse_cache_status.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
     let snapshot_id =
         joined_optional_values(diagnostics.iter().filter_map(|diagnostics| diagnostics.snapshot_id.clone()));
     let catalog_type =
@@ -1371,6 +2054,10 @@ fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableFormatScanDiagn
             .sum(),
         rejected_feature_list: rejected_features,
         native_source_read_capability: capabilities.join(","),
+        source_read_strategy,
+        source_decode_input,
+        credential_mode,
+        lakehouse_cache_status,
         direct_device_read_disposition,
     }
 }
@@ -1409,8 +2096,9 @@ fn joined_values(values: impl Iterator<Item = String>) -> String {
 async fn collect_cpu_baseline(
     sql: &str,
     records: &[StagingRecord],
+    session_profile: CpuBaselineSessionProfile,
 ) -> SmokeResult<(arrow::datatypes::SchemaRef, Vec<RecordBatch>)> {
-    let ctx = SessionContext::new_with_config(smoke_session_config());
+    let ctx = SessionContext::new_with_config(cpu_baseline_session_config(session_profile));
     let mut seen_tables = HashSet::new();
     for record in records {
         if seen_tables.insert(record.table_name.clone()) {
@@ -1423,6 +2111,49 @@ async fn collect_cpu_baseline(
     let schema = plan.schema();
     let batches = collect(plan, task_ctx.into()).await?;
     Ok((schema, batches))
+}
+
+async fn collect_cpu_baseline_with_timeout(
+    sql: &str,
+    records: &[StagingRecord],
+    timeout_secs: Option<u64>,
+    session_profile: CpuBaselineSessionProfile,
+) -> SmokeResult<(arrow::datatypes::SchemaRef, Vec<RecordBatch>)> {
+    let future = collect_cpu_baseline(sql, records, session_profile);
+    match timeout_secs {
+        Some(timeout_secs) => {
+            tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), future).await.map_err(|_| {
+                smoke_error(format!("timeout_category=cpu_s3_baseline_timeout;timeout_secs={timeout_secs}"))
+            })?
+        },
+        None => future.await,
+    }
+}
+
+pub(crate) fn cpu_baseline_session_config(profile: CpuBaselineSessionProfile) -> SessionConfig {
+    match profile {
+        CpuBaselineSessionProfile::Smoke => smoke_session_config(),
+        CpuBaselineSessionProfile::TpchTuned => tpch_tuned_cpu_session_config(),
+    }
+}
+
+pub(crate) fn smoke_parity_uses_ordered_rows(sql: &str, schema: &arrow::datatypes::Schema) -> bool {
+    sql_has_top_level_order_by(sql) && sql_top_level_order_by_covers_output_columns(sql, schema)
+}
+
+pub(crate) fn fingerprint_output_batches(
+    schema: &arrow::datatypes::Schema,
+    batches: &[RecordBatch],
+    sql: &str,
+) -> datafusion_cudf::ParityComparisonResult {
+    compare_record_batches(
+        schema,
+        batches,
+        schema,
+        batches,
+        smoke_parity_uses_ordered_rows(sql, schema),
+        ParityFloatTolerance::exact(),
+    )
 }
 
 async fn register_cpu_table_from_scan_plan(
@@ -1443,7 +2174,8 @@ async fn register_cpu_table_from_scan_plan(
         table_name, url_count,
     );
     register_cpu_object_stores(ctx, &urls).await?;
-    let listing_options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
+    let listing_options = ListingOptions::new(Arc::new(ParquetFormat::default()))
+        .with_file_extension(cpu_baseline_listing_file_extension(&urls));
     let inferred_schema = listing_options.infer_schema(&ctx.state(), &urls[0]).await?;
     let config = ListingTableConfig::new_with_multi_paths(urls)
         .with_listing_options(listing_options)
@@ -1463,17 +2195,34 @@ pub(crate) fn cpu_baseline_listing_urls_from_scan_plan(
         .data_files
         .iter()
         .filter(|file| file.format == TableFormatDataFileFormat::Parquet)
-        .filter_map(|file| match &file.read_capability {
-            capability if capability == &TableFormatReadCapability::local_file_system() => {
-                Some(ListingTableUrl::parse(file.location.as_str()))
-            },
-            TableFormatReadCapability::ObjectStore { scheme } if scheme.eq_ignore_ascii_case("s3") => {
-                Some(ListingTableUrl::parse(file.location.as_str()))
-            },
-            _ => None,
-        })
+        .filter_map(cpu_baseline_listing_url_from_data_file)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| Box::new(error) as Box<dyn StdError + Send + Sync>)
+}
+
+fn cpu_baseline_listing_url_from_data_file(
+    file: &datafusion_cudf::TableFormatDataFile,
+) -> Option<datafusion::error::Result<ListingTableUrl>> {
+    if let Some(resolved) = &file.resolved_parquet_source
+        && resolved.read_strategy == ParquetReadStrategy::LocalCacheKvikio
+        && Path::new(&resolved.reader_location).exists()
+    {
+        return Some(ListingTableUrl::parse(resolved.reader_location.as_str()));
+    }
+
+    match &file.read_capability {
+        capability if capability == &TableFormatReadCapability::local_file_system() => {
+            Some(ListingTableUrl::parse(file.location.as_str()))
+        },
+        TableFormatReadCapability::ObjectStore { scheme } if scheme.eq_ignore_ascii_case("s3") => {
+            Some(ListingTableUrl::parse(file.location.as_str()))
+        },
+        _ => None,
+    }
+}
+
+pub(crate) fn cpu_baseline_listing_file_extension(urls: &[ListingTableUrl]) -> &'static str {
+    if urls.iter().any(|url| url.file_extension() != Some("parquet")) { "" } else { ".parquet" }
 }
 
 async fn register_cpu_object_stores(ctx: &SessionContext, urls: &[ListingTableUrl]) -> SmokeResult<()> {
@@ -1496,6 +2245,39 @@ async fn register_cpu_object_stores(ctx: &SessionContext, urls: &[ListingTableUr
 
 async fn build_cpu_s3_object_store(s3_url: &str) -> SmokeResult<object_store::aws::AmazonS3> {
     let mut builder = AmazonS3Builder::from_env().with_url(s3_url.to_string());
+    if let Ok(endpoint) = std::env::var(REST_S3_ENDPOINT_ENV)
+        && !endpoint.trim().is_empty()
+    {
+        let endpoint = endpoint.trim().to_string();
+        if endpoint.starts_with("http://") {
+            builder = builder.with_allow_http(true);
+        }
+        builder = builder.with_endpoint(endpoint);
+    }
+    if let Ok(path_style) = std::env::var(REST_S3_PATH_STYLE_ENV)
+        && matches!(path_style.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+    {
+        builder = builder.with_virtual_hosted_style_request(false);
+    }
+    if let Ok(region) = std::env::var(REST_S3_REGION_ENV)
+        && !region.trim().is_empty()
+    {
+        builder = builder.with_region(region.trim());
+    }
+    if let (Ok(access_key_id), Ok(secret_access_key)) =
+        (std::env::var(REST_S3_ACCESS_KEY_ID_ENV), std::env::var(REST_S3_SECRET_ACCESS_KEY_ENV))
+        && !access_key_id.trim().is_empty()
+        && !secret_access_key.trim().is_empty()
+    {
+        builder = builder.with_access_key_id(access_key_id.trim()).with_secret_access_key(secret_access_key.trim());
+        if let Ok(session_token) = std::env::var(REST_S3_SESSION_TOKEN_ENV)
+            && !session_token.trim().is_empty()
+        {
+            builder = builder.with_token(session_token.trim());
+        }
+        return Ok(builder.build()?);
+    }
+
     let mut loader = aws_config::defaults(BehaviorVersion::latest());
     if let Ok(profile) = std::env::var(AWS_PROFILE_ENV)
         && !profile.trim().is_empty()
@@ -1549,12 +2331,17 @@ async fn load_iceberg_table(fixture: &IcebergNativeSmokeFixture) -> SmokeResult<
             };
             Ok(load_glue_table(config).await?.table)
         },
+        IcebergNativeSmokeFixture::RestS3 { namespace, table, .. } => {
+            let backend =
+                RestIcebergCatalogBackend::from_config_env(fixture.rest_config().expect("rest config")).await?;
+            let ident = TableIdent::new(NamespaceIdent::new(namespace.clone()), table.clone());
+            Ok(backend.load_table(&ident).await?)
+        },
     }
 }
 
 fn iceberg_table_arrow_schema(table: &Table) -> SmokeResult<arrow::datatypes::SchemaRef> {
-    let schema = iceberg::arrow::schema_to_arrow_schema(table.current_schema_ref().as_ref())?;
-    Ok(Arc::new(schema))
+    Ok(iceberg_schema_to_datafusion_arrow_schema(table.current_schema_ref().as_ref())?)
 }
 
 fn smoke_session_config() -> SessionConfig {
@@ -1705,6 +2492,62 @@ fn optional_u64(value: Option<u64>) -> String {
     value.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string())
 }
 
+fn parse_optional_bool(value: Option<String>, name: &'static str) -> SmokeResult<bool> {
+    match value.map(|value| value.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("") | Some("false" | "0" | "off" | "no") => Ok(false),
+        Some("true" | "1" | "on" | "yes") => Ok(true),
+        Some(other) => {
+            Err(smoke_error(format!("unsupported {name}={other}; expected true/false, 1/0, on/off, or yes/no")))
+        },
+    }
+}
+
+fn parse_optional_timeout_secs(value: Option<String>, name: &'static str) -> SmokeResult<Option<u64>> {
+    match value {
+        Some(value) if !value.trim().is_empty() => {
+            let parsed = value.trim().parse::<u64>().map_err(|error| {
+                smoke_error(format!("invalid {name}={}: expected unsigned integer seconds: {error}", value.trim()))
+            })?;
+            if parsed == 0 {
+                return Err(smoke_error(format!("{name} must be greater than zero when set")));
+            }
+            Ok(Some(parsed))
+        },
+        _ => Ok(None),
+    }
+}
+
+fn optional_env_u64_get(get: &mut impl FnMut(&str) -> Option<String>, name: &'static str) -> SmokeResult<Option<u64>> {
+    parse_optional_positive_u64(get(name), name)
+}
+
+fn optional_env_usize_get(
+    get: &mut impl FnMut(&str) -> Option<String>,
+    name: &'static str,
+) -> SmokeResult<Option<usize>> {
+    match parse_optional_positive_u64(get(name), name)? {
+        Some(value) => usize::try_from(value)
+            .map(Some)
+            .map_err(|_| smoke_error(format!("{name} is too large for this platform's usize"))),
+        None => Ok(None),
+    }
+}
+
+fn parse_optional_positive_u64(value: Option<String>, name: &'static str) -> SmokeResult<Option<u64>> {
+    match value {
+        Some(value) if !value.trim().is_empty() => {
+            let parsed = value.trim().parse::<u64>().map_err(|error| {
+                smoke_error(format!("invalid {name}={}: expected unsigned integer: {error}", value.trim()))
+            })?;
+            if parsed == 0 {
+                return Err(smoke_error(format!("{name} must be greater than zero when set")));
+            }
+            Ok(Some(parsed))
+        },
+        _ => Ok(None),
+    }
+}
+
 fn optional_usize(value: Option<usize>) -> String {
     value.map(|value| value.to_string()).unwrap_or_else(|| "none".to_string())
 }
@@ -1715,6 +2558,59 @@ fn optional_u128(value: Option<u128>) -> String {
 
 fn optional_duration_ms_text(value: Option<usize>) -> String {
     value.map_or_else(|| "none".to_string(), |value| format!("{:.3}", value as f64 / 1_000_000.0))
+}
+
+fn metric_duration_ms_text(metrics: &MetricsSet, name: &str) -> String {
+    optional_duration_ms_text(metrics.sum_by_name(name).map(|value| value.as_usize()))
+}
+
+fn format_task_operator_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.task_operator_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.task_operator_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+fn format_task_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.task_runtime_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.task_runtime_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+fn format_source_read_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.source_read_runtime_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.source_read_runtime_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+fn format_aggregate_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.aggregate_strategy_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.aggregate_strategy_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+fn format_join_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
+    if metrics.join_strategy_rows.is_empty() {
+        return "none".to_string();
+    }
+    let mut rows = metrics.join_strategy_rows.iter().collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+}
+
+fn sanitize_nested(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ").replace('|', "/")
 }
 
 fn list_or_none(values: &[String]) -> String {

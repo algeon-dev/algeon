@@ -61,6 +61,10 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
         outputs: Vec<ResidentGpuFrame>,
     },
     Prepared(BoundedCompiledPreparedJoinProbeState),
+    MixedStreamed {
+        build: BoundedCompiledPreparedJoinBuildState,
+        outputs: Vec<ResidentGpuFrame>,
+    },
     OneShotStreamed {
         build: BoundedCompiledPreparedJoinBuildState,
         outputs: Vec<ResidentGpuFrame>,
@@ -629,6 +633,12 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
                 metrics,
             )
         },
+        BoundedCompiledJoinBuildState::Prepared(build)
+            if build.strategy == CompiledJoinExecutionStrategy::MixedKeyedResidual
+                && node.spec.join_type == JoinType::Inner =>
+        {
+            execute_compiled_mixed_join_probe_from_stream(context, node_id, node, build, stream, reservations, metrics)
+        },
         other => {
             let input =
                 materialize_bounded_join_leaf_local_parquet_source_stream(context, stream, reservations, metrics)?;
@@ -777,6 +787,10 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             execute_compiled_prepared_join_materialize(context, node_id, node, probe, reservations, metrics)
         },
+        BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
+            release_bounded_join_side_frame(build.input, reservations, metrics);
+            concatenate_streamed_hash_join_outputs(context, node_id, outputs, reservations, metrics)
+        },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary } => {
             execute_compiled_streamed_one_shot_join_materialize(
                 context,
@@ -866,6 +880,10 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 &summary,
                 metrics,
             );
+            Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
+        },
+        BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
+            release_bounded_join_side_frame(build.input, reservations, metrics);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
         BoundedCompiledJoinProbeState::OneShotLazyStream(probe) => {
@@ -975,6 +993,10 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
             let BoundedCompiledPreparedJoinProbeState { left, right, .. } = probe;
             release_bounded_join_side_frame(left, reservations, metrics);
             release_bounded_join_side_frame(right, reservations, metrics);
+        },
+        BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
+            release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+            release_bounded_join_side_frame(build.input, reservations, metrics);
         },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, .. } => {
             release_streamed_join_outputs_reverse(reservations, outputs, metrics);

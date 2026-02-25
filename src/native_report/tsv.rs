@@ -69,8 +69,12 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
         let total_rows = diagnostics.total_rows.map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
         let _ = write!(
             output,
-            "format={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
+            "format={},source_read_strategy={},source_decode_input={},credential_mode={},lakehouse_cache_status={},direct_device_read={},file_count={},ranged_file_count={},known_bytes={},selected_row_groups={},total_row_groups={},selected_source_bytes={},total_source_bytes={},selected_rows={},total_rows={},read_columns={},projected_output_columns={},pure_filter_columns={},predicate={},byte_range={},partition_columns={},zero_column_count={},scan_limit={},schema_mapping={},rejected_features={}",
             diagnostics.format,
+            diagnostics.source_read_strategy,
+            diagnostics.source_decode_input,
+            diagnostics.credential_mode,
+            diagnostics.lakehouse_cache_status,
             diagnostics.direct_device_read,
             diagnostics.file_count,
             diagnostics.ranged_file_count,

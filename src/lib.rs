@@ -49,9 +49,9 @@ pub use clickbench::{
     CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
     CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, CUDF_CLICKBENCH_PARQUET_DIR_ENV, ClickbenchDatasetMetadata,
     ClickbenchExecutionProgressEvent, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
-    ClickbenchWorkloadResult, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET,
-    DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR, clickbench_datafusion_execution_workload_items,
-    clickbench_datafusion_execution_workload_items_filtered,
+    ClickbenchWorkloadResult, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
+    DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR,
+    clickbench_datafusion_execution_workload_items, clickbench_datafusion_execution_workload_items_filtered,
     clickbench_datafusion_execution_workload_items_with_optimizer_config,
     clickbench_datafusion_planning_workload_items, clickbench_datafusion_planning_workload_items_with_optimizer_config,
     clickbench_fallback_pressure_workload_items, clickbench_native_optimizer_config, clickbench_query_ids,
@@ -61,8 +61,9 @@ pub use clickbench::{
 };
 pub use cudf_query_engine::{
     AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
-    NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, SemijoinReductionOptions,
-    StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract,
+    NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, S3SourceStorageCredential,
+    S3SourceStorageProfile, SemijoinReductionOptions, SourceStorageProfile, StatisticalAggregateExecutionMode,
+    StatisticalAggregateToleranceContract,
 };
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
@@ -88,14 +89,16 @@ pub use graph_sql::{
 #[cfg(feature = "iceberg")]
 pub use iceberg::catalog::{
     CudfIcebergCatalogProvider, CudfIcebergSchemaProvider, GlueIcebergCatalogBackend, GlueIcebergCatalogConfig,
-    IcebergCatalogBackend, IcebergProviderKind, build_catalog_provider_from_backend,
-    build_scoped_catalog_provider_from_backend,
+    IcebergCatalogBackend, IcebergProviderKind, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
+    build_catalog_provider_from_backend, build_scoped_catalog_provider_from_backend,
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::{
+    CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, CUDF_ICEBERG_S3_SESSION_TOKEN_ENV,
     CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig, GlueIcebergTableDiagnostics,
     GlueIcebergTableRegistration, IcebergTableFormatPlanner, LoadedGlueIcebergTable,
-    iceberg_file_scan_tasks_to_table_format_scan_plan, load_glue_table, register_glue_table,
+    iceberg_file_scan_tasks_to_table_format_scan_plan, iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
+    register_glue_table,
 };
 pub use native::{NativeLoweringResult, lower_physical_plan_to_native};
 pub use native_exec::{
@@ -115,13 +118,14 @@ pub use native_report::{
     NativeDynamicFilterRuntimeMetricRow, NativeDynamicFilterWorkAvoidanceStatus, NativeFallbackPressureOutcome,
     NativeFallbackPressureReport, NativeFallbackPressureRow, NativeFallbackPressureWorkloadInput,
     NativeFallbackPressureWorkloadItem, NativeGraphRuntimeMetricRow, NativeJoinDiagnosticSummary,
-    NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
-    NativeTpcdsParityExternalOutputStatus, NativeTpcdsParityExternalOutputSummary,
-    NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome,
-    NativeTpcdsParityReport, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode,
-    ParityComparisonResult, ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata,
-    compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+    NativeJoinStrategyMetricRow, NativePlanningFailure, NativeSourceDiagnosticSummary,
+    NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityExternalOutputStatus,
+    NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityNativePlanningOutcome,
+    NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityPlanningOutcome, NativeTpcdsParityReport,
+    NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem, ParityComparisonMode, ParityComparisonResult,
+    ParityFloatTolerance, ParityStageStatus, ParityStatus, WorkloadDatasetMetadata, compare_record_batches,
+    sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
@@ -139,9 +143,12 @@ pub use session::{
 pub use table_format::{
     CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
     TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
-    TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatPartitionValue,
-    TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanDiagnostics,
-    TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode,
+    TableFormatDirectDeviceReadDisposition, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
+    TableFormatParquetReadStrategyPreference, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
+    TableFormatPartitionValue, TableFormatPlanner, TableFormatReadCapability, TableFormatScalarValue,
+    TableFormatScanDiagnostics, TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeature,
+    TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
+    resolve_table_format_parquet_source_with_metadata,
 };
 pub use tpcds::{
     CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,

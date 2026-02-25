@@ -2,9 +2,13 @@ use super::{partitioned::partitioned_aggregate_partition_count, *};
 
 const SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN: usize = 64;
 const SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_ROW_GROUPS: u64 = 64;
+const SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES: u64 = 1024 * 1024 * 1024;
+const SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES: u64 = 64 * 1024 * 1024;
+const SOURCE_ADJACENT_PARTITIONED_AGGREGATE_BATCH_BUDGET_DIVISOR: u64 = 8;
+const SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 struct SourceAdjacentPartitionInput {
-    chunk: SourceChunk,
+    chunks: Vec<SourceChunk>,
     partial: CommittedPartial,
 }
 
@@ -56,40 +60,47 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         (0..partition_count).map(|_| Vec::new()).collect::<Vec<Vec<SourceAdjacentPartitionInput>>>();
     let mut aggregate_outputs = Vec::with_capacity(partition_count);
 
-    for chunk in chunks {
-        let raw = match execute_bounded_raw_source_chunk(context, bounded, chunk, reservations, metrics) {
-            Ok(raw) => raw,
+    let source_batches = source_adjacent_raw_source_batches(context, bounded, chunks);
+    let mut committed_source_batches = Vec::with_capacity(source_batches.len());
+    for batch in source_batches {
+        let raw_inputs = match execute_source_adjacent_raw_source_batch(context, bounded, batch, reservations, metrics)
+        {
+            Ok(raw_inputs) => raw_inputs,
             Err(error) => {
                 release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
                 release_partials_reverse(reservations, aggregate_outputs, metrics);
                 return Err(error);
             },
         };
-        let partitions = match partition_source_adjacent_raw_chunk(
-            context,
-            bounded.aggregate_id,
-            chunk.chunk_index,
-            raw,
-            partition_count,
-            &partitioner,
-            reservations,
-            metrics,
-        ) {
-            Ok(partitions) => partitions,
-            Err(error) => {
-                release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
-                release_partials_reverse(reservations, aggregate_outputs, metrics);
-                return Err(error);
-            },
-        };
-        for (partition_index, partition) in partitions.into_iter().enumerate() {
-            if let Some(partition) = partition {
-                partition_inputs[partition_index]
-                    .push(SourceAdjacentPartitionInput { chunk: chunk.clone(), partial: partition });
+        for (batch_chunks, raw) in raw_inputs {
+            let chunk_index = batch_chunks.first().expect("raw source batch has at least one chunk").chunk_index;
+            let partitions = match partition_source_adjacent_raw_chunk(
+                context,
+                bounded.aggregate_id,
+                chunk_index,
+                raw,
+                partition_count,
+                &partitioner,
+                reservations,
+                metrics,
+            ) {
+                Ok(partitions) => partitions,
+                Err(error) => {
+                    release_nested_partition_inputs_reverse(reservations, partition_inputs, metrics);
+                    release_partials_reverse(reservations, aggregate_outputs, metrics);
+                    return Err(error);
+                },
+            };
+            for (partition_index, partition) in partitions.into_iter().enumerate() {
+                if let Some(partition) = partition {
+                    partition_inputs[partition_index]
+                        .push(SourceAdjacentPartitionInput { chunks: batch_chunks.clone(), partial: partition });
+                }
             }
+            committed_source_batches.push(batch_chunks);
         }
         for (partition_index, inputs) in partition_inputs.iter_mut().enumerate() {
-            if source_adjacent_partition_batch_ready(inputs) {
+            if source_adjacent_partition_batch_ready(context, inputs) {
                 match execute_source_adjacent_partition_aggregate_batch(
                     context,
                     bounded,
@@ -133,11 +144,102 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             },
         }
     }
-    for chunk in chunks {
-        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+    for batch_chunks in committed_source_batches {
+        metrics.record_source_chunk_commit(batch_chunks.iter().map(|chunk| chunk.row_group_count() as u64).sum());
     }
 
     execute_final_aggregate_merge(context, bounded, aggregate_outputs, reservations, metrics)
+}
+
+fn execute_source_adjacent_raw_source_batch(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    batch: SourceChunkBatch,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<(Vec<SourceChunk>, CommittedPartial)>> {
+    context.check_cancellation("cudf_query_engine.exec.bounded.source_adjacent_raw_source_batch_retry")?;
+    if batch.is_singleton() {
+        let chunk = batch.chunks.into_iter().next().expect("singleton source batch has one child");
+        let raw = execute_bounded_raw_source_chunk(context, bounded, &chunk, reservations, metrics)?;
+        return Ok(vec![(vec![chunk], raw)]);
+    }
+    match execute_bounded_raw_source_chunk_batch(context, bounded, &batch, reservations, metrics) {
+        Ok(raw) => Ok(vec![(batch.chunks, raw)]),
+        Err(error) if is_retryable_chunk_error(&error) => {
+            record_chunk_retry_error(&error, metrics);
+            metrics.record_source_chunk_retry();
+            let Some((left, right)) = batch.split_for_retry() else {
+                return Err(error);
+            };
+            let mut raw_inputs =
+                execute_source_adjacent_raw_source_batch(context, bounded, left, reservations, metrics)?;
+            match execute_source_adjacent_raw_source_batch(context, bounded, right, reservations, metrics) {
+                Ok(mut right_inputs) => {
+                    raw_inputs.append(&mut right_inputs);
+                    Ok(raw_inputs)
+                },
+                Err(error) => {
+                    release_raw_source_inputs_reverse(reservations, raw_inputs, metrics);
+                    Err(error)
+                },
+            }
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn release_raw_source_inputs_reverse(
+    reservations: &mut ReservationTracker,
+    mut inputs: Vec<(Vec<SourceChunk>, CommittedPartial)>,
+    metrics: &mut QueryMetrics,
+) {
+    while let Some((_chunks, partial)) = inputs.pop() {
+        drop(partial.frame);
+        reservations.release(partial.reservation, metrics);
+    }
+}
+
+fn source_adjacent_raw_source_batches(
+    context: &ExecutionContext,
+    bounded: &BoundedPlan<'_>,
+    chunks: &[SourceChunk],
+) -> Vec<SourceChunkBatch> {
+    if context.local_parquet_source_cache().is_some()
+        || !bounded.source.partition_columns.is_empty()
+        || bounded.source.scan_limit.is_some()
+        || bounded
+            .source
+            .reader_predicate
+            .as_ref()
+            .is_some_and(|predicate| !bounded.source.reader_predicate_is_supported(predicate))
+    {
+        return singleton_source_chunk_batches(chunks);
+    }
+    let max_batch_source_read_bytes = match context.memory_control_policy() {
+        MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
+            Some(max_source_chunk_bytes.min(SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES))
+        },
+        MemoryControlPolicy::Unbounded => Some(SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES),
+    };
+    plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
+}
+
+fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(batch_index, chunk)| SourceChunkBatch {
+            batch_index,
+            chunks: vec![chunk.clone()],
+            estimated_source_read_bytes: chunk
+                .estimated_source_read_bytes
+                .or(chunk.known_row_group_bytes)
+                .or(chunk.estimated_chunk_bytes)
+                .or(chunk.known_file_bytes),
+            source_batching_reason: "source_gate:source_adjacent_batching_disabled".to_string(),
+        })
+        .collect()
 }
 
 fn source_adjacent_partitioned_aggregate_input_evidence(
@@ -165,10 +267,40 @@ fn source_adjacent_partitioned_aggregate_input_evidence(
     }
 }
 
-fn source_adjacent_partition_batch_ready(inputs: &[SourceAdjacentPartitionInput]) -> bool {
+fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[SourceAdjacentPartitionInput]) -> bool {
     inputs.len() >= SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN
-        || inputs.iter().map(|input| input.chunk.row_group_count() as u64).sum::<u64>()
+        || inputs.iter().flat_map(|input| input.chunks.iter()).map(|chunk| chunk.row_group_count() as u64).sum::<u64>()
             >= SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_ROW_GROUPS
+        || source_adjacent_partition_batch_reserved_bytes(inputs) >= source_adjacent_partition_batch_byte_limit(context)
+}
+
+fn source_adjacent_partition_batch_reserved_bytes(inputs: &[SourceAdjacentPartitionInput]) -> u64 {
+    if inputs.len() <= 1 {
+        return 0;
+    }
+    inputs
+        .iter()
+        .map(|input| input.partial.reservation.bytes())
+        .try_fold(0u64, |total, bytes| total.checked_add(bytes))
+        .unwrap_or(u64::MAX)
+}
+
+fn source_adjacent_partition_batch_byte_limit(context: &ExecutionContext) -> u64 {
+    let budget_limit = match context.memory_control_policy() {
+        MemoryControlPolicy::Bounded { device_budget_bytes, .. } => Some(device_budget_bytes),
+        _ => None,
+    };
+    source_adjacent_partition_batch_byte_limit_for_budget(budget_limit)
+}
+
+fn source_adjacent_partition_batch_byte_limit_for_budget(device_budget_bytes: Option<u64>) -> u64 {
+    let budget_limit = device_budget_bytes
+        .map(|bytes| bytes / SOURCE_ADJACENT_PARTITIONED_AGGREGATE_BATCH_BUDGET_DIVISOR)
+        .unwrap_or(SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES);
+    budget_limit.clamp(
+        SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES,
+        SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES,
+    )
 }
 
 fn execute_source_adjacent_partition_aggregate_batch(
@@ -184,7 +316,7 @@ fn execute_source_adjacent_partition_aggregate_batch(
     let batch_inputs = std::mem::take(inputs);
     let non_empty_partition_count = usize::from(batch_inputs.iter().any(|input| input.partial.frame.num_rows() > 0));
     let max_partition_fan_in = batch_inputs.len();
-    let batch_chunks = batch_inputs.iter().map(|input| input.chunk.clone()).collect::<Vec<_>>();
+    let batch_chunks = batch_inputs.iter().flat_map(|input| input.chunks.iter().cloned()).collect::<Vec<_>>();
     let input_evidence = source_adjacent_partitioned_aggregate_input_evidence(
         &batch_chunks,
         partitioner,
@@ -801,4 +933,29 @@ fn source_adjacent_aggregate_task_id(node_id: NodeId, stage: &'static str, suffi
 
 fn source_adjacent_partitioned_aggregate_min_partition_count(chunk_count: usize) -> usize {
     chunk_count.clamp(1, 32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_adjacent_partition_batch_byte_limit_tracks_device_budget_with_bounds() {
+        assert_eq!(
+            source_adjacent_partition_batch_byte_limit_for_budget(Some(16 * 1024 * 1024 * 1024)),
+            SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES
+        );
+        assert_eq!(
+            source_adjacent_partition_batch_byte_limit_for_budget(Some(4 * 1024 * 1024 * 1024)),
+            512 * 1024 * 1024
+        );
+        assert_eq!(
+            source_adjacent_partition_batch_byte_limit_for_budget(Some(256 * 1024 * 1024)),
+            SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MIN_BATCH_BYTES
+        );
+        assert_eq!(
+            source_adjacent_partition_batch_byte_limit_for_budget(None),
+            SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_BYTES
+        );
+    }
 }

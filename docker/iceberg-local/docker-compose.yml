@@ -1,0 +1,88 @@
+# Local Iceberg REST catalog + RustFS (S3) stack for datafusion-cudf E2E.
+#
+# Brings up:
+#   - rustfs       : S3-compatible object store (data plane)
+#   - rustfs-init  : one-shot bucket creation via AWS CLI (NOT MinIO `mc`)
+#   - iceberg-rest : apache/iceberg-rest-fixture, FileIO pointed at RustFS
+#
+# Endpoint identities:
+#   - in-network: http://rustfs:9000  (S3), http://iceberg-rest:8181 (REST)
+#   - host-side : http://localhost:9000,        http://localhost:8181
+#
+# Metadata is ephemeral (SQLite in-memory inside the REST fixture): always run
+# the loader after `up`. Tags are pinned for reproducibility.
+#
+# Usage:
+#   nerdctl compose -f docker/iceberg-local/docker-compose.yml up -d
+#   # ... run the loader ...
+#   nerdctl compose -f docker/iceberg-local/docker-compose.yml down -v
+
+services:
+  rustfs:
+    image: rustfs/rustfs:1.0.0-beta.5
+    container_name: cudf-iceberg-rustfs
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # console
+    environment:
+      RUSTFS_ACCESS_KEY: "${RUSTFS_ACCESS_KEY:-cudfadmin}"
+      RUSTFS_SECRET_KEY: "${RUSTFS_SECRET_KEY:-cudfadminsecret}"
+      RUSTFS_VOLUMES: "/data/rustfs"
+      RUSTFS_UNSAFE_BYPASS_DISK_CHECK: "true"
+      RUSTFS_OBS_LOGGER_LEVEL: "info"
+    healthcheck:
+      # RustFS exposes the S3 endpoint on :9000; a TCP/HTTP probe on the root
+      # is enough to know it is accepting connections.
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/ -o /dev/null || curl -s http://localhost:9000/ -o /dev/null"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  rustfs-init:
+    image: amazon/aws-cli:2.34.0
+    container_name: cudf-iceberg-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: "${RUSTFS_ACCESS_KEY:-cudfadmin}"
+      AWS_SECRET_ACCESS_KEY: "${RUSTFS_SECRET_KEY:-cudfadminsecret}"
+      AWS_REGION: "us-east-1"
+    # Create the `lakehouse` bucket idempotently against the RustFS endpoint.
+    # `mb` returns non-zero if the bucket already exists, so swallow that.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://lakehouse 2>/dev/null;
+        aws --endpoint-url http://rustfs:9000 s3 ls s3://lakehouse >/dev/null
+        && echo "bucket lakehouse ready"
+        || (echo "failed to create/verify bucket lakehouse" >&2; exit 1)
+
+  iceberg-rest:
+    image: apache/iceberg-rest-fixture:1.9.2
+    container_name: cudf-iceberg-rest
+    depends_on:
+      rustfs-init:
+        condition: service_completed_successfully
+    ports:
+      - "8181:8181"
+    environment:
+      # Keep JDBC metadata file-backed inside the ephemeral container. The
+      # fixture's default `jdbc:sqlite::memory:` creates one database per JDBC
+      # connection, which makes create/load/list operations see different
+      # catalogs.
+      CATALOG_URI: "jdbc:sqlite:file:/tmp/iceberg-rest-catalog.db"
+      CATALOG_WAREHOUSE: "s3://lakehouse/warehouse"
+      CATALOG_IO__IMPL: "org.apache.iceberg.aws.s3.S3FileIO"
+      CATALOG_S3_ENDPOINT: "http://rustfs:9000"
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: "${RUSTFS_ACCESS_KEY:-cudfadmin}"
+      AWS_SECRET_ACCESS_KEY: "${RUSTFS_SECRET_KEY:-cudfadminsecret}"
+      AWS_REGION: "us-east-1"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8181/v1/config || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s

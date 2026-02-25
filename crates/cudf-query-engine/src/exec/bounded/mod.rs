@@ -52,6 +52,8 @@ use strict::try_execute_strict_bounded_pipeline;
 use crate::mode::NativePipelineExecutionMode;
 
 const SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES: u64 = 384 * 1024 * 1024;
+const SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS: usize = 1024;
 const SOURCE_ADJACENT_GROUP_KEY_PARTITION_MAX_INPUT_ROWS: u64 = 32_000_000;
 
 pub(super) fn execute_bounded_query_plan(
@@ -146,8 +148,15 @@ fn aggregate_source_chunk_planning_policy(
                 .min(SOURCE_ADJACENT_AGGREGATE_TARGET_CHUNK_BYTES),
         );
     }
-    if is_source_adjacent_grouped_aggregate(bounded) {
-        policy.max_row_groups_per_chunk = 64;
+    if is_source_adjacent_grouped_aggregate(bounded) && source_adjacent_grouped_aggregate_has_string_key(bounded) {
+        policy.max_source_chunk_bytes = Some(
+            policy
+                .max_source_chunk_bytes
+                .unwrap_or(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES)
+                .min(SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES),
+        );
+        policy.max_row_groups_per_chunk =
+            policy.max_row_groups_per_chunk.min(SOURCE_ADJACENT_GROUPED_AGGREGATE_MAX_OPERATOR_ROW_GROUPS);
     }
     policy
 }

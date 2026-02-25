@@ -41,8 +41,9 @@ use crate::{
     policy::FallbackReason,
     table_format::{
         CudfTableFormatScanExec, TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile,
-        TableFormatDataFileFormat, TableFormatPartitionTransform, TableFormatReadCapability, TableFormatScalarValue,
-        TableFormatScanPlan,
+        TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,
+        TableFormatPartitionTransform, TableFormatScalarValue, TableFormatScanPlan,
+        resolve_table_format_parquet_source_with_metadata,
     },
 };
 
@@ -253,7 +254,7 @@ fn lower_table_format_source_input(
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
     let source_scan_limit =
         if filter.is_none() { combine_scan_limits(scan_plan.scan_limit, pushed_scan_limit) } else { None };
-    let native_source = NativeLocalParquetSource::from_files(
+    let mut native_source = NativeLocalParquetSource::from_files(
         native_files,
         Arc::clone(&source_output_schema),
         requirements.read_columns.clone(),
@@ -267,6 +268,11 @@ fn lower_table_format_source_input(
     .with_partition_columns(requirements.partition_columns.clone())
     .with_missing_columns(requirements.missing_columns.clone())
     .with_scan_limit(source_scan_limit);
+    if let Some(predicate) =
+        table_format_reader_pushdown_predicate(filter, &source_output_schema, scan_exec.schema(), &native_source)?
+    {
+        native_source = native_source.with_reader_predicate(predicate);
+    }
 
     let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
     let scan_output_bindings = source_bindings_for_schema(&source_output_schema, scan_exec.schema());
@@ -303,6 +309,24 @@ fn lower_table_format_source_input(
     } else {
         Ok(scan_output)
     }
+}
+
+fn table_format_reader_pushdown_predicate(
+    filter: Option<&datafusion::physical_plan::filter::FilterExec>,
+    source_output_schema: &SchemaRef,
+    frontend_schema: SchemaRef,
+    native_source: &NativeLocalParquetSource,
+) -> Result<Option<NativeExpr>, FallbackReason> {
+    let Some(filter) = filter else {
+        return Ok(None);
+    };
+    let bindings = source_bindings_for_schema(source_output_schema, frontend_schema);
+    let predicate =
+        match lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&bindings)) {
+            Ok(predicate) => predicate,
+            Err(_) => return Ok(None),
+        };
+    if native_source.reader_predicate_is_supported(&predicate) { Ok(Some(predicate)) } else { Ok(None) }
 }
 
 fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> Option<usize> {
@@ -586,8 +610,7 @@ fn table_format_local_parquet_file(
         return Err(FallbackReason::IcebergObjectStoreReadUnsupported);
     }
     let stable_id = format!("table-format:{}:{}", scan_plan.format.code(), file.id);
-    let mut native_file =
-        table_format_native_parquet_file(&file.location, &file.read_capability)?.with_stable_id(stable_id);
+    let mut native_file = table_format_native_parquet_file(file)?.with_stable_id(stable_id);
     if let Some(file_size_bytes) = file.size_bytes {
         native_file = native_file.with_file_size_bytes(file_size_bytes);
     }
@@ -650,22 +673,22 @@ fn table_format_local_path(location: &str) -> PathBuf {
     location.strip_prefix("file://").map_or_else(|| PathBuf::from(location), PathBuf::from)
 }
 
-fn table_format_native_parquet_file(
-    location: &str,
-    read_capability: &TableFormatReadCapability,
-) -> Result<NativeLocalParquetFile, FallbackReason> {
-    match read_capability {
-        TableFormatReadCapability::LocalFileSystem => {
-            Ok(NativeLocalParquetFile::new(table_format_local_path(location)))
-        },
-        TableFormatReadCapability::ObjectStore { scheme } if scheme == "s3" => {
-            NativeLocalParquetFile::object_store_uri(location)
-                .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)
-        },
-        TableFormatReadCapability::ObjectStore { .. } | TableFormatReadCapability::Unsupported { .. } => {
-            Err(FallbackReason::IcebergObjectStoreReadUnsupported)
-        },
+fn table_format_native_parquet_file(file: &TableFormatDataFile) -> Result<NativeLocalParquetFile, FallbackReason> {
+    if !file.read_capability.is_native_parquet_capable() {
+        return Err(FallbackReason::IcebergObjectStoreReadUnsupported);
     }
+    let resolved_source = match file.resolved_parquet_source.clone() {
+        Some(resolved_source) => resolved_source,
+        None => resolve_table_format_parquet_source_with_metadata(
+            &file.location,
+            &file.read_capability,
+            &TableFormatParquetReadStrategyConfig::from_env(),
+            &TableFormatParquetSourceMetadata::from_size_and_row_count(file.size_bytes, file.row_count),
+        )
+        .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)?,
+    };
+    NativeLocalParquetFile::from_resolved_parquet_source(resolved_source)
+        .map_err(|_error| FallbackReason::IcebergObjectStoreReadUnsupported)
 }
 
 fn table_format_file_schema(scan_plan: &TableFormatScanPlan) -> SchemaRef {
@@ -680,7 +703,28 @@ fn table_format_file_schema(scan_plan: &TableFormatScanPlan) -> SchemaRef {
                 parquet::arrow::parquet_to_arrow_schema(metadata.schema_descr(), metadata.key_value_metadata()).ok()
             })
         })
-        .map_or_else(|| Arc::clone(&scan_plan.native_source_schema), Arc::new)
+        .map(strip_table_format_file_schema_metadata)
+        .unwrap_or_else(|| strip_table_format_schema_metadata(&scan_plan.native_source_schema))
+}
+
+fn strip_table_format_file_schema_metadata(schema: Schema) -> SchemaRef {
+    Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
+            .collect::<Vec<_>>(),
+    ))
+}
+
+fn strip_table_format_schema_metadata(schema: &SchemaRef) -> SchemaRef {
+    Arc::new(Schema::new(
+        schema
+            .fields()
+            .iter()
+            .map(|field| Field::new(field.name(), field.data_type().clone(), field.is_nullable()))
+            .collect::<Vec<_>>(),
+    ))
 }
 
 fn project_scan_output_columns(

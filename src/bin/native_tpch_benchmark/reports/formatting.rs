@@ -35,6 +35,7 @@ pub(super) fn write_native_memory_policy_metadata(
         },
     }
     push_line(output, format_args!("# tpch_benchmark_native_max_source_reads_in_flight={max_source_reads_in_flight}"));
+    push_line(output, format_args!("# tpch_benchmark_native_runtime_policy=shared_per_benchmark_run"));
     push_line(output, format_args!("# tpch_benchmark_native_source_cache_policy={}", source_cache_policy.as_str()));
     push_line(
         output,

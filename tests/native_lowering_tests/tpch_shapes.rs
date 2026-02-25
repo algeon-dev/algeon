@@ -462,6 +462,38 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
     );
 
+    let optimized = cudf_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    let materialization = &optimized.diagnostics.shared_subplan_materialization;
+    assert_eq!(materialization.applied_count, 1, "optimizer diagnostics={materialization:?}");
+    assert!(
+        materialization.candidates.iter().any(|candidate| {
+            candidate.applied
+                && candidate.aggregate_node_ids.len() == 2
+                && candidate.duplicate_selected_source_bytes.is_some()
+        }),
+        "q11 should record grouped+scalar aggregate sharing evidence: {materialization:?}"
+    );
+    let scalar_aggregate_node = optimized
+        .plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty()))
+        .expect("optimized q11 should keep a scalar threshold aggregate");
+    let PlanNode::Aggregate(scalar_aggregate) = &scalar_aggregate_node.kind else {
+        unreachable!("matched above");
+    };
+    let grouped_aggregate_node =
+        optimized.plan.node(scalar_aggregate.input).expect("scalar aggregate input should exist");
+    let PlanNode::Aggregate(grouped_aggregate) = &grouped_aggregate_node.kind else {
+        panic!("optimized q11 scalar threshold should derive from the grouped aggregate output:\n{}", optimized.plan);
+    };
+    assert!(!grouped_aggregate.spec.group_exprs.is_empty());
+    assert_eq!(scalar_aggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(
+        scalar_aggregate.spec.aggr_exprs[0].expr,
+        Expr::column(grouped_aggregate.spec.aggr_exprs[0].alias.clone())
+    );
+
     fs::remove_dir_all(dir).unwrap();
 }
 

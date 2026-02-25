@@ -61,6 +61,10 @@ fn no_delete_local_parquet_iceberg_tasks_produce_native_admissible_scan_plan() {
     assert_eq!(plan.data_files[0].size_bytes, Some(4096));
     assert_eq!(plan.data_files[0].row_count, Some(17));
     assert_eq!(plan.data_files[0].read_capability, TableFormatReadCapability::LocalFileSystem);
+    assert!(plan.logical_schema.metadata().is_empty());
+    assert!(plan.logical_schema.fields().iter().all(|field| field.metadata().is_empty()));
+    assert!(plan.native_source_schema.metadata().is_empty());
+    assert!(plan.native_source_schema.fields().iter().all(|field| field.metadata().is_empty()));
     assert_eq!(plan.projected_columns.len(), 2);
     assert_eq!(plan.projected_columns[0].field_id, Some(1));
     assert_eq!(plan.projected_columns[0].logical_name, "id");

@@ -7,24 +7,26 @@ pub struct CompiledGpuResource {
 }
 
 pub(super) enum CompiledGpuResourcePayload {
-    ResidentFrame { frame: ResidentGpuFrame, applied_limit: Option<NodeId> },
+    ResidentFrame { frame: Box<ResidentGpuFrame>, applied_limit: Option<NodeId> },
     ResidentFrameStream(ResidentFrameStreamPayload),
-    JoinLeafLocalParquetSource(BoundedJoinLeafLocalParquetSourceStream),
+    JoinLeafLocalParquetSource(Box<BoundedJoinLeafLocalParquetSourceStream>),
 }
 
 impl CompiledGpuResource {
     pub(in crate::exec::bounded) fn new(frame: ResidentGpuFrame) -> Self {
-        Self { payload: CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: None } }
+        Self { payload: CompiledGpuResourcePayload::ResidentFrame { frame: Box::new(frame), applied_limit: None } }
     }
 
     pub(in crate::exec::bounded) fn frame_with_applied_limit(frame: ResidentGpuFrame, limit: NodeId) -> Self {
-        Self { payload: CompiledGpuResourcePayload::ResidentFrame { frame, applied_limit: Some(limit) } }
+        Self {
+            payload: CompiledGpuResourcePayload::ResidentFrame { frame: Box::new(frame), applied_limit: Some(limit) },
+        }
     }
 
     pub(in crate::exec::bounded) fn join_leaf_local_parquet_source(
         stream: BoundedJoinLeafLocalParquetSourceStream,
     ) -> Self {
-        Self { payload: CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) }
+        Self { payload: CompiledGpuResourcePayload::JoinLeafLocalParquetSource(Box::new(stream)) }
     }
 
     pub(in crate::exec::bounded) fn frame_stream(frames: Vec<ResidentGpuFrame>) -> Self {

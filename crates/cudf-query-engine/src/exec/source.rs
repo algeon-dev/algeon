@@ -1,4 +1,8 @@
-use std::collections::VecDeque;
+use std::{
+    collections::{BTreeSet, VecDeque},
+    fs,
+    time::Duration,
+};
 
 use super::*;
 
@@ -15,10 +19,15 @@ mod scheduler;
 mod schema;
 mod zero_column_count;
 
-use cudf_contract::{cudf_local_parquet_source_chunk, cudf_local_parquet_source_file_selection};
+use cudf_contract::{
+    cudf_local_parquet_source_chunk, cudf_local_parquet_source_chunk_batch, cudf_local_parquet_source_file_selection,
+};
 pub use gpu_resident::read_gpu_resident_source;
 use host_buffer::{
-    ScheduledHostParquetFetch, finish_object_store_parquet_file_fetch, read_object_store_parquet_chunk,
+    LakehouseOptimizedBatchCacheEntry, ScheduledHostParquetFetch, acquire_lakehouse_cache_chunk_read_pin,
+    acquire_lakehouse_cache_file_read_pin, acquire_lakehouse_optimized_batch_read_pin,
+    ensure_local_cache_parquet_chunk, ensure_local_cache_parquet_file, finish_object_store_parquet_file_fetch,
+    local_cache_optimized_batch_entry, publish_lakehouse_optimized_batch_frame, read_object_store_parquet_chunk,
     read_object_store_parquet_file, start_object_store_parquet_file_fetch,
 };
 pub(super) use metrics::{format_row_groups, record_bounded_parquet_source_metrics};
@@ -165,17 +174,22 @@ fn read_local_parquet_source_uncached(
         let row_count_override = if columns.is_empty() { Some(local_parquet_file_row_count(file)?) } else { None };
         let frame = if columns.is_empty() {
             context.runtime().empty_dataframe()
-        } else if matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+        } else if file.resolved_source.uses_host_buffer() {
             read_object_store_parquet_file(context, source, file, file_index, file_index, metrics)?
         } else {
+            let _cache_read_pin =
+                if file.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+                    ensure_local_cache_parquet_file(context, file, metrics)?;
+                    Some(acquire_lakehouse_cache_file_read_pin(context, file)?)
+                } else {
+                    None
+                };
             let (cudf_source, _cudf_chunk) =
                 cudf_local_parquet_source_file_selection(context, source, file, file_index, file_index)?;
             let reader_predicate = cudf_source.reader_predicate().cloned();
             read_local_parquet_file(context, file, &columns, reader_predicate.clone(), metrics)?
         };
-        let frame = if matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. })
-            && !columns.is_empty()
-        {
+        let frame = if file.resolved_source.uses_host_buffer() && !columns.is_empty() {
             frame
         } else {
             let frame = inject_partition_columns(context, source, &file.partition_values, frame, metrics)?.into_frame();
@@ -242,10 +256,7 @@ fn object_store_file_fetch_pipeline_enabled(
         && source.scan_limit.is_none()
         && source.files.len() > 1
         && max_source_reads_in_flight > 1
-        && source
-            .files
-            .iter()
-            .all(|file| matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }))
+        && source.files.iter().all(|file| file.resolved_source.uses_host_buffer())
 }
 
 fn read_object_store_parquet_source_with_fetch_pipeline(
@@ -364,6 +375,26 @@ pub(super) fn read_local_parquet_chunk(
     budget_boundary: &'static str,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    read_local_parquet_chunk_with_reader_dynamic_filter_count(
+        context,
+        source,
+        chunk,
+        budget_bytes,
+        budget_boundary,
+        0,
+        metrics,
+    )
+}
+
+pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
     context.check_cancellation("cudf_query_engine.local_parquet_chunk.read")?;
     if chunk.scan_limit_rows == Some(0) {
         let frame = empty_local_parquet_execution_frame(context, source)?;
@@ -395,6 +426,13 @@ pub(super) fn read_local_parquet_chunk(
             });
     }
 
+    let _cache_read_pin = if chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio
+    {
+        ensure_local_cache_parquet_chunk(context, chunk, metrics)?;
+        Some(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?)
+    } else {
+        None
+    };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
         QueryError::new(
@@ -424,7 +462,7 @@ pub(super) fn read_local_parquet_chunk(
             .with_fact("row_groups", format_row_groups(chunk))
         })?;
     let read_timer = Instant::now();
-    let outcome = if matches!(chunk.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+    let outcome = if chunk.resolved_source.uses_host_buffer() {
         read_object_store_parquet_chunk(context, source, chunk, &cudf_source, &cudf_chunk, &token, metrics)?
     } else {
         DataFrame::read_parquet_source_chunk_with_budget(
@@ -455,8 +493,370 @@ pub(super) fn read_local_parquet_chunk(
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+    record_source_chunk_read_runtime(
+        source,
+        chunk,
+        frame.num_rows() as u64,
+        read_elapsed,
+        reader_dynamic_filter_count,
+        metrics,
+    );
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(GpuDataFrame::new(frame))
+}
+
+pub(super) fn read_local_parquet_chunk_batch(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    batch: &crate::chunk::SourceChunkBatch,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    if batch.is_singleton() {
+        let chunk = batch.chunks.first().expect("singleton source chunk batch has one child");
+        return read_local_parquet_chunk_with_reader_dynamic_filter_count(
+            context,
+            source,
+            chunk,
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count,
+            metrics,
+        );
+    }
+    context.check_cancellation("cudf_query_engine.local_parquet_chunk_batch.read")?;
+    validate_local_parquet_chunk_batch(source, batch)?;
+    if let Some(entry) = local_cache_optimized_batch_entry(source, batch)
+        && entry.path.is_file()
+    {
+        match read_optimized_local_cache_chunk_batch(
+            context,
+            source,
+            batch,
+            &entry,
+            budget_bytes,
+            budget_boundary,
+            reader_dynamic_filter_count,
+            metrics,
+        ) {
+            Ok(frame) => return Ok(frame),
+            Err(_error) => {
+                let _ = fs::remove_file(&entry.path);
+            },
+        }
+    }
+    let optimized_cache_entry = local_cache_optimized_batch_entry(source, batch);
+    let mut cache_read_pins = Vec::with_capacity(batch.chunk_count());
+    for chunk in &batch.chunks {
+        if chunk.resolved_source.read_strategy == crate::source::ParquetReadStrategy::LocalCacheKvikio {
+            ensure_local_cache_parquet_chunk(context, chunk, metrics)?;
+            cache_read_pins.push(acquire_lakehouse_cache_chunk_read_pin(context, chunk)?);
+        }
+    }
+    let (cudf_source, cudf_chunks) = cudf_local_parquet_source_chunk_batch(context, source, &batch.chunks)?;
+    let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_chunk_batch.budget",
+            "bounded local parquet source chunk batch budget exceeds platform usize range",
+        )
+        .with_fact("batch_index", batch.batch_index)
+        .with_fact("chunk_count", batch.chunk_count())
+        .with_fact("budget_bytes", budget_bytes)
+    })?;
+    let token = context
+        .runtime()
+        .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
+        .map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                "cudf_query_engine.local_parquet_chunk_batch.budget",
+                "failed to create bounded native local parquet source chunk batch budget token",
+                error,
+            )
+            .with_fact("batch_index", batch.batch_index)
+            .with_fact("chunk_count", batch.chunk_count())
+        })?;
+
+    let read_timer = Instant::now();
+    let outcome = DataFrame::read_parquet_source_chunks_with_budget(
+        context.runtime(),
+        &cudf_source,
+        &cudf_chunks,
+        SourceReadMode::ExecutionFrame,
+        &token,
+    )
+    .map_err(|error| {
+        QueryError::from_cudf_with_budget_details(
+            "cudf_query_engine.local_parquet_chunk_batch.read",
+            "failed to read bounded native local parquet source chunk batch with cudf",
+            error,
+        )
+        .with_fact("batch_index", batch.batch_index)
+        .with_fact("chunk_count", batch.chunk_count())
+        .with_fact("first_chunk_index", batch.chunks[0].chunk_index)
+        .with_fact("first_file_index", batch.chunks[0].file_index)
+    })?;
+    drop(cache_read_pins);
+    metrics.record_budgeted_execution("cudf_query_engine.local_parquet_chunk_batch.read", outcome.report());
+    let read_elapsed = read_timer.elapsed();
+    metrics.parquet_read_time += read_elapsed;
+    metrics.source_read_time += read_elapsed;
+    let frame = outcome.into_value();
+    let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
+    record_source_chunk_batch_read_runtime(
+        source,
+        batch,
+        "chunk_batch",
+        frame.num_rows() as u64,
+        read_elapsed,
+        reader_dynamic_filter_count,
+        metrics,
+    );
+    metrics.record_input_batch(frame.num_rows() as u64);
+    if let Some(entry) = optimized_cache_entry.as_ref() {
+        let _ = publish_lakehouse_optimized_batch_frame(context, entry, &frame);
+    }
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    let frame = append_source_order_columns(context, frame, first_chunk.chunk_index)?;
+    Ok(GpuDataFrame::new(frame))
+}
+
+fn read_optimized_local_cache_chunk_batch(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    batch: &crate::chunk::SourceChunkBatch,
+    entry: &LakehouseOptimizedBatchCacheEntry,
+    budget_bytes: u64,
+    budget_boundary: &'static str,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) -> Result<GpuDataFrame> {
+    context.check_cancellation("cudf_query_engine.local_parquet_chunk_batch.optimized_cache_read")?;
+    let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_chunk_batch.optimized_cache_budget",
+            "bounded optimized local parquet source chunk batch budget exceeds platform usize range",
+        )
+        .with_fact("batch_index", batch.batch_index)
+        .with_fact("chunk_count", batch.chunk_count())
+        .with_fact("budget_bytes", budget_bytes)
+        .with_fact("path", entry.path.display())
+    })?;
+    let token = context
+        .runtime()
+        .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
+        .map_err(|error| {
+            QueryError::from_cudf_with_budget_details(
+                "cudf_query_engine.local_parquet_chunk_batch.optimized_cache_budget",
+                "failed to create bounded optimized local parquet source chunk batch budget token",
+                error,
+            )
+            .with_fact("batch_index", batch.batch_index)
+            .with_fact("chunk_count", batch.chunk_count())
+            .with_fact("path", entry.path.display())
+        })?;
+    let read_columns = source.read_columns.iter().map(String::as_str).collect::<Vec<_>>();
+    let _cache_read_pin = acquire_lakehouse_optimized_batch_read_pin(context, entry)?;
+    let read_timer = Instant::now();
+    let outcome = DataFrame::read_parquet_with_budget(
+        ParquetReadOptions::builder()
+            .filepath(&entry.path)
+            .columns(&read_columns)
+            .with_runtime(context.runtime())
+            .build(),
+        &token,
+    )
+    .map_err(|error| {
+        QueryError::from_cudf_with_budget_details(
+            "cudf_query_engine.local_parquet_chunk_batch.optimized_cache_read",
+            "failed to read optimized local cache parquet source chunk batch with cudf",
+            error,
+        )
+        .with_fact("batch_index", batch.batch_index)
+        .with_fact("chunk_count", batch.chunk_count())
+        .with_fact("path", entry.path.display())
+        .with_fact("stable_id", entry.stable_id.as_str())
+    })?;
+    metrics.record_budgeted_execution(
+        "cudf_query_engine.local_parquet_chunk_batch.optimized_cache_read",
+        outcome.report(),
+    );
+    let read_elapsed = read_timer.elapsed();
+    metrics.parquet_read_time += read_elapsed;
+    metrics.source_read_time += read_elapsed;
+    let frame = outcome.into_value();
+    let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
+    record_source_chunk_batch_read_runtime(
+        source,
+        batch,
+        "optimized_chunk_batch",
+        frame.num_rows() as u64,
+        read_elapsed,
+        reader_dynamic_filter_count,
+        metrics,
+    );
+    metrics.record_input_batch(frame.num_rows() as u64);
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    let frame = append_source_order_columns(context, frame, first_chunk.chunk_index)?;
+    Ok(GpuDataFrame::new(frame))
+}
+
+fn record_source_chunk_read_runtime(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    output_rows: u64,
+    elapsed: Duration,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) {
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: chunk.source_node_id.to_string(),
+        read_kind: "chunk".to_string(),
+        read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
+        batch_index: chunk.chunk_index as u64,
+        chunk_count: 1,
+        first_chunk_index: chunk.chunk_index as u64,
+        last_chunk_index: chunk.chunk_index as u64,
+        first_file_index: chunk.file_index as u64,
+        last_file_index: chunk.file_index as u64,
+        file_count: 1,
+        row_group_count: chunk.row_group_count() as u64,
+        read_columns_per_file: chunk.read_columns.len() as u64,
+        read_columns_total: chunk.read_columns.len() as u64,
+        known_file_bytes: chunk.known_file_bytes.unwrap_or(0),
+        estimated_source_read_bytes: best_chunk_source_read_bytes(chunk),
+        known_row_group_bytes: chunk.known_row_group_bytes.unwrap_or(0),
+        known_projected_compressed_bytes: chunk.known_projected_compressed_bytes.unwrap_or(0),
+        known_projected_uncompressed_bytes: chunk.known_projected_uncompressed_bytes.unwrap_or(0),
+        known_pure_filter_compressed_bytes: chunk.known_pure_filter_compressed_bytes.unwrap_or(0),
+        known_pure_filter_uncompressed_bytes: chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0),
+        output_rows,
+        reader_predicate: source.reader_predicate.is_some(),
+        reader_dynamic_filter_count: reader_dynamic_filter_count as u64,
+        source_batching_reason: chunk.source_batching_reason.clone().unwrap_or_else(|| "not_evaluated".to_string()),
+        elapsed,
+    });
+}
+
+fn record_source_chunk_batch_read_runtime(
+    source: &LocalParquetSource,
+    batch: &crate::chunk::SourceChunkBatch,
+    read_kind: &'static str,
+    output_rows: u64,
+    elapsed: Duration,
+    reader_dynamic_filter_count: usize,
+    metrics: &mut QueryMetrics,
+) {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    let last_chunk = batch.chunks.last().expect("source chunk batch is non-empty");
+    let file_count = batch.chunks.iter().map(|chunk| chunk.file_index).collect::<BTreeSet<_>>().len();
+    let estimated_source_read_bytes = batch
+        .estimated_source_read_bytes
+        .unwrap_or_else(|| batch.chunks.iter().map(best_chunk_source_read_bytes).sum());
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: first_chunk.source_node_id.to_string(),
+        read_kind: read_kind.to_string(),
+        read_strategy: first_chunk.resolved_source.read_strategy.as_str().to_string(),
+        batch_index: batch.batch_index as u64,
+        chunk_count: batch.chunk_count() as u64,
+        first_chunk_index: first_chunk.chunk_index as u64,
+        last_chunk_index: last_chunk.chunk_index as u64,
+        first_file_index: first_chunk.file_index as u64,
+        last_file_index: last_chunk.file_index as u64,
+        file_count: file_count as u64,
+        row_group_count: batch.row_group_count() as u64,
+        read_columns_per_file: source.read_column_count() as u64,
+        read_columns_total: batch.chunks.iter().map(|chunk| chunk.read_columns.len() as u64).sum(),
+        known_file_bytes: batch.chunks.iter().map(|chunk| chunk.known_file_bytes.unwrap_or(0)).sum(),
+        estimated_source_read_bytes,
+        known_row_group_bytes: batch.chunks.iter().map(|chunk| chunk.known_row_group_bytes.unwrap_or(0)).sum(),
+        known_projected_compressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_projected_compressed_bytes.unwrap_or(0))
+            .sum(),
+        known_projected_uncompressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_projected_uncompressed_bytes.unwrap_or(0))
+            .sum(),
+        known_pure_filter_compressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_pure_filter_compressed_bytes.unwrap_or(0))
+            .sum(),
+        known_pure_filter_uncompressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0))
+            .sum(),
+        output_rows,
+        reader_predicate: source.reader_predicate.is_some(),
+        reader_dynamic_filter_count: reader_dynamic_filter_count as u64,
+        source_batching_reason: batch.source_batching_reason.clone(),
+        elapsed,
+    });
+}
+
+fn best_chunk_source_read_bytes(chunk: &SourceChunk) -> u64 {
+    chunk
+        .estimated_source_read_bytes
+        .or(chunk.known_row_group_bytes)
+        .or(chunk.estimated_chunk_bytes)
+        .or(chunk.known_file_bytes)
+        .unwrap_or(0)
+}
+
+fn validate_local_parquet_chunk_batch(
+    source: &LocalParquetSource,
+    batch: &crate::chunk::SourceChunkBatch,
+) -> Result<()> {
+    if source.reader_predicate.as_ref().is_some_and(|predicate| !source.reader_predicate_is_supported(predicate)) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_chunk_batch",
+            "source chunk batching requires a supported reader predicate",
+        )
+        .with_fact("reason", "unsupported_reader_predicate"));
+    }
+    if !source.partition_columns.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "cudf_query_engine.local_parquet_chunk_batch",
+            "source chunk batching does not yet materialize per-file partition columns",
+        )
+        .with_fact("reason", "partition_columns_not_supported")
+        .with_fact("partition_column_count", source.partition_columns.len()));
+    }
+    for chunk in &batch.chunks {
+        if chunk.zero_column_count
+            || chunk.resolved_source.uses_host_buffer()
+            || !matches!(
+                chunk.resolved_source.read_strategy,
+                crate::source::ParquetReadStrategy::LocalKvikio | crate::source::ParquetReadStrategy::LocalCacheKvikio
+            )
+            || chunk.scan_limit_rows.is_some()
+            || chunk.reads_all_row_groups
+            || chunk.row_group_indexes.is_empty()
+            || chunk.read_columns.is_empty()
+            || !chunk.partition_values.is_empty()
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "cudf_query_engine.local_parquet_chunk_batch",
+                "source chunk is not eligible for multi-source Parquet batching",
+            )
+            .with_fact("reason", "ineligible_chunk")
+            .with_fact("path", chunk.path.display())
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("row_groups", format_row_groups(chunk)));
+        }
+    }
+    Ok(())
 }
 
 fn empty_local_parquet_execution_frame(context: &ExecutionContext, source: &LocalParquetSource) -> Result<DataFrame> {

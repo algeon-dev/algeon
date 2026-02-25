@@ -6,13 +6,16 @@
 
 #![deny(missing_docs)]
 
-use std::{collections::BTreeMap, sync::RwLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::RwLock,
+};
 
 use arrow::datatypes::DataType;
 
 use crate::{
     expr::{AggregateFunction, BinaryOp, Expr, LiteralValue},
-    metrics::{QueryMetrics, TaskRuntimeMetrics},
+    metrics::{MemoryReservationEventAction, MemoryReservationEventOutcome, QueryMetrics, TaskRuntimeMetrics},
     pipeline::{CompiledPipeline, PipelineTask},
     plan::{PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
@@ -310,8 +313,10 @@ impl AdaptiveMemoryHistory {
     /// Fold all compiled-task metrics from one query execution into history.
     ///
     /// Tasks without runtime metrics are skipped. The input-basis byte signal is
-    /// the max of requested, granted, observed peak, and retained bytes for that
-    /// task.
+    /// recorded both as the task-level max of requested, granted, observed peak,
+    /// and retained bytes and as each successful reserve request's bytes. Runtime
+    /// refinement happens at individual reservation requests, so multi-reservation
+    /// tasks need request-sized keys to make the next execution's lookup hit.
     pub fn record_task_observations_from_query_metrics(
         &self,
         plan: &QueryPlan,
@@ -328,10 +333,21 @@ impl AdaptiveMemoryHistory {
                 .max(task_metrics.reservation_granted_bytes)
                 .max(task_metrics.max_observed_peak_bytes.unwrap_or(0))
                 .max(task_metrics.max_retained_bytes.unwrap_or(0));
-            self.record_task_observation(
-                AdaptiveTaskMemoryHistoryKey::for_plan_task(plan, task, input_basis_bytes),
-                AdaptiveTaskMemoryObservation::from_task_metrics(task_metrics),
-            );
+            let observation = AdaptiveTaskMemoryObservation::from_task_metrics(task_metrics);
+            let mut input_basis_values = BTreeSet::from([input_basis_bytes]);
+            input_basis_values.extend(metrics.reservation_events.iter().filter_map(|event| {
+                (event.compiled_task_id.as_deref() == Some(task_id.as_str())
+                    && event.action == MemoryReservationEventAction::Reserve
+                    && event.outcome == MemoryReservationEventOutcome::Granted
+                    && event.requested_bytes > 0)
+                    .then_some(event.requested_bytes)
+            }));
+            for input_basis_bytes in input_basis_values {
+                self.record_task_observation(
+                    AdaptiveTaskMemoryHistoryKey::for_plan_task(plan, task, input_basis_bytes),
+                    observation.clone(),
+                );
+            }
         }
     }
 }

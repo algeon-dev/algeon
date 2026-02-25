@@ -263,6 +263,7 @@ fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
         chunk_index: 0,
         file_index: 0,
         location: source.files[0].location.clone(),
+        resolved_source: source.files[0].resolved_source.clone(),
         path: "/tmp/source-cache-chunk-key.parquet".into(),
         stable_id: "file-id".into(),
         row_group_indexes: vec![0],
@@ -289,6 +290,7 @@ fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
         known_row_count: Some(10),
         scan_limit_rows: None,
         size_estimate_based: false,
+        source_batching_reason: None,
     };
     let mut second = first.clone();
     second.chunk_index = 1;
@@ -319,6 +321,7 @@ fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
         chunk_index: 0,
         file_index: 0,
         location: source.files[0].location.clone(),
+        resolved_source: source.files[0].resolved_source.clone(),
         path: "/tmp/source-cache-planner-identity.parquet".into(),
         stable_id: "file-id".into(),
         row_group_indexes: vec![0],
@@ -345,6 +348,7 @@ fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
         known_row_count: Some(10),
         scan_limit_rows: None,
         size_estimate_based: false,
+        source_batching_reason: None,
     };
     let mut same_contract_different_plan_identity = first.clone();
     same_contract_different_plan_identity.source_node_id = second_source_node_id;
@@ -427,6 +431,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "native_task_operator_rows",
         "native_task_runtime_rows",
         "native_dynamic_filter_runtime_rows",
+        "native_source_read_runtime_rows",
         "compiled_pipeline_attempts",
         "compiled_pipeline_tasks_executed",
         "compiled_pipeline_host_arrow_sinks",

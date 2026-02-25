@@ -268,6 +268,40 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
 }
 
 #[test]
+fn native_optimizer_derives_scalar_sum_from_grouped_sum_with_permuted_source_files() {
+    let plan = grouped_and_scalar_sum_over_permuted_source_files_plan();
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(candidate.reuse_count, 2);
+    assert_eq!(candidate.aggregate_node_ids.len(), 2);
+    assert!(candidate.applied);
+
+    let scalar_aggregate_node = result
+        .plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.group_exprs.is_empty()))
+        .expect("optimized plan should retain a scalar aggregate");
+    let PlanNode::Aggregate(scalar_aggregate) = &scalar_aggregate_node.kind else {
+        unreachable!("matched above");
+    };
+    let grouped_aggregate_node = result.plan.node(scalar_aggregate.input).expect("scalar aggregate input should exist");
+    assert!(
+        matches!(&grouped_aggregate_node.kind, PlanNode::Aggregate(aggregate) if !aggregate.spec.group_exprs.is_empty()),
+        "scalar aggregate should derive from grouped aggregate output:\n{}",
+        result.plan
+    );
+}
+
+#[test]
 fn disabled_shared_subplan_materialization_emits_no_diagnostics() {
     let plan = repeated_grouped_aggregate_materialization_plan();
     let options = NativeOptimizerOptions {
@@ -316,19 +350,27 @@ fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_r
 }
 
 #[test]
-fn native_optimizer_rejects_dynamic_filter_route_for_inner_keyed_residual_join() {
+fn native_optimizer_discovers_dynamic_filter_route_for_inner_keyed_residual_join() {
     let plan =
         estimated_inner_residual_join_plan(JoinSide::Right, 256 * 1024 * 1024, 10_000_000, 16 * 1024 * 1024, 100_000);
 
     let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
 
-    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
-    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
-    assert!(!candidate.routed);
-    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::UnsupportedJoinShape));
-    assert!(result.plan.dynamic_filter_routes().is_empty());
+    assert!(candidate.routed);
+    assert_eq!(candidate.rejected_reason, None);
+    assert_eq!(candidate.consumer_key_column.as_deref(), Some("left_key"));
+    assert_eq!(candidate.consumer_kind.as_deref(), Some("local_parquet_source"));
+    assert_eq!(candidate.consumer_lowering, Some(DynamicFilterConsumerLowering::ReaderPredicate));
+
+    let routes = result.plan.dynamic_filter_routes();
+    assert_eq!(routes.len(), 1);
+    assert!(matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }));
+    assert_eq!(routes[0].producer_columns, vec!["right_key".to_string()]);
+    assert_eq!(routes[0].consumer_columns, vec!["left_key".to_string()]);
 }
 
 #[test]
@@ -1811,6 +1853,54 @@ fn repeated_scalar_count_materialization_plan() -> cudf_query_engine::QueryPlan 
     }
     let union = builder.add_union(counts, count_schema);
     builder.finish_gpu_resident(union)
+}
+
+fn grouped_and_scalar_sum_over_permuted_source_files_plan() -> cudf_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let grouped_input = builder.add_source(two_file_source(["a", "b"]));
+    let scalar_input = builder.add_source(two_file_source(["b", "a"]));
+    let grouped = builder.add_aggregate(
+        grouped_input,
+        AggregateSpec::new(
+            vec![Expr::column("k")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "sum_v")],
+        ),
+        schema(&["k", "sum_v"]),
+    );
+    let scalar = builder.add_aggregate(
+        scalar_input,
+        AggregateSpec::new(Vec::new(), vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("v"), "total_v")]),
+        schema(&["total_v"]),
+    );
+    let root = builder.add_join(
+        grouped,
+        scalar,
+        JoinSpec::new(JoinType::Inner, Vec::new()).with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sum_v", "sum_v"), "sum_v"),
+            JoinOutputColumn::right(ColumnRef::input(1, "total_v", "total_v"), "total_v"),
+        ]),
+        schema(&["k", "sum_v", "total_v"]),
+    );
+    builder.finish_gpu_resident(root)
+}
+
+fn two_file_source(order: [&str; 2]) -> SourceNode {
+    let source_schema = schema(&["k", "v"]);
+    let files = order
+        .into_iter()
+        .map(|name| {
+            LocalParquetFile::new(format!("/tmp/{name}.parquet"))
+                .with_stable_id(name)
+                .with_projected_row_group_bytes(vec![1024], vec![1024])
+                .with_row_group_rows(vec![10])
+        })
+        .collect::<Vec<_>>();
+    SourceNode::LocalParquet(LocalParquetSource::from_files(
+        files,
+        source_schema,
+        vec!["k".to_string(), "v".to_string()],
+    ))
 }
 
 fn shared_fact_target_dimension_pruning_plan() -> cudf_query_engine::QueryPlan {

@@ -219,7 +219,105 @@ fn bounded_native_query_applies_hash_join_build_dynamic_filter_to_probe_source()
 }
 
 #[test]
-fn bounded_native_query_applies_large_hash_set_dynamic_filter_after_probe_source_decode() {
+fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-batched-dynamic-reader-filter");
+    let left_paths = [dir.join("lineitem-0.parquet"), dir.join("lineitem-1.parquet"), dir.join("lineitem-2.parquet")];
+    let left_schema = write_dynamic_filter_probe_rows_parquet(&left_paths[0], &[1, 2], &[10, 20]);
+    write_dynamic_filter_probe_rows_parquet(&left_paths[1], &[2, 3], &[21, 30]);
+    write_dynamic_filter_probe_rows_parquet(&left_paths[2], &[2, 4], &[22, 40]);
+    let right_schema = Arc::new(Schema::new(vec![Field::new("order_id", DataType::Int32, false)]));
+    let right_batch =
+        RecordBatch::try_new(Arc::clone(&right_schema), vec![Arc::new(Int32Array::from(vec![2]))]).unwrap();
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("order_id", DataType::Int32, false),
+        Field::new("qty", DataType::Int32, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        left_paths
+            .iter()
+            .map(|path| {
+                LocalParquetFile::new(path)
+                    .with_file_size_bytes(fs::metadata(path).unwrap().len())
+                    .with_row_group_rows(vec![2])
+            })
+            .collect(),
+        Arc::clone(&left_schema),
+        vec!["order_id".to_string(), "qty".to_string()],
+    )));
+    let right = builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&right_schema), vec![right_batch])));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(JoinType::Inner, vec![join_order_id_key()])
+            .with_output_projection(vec![
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "order_id", "order_id"), "order_id"),
+                JoinOutputColumn::left(cudf_query_engine::ColumnRef::input(0, "qty", "qty"), "qty"),
+            ])
+            .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(join);
+    let optimizer_options = cudf_query_engine::NativeOptimizerOptions {
+        join_build_side_selection: cudf_query_engine::JoinBuildSideSelectionOptions::disabled(),
+        ..cudf_query_engine::NativeOptimizerOptions::default()
+    };
+    let optimized = cudf_query_engine::optimize_query_plan(plan, &optimizer_options);
+    assert_eq!(optimized.diagnostics.dynamic_filter_route_discovery.route_count, 1);
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &optimized.plan).unwrap();
+    let output = result.output().as_host_arrow().unwrap();
+    let metrics = result.metrics();
+    assert_eq!(output.num_rows(), 3);
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[2, 2, 2]);
+    assert_eq!(int32_array(output, 1).values().as_ref(), &[20, 21, 22]);
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_attempted, 3);
+    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.row_groups_committed, 3);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 6);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 3);
+    assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+    let source_read_row = &metrics.source_read_runtime_rows[0];
+    assert_eq!(source_read_row.read_kind, "chunk_batch");
+    assert_eq!(source_read_row.read_strategy, "local_kvikio");
+    assert_eq!(source_read_row.batch_index, 0);
+    assert_eq!(source_read_row.chunk_count, 3);
+    assert_eq!(source_read_row.file_count, 3);
+    assert_eq!(source_read_row.row_group_count, 3);
+    assert_eq!(source_read_row.read_columns_per_file, 2);
+    assert_eq!(source_read_row.read_columns_total, 6);
+    assert_eq!(source_read_row.output_rows, 3);
+    assert!(source_read_row.reader_predicate);
+    assert_eq!(source_read_row.reader_dynamic_filter_count, 1);
+    assert!(source_read_row.elapsed > std::time::Duration::ZERO);
+    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.event == "reader_predicate_rows"
+            && row.source_file_index.is_none()
+            && row.source_chunk_index.is_none()
+            && row.reader_predicate_rows_before == Some(6)
+            && row.reader_predicate_rows_after == Some(3)
+    }));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_keeps_unpruned_hash_set_dynamic_filter_off_probe_source_post_decode() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("cudf-query-engine-bounded-root-hash-join-source-hash-set-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
@@ -295,21 +393,13 @@ fn bounded_native_query_applies_large_hash_set_dynamic_filter_after_probe_source
             && row.selected_row_groups_before == Some(3)
             && row.selected_row_groups_after == Some(3)
     }));
-    let post_decode_rows = metrics
-        .dynamic_filter_runtime_rows
-        .iter()
-        .filter(|row| {
-            row.event == "applied_post_decode"
-                && row.consumer_kind == "local_parquet_source"
-                && row.filter_kind == "hash_set_contains"
-                && row.selected_row_groups_before.is_none()
-        })
-        .collect::<Vec<_>>();
-    assert!(!post_decode_rows.is_empty());
-    assert_eq!(post_decode_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 6);
-    assert_eq!(post_decode_rows.iter().filter_map(|row| row.post_decode_rows_after).sum::<u64>(), 4);
-    assert_eq!(post_decode_rows.iter().map(|row| row.post_decode_rows_filtered).sum::<u64>(), 2);
-    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 2);
+    assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.event == "applied_post_decode"
+            && row.consumer_kind == "local_parquet_source"
+            && row.filter_kind == "hash_set_contains"
+            && row.selected_row_groups_before.is_none()
+    }));
+    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
     assert_eq!(metrics.dynamic_filter_filter_post_decode_rows_filtered, 0);
     assert_eq!(metrics.dynamic_filter_join_probe_post_decode_rows_filtered, 0);
 
@@ -510,6 +600,12 @@ fn bounded_native_query_produces_range_only_dynamic_filter_for_large_local_parqu
             && row.selected_row_groups_before == Some(3)
             && row.selected_row_groups_after == Some(3)
     }));
+    assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.event == "reader_predicate_rows"
+            && row.consumer_kind == "local_parquet_source"
+            && row.filter_kind == "range"
+    }));
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2444,9 +2540,9 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
     assert_eq!(metrics.source_chunks_attempted, 7);
-    assert_eq!(metrics.source_chunks_committed, 7);
-    assert_eq!(metrics.source_read_prefetches_started, 5);
-    assert_eq!(metrics.source_read_prefetches_completed, 5);
+    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_read_prefetches_started, 0);
+    assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
@@ -2463,8 +2559,8 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
         })
         .count();
     assert_eq!(
-        left_source_read_reserves, 4,
-        "multi-chunk join probe source should stream chunk reads without an extra full-source concat reservation"
+        left_source_read_reserves, 1,
+        "multi-chunk join probe source should batch adjacent row groups without an extra full-source concat reservation"
     );
     let left_source_read_bytes = metrics
         .reservation_events
@@ -2494,7 +2590,7 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
                 && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
         })
         .count();
-    assert!(join_source_reads >= 7);
+    assert_eq!(join_source_reads, 2);
     let join_source_prefetches = metrics
         .reservation_events
         .iter()
@@ -2504,7 +2600,7 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
                 && event.memory_boundary == "join_source_read_prefetch"
         })
         .count();
-    assert_eq!(join_source_prefetches, 5);
+    assert_eq!(join_source_prefetches, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -2581,35 +2677,13 @@ fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.source_read_prefetches_started, metrics.source_read_prefetches_completed);
-    assert!(metrics.source_read_prefetches_completed > 0);
+    assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.retry_resource_exhausted_count, 0);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::SourceRead
-            && event.memory_boundary == "join_source_read_prefetch"
-    }));
-    let first_join_prefetch_reserve = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.memory_boundary == "join_source_read_prefetch"
-        })
-        .expect("join probe prefetch should reserve its initial estimate");
-    assert!(metrics.reservation_events[first_join_prefetch_reserve..].iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.action == MemoryReservationEventAction::Grow
-            && event.reservation_kind == ReservationKind::SourceRead
-            && event.memory_boundary == "join_source_read"
-            && event.source_read_contract_quality.as_deref() == Some("observed_grow_shrink")
-    }));
+    assert!(metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_read_prefetch"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -2674,10 +2748,10 @@ fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decod
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.source_read_prefetches_started, 0);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
-    assert!(metrics.source_read_prefetches_skipped > 0);
+    assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
     assert_eq!(metrics.reservation_denied_count, 0);
     assert!(
@@ -2757,7 +2831,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.reservation_denied_count, 0);
     let left_node_id = left.to_string();
     let left_source_read_reserves = metrics
@@ -2771,7 +2845,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
                 && event.node_id.as_deref() == Some(left_node_id.as_str())
         })
         .count();
-    assert_eq!(left_source_read_reserves, 4);
+    assert_eq!(left_source_read_reserves, 1);
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),
         "source-adjacent unary probe stream should not materialize and concat the full source before probing"
@@ -2796,8 +2870,8 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
                 && event.memory_boundary == "join_source_projection_output"
         })
         .count();
-    assert_eq!(streamed_filter_outputs, 4);
-    assert_eq!(streamed_projection_outputs, 4);
+    assert_eq!(streamed_filter_outputs, 1);
+    assert_eq!(streamed_projection_outputs, 1);
     assert!(
         metrics.reservation_events.iter().all(|event| {
             event.memory_boundary != "compiled_filter_output" && event.memory_boundary != "compiled_projection_output"
@@ -3097,7 +3171,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 7);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(metrics.reservation_denied_count, 0);
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),
@@ -3114,7 +3188,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
                     && event.memory_boundary == "join_source_filter_output"
             })
             .count(),
-        4
+        1
     );
     assert_eq!(
         metrics
@@ -3127,7 +3201,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
                     && event.memory_boundary == "join_source_projection_output"
             })
             .count(),
-        4
+        1
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -3243,7 +3317,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
                     && event.memory_boundary == "join_source_filter_output"
             })
             .count(),
-        4
+        1
     );
     assert_eq!(
         metrics
@@ -3256,7 +3330,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
                     && event.memory_boundary == "join_source_projection_output"
             })
             .count(),
-        4
+        1
     );
     assert!(
         metrics.reservation_events.iter().all(|event| {
@@ -3264,20 +3338,6 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
         }),
         "source-adjacent partitioned probe filtering/projection should be fused into the join source stream"
     );
-    let left_node_id = left.to_string();
-    let second_left_read = metrics
-        .reservation_events
-        .iter()
-        .enumerate()
-        .filter(|(_index, event)| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && matches!(event.memory_boundary.as_str(), "join_source_read" | "join_source_read_prefetch")
-                && event.node_id.as_deref() == Some(left_node_id.as_str())
-        })
-        .nth(1)
-        .map(|(index, _event)| index);
     let first_projection_transfer = metrics.reservation_events.iter().position(|event| {
         event.outcome.as_str() == "applied"
             && event.action == MemoryReservationEventAction::Transfer
@@ -3285,8 +3345,8 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_partition
             && event.memory_boundary == "join_source_projection_output"
     });
     assert!(
-        first_projection_transfer.zip(second_left_read).is_some_and(|(projection, read)| projection < read),
-        "partitioned probe stream should filter/project the first source chunk before reading later chunks"
+        first_projection_transfer.is_some(),
+        "partitioned probe stream should still filter/project the batched source stream"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -3697,16 +3757,18 @@ fn join_source_with_projected_row_group_estimates(
 }
 
 fn write_dynamic_filter_probe_parquet(path: &Path) -> Arc<Schema> {
+    write_dynamic_filter_probe_rows_parquet(path, &[1, 1, 2, 2, 3, 3], &[10, 11, 20, 21, 30, 31])
+}
+
+fn write_dynamic_filter_probe_rows_parquet(path: &Path, order_ids: &[i32], quantities: &[i32]) -> Arc<Schema> {
+    assert_eq!(order_ids.len(), quantities.len());
     let schema = Arc::new(Schema::new(vec![
         Field::new("order_id", DataType::Int32, false),
         Field::new("qty", DataType::Int32, false),
     ]));
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
-        vec![
-            Arc::new(Int32Array::from(vec![1, 1, 2, 2, 3, 3])),
-            Arc::new(Int32Array::from(vec![10, 11, 20, 21, 30, 31])),
-        ],
+        vec![Arc::new(Int32Array::from(order_ids.to_vec())), Arc::new(Int32Array::from(quantities.to_vec()))],
     )
     .unwrap();
     write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 2);

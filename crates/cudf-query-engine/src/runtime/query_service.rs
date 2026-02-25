@@ -14,7 +14,8 @@ use super::{
     DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation,
     ExecutionContext, GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy, MemoryResourcePolicy,
     ServiceStreamPool, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry, SourceSchedulerPolicy,
-    StreamLease, default_host_fetch_budget_bytes, default_source_fetch_runtime, validate_service_stream_pool_device,
+    SourceStorageProfile, StreamLease, default_host_fetch_budget_bytes, default_source_fetch_runtime,
+    validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -107,6 +108,8 @@ pub struct QueryServiceConfig {
     pub device_ordinal: usize,
     /// Source IO policy and shared gate sizes.
     pub source_fetch: SourceFetchConfig,
+    /// Source object-store profiles available to service-owned execution contexts.
+    pub source_storage_profiles: Vec<SourceStorageProfile>,
     /// Source/build/probe/result boundary policy copied into tenant contexts.
     pub boundary_policy: ExecutionBoundaryPolicy,
     /// Bounded source scheduling policy copied into tenant contexts.
@@ -185,6 +188,7 @@ impl Default for QueryServiceConfig {
         Self {
             device_ordinal: 0,
             source_fetch: SourceFetchConfig::default(),
+            source_storage_profiles: Vec::new(),
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
@@ -310,7 +314,9 @@ impl QueryService {
             )?,
             gds_concurrency: GdsConcurrencyGate::new(config.source_fetch.gds_max_concurrent_ops)?,
             source_fetch_runtime: default_source_fetch_runtime(),
-            source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
+            source_object_stores: Arc::new(SourceObjectStoreRegistry::with_profiles(
+                config.source_storage_profiles.clone(),
+            )?),
             deployment_io_capability,
         };
         Self::build(config, tenants, Some(resources))

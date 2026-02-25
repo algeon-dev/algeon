@@ -10,6 +10,7 @@ pub(super) const EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_00
 pub(super) const EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
 pub(super) const PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
 pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS: u64 = 64;
+pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES: u64 = 384 * 1024 * 1024;
 pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN: u64 = 64;
 
 pub(super) fn select_partial_aggregate_strategy_decision(
@@ -565,11 +566,16 @@ fn exact_cardinality_probe_values_should_select_prepared_sort_groupby(
 }
 
 fn source_adjacent_prepared_sort_groupby_allowed(evidence: PartialAggregateInputEvidence) -> bool {
+    if evidence.source_adjacent_partition_strategy == "none" {
+        if evidence.source_chunk_row_group_count <= SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS {
+            return true;
+        }
+        return evidence
+            .source_chunk_estimated_source_read_bytes
+            .is_some_and(|bytes| bytes <= SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES);
+    }
     if evidence.source_chunk_row_group_count > SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS {
         return false;
-    }
-    if evidence.source_adjacent_partition_strategy == "none" {
-        return true;
     }
     evidence.source_adjacent_partition_strategy == "group_key"
         && evidence

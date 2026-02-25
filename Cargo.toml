@@ -33,6 +33,8 @@ iceberg = [
     "dep:aws-credential-types",
     "dep:iceberg",
     "dep:iceberg-catalog-glue",
+    "dep:iceberg-catalog-rest",
+    "dep:iceberg-storage-opendal",
     "dep:object_store",
     "dep:tempfile",
 ]
@@ -84,7 +86,12 @@ datafusion = { path = "../datafusion/datafusion/core" }
 futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg", optional = true }
 iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue", optional = true }
+iceberg-catalog-rest = { path = "../iceberg-rust/crates/catalog/rest", optional = true }
 iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion", optional = true }
+# opendal-s3 is in the crate's default feature set; pulled in for
+# OpenDalStorageFactory::S3 which RestCatalog requires (REST has no default
+# storage factory, unlike Glue).
+iceberg-storage-opendal = { path = "../iceberg-rust/crates/storage/opendal", optional = true }
 object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
 parquet = { workspace = true }
 prost = { version = "0.14.1", optional = true }

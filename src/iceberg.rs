@@ -23,6 +23,7 @@ use iceberg_catalog_glue::{
 
 pub use crate::table_format::iceberg::{
     CudfIcebergTableProvider, IcebergTableFormatPlanner, iceberg_file_scan_tasks_to_table_format_scan_plan,
+    iceberg_schema_to_datafusion_arrow_schema,
 };
 
 const LOAD_GLUE_TABLE_OPERATION: &str = "datafusion_cudf.iceberg.load_glue_table";
@@ -52,6 +53,20 @@ pub const AWS_SECRET_ACCESS_KEY_ENV: &str = "AWS_SECRET_ACCESS_KEY";
 pub const AWS_SESSION_TOKEN_ENV: &str = "AWS_SESSION_TOKEN";
 /// Legacy session-token env var accepted as a fallback.
 pub const AWS_SECURITY_TOKEN_ENV: &str = "AWS_SECURITY_TOKEN";
+
+/// Explicit S3 access key id for the REST FileIO path.
+///
+/// Deliberately distinct from `AWS_ACCESS_KEY_ID` so a local REST/RustFS stack
+/// never silently picks up a developer's real AWS credentials. Consumed at
+/// connect time and never retained in diagnostics.
+pub const CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ACCESS_KEY_ID";
+/// Explicit S3 secret access key for the REST FileIO path. Secret; consumed at
+/// connect time and never retained in diagnostics. See
+/// [`CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV`] for why this is not `AWS_*`.
+pub const CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_SECRET_ACCESS_KEY";
+/// Optional explicit S3 session token for the REST FileIO path. Secret;
+/// consumed at connect time and never retained in diagnostics.
+pub const CUDF_ICEBERG_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_SESSION_TOKEN";
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.

@@ -366,6 +366,96 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
 }
 
 #[test]
+fn bounded_native_query_batches_source_adjacent_grouped_aggregate_files() {
+    let dir = unique_temp_dir("cudf-query-engine-bounded-source-adjacent-batched-files");
+    let paths = [dir.join("input-0.parquet"), dir.join("input-1.parquet"), dir.join("input-2.parquet")];
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = write_input_parquet(&runtime, &paths[0]);
+    write_input_parquet(&runtime, &paths[1]);
+    write_input_parquet(&runtime, &paths[2]);
+
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("x00", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("sum_x00", DataType::Int64, true),
+    ]));
+    let files = paths
+        .iter()
+        .map(|path| {
+            LocalParquetFile::new(path)
+                .with_file_size_bytes(fs::metadata(path).unwrap().len())
+                .with_row_group_bytes(vec![64 * 1024])
+                .with_projected_row_group_bytes(vec![64 * 1024], vec![64 * 1024])
+                .with_row_group_rows(vec![4])
+        })
+        .collect::<Vec<_>>();
+    let source = LocalParquetSource::from_files(
+        files,
+        Arc::clone(&input_schema),
+        vec!["key".to_string(), "m00".to_string(), "m01".to_string(), "payload".to_string()],
+    );
+    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(10)));
+    let projection =
+        vec![Expr::column("key"), Expr::binary(Expr::column("m00"), BinaryOp::Add, Expr::column("m01")).alias("x00")];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("key")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("x00"), "sum_x00")],
+    );
+    let sort = SortSpec::new(vec![
+        SortExpr::new(Expr::column("sum_x00"), true, false),
+        SortExpr::new(Expr::column("key"), false, false),
+    ]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
+    let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
+    let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
+    let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
+    let plan = builder.finish_with_host_sink(sort);
+
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .with_source_scheduler_policy(SourceSchedulerPolicy::new(3))
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, 3);
+    assert_eq!(metrics.source_chunks_attempted, 3);
+    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.row_groups_planned, 3);
+    assert_eq!(metrics.row_groups_committed, 3);
+    assert_eq!(metrics.source_read_prefetches_started, 0);
+    assert_eq!(metrics.source_read_runtime_rows.len(), 1);
+    let source_read_row = &metrics.source_read_runtime_rows[0];
+    assert_eq!(source_read_row.read_kind, "chunk_batch");
+    assert_eq!(source_read_row.chunk_count, 3);
+    assert_eq!(source_read_row.file_count, 3);
+    assert_eq!(source_read_row.read_columns_total, 12);
+    assert!(metrics.partial_aggregate_count > 0);
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[3, 1, 2]);
+    assert_eq!(int64_array(batch, 1).values().as_ref(), &[1212, 909, 606]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_budget() {
     let dir = unique_temp_dir("cudf-query-engine-bounded-native-many-source-adjacent-chunks");
     let path = dir.join("input.parquet");
@@ -429,8 +519,8 @@ fn bounded_native_query_coalesces_many_source_adjacent_grouped_row_groups_by_bud
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.source_chunks_planned, 4);
-    assert_eq!(metrics.source_chunks_committed, 4);
+    assert_eq!(metrics.source_chunks_planned, 11);
+    assert_eq!(metrics.source_chunks_committed, 11);
     assert_eq!(metrics.row_groups_planned, row_group_count as u64);
     assert_eq!(metrics.row_groups_committed, row_group_count as u64);
     assert!(metrics.partial_aggregate_count > 0);

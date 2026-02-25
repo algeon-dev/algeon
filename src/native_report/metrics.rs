@@ -17,6 +17,7 @@ const NATIVE_GRAPH_RUNTIME_ROWS_METRIC_NAME: &str = "native_graph_runtime_rows";
 const NATIVE_TASK_OPERATOR_ROWS_METRIC_NAME: &str = "native_task_operator_rows";
 const NATIVE_TASK_RUNTIME_ROWS_METRIC_NAME: &str = "native_task_runtime_rows";
 const NATIVE_DYNAMIC_FILTER_RUNTIME_ROWS_METRIC_NAME: &str = "native_dynamic_filter_runtime_rows";
+const NATIVE_SOURCE_READ_RUNTIME_ROWS_METRIC_NAME: &str = "native_source_read_runtime_rows";
 
 /// Native metrics projected from DataFusion `MetricsSet` into report rows.
 ///
@@ -182,6 +183,8 @@ pub struct NativeDataFusionExecutionMetrics {
     pub dynamic_filter_join_probe_post_decode_rows_filtered: usize,
     /// Stable nested dynamic-filter runtime rows.
     pub dynamic_filter_runtime_rows: Vec<NativeDynamicFilterRuntimeMetricRow>,
+    /// Stable nested source-read runtime rows.
+    pub source_read_runtime_rows: Vec<NativeSourceReadRuntimeMetricRow>,
     /// Count of reusable cuDF hash-join artifacts built.
     pub hash_join_build_count: usize,
     /// Count of reusable cuDF filtered-join artifacts built.
@@ -429,6 +432,7 @@ impl NativeDataFusionExecutionMetrics {
                 "dynamic_filter_join_probe_post_decode_rows_filtered",
             ),
             dynamic_filter_runtime_rows: dynamic_filter_runtime_rows(metrics),
+            source_read_runtime_rows: source_read_runtime_rows(metrics),
             hash_join_build_count: metric_count(metrics, "hash_join_build_count"),
             filtered_join_build_count: metric_count(metrics, "filtered_join_build_count"),
             one_shot_join_count: metric_count(metrics, "one_shot_join_count"),
@@ -713,6 +717,12 @@ impl NativeDataFusionExecutionMetrics {
         self.dynamic_filter_runtime_rows.extend(rows);
         self.dynamic_filter_runtime_rows.sort_by_key(|row| row.to_stable_kv_row());
     }
+
+    /// Appends source-read runtime rows and restores stable sort order.
+    pub fn merge_source_read_runtime_rows(&mut self, rows: Vec<NativeSourceReadRuntimeMetricRow>) {
+        self.source_read_runtime_rows.extend(rows);
+        self.source_read_runtime_rows.sort_by_key(|row| row.to_stable_kv_row());
+    }
 }
 
 /// Stable nested metric row for one graph algorithm execution.
@@ -859,6 +869,95 @@ impl NativeDynamicFilterRuntimeMetricRow {
             self.post_decode_rows_filtered,
             self.row_groups_pruned,
             self.source_bytes_pruned,
+        )
+    }
+}
+
+/// Stable nested metric row for one local-Parquet source read.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NativeSourceReadRuntimeMetricRow {
+    /// Native source node id.
+    pub source_node_id: String,
+    /// Source read shape, for example `chunk` or `chunk_batch`.
+    pub read_kind: String,
+    /// Parquet read strategy used by the chunk or batch.
+    pub read_strategy: String,
+    /// Batch index within the source stream, or chunk index for singleton reads.
+    pub batch_index: usize,
+    /// Number of source chunks represented by this read.
+    pub chunk_count: usize,
+    /// First source chunk index represented by this read.
+    pub first_chunk_index: usize,
+    /// Last source chunk index represented by this read.
+    pub last_chunk_index: usize,
+    /// First source file index represented by this read.
+    pub first_file_index: usize,
+    /// Last source file index represented by this read.
+    pub last_file_index: usize,
+    /// Number of distinct files represented by this read.
+    pub file_count: usize,
+    /// Selected row groups represented by this read.
+    pub row_group_count: usize,
+    /// Number of physical read columns per represented file.
+    pub read_columns_per_file: usize,
+    /// Sum of physical read-column selections across represented files.
+    pub read_columns_total: usize,
+    /// Sum of known file bytes for represented files, when available.
+    pub known_file_bytes: usize,
+    /// Best available source-read byte estimate for represented chunks.
+    pub estimated_source_read_bytes: usize,
+    /// Sum of known selected row-group bytes, when available.
+    pub known_row_group_bytes: usize,
+    /// Sum of known projected compressed bytes, when available.
+    pub known_projected_compressed_bytes: usize,
+    /// Sum of known projected uncompressed bytes, when available.
+    pub known_projected_uncompressed_bytes: usize,
+    /// Sum of known pure-filter compressed bytes, when available.
+    pub known_pure_filter_compressed_bytes: usize,
+    /// Sum of known pure-filter uncompressed bytes, when available.
+    pub known_pure_filter_uncompressed_bytes: usize,
+    /// Number of output rows materialized by the read after reader predicates.
+    pub output_rows: usize,
+    /// Whether this read carried a source reader predicate.
+    pub reader_predicate: bool,
+    /// Number of dynamic-filter reader predicate routes attached to this read.
+    pub reader_dynamic_filter_count: usize,
+    /// Stable diagnostic reason for the source chunk batching decision.
+    pub source_batching_reason: String,
+    /// Elapsed time spent in the source read, in nanoseconds.
+    pub elapsed_ns: usize,
+}
+
+impl NativeSourceReadRuntimeMetricRow {
+    /// Serializes this nested row as stable comma-separated key/value pairs.
+    pub fn to_stable_kv_row(&self) -> String {
+        format!(
+            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},elapsed_ns={}",
+            self.source_node_id,
+            self.read_kind,
+            self.read_strategy,
+            self.batch_index,
+            self.chunk_count,
+            self.first_chunk_index,
+            self.last_chunk_index,
+            self.first_file_index,
+            self.last_file_index,
+            self.file_count,
+            self.row_group_count,
+            self.read_columns_per_file,
+            self.read_columns_total,
+            self.known_file_bytes,
+            self.estimated_source_read_bytes,
+            self.known_row_group_bytes,
+            self.known_projected_compressed_bytes,
+            self.known_projected_uncompressed_bytes,
+            self.known_pure_filter_compressed_bytes,
+            self.known_pure_filter_uncompressed_bytes,
+            self.output_rows,
+            self.reader_predicate,
+            self.reader_dynamic_filter_count,
+            self.source_batching_reason,
+            self.elapsed_ns,
         )
     }
 }
@@ -1577,6 +1676,17 @@ fn dynamic_filter_runtime_rows(metrics: &MetricsSet) -> Vec<NativeDynamicFilterR
     rows
 }
 
+fn source_read_runtime_rows(metrics: &MetricsSet) -> Vec<NativeSourceReadRuntimeMetricRow> {
+    let mut rows = metrics
+        .iter()
+        .filter(|metric| metric.value().name() == NATIVE_SOURCE_READ_RUNTIME_ROWS_METRIC_NAME)
+        .filter(|metric| metric.labels().iter().any(|label| label.name() == "source_node_id"))
+        .map(|metric| labels_to_source_read_runtime_row(labels_by_name(metric.labels())))
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|row| row.to_stable_kv_row());
+    rows
+}
+
 fn labels_by_name(labels: &[datafusion::physical_plan::metrics::Label]) -> BTreeMap<&str, &str> {
     labels.iter().map(|label| (label.name(), label.value())).collect()
 }
@@ -1797,6 +1907,36 @@ fn labels_to_dynamic_filter_runtime_row(labels: BTreeMap<&str, &str>) -> NativeD
         post_decode_rows_filtered: usize_label(&labels, "post_decode_rows_filtered"),
         row_groups_pruned: usize_label(&labels, "row_groups_pruned"),
         source_bytes_pruned: usize_label(&labels, "source_bytes_pruned"),
+    }
+}
+
+fn labels_to_source_read_runtime_row(labels: BTreeMap<&str, &str>) -> NativeSourceReadRuntimeMetricRow {
+    NativeSourceReadRuntimeMetricRow {
+        source_node_id: string_label(&labels, "source_node_id"),
+        read_kind: string_label(&labels, "read_kind"),
+        read_strategy: string_label(&labels, "read_strategy"),
+        batch_index: usize_label(&labels, "batch_index"),
+        chunk_count: usize_label(&labels, "chunk_count"),
+        first_chunk_index: usize_label(&labels, "first_chunk_index"),
+        last_chunk_index: usize_label(&labels, "last_chunk_index"),
+        first_file_index: usize_label(&labels, "first_file_index"),
+        last_file_index: usize_label(&labels, "last_file_index"),
+        file_count: usize_label(&labels, "file_count"),
+        row_group_count: usize_label(&labels, "row_group_count"),
+        read_columns_per_file: usize_label(&labels, "read_columns_per_file"),
+        read_columns_total: usize_label(&labels, "read_columns_total"),
+        known_file_bytes: usize_label(&labels, "known_file_bytes"),
+        estimated_source_read_bytes: usize_label(&labels, "estimated_source_read_bytes"),
+        known_row_group_bytes: usize_label(&labels, "known_row_group_bytes"),
+        known_projected_compressed_bytes: usize_label(&labels, "known_projected_compressed_bytes"),
+        known_projected_uncompressed_bytes: usize_label(&labels, "known_projected_uncompressed_bytes"),
+        known_pure_filter_compressed_bytes: usize_label(&labels, "known_pure_filter_compressed_bytes"),
+        known_pure_filter_uncompressed_bytes: usize_label(&labels, "known_pure_filter_uncompressed_bytes"),
+        output_rows: usize_label(&labels, "output_rows"),
+        reader_predicate: bool_label(&labels, "reader_predicate"),
+        reader_dynamic_filter_count: usize_label(&labels, "reader_dynamic_filter_count"),
+        source_batching_reason: string_label(&labels, "source_batching_reason"),
+        elapsed_ns: usize_label(&labels, "elapsed_ns"),
     }
 }
 

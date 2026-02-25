@@ -52,6 +52,11 @@ pub const DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEB
 pub const DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_NAMESPACE";
 pub const DATAFUSION_CUDF_ICEBERG_TABLES_ENV: &str = "DATAFUSION_CUDF_ICEBERG_TABLES";
 
+/// Selects which Iceberg catalog backend the server connects to. Accepts
+/// `glue` (default when unset) or `rest`. Any other value is rejected at
+/// config load time.
+pub const DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV: &str = "DATAFUSION_CUDF_ICEBERG_CATALOG_KIND";
+
 // Glue-specific env vars (retained for backward compatibility).
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME";
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE";
@@ -59,12 +64,24 @@ pub const DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "DATAFUSION_CUDF_IC
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID";
 pub const DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_TABLES";
 
+// REST-specific env vars. The warehouse reuses
+// `DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV` (`DATAFUSION_CUDF_ICEBERG_WAREHOUSE`).
+pub const DATAFUSION_CUDF_ICEBERG_REST_URI_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_URI";
+pub const DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_PREFIX";
+pub const DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_TOKEN";
+pub const DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE";
+pub const DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT";
+pub const DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_REGION";
+pub const DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE";
+
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
 const DEFAULT_MAX_IN_FLIGHT: usize = 1;
 const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 #[cfg(feature = "iceberg")]
 const DEFAULT_GLUE_CATALOG_NAME: &str = "glue";
+#[cfg(feature = "iceberg")]
+const DEFAULT_REST_CATALOG_HANDLE: &str = "rest";
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -170,19 +187,45 @@ pub struct IcebergServerConfig {
     /// DataFusion catalog name (e.g. "iceberg" or "glue").  Exposed as the
     /// first part of `catalog.namespace.table` three-part addressing.
     pub catalog_name: String,
-    /// Internal catalog handle passed to the iceberg-rust Glue catalog builder.
-    /// Independent of `catalog_name` so users can set `DATAFUSION_CUDF_ICEBERG_CATALOG_NAME=iceberg`
-    /// for Trino-style addressing without changing the Glue catalog identifier.
-    /// Defaults to "glue"; controlled only by `DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME`.
-    pub glue_catalog_handle: String,
     /// Iceberg namespace / Glue database name (e.g. "demo_db"). This is the
     /// dynamic catalog visibility scope and the second part of three-part addressing.
     pub namespace: String,
-    pub warehouse: String,
-    pub catalog_id: Option<String>,
-    pub region: String,
-    pub profile: Option<String>,
+    /// Pre-declared table alias registrations seeded before catalog
+    /// registration. Empty means dynamic-catalog-only (all tables resolve
+    /// lazily via three-part addressing).
     pub tables: Vec<IcebergTableRegistrationConfig>,
+    /// Backend-specific connection payload. The enum makes invalid
+    /// combinations unrepresentable (a Glue payload cannot carry a REST URI and
+    /// vice versa). Selected by [`DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV`].
+    pub backend: IcebergCatalogBackendConfig,
+}
+
+/// Backend-specific Iceberg catalog connection config.
+///
+/// Validation lives per-variant: the Glue branch requires a region; the REST
+/// branch requires a URI and never requires a region.
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IcebergCatalogBackendConfig {
+    Glue(GlueServerBackendConfig),
+    Rest(crate::iceberg::catalog::RestIcebergCatalogConfig),
+}
+
+/// Glue-backend connection config carried by [`IcebergCatalogBackendConfig::Glue`].
+///
+/// `catalog_handle` is the internal handle passed to iceberg-rust's
+/// `GlueCatalogBuilder`; it is independent of the DataFusion `catalog_name` so
+/// operators can choose a Trino-style connector name without changing the Glue
+/// catalog identifier. `region` is required for Glue. `catalog_id` / `profile`
+/// are optional AWS scoping knobs.
+#[cfg(feature = "iceberg")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlueServerBackendConfig {
+    pub catalog_handle: String,
+    pub warehouse: String,
+    pub region: String,
+    pub catalog_id: Option<String>,
+    pub profile: Option<String>,
 }
 
 #[cfg(feature = "iceberg")]
@@ -219,10 +262,17 @@ impl ServerConfig {
                 DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
                 DEFAULT_STATEMENT_TICKET_TTL_SECS,
             )?);
-        let native_optimizer_config = native_optimizer_config(&mut values)?;
+        let mut native_optimizer_config = native_optimizer_config(&mut values)?;
 
         #[cfg(feature = "iceberg")]
         let iceberg = iceberg_config(&mut values)?;
+
+        #[cfg(feature = "iceberg")]
+        if let Some(profile) = iceberg.as_ref().map(|config| iceberg_source_storage_profile(config, &mut values)) {
+            let execution_config =
+                native_optimizer_config.native_execution_config().clone().with_source_storage_profile(profile);
+            native_optimizer_config = native_optimizer_config.with_native_execution_config(execution_config);
+        }
 
         #[cfg(not(feature = "iceberg"))]
         reject_iceberg_env_without_feature(&mut values)?;
@@ -331,6 +381,32 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
     Ok(CudfOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
 }
 
+#[cfg(feature = "iceberg")]
+fn iceberg_source_storage_profile(
+    config: &IcebergServerConfig,
+    values: &mut EnvValues<'_>,
+) -> cudf_query_engine::SourceStorageProfile {
+    match &config.backend {
+        IcebergCatalogBackendConfig::Glue(glue) => {
+            let mut catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
+                glue.catalog_handle.clone(),
+                glue.warehouse.clone(),
+                glue.region.clone(),
+            );
+            if let Some(catalog_id) = glue.catalog_id.as_ref() {
+                catalog_config = catalog_config.with_catalog_id(catalog_id.clone());
+            }
+            if let Some(profile) = glue.profile.as_ref() {
+                catalog_config = catalog_config.with_profile(profile.clone());
+            }
+            catalog_config.source_storage_profile_with_env(|name| values.string_uncached(name))
+        },
+        IcebergCatalogBackendConfig::Rest(rest) => {
+            rest.source_storage_profile_with_env(|name| values.string_uncached(name))
+        },
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ServerNativeMemoryPolicy {
     Bounded,
@@ -349,8 +425,31 @@ fn parse_native_memory_policy(raw: &str) -> Result<ServerNativeMemoryPolicy> {
 }
 
 #[cfg(feature = "iceberg")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IcebergCatalogKind {
+    Glue,
+    Rest,
+}
+
+#[cfg(feature = "iceberg")]
+fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<IcebergCatalogKind> {
+    match values.string(DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV) {
+        None => Ok(IcebergCatalogKind::Glue),
+        Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
+            "glue" => Ok(IcebergCatalogKind::Glue),
+            "rest" => Ok(IcebergCatalogKind::Rest),
+            other => Err(ServerError::invalid_config(
+                DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV,
+                format!("must be `glue` or `rest`, got `{other}`"),
+            )),
+        },
+    }
+}
+
+#[cfg(feature = "iceberg")]
 fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConfig>> {
     let requested = values.any_present([
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV,
         DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
         DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
         DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
@@ -359,10 +458,19 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
     ]);
     if !requested {
         return Ok(None);
     }
+
+    let kind = iceberg_catalog_kind(values)?;
 
     // Backend-neutral DATAFUSION_CUDF_ICEBERG_NAMESPACE takes precedence; fall
     // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE alias.
@@ -377,10 +485,6 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         })?;
 
     let warehouse = values.required_string(DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV)?;
-    let region = values
-        .string(crate::iceberg::AWS_REGION_ENV)
-        .or_else(|| values.string(crate::iceberg::AWS_DEFAULT_REGION_ENV))
-        .ok_or_else(|| ServerError::invalid_config(crate::iceberg::AWS_REGION_ENV, "is required for Glue Iceberg"))?;
 
     // Backend-neutral DATAFUSION_CUDF_ICEBERG_TABLES takes precedence; fall
     // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_TABLES alias.
@@ -403,29 +507,74 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
 
     // Backend-neutral DATAFUSION_CUDF_ICEBERG_CATALOG_NAME takes precedence;
     // fall back to the Glue-specific alias, then to the compiled-in default.
+    let default_catalog_name = match kind {
+        IcebergCatalogKind::Glue => DEFAULT_GLUE_CATALOG_NAME,
+        IcebergCatalogKind::Rest => DEFAULT_REST_CATALOG_HANDLE,
+    };
     let catalog_name = values
         .string(DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV)
         .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV))
-        .unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
+        .unwrap_or_else(|| default_catalog_name.to_string());
 
-    // glue_catalog_handle is the internal handle passed to iceberg-rust's
+    let backend = match kind {
+        IcebergCatalogKind::Glue => IcebergCatalogBackendConfig::Glue(glue_backend_config(values, &warehouse)?),
+        IcebergCatalogKind::Rest => IcebergCatalogBackendConfig::Rest(rest_backend_config(values, warehouse.clone())?),
+    };
+
+    Ok(Some(IcebergServerConfig { catalog_name, namespace, tables, backend }))
+}
+
+#[cfg(feature = "iceberg")]
+fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -> Result<GlueServerBackendConfig> {
+    let region = values
+        .string(crate::iceberg::AWS_REGION_ENV)
+        .or_else(|| values.string(crate::iceberg::AWS_DEFAULT_REGION_ENV))
+        .ok_or_else(|| ServerError::invalid_config(crate::iceberg::AWS_REGION_ENV, "is required for Glue Iceberg"))?;
+
+    // catalog_handle is the internal handle passed to iceberg-rust's
     // GlueCatalogBuilder; it is independent of the DataFusion catalog_name so
     // users can choose a different connector name without changing the Glue
     // catalog identifier.  Controlled only by the Glue-specific env var.
-    let glue_catalog_handle = values
+    let catalog_handle = values
         .string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV)
         .unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
 
-    Ok(Some(IcebergServerConfig {
-        catalog_name,
-        glue_catalog_handle,
-        namespace,
-        warehouse,
-        catalog_id: values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV),
+    Ok(GlueServerBackendConfig {
+        catalog_handle,
+        warehouse: warehouse.to_string(),
         region,
+        catalog_id: values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV),
         profile: values.string(crate::iceberg::AWS_PROFILE_ENV),
-        tables,
-    }))
+    })
+}
+
+#[cfg(feature = "iceberg")]
+fn rest_backend_config(
+    values: &mut EnvValues<'_>,
+    warehouse: String,
+) -> Result<crate::iceberg::catalog::RestIcebergCatalogConfig> {
+    let uri = values.required_string(DATAFUSION_CUDF_ICEBERG_REST_URI_ENV)?;
+    let catalog_handle = values
+        .string(DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV)
+        .unwrap_or_else(|| DEFAULT_REST_CATALOG_HANDLE.to_string());
+
+    let mut config = crate::iceberg::catalog::RestIcebergCatalogConfig::new(catalog_handle, uri, warehouse);
+    if let Some(prefix) = values.string(DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV) {
+        config = config.with_prefix(prefix);
+    }
+    if let Some(token) = values.string(DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV) {
+        config = config.with_token(token);
+    }
+    if let Some(endpoint) = values.string(DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV) {
+        config = config.with_s3_endpoint(endpoint);
+    }
+    if let Some(region) = values.string(DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV) {
+        config = config.with_s3_region(region);
+    }
+    if let Some(path_style) = values.optional_bool(DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV)? {
+        config = config.with_s3_path_style_access(path_style);
+    }
+    Ok(config)
 }
 
 #[cfg(feature = "iceberg")]
@@ -519,6 +668,7 @@ fn parse_cugraph_construction_policy(env_name: &'static str, raw: &str) -> Resul
 #[cfg(not(feature = "iceberg"))]
 fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
     if values.any_present([
+        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV,
         DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
         DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
         DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
@@ -527,6 +677,13 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
         DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV,
+        DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV,
+        DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
     ]) {
         return Err(ServerError::invalid_config(
             DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
@@ -584,6 +741,14 @@ impl<'a> EnvValues<'a> {
         value
     }
 
+    #[cfg(feature = "iceberg")]
+    fn string_uncached(&mut self, name: &str) -> Option<String> {
+        (self.get)(name).and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+        })
+    }
+
     fn socket_addr(&mut self, name: &'static str, default: &str) -> Result<SocketAddr> {
         let raw = self.string(name).unwrap_or_else(|| default.to_string());
         raw.parse().map_err(|error| ServerError::invalid_config(name, format!("must be a socket address: {error}")))
@@ -635,7 +800,7 @@ impl<'a> EnvValues<'a> {
             .transpose()
     }
 
-    #[cfg(feature = "cugraph")]
+    #[cfg(any(feature = "cugraph", feature = "iceberg"))]
     fn optional_bool(&mut self, name: &'static str) -> Result<Option<bool>> {
         self.string(name)
             .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {

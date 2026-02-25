@@ -122,6 +122,294 @@ impl fmt::Display for ParquetSourceLocation {
     }
 }
 
+/// High-level Parquet read strategy selected before source execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParquetReadStrategy {
+    /// Path-based cuDF/libcudf read for a local filesystem path.
+    LocalKvikio,
+    /// Fetch remote object bytes into host memory, then decode with cuDF.
+    RemoteHostBuffer,
+    /// Read a previously materialized local byte-cache entry through the path-based reader.
+    LocalCacheKvikio,
+    /// Experimental path-based cuDF/libcudf read for a remote URI such as `s3://...`.
+    RemoteKvikioExperimental,
+}
+
+impl ParquetReadStrategy {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LocalKvikio => "local_kvikio",
+            Self::RemoteHostBuffer => "remote_host_buffer",
+            Self::LocalCacheKvikio => "local_cache_kvikio",
+            Self::RemoteKvikioExperimental => "remote_kvikio_experimental",
+        }
+    }
+}
+
+impl fmt::Display for ParquetReadStrategy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Mechanical input form supplied to cuDF's Parquet decoder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceDecodeInput {
+    /// cuDF receives a path or URI string.
+    Filepath,
+    /// cuDF receives an already fetched host-memory Parquet payload.
+    HostBuffer,
+}
+
+impl SourceDecodeInput {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Filepath => "filepath",
+            Self::HostBuffer => "host_buffer",
+        }
+    }
+}
+
+impl fmt::Display for SourceDecodeInput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Credential scope used by a resolved source read.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CredentialMode {
+    /// No external credentials are needed.
+    #[default]
+    None,
+    /// Reader uses credentials already configured for the running process.
+    SharedProcessEnv,
+    /// Placeholder for future per-tenant credential plumbing.
+    FutureTenantScoped,
+}
+
+impl CredentialMode {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::SharedProcessEnv => "shared_process_env",
+            Self::FutureTenantScoped => "future_tenant_scoped",
+        }
+    }
+}
+
+impl fmt::Display for CredentialMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Local byte-cache status for a resolved Parquet source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum LakehouseCacheStatus {
+    /// Cache strategy is not enabled for this source.
+    Disabled,
+    /// A complete cache entry is used as the reader input.
+    Hit,
+    /// A cache entry was absent.
+    Miss,
+    /// Cache fill was selected before reading.
+    FillBeforeRead,
+    /// Cache was considered but not used.
+    Skipped,
+}
+
+impl LakehouseCacheStatus {
+    /// Stable diagnostic string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Hit => "hit",
+            Self::Miss => "miss",
+            Self::FillBeforeRead => "fill_before_read",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+impl fmt::Display for LakehouseCacheStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Resolved Parquet reader contract carried into native source execution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ResolvedParquetSource {
+    /// Catalog or table-format location before read-strategy resolution.
+    pub original_location: String,
+    /// Path or URI string passed to the selected cuDF reader branch.
+    pub reader_location: String,
+    /// Credential-free storage domain used for cache scoping, when known.
+    pub storage_domain: Option<String>,
+    /// Credential-free content identity used for cache scoping, when known.
+    pub content_identity: Option<String>,
+    /// Execution-time source storage profile used for object-store fetches.
+    ///
+    /// The referenced profile lives on [`crate::ExecutionContext`]. Keeping only
+    /// the id here lets plans and diagnostics stay credential-free.
+    pub storage_profile_id: Option<String>,
+    /// Selected high-level read strategy.
+    pub read_strategy: ParquetReadStrategy,
+    /// Mechanical decoder input used by the executor.
+    pub decode_input: SourceDecodeInput,
+    /// Credential scope used by the selected strategy.
+    pub credential_mode: CredentialMode,
+    /// Local byte-cache status for this source.
+    pub cache_status: LakehouseCacheStatus,
+    /// Lakehouse byte-cache root used by cache maintenance, when configured.
+    pub lakehouse_cache_root: Option<String>,
+    /// Best-effort retained byte target for the lakehouse byte-cache root.
+    pub lakehouse_cache_max_bytes: Option<u64>,
+    /// Stable fallback reason when the preferred strategy was unavailable.
+    pub fallback_reason: Option<String>,
+}
+
+impl ResolvedParquetSource {
+    /// Builds a local path-based read contract.
+    pub fn local_kvikio(location: impl Into<String>) -> Self {
+        let location = location.into();
+        Self {
+            original_location: location.clone(),
+            reader_location: location,
+            storage_domain: None,
+            content_identity: None,
+            storage_profile_id: None,
+            read_strategy: ParquetReadStrategy::LocalKvikio,
+            decode_input: SourceDecodeInput::Filepath,
+            credential_mode: CredentialMode::None,
+            cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_root: None,
+            lakehouse_cache_max_bytes: None,
+            fallback_reason: None,
+        }
+    }
+
+    /// Builds a remote host-buffer read contract.
+    pub fn remote_host_buffer(
+        original_location: impl Into<String>,
+        reader_location: impl Into<String>,
+        credential_mode: CredentialMode,
+    ) -> Self {
+        Self {
+            original_location: original_location.into(),
+            reader_location: reader_location.into(),
+            storage_domain: None,
+            content_identity: None,
+            storage_profile_id: None,
+            read_strategy: ParquetReadStrategy::RemoteHostBuffer,
+            decode_input: SourceDecodeInput::HostBuffer,
+            credential_mode,
+            cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_root: None,
+            lakehouse_cache_max_bytes: None,
+            fallback_reason: None,
+        }
+    }
+
+    /// Builds a local cache hit read contract.
+    pub fn local_cache_kvikio(
+        original_location: impl Into<String>,
+        reader_location: impl Into<String>,
+        credential_mode: CredentialMode,
+        cache_status: LakehouseCacheStatus,
+    ) -> Self {
+        Self {
+            original_location: original_location.into(),
+            reader_location: reader_location.into(),
+            storage_domain: None,
+            content_identity: None,
+            storage_profile_id: None,
+            read_strategy: ParquetReadStrategy::LocalCacheKvikio,
+            decode_input: SourceDecodeInput::Filepath,
+            credential_mode,
+            cache_status,
+            lakehouse_cache_root: None,
+            lakehouse_cache_max_bytes: None,
+            fallback_reason: None,
+        }
+    }
+
+    /// Builds an experimental remote path-based read contract.
+    pub fn remote_kvikio_experimental(original_location: impl Into<String>, credential_mode: CredentialMode) -> Self {
+        let original_location = original_location.into();
+        Self {
+            reader_location: original_location.clone(),
+            original_location,
+            storage_domain: None,
+            content_identity: None,
+            storage_profile_id: None,
+            read_strategy: ParquetReadStrategy::RemoteKvikioExperimental,
+            decode_input: SourceDecodeInput::Filepath,
+            credential_mode,
+            cache_status: LakehouseCacheStatus::Disabled,
+            lakehouse_cache_root: None,
+            lakehouse_cache_max_bytes: None,
+            fallback_reason: None,
+        }
+    }
+
+    /// Attaches a stable fallback reason.
+    pub fn with_fallback_reason(mut self, reason: impl Into<String>) -> Self {
+        self.fallback_reason = Some(reason.into());
+        self
+    }
+
+    /// Replaces the local byte-cache status after strategy fallback.
+    pub fn with_cache_status(mut self, cache_status: LakehouseCacheStatus) -> Self {
+        self.cache_status = cache_status;
+        self
+    }
+
+    /// Attaches a credential-free storage-domain identity for cache scoping.
+    pub fn with_storage_domain(mut self, storage_domain: impl Into<String>) -> Self {
+        self.storage_domain = Some(storage_domain.into());
+        self
+    }
+
+    /// Attaches a credential-free content identity for cache scoping.
+    pub fn with_content_identity(mut self, content_identity: impl Into<String>) -> Self {
+        self.content_identity = Some(content_identity.into());
+        self
+    }
+
+    /// Attaches the execution-time source storage profile id.
+    pub fn with_storage_profile_id(mut self, profile_id: impl Into<String>) -> Self {
+        self.storage_profile_id = Some(profile_id.into());
+        self
+    }
+
+    /// Attaches an execution-time source storage profile id when present.
+    pub fn with_optional_storage_profile_id(mut self, profile_id: Option<String>) -> Self {
+        self.storage_profile_id = profile_id;
+        self
+    }
+
+    /// Attaches lakehouse byte-cache maintenance settings.
+    pub fn with_lakehouse_cache_config(
+        mut self,
+        cache_root: impl Into<String>,
+        max_retained_bytes: Option<u64>,
+    ) -> Self {
+        self.lakehouse_cache_root = Some(cache_root.into());
+        self.lakehouse_cache_max_bytes = max_retained_bytes;
+        self
+    }
+
+    /// Whether execution must use the object-store host-buffer branch.
+    pub fn uses_host_buffer(&self) -> bool {
+        self.decode_input == SourceDecodeInput::HostBuffer
+    }
+}
+
 /// Native query-engine source description.
 ///
 /// Frontends lower scan nodes into this enum after they have resolved file
@@ -502,6 +790,12 @@ impl LocalParquetSource {
                 || reader_predicate_source_contract_shape_is_supported(self, predicate))
     }
 
+    /// Returns true when the reader predicate needs per-source-chunk metadata
+    /// to lower correctly.
+    pub fn reader_predicate_requires_source_contract(&self, predicate: &Expr) -> bool {
+        reader_predicate_references_decimal_column(self, predicate)
+    }
+
     /// Recomputes diagnostics from the current source metadata.
     pub fn refresh_diagnostics(&mut self) {
         let zero_column_count_represented = self.is_zero_column_count_source();
@@ -618,24 +912,7 @@ impl LocalParquetSource {
 }
 
 fn object_store_reader_path(uri: &str) -> String {
-    if let Some(path) = s3_https_reader_path(uri) {
-        return path;
-    }
     uri.to_string()
-}
-
-fn s3_https_reader_path(uri: &str) -> Option<String> {
-    let rest = uri.strip_prefix("s3://")?;
-    let (bucket, key) = rest.split_once('/')?;
-    if bucket.is_empty() || key.is_empty() {
-        return None;
-    }
-    let region = std::env::var("AWS_REGION")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok().filter(|value| !value.is_empty()))
-        .unwrap_or_else(|| "us-east-1".to_string());
-    Some(format!("https://{bucket}.s3.{region}.amazonaws.com/{key}"))
 }
 
 fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
@@ -1104,6 +1381,8 @@ pub struct LocalParquetFile {
     /// reader APIs. Object-store URIs are represented as path-shaped strings
     /// but must be created through `object_store_uri`.
     pub path: PathBuf,
+    /// Resolved reader strategy and decode contract for this file.
+    pub resolved_source: ResolvedParquetSource,
     /// Stable identifier for diagnostics, pruning, and executor bookkeeping.
     ///
     /// Frontends should choose a value that remains stable across equivalent
@@ -1142,9 +1421,11 @@ impl LocalParquetFile {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         let stable_id = path.display().to_string();
+        let reader_location = path.display().to_string();
         Self {
             location: ParquetSourceLocation::local_path(path.clone()),
             path,
+            resolved_source: ResolvedParquetSource::local_kvikio(reader_location),
             stable_id,
             file_size_bytes: None,
             row_groups: None,
@@ -1166,7 +1447,12 @@ impl LocalParquetFile {
         let reader_path = object_store_reader_path(&uri);
         Ok(Self {
             location,
-            path: PathBuf::from(reader_path),
+            path: PathBuf::from(&reader_path),
+            resolved_source: ResolvedParquetSource::remote_host_buffer(
+                uri,
+                reader_path,
+                CredentialMode::SharedProcessEnv,
+            ),
             stable_id,
             file_size_bytes: None,
             row_groups: None,
@@ -1178,6 +1464,35 @@ impl LocalParquetFile {
             row_group_rows: None,
             partition_values: Vec::new(),
         })
+    }
+
+    /// Creates a file descriptor from an already resolved reader contract.
+    pub fn from_resolved_parquet_source(resolved_source: ResolvedParquetSource) -> Result<Self, String> {
+        let location = parquet_source_location_for_original(&resolved_source.original_location)?;
+        let stable_id = resolved_source.original_location.clone();
+        Ok(Self {
+            location,
+            path: PathBuf::from(&resolved_source.reader_location),
+            resolved_source,
+            stable_id,
+            file_size_bytes: None,
+            row_groups: None,
+            row_group_bytes: None,
+            projected_row_group_compressed_bytes: None,
+            projected_row_group_uncompressed_bytes: None,
+            pure_filter_row_group_compressed_bytes: None,
+            pure_filter_row_group_uncompressed_bytes: None,
+            row_group_rows: None,
+            partition_values: Vec::new(),
+        })
+    }
+
+    /// Replaces the resolved reader contract and updates the reader path.
+    pub fn with_resolved_parquet_source(mut self, resolved_source: ResolvedParquetSource) -> Result<Self, String> {
+        self.location = parquet_source_location_for_original(&resolved_source.original_location)?;
+        self.path = PathBuf::from(&resolved_source.reader_location);
+        self.resolved_source = resolved_source;
+        Ok(self)
     }
 
     /// Sets the stable file identifier used by native diagnostics/execution.
@@ -1247,4 +1562,14 @@ impl LocalParquetFile {
             Vec::len,
         )
     }
+}
+
+fn parquet_source_location_for_original(location: &str) -> Result<ParquetSourceLocation, String> {
+    if let Some(path) = location.strip_prefix("file://") {
+        return Ok(ParquetSourceLocation::local_path(path));
+    }
+    if location.contains("://") {
+        return ParquetSourceLocation::object_store_uri(location);
+    }
+    Ok(ParquetSourceLocation::local_path(location))
 }

@@ -1,4 +1,24 @@
+use datafusion::physical_plan::metrics::MetricsSet;
+
 use super::*;
+
+fn metric_usize(metrics: &MetricsSet, name: &str) -> usize {
+    metrics.sum_by_name(name).unwrap().as_usize()
+}
+
+fn assert_source_batch_metrics(metrics: &MetricsSet) {
+    let planned = metric_usize(metrics, "source_chunks_planned");
+    let committed = metric_usize(metrics, "source_chunks_committed");
+
+    assert!(planned > 0);
+    assert!(committed > 0);
+    assert!(committed <= planned);
+}
+
+fn assert_row_group_coverage_metrics(metrics: &MetricsSet) {
+    assert!(metric_usize(metrics, "row_groups_planned") > 0);
+    assert_eq!(metric_usize(metrics, "row_groups_planned"), metric_usize(metrics, "row_groups_committed"));
+}
 
 #[tokio::test]
 async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
@@ -20,18 +40,10 @@ async fn native_datafusion_exec_q6_shaped_global_decimal_sum_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
-    assert!(metrics.sum_by_name("source_chunks_planned").unwrap().as_usize() > 0);
-    assert_eq!(
-        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
-        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
-    );
-    assert!(metrics.sum_by_name("row_groups_planned").unwrap().as_usize() > 0);
-    assert_eq!(
-        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
-        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
-    );
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
+    assert_source_batch_metrics(&metrics);
+    assert_row_group_coverage_metrics(&metrics);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -56,9 +68,9 @@ async fn native_datafusion_exec_sql_count_only_uses_zero_column_count_source() {
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("read_columns").unwrap().as_usize(), 0);
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
+    assert_eq!(metric_usize(&metrics, "read_columns"), 0);
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -84,18 +96,12 @@ async fn native_datafusion_exec_default_sql_uses_bounded_native_engine() {
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
-    assert_eq!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize(), 2);
-    assert!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize() < total_row_groups);
-    assert_eq!(
-        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
-        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
-    );
-    assert_eq!(
-        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
-        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
-    );
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
+    assert_eq!(metric_usize(&metrics, "row_groups_selected"), 2);
+    assert!(metric_usize(&metrics, "row_groups_selected") < total_row_groups);
+    assert_source_batch_metrics(&metrics);
+    assert_row_group_coverage_metrics(&metrics);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -121,18 +127,12 @@ async fn native_datafusion_exec_default_sql_distributed_avg_uses_bounded_native_
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
-    assert_eq!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize(), 2);
-    assert!(metrics.sum_by_name("row_groups_selected").unwrap().as_usize() < total_row_groups);
-    assert_eq!(
-        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
-        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
-    );
-    assert_eq!(
-        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
-        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
-    );
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
+    assert_eq!(metric_usize(&metrics, "row_groups_selected"), 2);
+    assert!(metric_usize(&metrics, "row_groups_selected") < total_row_groups);
+    assert_source_batch_metrics(&metrics);
+    assert_row_group_coverage_metrics(&metrics);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -157,16 +157,10 @@ async fn native_datafusion_exec_nullable_avg_output_ordering_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
     let metrics = plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
-    assert_eq!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize(), 1);
-    assert_eq!(
-        metrics.sum_by_name("source_chunks_planned").unwrap().as_usize(),
-        metrics.sum_by_name("source_chunks_committed").unwrap().as_usize(),
-    );
-    assert_eq!(
-        metrics.sum_by_name("row_groups_planned").unwrap().as_usize(),
-        metrics.sum_by_name("row_groups_committed").unwrap().as_usize(),
-    );
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
+    assert_source_batch_metrics(&metrics);
+    assert_row_group_coverage_metrics(&metrics);
 
     fs::remove_dir_all(dir).unwrap();
 }

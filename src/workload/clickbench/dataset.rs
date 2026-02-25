@@ -38,6 +38,11 @@ pub const CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_CLICKBENCH_CONTE
 /// var is set and the partitioned variants are unavailable.
 pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET: &str = "./tests/data/clickbench/hits.parquet";
 
+/// In-repo default directory for the single-file ClickBench fixture, i.e. a
+/// directory containing `hits.parquet`. Discovery resolves this to a
+/// [`ClickbenchLayout::Single`].
+pub const DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR: &str = "./tests/data/clickbench/single";
+
 /// In-repo default for the partitioned ClickBench fixture (100 shards).
 pub const DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR: &str = "./tests/data/clickbench/partitioned";
 
