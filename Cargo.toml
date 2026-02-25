@@ -3,7 +3,7 @@ name = "datafusion-cudf"
 description = "DataFusion physical-plan adapter for native cudf-rs GPU execution."
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.94"
 build = "build.rs"
 
 [workspace]
@@ -143,10 +143,6 @@ required-features = ["cugraph"]
 name = "refresh_cugraph_oracle"
 required-features = ["cugraph"]
 
-[[example]]
-name = "iceberg_limit_smoke"
-required-features = ["iceberg"]
-
 [[test]]
 name = "table_format_iceberg_planner_tests"
 required-features = ["iceberg"]
@@ -169,6 +165,10 @@ required-features = ["iceberg"]
 
 [[test]]
 name = "iceberg_catalog_provider_tests"
+required-features = ["iceberg"]
+
+[[test]]
+name = "iceberg_rest_e2e_tests"
 required-features = ["iceberg"]
 
 [[test]]
@@ -198,6 +198,10 @@ required-features = ["server"]
 [[test]]
 name = "server_auth_tests"
 required-features = ["server"]
+
+[[test]]
+name = "server_session_namespace_tests"
+required-features = ["server", "iceberg"]
 
 [[test]]
 name = "server_cugraph_dsl_tests"
