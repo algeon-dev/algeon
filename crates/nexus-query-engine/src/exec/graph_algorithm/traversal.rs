@@ -20,6 +20,7 @@ pub(super) fn execute_bfs(
     let options = table_graph_options(spec);
     let bfs_p = bfs_params(params)?;
     let predicate_columns = BfsPredicateColumns::from_side_inputs(
+        context,
         params,
         &side_inputs,
         vertex_type,
@@ -220,10 +221,12 @@ struct BfsPredicateColumns {
     include_edge_ids: Option<cudf::Series>,
     include_edges_rows: Option<usize>,
     include_edges_aligned_rows: Option<usize>,
+    include_edges_null_rows_dropped: Option<usize>,
 }
 
 impl BfsPredicateColumns {
     fn from_side_inputs(
+        context: &ExecutionContext,
         params: &crate::plan::GraphBfsParams,
         side_inputs: &std::collections::BTreeMap<NodeId, GpuDataFrame>,
         vertex_type: cudf::TypeId,
@@ -251,11 +254,17 @@ impl BfsPredicateColumns {
                 "nexus_query_engine.graph_algorithm.bfs_predicates",
                 "BFS include_edge_ids requires the primary edge list to declare a stable edge-id column binding",
             )
-            .with_fact("predicate", "include_edge_ids")
+            .with_fact("predicate_role", "include_edge_ids")
             .with_fact("missing_binding", "edge_id_col"));
         }
-        let edge_alignment =
-            align_include_edges(edges, spec, params.predicates.include_edges.as_ref(), side_inputs, vertex_type)?;
+        let edge_alignment = align_include_edges(
+            context,
+            edges,
+            spec,
+            params.predicates.include_edges.as_ref(),
+            side_inputs,
+            vertex_type,
+        )?;
         Ok(Self {
             source_vertices: source_vertex_series(side_inputs, params.source_vertices.as_ref(), vertex_type)?,
             include_vertices: predicate_series(
@@ -284,6 +293,7 @@ impl BfsPredicateColumns {
             )?,
             include_edges_rows: edge_alignment.input_rows,
             include_edges_aligned_rows: edge_alignment.aligned_rows,
+            include_edges_null_rows_dropped: edge_alignment.null_rows_dropped,
         })
     }
 
@@ -296,7 +306,7 @@ impl BfsPredicateColumns {
 
     fn metadata(&self) -> String {
         format!(
-            "source_vertices_rows={},predicate_include_vertices_rows={},predicate_exclude_vertices_rows={},predicate_target_vertices_rows={},predicate_include_edge_ids_rows={},predicate_include_edges_rows={},predicate_include_edges_aligned_rows={},target_early_stop_supported={}",
+            "source_vertices_rows={},predicate_include_vertices_rows={},predicate_exclude_vertices_rows={},predicate_target_vertices_rows={},predicate_include_edge_ids_rows={},predicate_include_edges_rows={},predicate_include_edges_aligned_rows={},predicate_include_edges_null_rows_dropped={},target_early_stop_supported={}",
             optional_series_len(self.source_vertices.as_ref()),
             optional_series_len(self.include_vertices.as_ref()),
             optional_series_len(self.exclude_vertices.as_ref()),
@@ -304,6 +314,7 @@ impl BfsPredicateColumns {
             optional_series_len(self.include_edge_ids.as_ref()),
             optional_usize(self.include_edges_rows),
             optional_usize(self.include_edges_aligned_rows),
+            optional_usize(self.include_edges_null_rows_dropped),
             self.target_vertices.is_some(),
         )
     }
@@ -313,9 +324,11 @@ impl BfsPredicateColumns {
 struct EdgePredicateAlignment {
     input_rows: Option<usize>,
     aligned_rows: Option<usize>,
+    null_rows_dropped: Option<usize>,
 }
 
 fn align_include_edges(
+    context: &ExecutionContext,
     edges: &mut DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     input: Option<&crate::plan::GraphEdgePredicateInput>,
@@ -331,15 +344,16 @@ fn align_include_edges(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "BFS include_edges side input was not executed",
         )
-        .with_fact("predicate", "include_edges")
+        .with_fact("predicate_role", "include_edges")
         .with_fact("input", input.input)
     })?;
     let frame = frame.clone().into_frame();
-    validate_predicate_series(&frame, input.input, &input.source, "include_edges_source", vertex_type)?;
-    validate_predicate_series(&frame, input.input, &input.destination, "include_edges_destination", vertex_type)?;
+    let input_rows = frame.num_rows();
 
     let mut left_keys = vec![spec.edge_columns.source.clone(), spec.edge_columns.destination.clone()];
     let mut right_keys = vec![input.source.clone(), input.destination.clone()];
+    let mut predicate_columns =
+        vec![("include_edges_source", input.source.clone()), ("include_edges_destination", input.destination.clone())];
     if let Some(edge_id) = &input.edge_id {
         let primary_edge_id = spec.edge_columns.edge_id.as_ref().ok_or_else(|| {
             QueryError::new(
@@ -347,24 +361,26 @@ fn align_include_edges(
                 "nexus_query_engine.graph_algorithm.bfs_predicates",
                 "BFS include_edges edge-id alignment requires a primary edge-id column binding",
             )
-            .with_fact("predicate", "include_edges")
+            .with_fact("predicate_role", "include_edges")
             .with_fact("input", input.input)
             .with_fact("missing_binding", "edge_id_col")
         })?;
-        validate_predicate_series(&frame, input.input, edge_id, "include_edges_edge_id", vertex_type)?;
         left_keys.push(primary_edge_id.clone());
         right_keys.push(edge_id.clone());
+        predicate_columns.push(("include_edges_edge_id", edge_id.clone()));
     }
 
-    let allowed_edges = frame.select(right_keys.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.bfs_predicates",
-            "failed to project BFS include_edges predicate columns",
-            error,
-        )
-        .with_fact("predicate", "include_edges")
-        .with_fact("input", input.input)
-    })?;
+    // include_edges is a relational filter: a null src/dst/edge-id cannot identify
+    // any allowed edge, so dropping the row preserves user intent. Decide on the
+    // actual values (null_count), never schema nullability. Dtype is still
+    // validated (it must match the graph vertex dtype for the semi-join keys).
+    for (role, column) in &predicate_columns {
+        let series = predicate_series_for_column(&frame, input.input, column, role)?;
+        validate_predicate_series_dtype(&series, input.input, column, role, vertex_type)?;
+    }
+    let (allowed_edges, null_rows_dropped) = drop_null_include_edge_rows(context, input.input, &frame, &right_keys)?;
+
+    let aligned_allowed_rows = allowed_edges.num_rows();
     let options = cudf::DataFrameJoinOptions::new()
         .left_on(left_keys.iter().map(String::as_str))
         .right_on(right_keys.iter().map(String::as_str))
@@ -375,12 +391,81 @@ fn align_include_edges(
             "failed to align BFS include_edges predicate with the primary edge list",
             error,
         )
-        .with_fact("predicate", "include_edges")
+        .with_fact("predicate_role", "include_edges")
         .with_fact("input", input.input)
         .with_fact("left_keys", left_keys.join(","))
         .with_fact("right_keys", right_keys.join(","))
     })?;
-    Ok(EdgePredicateAlignment { input_rows: Some(frame.num_rows()), aligned_rows: Some(edges.num_rows()) })
+
+    // A whitelist that collapses to empty (every row dropped, or empty input)
+    // would silently produce an empty BFS. Surface it as a deliberate error so
+    // the user knows the predicate, not the graph, eliminated all edges.
+    if aligned_allowed_rows == 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_predicates",
+            "BFS include_edges whitelist is empty after dropping null rows",
+        )
+        .with_fact("predicate_role", "include_edges")
+        .with_fact("input", input.input)
+        .with_fact("input_rows", input_rows)
+        .with_fact("null_rows_dropped", null_rows_dropped));
+    }
+
+    Ok(EdgePredicateAlignment {
+        input_rows: Some(input_rows),
+        aligned_rows: Some(edges.num_rows()),
+        null_rows_dropped: Some(null_rows_dropped),
+    })
+}
+
+/// Projects the include_edges key columns and drops any row containing a null in
+/// a key column, returning the cleaned whitelist frame and the dropped-row count.
+///
+/// Mirrors [`super::edge_null_filter::filter_null_edge_rows`]: the reject-vs-drop
+/// axis is the actual `null_count`, not schema nullability.
+fn drop_null_include_edge_rows(
+    context: &ExecutionContext,
+    input: NodeId,
+    frame: &DataFrame,
+    right_keys: &[String],
+) -> Result<(DataFrame, usize)> {
+    let allowed_edges = frame.select(right_keys.iter().map(String::as_str)).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_predicates",
+            "failed to project BFS include_edges predicate columns",
+            error,
+        )
+        .with_fact("predicate_role", "include_edges")
+        .with_fact("input", input)
+    })?;
+
+    let mut has_nulls = false;
+    for column in right_keys {
+        let series = predicate_series_for_column(&allowed_edges, input, column, "include_edges")?;
+        if series.null_count() != 0 {
+            has_nulls = true;
+            break;
+        }
+    }
+    if !has_nulls {
+        return Ok((allowed_edges, 0));
+    }
+
+    let input_rows = allowed_edges.num_rows();
+    let predicates = right_keys.iter().map(|column| col(column.as_str()).is_not_null()).collect::<Vec<_>>();
+    let filtered =
+        allowed_edges.with_execution(&execution_overrides(context)).filter_all(predicates).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.bfs_predicates",
+                "failed to drop null BFS include_edges predicate rows",
+                error,
+            )
+            .with_fact("predicate_role", "include_edges")
+            .with_fact("input", input)
+        })?;
+    let null_rows_dropped = input_rows.saturating_sub(filtered.num_rows());
+    Ok((filtered, null_rows_dropped))
 }
 
 fn predicate_series(
@@ -398,7 +483,7 @@ fn predicate_series(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "BFS predicate side input was not executed",
         )
-        .with_fact("predicate", role)
+        .with_fact("predicate_role", role)
         .with_fact("input", input.input)
         .with_fact("column", &input.column)
     })?;
@@ -430,6 +515,14 @@ fn source_vertex_series(
     Ok(Some(series))
 }
 
+/// Validates a vertex-set predicate column (`include_vertices`,
+/// `exclude_vertices`, `target_vertices`, `include_edge_ids`, `source_vertices`).
+///
+/// These predicates are set constraints the user explicitly enumerated, so a
+/// null id is an unknown set member and is rejected on the actual *values*
+/// (`null_count() > 0`), never on schema nullability. Schema nullability is
+/// accepted at planning time; the reject decision happens here, where the data
+/// is materialized.
 fn validate_predicate_series(
     frame: &DataFrame,
     input: NodeId,
@@ -437,34 +530,55 @@ fn validate_predicate_series(
     role: &'static str,
     vertex_type: cudf::TypeId,
 ) -> Result<cudf::Series> {
-    let series = frame.series(column).map_err(|error| {
+    let series = predicate_series_for_column(frame, input, column, role)?;
+    if series.null_count() != 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_predicates",
+            "BFS vertex-set predicate column contains null values",
+        )
+        .with_fact("reason", "predicate_column_contains_nulls")
+        .with_fact("predicate_role", role)
+        .with_fact("input", input)
+        .with_fact("column", column)
+        .with_fact("null_count", series.null_count()));
+    }
+    validate_predicate_series_dtype(&series, input, column, role, vertex_type)?;
+    Ok(series)
+}
+
+fn predicate_series_for_column(
+    frame: &DataFrame,
+    input: NodeId,
+    column: &str,
+    role: &'static str,
+) -> Result<cudf::Series> {
+    frame.series(column).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "failed to access BFS predicate column",
             error,
         )
-        .with_fact("predicate", role)
+        .with_fact("predicate_role", role)
         .with_fact("input", input)
         .with_fact("column", column)
-    })?;
-    if series.null_count() != 0 {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.bfs_predicates",
-            "BFS predicate id columns must be non-null",
-        )
-        .with_fact("predicate", role)
-        .with_fact("input", input)
-        .with_fact("column", column)
-        .with_fact("null_count", series.null_count()));
-    }
+    })
+}
+
+fn validate_predicate_series_dtype(
+    series: &cudf::Series,
+    input: NodeId,
+    column: &str,
+    role: &'static str,
+    vertex_type: cudf::TypeId,
+) -> Result<()> {
     let dtype = series.dtype().map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "failed to inspect BFS predicate column type",
             error,
         )
-        .with_fact("predicate", role)
+        .with_fact("predicate_role", role)
         .with_fact("input", input)
         .with_fact("column", column)
     })?;
@@ -474,13 +588,13 @@ fn validate_predicate_series(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "BFS predicate id column dtype must match the graph vertex dtype",
         )
-        .with_fact("predicate", role)
+        .with_fact("predicate_role", role)
         .with_fact("input", input)
         .with_fact("column", column)
         .with_fact("predicate_dtype", format!("{:?}", dtype.id()))
         .with_fact("vertex_dtype", format!("{vertex_type:?}")));
     }
-    Ok(series)
+    Ok(())
 }
 
 fn predicate_column_slice<'a, T: cudf::CudfType>(
@@ -495,7 +609,7 @@ fn predicate_column_slice<'a, T: cudf::CudfType>(
                     "failed to borrow BFS predicate column device slice",
                     error,
                 )
-                .with_fact("predicate", role)
+                .with_fact("predicate_role", role)
             })
         })
         .transpose()
@@ -513,7 +627,7 @@ fn predicate_device_view<'a, T: cugraph::types::CugraphElement>(
             ))
         })
         .transpose()
-        .map_err(|error| error.with_fact("predicate", role))
+        .map_err(|error| error.with_fact("predicate_role", role))
 }
 
 fn optional_series_len(series: Option<&cudf::Series>) -> String {

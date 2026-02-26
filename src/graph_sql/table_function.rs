@@ -247,12 +247,6 @@ fn validate_predicate_source_schema(
         let field = schema.field_with_name(column).map_err(|_| {
             plan_error(format!("cuGraph BFS predicate source '{}' is missing column '{column}'", source.table_name))
         })?;
-        if field.is_nullable() {
-            return Err(plan_error(format!(
-                "cuGraph BFS predicate column '{column}' in '{}' must be non-null",
-                source.table_name
-            )));
-        }
         if !vertex_domain.accepts(field.data_type()) {
             return Err(plan_error(format!(
                 "cuGraph BFS predicate column '{column}' in '{}' must have dtype {}",

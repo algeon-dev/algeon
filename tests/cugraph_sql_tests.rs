@@ -2117,6 +2117,143 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
     assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
 }
 
+#[tokio::test]
+async fn cugraph_validate_call_accepts_schema_nullable_predicate_columns() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    // Predicate side inputs whose Arrow schema is nullable. After the
+    // schema-vs-data split, validate must not reject on schema nullability for
+    // any predicate role; it only checks existence and dtype.
+    register_vertex_memtable(&ctx, "targets", "vertex_id", DataType::Int64, true);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("allowed_src", DataType::Int64, true),
+        Field::new("allowed_dst", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64, 3])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("allowed_edges", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'raw_edges',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","options":{"target_vertices_table":"targets","target_vertex_col":"vertex_id","include_edges_table":"allowed_edges","include_edge_src_col":"allowed_src","include_edge_dst_col":"allowed_dst"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0), "schema-nullable predicate columns must validate");
+    assert_eq!(string_value(batch, 1, 0), "ok");
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_nullable_allowed_bfs_edges_with_nulls(&ctx, "allowed_edges");
+
+    // The whitelist enumerates 0->2 and 2->3 plus a null row that cannot name
+    // any edge. The null row is dropped (not rejected), leaving the same
+    // policy as the clean include_edges test: reachable {0,2,3}, 1 unreachable.
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor \
+             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"include_edges_table\":\"allowed_edges\",\
+                     \"include_edge_src_col\":\"allowed_src\",\
+                     \"include_edge_dst_col\":\"allowed_dst\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 1), None);
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_nullable_vertex_memtable_with_nulls(&ctx, "targets", "vertex_id");
+
+    let error = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor \
+             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err()
+        .to_string();
+    // Vertex-set predicate values that are actually null are rejected at
+    // execution with the value-level diagnostic code carrying the role/column.
+    assert!(error.contains("predicate_column_contains_nulls"), "unexpected error: {error}");
+    assert!(error.contains("target_vertices"), "error should carry predicate_role: {error}");
+    assert!(error.contains("vertex_id"), "error should carry the column name: {error}");
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_all_null_allowed_bfs_edges(&ctx, "allowed_edges");
+
+    let error = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor \
+             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"include_edges_table\":\"allowed_edges\",\
+                     \"include_edge_src_col\":\"allowed_src\",\
+                     \"include_edge_dst_col\":\"allowed_dst\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap_err()
+        .to_string();
+    // A whitelist that collapses to empty after dropping null rows is a
+    // deliberate error, never a silent empty BFS.
+    assert!(error.contains("include_edges whitelist is empty"), "unexpected error: {error}");
+}
+
 fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
     stable_result_schema(algorithm).fields().iter().map(|field| field.as_ref().clone()).collect()
 }
@@ -2379,6 +2516,51 @@ fn register_allowed_bfs_edges(ctx: &SessionContext, table_name: &str) {
             Arc::new(Int64Array::from(vec![0_i64, 2])) as ArrayRef,
             Arc::new(Int64Array::from(vec![2_i64, 3])) as ArrayRef,
         ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_nullable_allowed_bfs_edges_with_nulls(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("allowed_src", DataType::Int64, true),
+        Field::new("allowed_dst", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(0_i64), Some(2), None])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![Some(2_i64), Some(3), Some(3)])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_all_null_allowed_bfs_edges(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("allowed_src", DataType::Int64, true),
+        Field::new("allowed_dst", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![None, None] as Vec<Option<i64>>)) as ArrayRef,
+            Arc::new(Int64Array::from(vec![Some(2_i64), Some(3)])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_nullable_vertex_memtable_with_nulls(ctx: &SessionContext, table_name: &str, column_name: &str) {
+    let schema = Arc::new(Schema::new(vec![Field::new(column_name, DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![Some(3_i64), None])) as ArrayRef],
     )
     .unwrap();
     let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());

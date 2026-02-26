@@ -31,7 +31,6 @@ const ERROR_INVALID_CALL_JSON: &str = "invalid_call_json";
 const ERROR_INVALID_ARGUMENT: &str = "invalid_argument";
 const ERROR_TABLE_NOT_FOUND: &str = "table_not_found";
 const ERROR_COLUMN_NOT_FOUND: &str = "column_not_found";
-const ERROR_NULLABLE_EDGE_COLUMN: &str = "nullable_edge_column";
 const ERROR_UNSUPPORTED_VERTEX_DTYPE: &str = "unsupported_vertex_dtype";
 const ERROR_VERTEX_DTYPE_MISMATCH: &str = "vertex_dtype_mismatch";
 const ERROR_UNSUPPORTED_WEIGHT_DTYPE: &str = "unsupported_weight_dtype";
@@ -729,14 +728,6 @@ async fn validate_predicate_columns(
                 ));
             },
         };
-        if field.is_nullable() {
-            return Some(predicate_validation_error(
-                function_name,
-                ERROR_NULLABLE_EDGE_COLUMN,
-                format!("cuGraph BFS predicate column '{}' for {role} must be non-null", column),
-                output_schema_json,
-            ));
-        }
         if !vertex_domain.accepts(field.data_type()) {
             return Some(predicate_validation_error(
                 function_name,
