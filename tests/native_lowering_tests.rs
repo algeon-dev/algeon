@@ -51,11 +51,12 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapLoweringExpectation,
-    CandidateOutcome, FallbackReason, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
-    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeLoweringResult,
-    ad_hoc_olap_fallback_pressure_workload_items, ad_hoc_olap_query_ids, lower_physical_plan_to_native,
-    tpch_fallback_pressure_workload_items, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
+    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
+    AnalyticalOlapLoweringExpectation, CandidateOutcome, FallbackReason, NativeFallbackPressureOutcome,
+    NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem,
+    NativeLoweringResult, analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,
+    lower_physical_plan_to_native, tpch_fallback_pressure_workload_items, tpch_report_session_config,
+    write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
     AggregateFunction, Expr, JoinNullEquality as NativeJoinNullEquality, JoinOutputColumn as NativeJoinOutputColumn,
@@ -63,12 +64,12 @@ use nexus_query_engine::{
     SourceColumnRef, SourceNode, ZERO_COLUMN_COUNT_COLUMN,
 };
 
-#[path = "native_lowering_tests/ad_hoc_full_gpu_gaps.rs"]
-mod ad_hoc_full_gpu_gaps;
-#[path = "native_lowering_tests/ad_hoc_olap.rs"]
-mod ad_hoc_olap;
+#[path = "native_lowering_tests/analytical_olap.rs"]
+mod analytical_olap;
 #[path = "native_lowering_tests/fixtures.rs"]
 mod fixtures;
+#[path = "native_lowering_tests/full_gpu_gap_analysis.rs"]
+mod full_gpu_gap_analysis;
 #[path = "native_lowering_tests/join_plan_builders.rs"]
 mod join_plan_builders;
 #[path = "native_lowering_tests/join_shapes.rs"]
@@ -93,8 +94,8 @@ mod sql_aggregate_shapes;
 mod core_shapes;
 #[path = "native_lowering_tests/expression_validation.rs"]
 mod expression_validation;
-#[path = "native_lowering_tests/phase2_source_columns.rs"]
-mod phase2_source_columns;
+#[path = "native_lowering_tests/source_column_pruning.rs"]
+mod source_column_pruning;
 
 use aggregate_plan_builders::*;
 use fixtures::*;

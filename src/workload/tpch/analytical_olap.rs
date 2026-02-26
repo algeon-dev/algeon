@@ -11,20 +11,20 @@ use crate::{
     NativeDataFusionPlanningWorkloadItem, NativeFallbackPressureWorkloadItem, tpch_native_optimizer_config,
 };
 
-pub const AD_HOC_OLAP_QUERY_COUNT: usize = AD_HOC_OLAP_QUERIES.len();
+pub const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdHocOlapQuery {
+pub struct AnalyticalOlapQuery {
     pub id: &'static str,
     pub sql: &'static str,
-    pub workload_class: AdHocOlapWorkloadClass,
-    pub expected_lowering: AdHocOlapLoweringExpectation,
-    pub current_strict_admission: AdHocOlapCurrentStrictAdmission,
-    pub capability_first_admission: AdHocOlapCapabilityFirstAdmission,
+    pub workload_class: AnalyticalOlapWorkloadClass,
+    pub expected_lowering: AnalyticalOlapLoweringExpectation,
+    pub current_strict_admission: AnalyticalOlapCurrentStrictAdmission,
+    pub capability_first_admission: AnalyticalOlapCapabilityFirstAdmission,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdHocOlapWorkloadClass {
+pub enum AnalyticalOlapWorkloadClass {
     StarSchemaJoin,
     SelfJoin,
     DecorrelatableSubquery,
@@ -32,7 +32,7 @@ pub enum AdHocOlapWorkloadClass {
     AggregateSortTopK,
 }
 
-impl AdHocOlapWorkloadClass {
+impl AnalyticalOlapWorkloadClass {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::StarSchemaJoin => "star_schema_join",
@@ -45,11 +45,11 @@ impl AdHocOlapWorkloadClass {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdHocOlapLoweringExpectation {
+pub enum AnalyticalOlapLoweringExpectation {
     NativeQueryPlan,
 }
 
-impl AdHocOlapLoweringExpectation {
+impl AnalyticalOlapLoweringExpectation {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::NativeQueryPlan => "native_query_plan",
@@ -58,12 +58,12 @@ impl AdHocOlapLoweringExpectation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdHocOlapCurrentStrictAdmission {
+pub enum AnalyticalOlapCurrentStrictAdmission {
     Accepted,
     RejectedBeforeExecution,
 }
 
-impl AdHocOlapCurrentStrictAdmission {
+impl AnalyticalOlapCurrentStrictAdmission {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
@@ -73,12 +73,12 @@ impl AdHocOlapCurrentStrictAdmission {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AdHocOlapCapabilityFirstAdmission {
+pub enum AnalyticalOlapCapabilityFirstAdmission {
     Accepted,
     ExpectedSupersetWin,
 }
 
-impl AdHocOlapCapabilityFirstAdmission {
+impl AnalyticalOlapCapabilityFirstAdmission {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
@@ -87,13 +87,13 @@ impl AdHocOlapCapabilityFirstAdmission {
     }
 }
 
-pub const AD_HOC_OLAP_QUERIES: &[AdHocOlapQuery] = &[
-    AdHocOlapQuery {
+pub const ANALYTICAL_OLAP_QUERIES: &[AnalyticalOlapQuery] = &[
+    AnalyticalOlapQuery {
         id: "adhoc_olap_01_customer_order_lineitem_star",
-        workload_class: AdHocOlapWorkloadClass::StarSchemaJoin,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT c.c_mktsegment, o.o_orderstatus, SUM(l.l_extendedprice) AS revenue
 FROM customer c
@@ -104,12 +104,12 @@ ORDER BY revenue DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_02_part_supplier_supply_star",
-        workload_class: AdHocOlapWorkloadClass::StarSchemaJoin,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT p.p_brand, s.s_nationkey, SUM(ps.ps_supplycost) AS supply_cost
 FROM part p
@@ -120,12 +120,12 @@ ORDER BY supply_cost ASC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_03_region_nation_customer_orders",
-        workload_class: AdHocOlapWorkloadClass::StarSchemaJoin,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT r.r_name, n.n_name, COUNT(o.o_orderkey) AS order_count
 FROM region r
@@ -137,12 +137,12 @@ ORDER BY order_count DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_04_supplier_same_nation_self_join",
-        workload_class: AdHocOlapWorkloadClass::SelfJoin,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::SelfJoin,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT s1.s_nationkey, COUNT(*) AS supplier_pairs
 FROM supplier s1
@@ -153,12 +153,12 @@ ORDER BY supplier_pairs DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_05_customer_order_self_join",
-        workload_class: AdHocOlapWorkloadClass::SelfJoin,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::SelfJoin,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT o1.o_custkey, COUNT(*) AS order_pairs
 FROM orders o1
@@ -169,12 +169,12 @@ ORDER BY order_pairs DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_06_customer_in_join_aggregate_subquery",
-        workload_class: AdHocOlapWorkloadClass::DecorrelatableSubquery,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::ExpectedSupersetWin,
+        workload_class: AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin,
         sql: "
 SELECT c.c_custkey, SUM(o.o_totalprice) AS customer_total
 FROM customer c
@@ -190,12 +190,12 @@ ORDER BY customer_total DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_07_nested_exists_customer_orders_lineitem",
-        workload_class: AdHocOlapWorkloadClass::DecorrelatableSubquery,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT c.c_custkey, COUNT(o.o_orderkey) AS matched_orders
 FROM customer c
@@ -210,12 +210,12 @@ ORDER BY matched_orders DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_08_order_revenue_reused_cte",
-        workload_class: AdHocOlapWorkloadClass::MultiJoinResidentPressure,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::ExpectedSupersetWin,
+        workload_class: AnalyticalOlapWorkloadClass::MultiJoinResidentPressure,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin,
         sql: "
 WITH order_revenue AS (
     SELECT o.o_orderkey, o.o_custkey, SUM(l.l_extendedprice) AS revenue
@@ -232,12 +232,12 @@ ORDER BY high_revenue DESC
 LIMIT 5
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_09_nation_supplier_lineitem_topk",
-        workload_class: AdHocOlapWorkloadClass::AggregateSortTopK,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::AggregateSortTopK,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT n.n_name, SUM(l.l_extendedprice) AS revenue
 FROM nation n
@@ -248,12 +248,12 @@ ORDER BY revenue DESC
 LIMIT 3
 ",
     },
-    AdHocOlapQuery {
+    AnalyticalOlapQuery {
         id: "adhoc_olap_10_part_lineitem_supplier_topk",
-        workload_class: AdHocOlapWorkloadClass::AggregateSortTopK,
-        expected_lowering: AdHocOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AdHocOlapCurrentStrictAdmission::Accepted,
-        capability_first_admission: AdHocOlapCapabilityFirstAdmission::Accepted,
+        workload_class: AnalyticalOlapWorkloadClass::AggregateSortTopK,
+        expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
+        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT p.p_type, s.s_nationkey, SUM(l.l_quantity) AS quantity
 FROM part p
@@ -266,18 +266,18 @@ LIMIT 5
     },
 ];
 
-pub fn ad_hoc_olap_query_ids() -> impl Iterator<Item = &'static str> {
-    AD_HOC_OLAP_QUERIES.iter().map(|query| query.id)
+pub fn analytical_olap_query_ids() -> impl Iterator<Item = &'static str> {
+    ANALYTICAL_OLAP_QUERIES.iter().map(|query| query.id)
 }
 
-pub async fn ad_hoc_olap_fallback_pressure_workload_items(
+pub async fn analytical_olap_fallback_pressure_workload_items(
     root: &Path,
     config: SessionConfig,
 ) -> TpchWorkloadResult<Vec<NativeFallbackPressureWorkloadItem>> {
     let ctx = SessionContext::new_with_config(config);
     register_tpch_tables(&ctx, root).await?;
-    let mut items = Vec::with_capacity(AD_HOC_OLAP_QUERIES.len());
-    for query in AD_HOC_OLAP_QUERIES {
+    let mut items = Vec::with_capacity(ANALYTICAL_OLAP_QUERIES.len());
+    for query in ANALYTICAL_OLAP_QUERIES {
         let item = match ctx.sql(query.sql).await {
             Ok(df) => match df.create_physical_plan().await {
                 Ok(plan) => NativeFallbackPressureWorkloadItem::new(query.id, plan),
@@ -300,11 +300,11 @@ pub async fn ad_hoc_olap_fallback_pressure_workload_items(
     Ok(items)
 }
 
-pub async fn ad_hoc_olap_datafusion_planning_workload_items(
+pub async fn analytical_olap_datafusion_planning_workload_items(
     root: &Path,
     session_config: SessionConfig,
 ) -> TpchWorkloadResult<Vec<NativeDataFusionPlanningWorkloadItem>> {
-    ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config(
+    analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
         root,
         session_config,
         tpch_native_optimizer_config(),
@@ -312,7 +312,7 @@ pub async fn ad_hoc_olap_datafusion_planning_workload_items(
     .await
 }
 
-pub async fn ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_config(
+pub async fn analytical_olap_datafusion_planning_workload_items_with_optimizer_config(
     root: &Path,
     session_config: SessionConfig,
     optimizer_config: CudfOptimizerConfig,
@@ -325,8 +325,8 @@ pub async fn ad_hoc_olap_datafusion_planning_workload_items_with_optimizer_confi
     let ctx = SessionContext::new_with_state(state);
     register_tpch_tables(&ctx, root).await?;
 
-    let mut items = Vec::with_capacity(AD_HOC_OLAP_QUERIES.len());
-    for query in AD_HOC_OLAP_QUERIES {
+    let mut items = Vec::with_capacity(ANALYTICAL_OLAP_QUERIES.len());
+    for query in ANALYTICAL_OLAP_QUERIES {
         let item = match ctx.sql(query.sql).await {
             Ok(df) => match df.create_physical_plan().await {
                 Ok(plan) => match native_rule.last_planning_diagnostics() {

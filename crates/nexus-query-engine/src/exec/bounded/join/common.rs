@@ -257,7 +257,7 @@ pub(in crate::exec::bounded) fn trace_preflight_entry(
         return;
     }
     eprintln!(
-        "[bounded-join-materialize-trace] phase=preflight_entry caller={} execution_strategy={} node_id={} budget_bytes={} reserved_bytes={} remaining_bytes={} gather_map_bytes={} expected_output_rows={} left_rows={} left_bytes={} right_rows={} right_bytes={}",
+        "[bounded-join-materialize-trace] stage=preflight_entry caller={} execution_strategy={} node_id={} budget_bytes={} reserved_bytes={} remaining_bytes={} gather_map_bytes={} expected_output_rows={} left_rows={} left_bytes={} right_rows={} right_bytes={}",
         caller,
         execution_strategy,
         node_id,
@@ -283,7 +283,7 @@ pub(in crate::exec::bounded) fn trace_preflight_success(
         return;
     }
     eprintln!(
-        "[bounded-join-materialize-trace] phase=preflight_success caller={} node_id={} output_reservation_bytes={} reserved_bytes_now={} remaining_bytes_now={}",
+        "[bounded-join-materialize-trace] stage=preflight_success caller={} node_id={} output_reservation_bytes={} reserved_bytes_now={} remaining_bytes_now={}",
         caller,
         node_id,
         output_reservation_bytes,
@@ -302,7 +302,7 @@ pub(in crate::exec::bounded) fn trace_preflight_failed(
         return;
     }
     eprintln!(
-        "[bounded-join-materialize-trace] phase=preflight_failed caller={} node_id={} reserved_bytes_at_failure={} remaining_bytes_at_failure={} budget_bytes={} error_code={:?}",
+        "[bounded-join-materialize-trace] stage=preflight_failed caller={} node_id={} reserved_bytes_at_failure={} remaining_bytes_at_failure={} budget_bytes={} error_code={:?}",
         caller,
         node_id,
         reservations.reserved_bytes(),

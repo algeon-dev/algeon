@@ -635,7 +635,7 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &ExecutionContext, groups:
 
     let result = execute_query_plan(context, &plan).unwrap();
     let metrics = result.metrics();
-    if metrics.phase_c_memory_control_policy.as_str() == "bounded" {
+    if metrics.memory_control_policy.as_str() == "bounded" {
         let partial_strategy_rows = metrics
             .aggregate_strategy_decisions
             .iter()

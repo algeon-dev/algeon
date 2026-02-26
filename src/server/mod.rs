@@ -375,7 +375,7 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
 /// through `iceberg_datafusion::IcebergStaticTableProvider`, which has a real
 /// CPU Arrow reader, so the combination is production-supported. Without it
 /// the catalog still hands out the GPU-only `CudfIcebergTableProvider`, plain
-/// `ORDER BY` queries hit the Phase 1 leaf guard, and the warning is the only
+/// `ORDER BY` queries hit the Milestone 1 leaf guard, and the warning is the only
 /// surface that flags the misconfiguration.
 fn warn_if_testing_profile_active(config: &ServerConfig) {
     if !is_testing_profile_active(config) {

@@ -1,11 +1,11 @@
 use super::*;
 
 #[test]
-fn native_query_executes_phase2_scalar_expression_families() {
-    let dir = unique_temp_dir("nexus-query-engine-native-execution-phase2-scalars");
+fn native_query_executes_scalar_expression_families() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-scalars");
     let path = dir.join("tpch-like.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let projected_schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
         Field::new("order_mod", DataType::Int64, false),
@@ -133,7 +133,7 @@ fn native_query_executes_bitwise_scalar_expressions() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-bitwise-scalars");
     let path = dir.join("input.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![
         Field::new("flags", DataType::Int64, false),
         Field::new("flags_and", DataType::Int64, false),
@@ -254,11 +254,11 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
 }
 
 #[test]
-fn native_query_rejects_phase2_scalar_type_mismatch_before_cudf_execution() {
-    let dir = unique_temp_dir("nexus-query-engine-native-execution-phase2-type-reject");
+fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-type-reject");
     let path = dir.join("tpch-like.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("bad_like", DataType::Boolean, true)]));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
@@ -562,11 +562,11 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
 }
 
 #[test]
-fn native_query_rejects_unread_source_column_in_nested_phase2_scalar_before_cudf_execution() {
-    let dir = unique_temp_dir("nexus-query-engine-native-execution-phase2-source-column-reject");
+fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execution() {
+    let dir = unique_temp_dir("nexus-query-engine-native-execution-scalar_expression-source-column-reject");
     let path = dir.join("tpch-like.parquet");
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let input_schema = write_phase2_scalar_expression_parquet(&runtime, &path);
+    let input_schema = write_scalar_expression_parquet(&runtime, &path);
     let output_schema = Arc::new(Schema::new(vec![Field::new("status_label", DataType::Utf8, true)]));
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],

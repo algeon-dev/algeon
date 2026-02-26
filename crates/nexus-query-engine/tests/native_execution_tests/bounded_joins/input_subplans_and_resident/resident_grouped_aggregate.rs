@@ -29,7 +29,7 @@ fn bounded_native_query_executes_mixed_keyed_residual_join_with_grouped_aggregat
     let context = mixed_grouped_aggregate_execution_context(&runtime, 8 * 1024 * 1024 * 1024);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
+    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.reservation_denied_count, 0);

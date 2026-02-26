@@ -113,12 +113,12 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
         .with_unsupported_feature(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergDeleteFilesUnsupported,
             "delete-0001",
-            "position delete files require Phase 2 row-level semantics",
+            "position delete files require Milestone 2 row-level semantics",
         ))
         .with_unsupported_feature(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergObjectStoreReadUnsupported,
             "data-0001",
-            "s3 object-store reads are not represented by Phase A local source facts",
+            "s3 object-store reads are not represented by Milestone A local source facts",
         ));
 
     assert!(!plan.is_native_admissible());

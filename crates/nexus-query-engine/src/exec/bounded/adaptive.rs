@@ -1,8 +1,8 @@
 //! Adaptive bounded-pipeline execution facade.
 //!
-//! Phase E.5 adds the adaptive executor shell. The initial strategy is a
+//! Milestone E.5 adds the adaptive executor shell. The initial strategy is a
 //! conservative compiled-pipeline wrapper with adaptive labels and action
-//! accounting; richer runtime actions belong to later Phase E steps.
+//! accounting; richer runtime actions belong to later Milestone E steps.
 
 use super::{
     admission::{CapabilityFirstCandidateStatus, capability_first_bounded_pipeline_admission},

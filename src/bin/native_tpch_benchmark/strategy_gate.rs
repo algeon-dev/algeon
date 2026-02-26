@@ -19,7 +19,7 @@ pub(super) struct LargeKeyedJoinStrategyGateSummary {
 impl LargeKeyedJoinStrategyGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} reservation_denied_count={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
+            "[native_tpch_benchmark] stage=large_keyed_join_strategy_gate outcome=passed query_ids={} large_partitioned_sites={} large_fallback_one_shot_sites={} large_reusable_sites={} reservation_denied_count={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.large_partitioned_sites,
             self.large_fallback_one_shot_sites,
@@ -44,7 +44,7 @@ pub(super) struct Sf100BoundedReservationGateSummary {
 impl Sf100BoundedReservationGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=sf100_bounded_reservation_gate outcome=passed scope=q09_q18_q19_subset query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
+            "[native_tpch_benchmark] stage=sf100_bounded_reservation_gate outcome=passed scope=q09_q18_q19_subset query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.reservation_denied_count,
             self.reservation_live_peak_bytes,
@@ -68,7 +68,7 @@ pub(super) struct Sf100FullReservationHealthGateSummary {
 impl Sf100FullReservationHealthGateSummary {
     pub(super) fn progress_line(&self) -> String {
         format!(
-            "[native_tpch_benchmark] phase=sf100_full_reservation_health_gate outcome=passed scope=full_selected query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
+            "[native_tpch_benchmark] stage=sf100_full_reservation_health_gate outcome=passed scope=full_selected query_ids={} reservation_denied_count={} reservation_live_peak_bytes={} device_budget_bytes={} dynamic_filter_measured_reduction_statuses={} dynamic_filter_work_avoidance_statuses={} dynamic_filter_applied_without_work_avoidance_count={}",
             self.query_ids.join(","),
             self.reservation_denied_count,
             self.reservation_live_peak_bytes,

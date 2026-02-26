@@ -419,7 +419,7 @@ pub fn execute_query_plan_with_gpu_inputs(
             && plan_requires_datafusion_exact_statistical_order(plan),
     );
     let mut metrics = QueryMetrics {
-        phase_c_memory_control_policy: context.memory_control_policy(),
+        memory_control_policy: context.memory_control_policy(),
         execution_boundary_policy: context.boundary_policy(),
         ..Default::default()
     };

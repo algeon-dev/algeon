@@ -60,7 +60,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
 }
 
 #[test]
-fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_admission_uses_capability_proof() {
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission_uses_capability_proof() {
     let plan =
         keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
     let analysis = plan.capability_analysis();
@@ -84,7 +84,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_ad
 }
 
 #[test]
-fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_phase8_rejects_bad_subplan_locally() {
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_rejects_bad_subplan_locally() {
     let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,
     );

@@ -41,7 +41,7 @@ pub(crate) fn write_discounted_lineitem_parquet(path: &Path) -> Arc<Schema> {
     schema
 }
 
-pub(crate) fn write_phase2_scalar_expression_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
+pub(crate) fn write_scalar_expression_parquet(runtime: &cudf::Runtime, path: &std::path::Path) -> Arc<Schema> {
     let schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
         Field::new("shipdate", DataType::Date32, false),

@@ -77,7 +77,7 @@ const ADAPTIVE_RUNTIME_TERM_NEEDLES: &[(&str, &[&str])] = &[
 ];
 
 #[test]
-fn phase_e_bounded_direct_modules_have_explicit_ownership() {
+fn bounded_direct_modules_have_explicit_ownership() {
     let bounded_dir = repo_root().join("crates/nexus-query-engine/src/exec/bounded");
     let discovered = direct_module_names(&bounded_dir);
     let ownership = bounded_module_ownership();
@@ -90,7 +90,7 @@ fn phase_e_bounded_direct_modules_have_explicit_ownership() {
 }
 
 #[test]
-fn phase_e8_topology_executor_bridges_are_retired_from_the_runtime_tree() {
+fn adaptive_diagnostics_topology_executor_bridges_are_retired_from_the_runtime_tree() {
     let root = repo_root();
     for relative in RETIRED_TOPOLOGY_EXECUTOR_BRIDGES {
         let path = root.join(relative);
@@ -103,7 +103,7 @@ fn phase_e8_topology_executor_bridges_are_retired_from_the_runtime_tree() {
 }
 
 #[test]
-fn phase_e8_retired_whole_query_dispatch_entrypoints_do_not_reappear() {
+fn adaptive_diagnostics_retired_whole_query_dispatch_entrypoints_do_not_reappear() {
     let bounded_dir = repo_root().join("crates/nexus-query-engine/src/exec/bounded");
     let mut source = String::new();
     for file in source_files(&["crates/nexus-query-engine/src/exec/bounded"]) {
@@ -111,7 +111,11 @@ fn phase_e8_retired_whole_query_dispatch_entrypoints_do_not_reappear() {
         source.push('\n');
     }
 
-    assert!(bounded_dir.exists(), "{} must exist for Phase E.8 dispatch retirement checks", bounded_dir.display());
+    assert!(
+        bounded_dir.exists(),
+        "{} must exist for compiled pipeline dispatch retirement checks",
+        bounded_dir.display()
+    );
     for entrypoint in RETIRED_DISPATCH_ENTRYPOINTS {
         assert!(
             !source.contains(entrypoint),
@@ -121,7 +125,7 @@ fn phase_e8_retired_whole_query_dispatch_entrypoints_do_not_reappear() {
 }
 
 #[test]
-fn phase_e_strict_exports_use_strict_boundary_facade() {
+fn strict_exports_use_strict_boundary_facade() {
     let exec_mod = read_repo_file("crates/nexus-query-engine/src/exec/mod.rs");
 
     assert!(
@@ -135,7 +139,7 @@ fn phase_e_strict_exports_use_strict_boundary_facade() {
 }
 
 #[test]
-fn phase_e_strict_modules_do_not_import_adaptive_modules() {
+fn strict_modules_do_not_import_adaptive_modules() {
     for file in source_files(STRICT_SOURCE_ROOTS) {
         let source = read_file(&file);
         for needle in ADAPTIVE_IMPORT_NEEDLES {
@@ -149,7 +153,7 @@ fn phase_e_strict_modules_do_not_import_adaptive_modules() {
 }
 
 #[test]
-fn phase_e_strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_terms() {
+fn strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_terms() {
     let mut checked_files = source_files(STRICT_SOURCE_ROOTS);
     checked_files.extend(source_files(SHARED_MODE_AGNOSTIC_ROOTS));
     checked_files.sort();
@@ -187,14 +191,14 @@ fn phase_e_strict_and_shared_graph_modules_do_not_use_adaptive_runtime_contract_
 }
 
 #[test]
-fn phase_f3_strict_and_adaptive_facades_enter_through_capability_first_admission() {
+fn capability_first_admission_strict_and_adaptive_facades_enter_through_capability_first_admission() {
     let strict = read_repo_file("crates/nexus-query-engine/src/exec/bounded/strict.rs");
     let adaptive = read_repo_file("crates/nexus-query-engine/src/exec/bounded/adaptive.rs");
     let admission = read_repo_file("crates/nexus-query-engine/src/exec/bounded/admission.rs");
 
     assert!(
         admission.contains("CapabilityFirstPipelineAdmission"),
-        "Phase F.3 shared admission result must stay explicit"
+        "capability-first shared admission result must stay explicit"
     );
     assert!(
         strict.contains("capability_first_bounded_pipeline_admission"),
@@ -211,7 +215,7 @@ fn phase_f3_strict_and_adaptive_facades_enter_through_capability_first_admission
 }
 
 #[test]
-fn phase_f3_live_capability_first_paths_do_not_import_bounded_join_capability_bridges() {
+fn capability_first_admission_live_capability_first_paths_do_not_import_bounded_join_capability_bridges() {
     for relative in [
         "crates/nexus-query-engine/src/capability.rs",
         "crates/nexus-query-engine/src/capability/node.rs",
@@ -237,7 +241,7 @@ fn phase_f3_live_capability_first_paths_do_not_import_bounded_join_capability_br
 }
 
 #[test]
-fn phase_f4_family_recognizer_sources_are_deleted_or_demoted() {
+fn capability_first_cleanup_family_recognizer_sources_are_deleted_or_demoted() {
     let root = repo_root();
     for relative in RETIRED_BOUNDED_RECOGNIZER_SOURCES {
         let path = root.join(relative);
@@ -272,12 +276,12 @@ fn phase_f4_family_recognizer_sources_are_deleted_or_demoted() {
     let bounded_mod = read_repo_file("crates/nexus-query-engine/src/bounded.rs");
     assert!(
         !bounded_mod.contains("#![allow(dead_code)]"),
-        "bounded.rs must not keep a dead-code retirement shield after Phase F.4 recognizer deletion"
+        "bounded.rs must not keep a dead-code retirement shield after capability recognizer deletion"
     );
 }
 
 #[test]
-fn phase_f4_normal_execution_sources_do_not_reintroduce_family_path_types() {
+fn capability_first_cleanup_normal_execution_sources_do_not_reintroduce_family_path_types() {
     let mut source = String::new();
     for file in source_files(&["crates/nexus-query-engine/src", "src/planner/native"]) {
         source.push_str(&read_file(&file));
@@ -293,7 +297,7 @@ fn phase_f4_normal_execution_sources_do_not_reintroduce_family_path_types() {
 }
 
 #[test]
-fn phase_f5_rejection_facts_do_not_reintroduce_family_blocker_projection() {
+fn canonical_rejection_fact_rejection_facts_do_not_reintroduce_family_blocker_projection() {
     let mut source = String::new();
     for file in source_files(&["crates/nexus-query-engine/src/bounded", "crates/nexus-query-engine/src/exec/bounded"]) {
         source.push_str(&read_file(&file));
@@ -358,7 +362,7 @@ fn source_files(roots: &[&str]) -> Vec<PathBuf> {
     let mut files = Vec::new();
     for relative in roots {
         let path = root.join(relative);
-        assert!(path.exists(), "{} must exist for Phase E boundary checks", path.display());
+        assert!(path.exists(), "{} must exist for capability boundary checks", path.display());
         if path.is_dir() {
             collect_rs_files(&path, &mut files);
         } else {

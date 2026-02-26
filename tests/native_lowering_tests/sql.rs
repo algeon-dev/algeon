@@ -139,7 +139,7 @@ ORDER BY distinct_payload DESC, key ASC
 LIMIT 2
 ";
 
-pub(super) const SQL_PHASE2_FILTER_REQUIRED_COLUMNS_QUERY: &str = "
+pub(super) const SQL_SOURCE_COLUMN_FILTER_REQUIRED_COLUMNS_QUERY: &str = "
 SELECT key, SUM(m00 + m01) AS sum_x00
 FROM bench
 WHERE label IS NOT NULL
@@ -149,7 +149,7 @@ ORDER BY sum_x00 DESC, key ASC
 LIMIT 2
 ";
 
-pub(super) const SQL_PHASE2_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY: &str = "
+pub(super) const SQL_SOURCE_COLUMN_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY: &str = "
 SELECT key, SUM(x00) AS sum_x00
 FROM (
     SELECT key, CASE WHEN label IN ('a', 'b') THEN m00 ELSE m01 END AS x00
@@ -160,7 +160,7 @@ ORDER BY sum_x00 DESC, key ASC
 LIMIT 2
 ";
 
-pub(super) const SQL_PHASE2_AGGREGATE_ARGUMENT_REQUIRED_COLUMNS_QUERY: &str = "
+pub(super) const SQL_SOURCE_COLUMN_AGGREGATE_ARGUMENT_REQUIRED_COLUMNS_QUERY: &str = "
 SELECT key, SUM(CASE WHEN label LIKE 'a%' THEN m00 ELSE m01 END) AS sum_x00
 FROM bench
 GROUP BY key
@@ -168,7 +168,7 @@ ORDER BY sum_x00 DESC, key ASC
 LIMIT 2
 ";
 
-pub(super) const SQL_PHASE2_GROUP_REQUIRED_COLUMNS_QUERY: &str = "
+pub(super) const SQL_SOURCE_COLUMN_GROUP_REQUIRED_COLUMNS_QUERY: &str = "
 SELECT
     SUBSTRING(label FROM 1 FOR 1) AS label_prefix,
     EXTRACT(YEAR FROM shipdate) AS ship_year,
@@ -179,7 +179,7 @@ ORDER BY label_prefix ASC, ship_year ASC
 LIMIT 2
 ";
 
-pub(super) const SQL_PHASE2_PUSHED_PROJECTION_REQUIRED_COLUMNS_QUERY: &str = "
+pub(super) const SQL_SOURCE_COLUMN_PUSHED_PROJECTION_REQUIRED_COLUMNS_QUERY: &str = "
 SELECT label_prefix, ship_year, SUM(m00) AS sum_m00
 FROM (
     SELECT SUBSTRING(label FROM 1 FOR 1) AS label_prefix, EXTRACT(YEAR FROM shipdate) AS ship_year, m00

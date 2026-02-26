@@ -57,14 +57,14 @@ use crate::bounded_join_admission::{
 
 #[path = "pipeline_compiled_execution/admission.rs"]
 mod admission;
+#[path = "pipeline_compiled_execution/execution_modes.rs"]
+mod execution_modes;
 #[path = "pipeline_compiled_execution/fixtures_parquet.rs"]
 mod fixtures_parquet;
 #[path = "pipeline_compiled_execution/fixtures_plans.rs"]
 mod fixtures_plans;
 #[path = "pipeline_compiled_execution/gpu_execution.rs"]
 mod gpu_execution;
-#[path = "pipeline_compiled_execution/phase_e_modes.rs"]
-mod phase_e_modes;
 #[path = "pipeline_compiled_execution/scheduler.rs"]
 mod scheduler;
 #[path = "pipeline_compiled_execution/support.rs"]

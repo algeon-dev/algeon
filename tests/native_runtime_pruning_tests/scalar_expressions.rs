@@ -1,13 +1,13 @@
 use super::*;
 
 #[tokio::test]
-async fn native_runtime_phase2_scalar_expressions_match_cpu_and_collect_required_columns() {
-    let dir = unique_temp_dir("datafusion-nexus-native-runtime-phase2-scalars");
+async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_columns() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-scalar_expression-scalars");
     let path = dir.join("input.parquet");
-    write_phase2_scalar_input_parquet(&path);
+    write_scalar_expression_input_parquet(&path);
 
-    let cpu_batches = cpu_sql_output(&path, SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY).await;
-    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY).await;
+    let cpu_batches = cpu_sql_output(&path, SQL_SCALAR_EXPRESSIONS_QUERY).await;
+    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SCALAR_EXPRESSIONS_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
@@ -34,14 +34,13 @@ async fn native_runtime_phase2_scalar_expressions_match_cpu_and_collect_required
 }
 
 #[tokio::test]
-async fn native_runtime_phase2_nullable_scalar_expressions_match_cpu() {
-    let dir = unique_temp_dir("datafusion-nexus-native-runtime-phase2-nullable-scalars");
+async fn native_runtime_nullable_scalar_expressions_match_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-scalar_expression-nullable-scalars");
     let path = dir.join("input.parquet");
-    write_nullable_phase2_scalar_input_parquet(&path);
+    write_nullable_scalar_expression_input_parquet(&path);
 
-    let cpu_batches = cpu_sql_output(&path, SQL_PHASE2_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
-    let native_physical_plan =
-        sql_plan(&path, SessionConfig::new(), SQL_PHASE2_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
+    let cpu_batches = cpu_sql_output(&path, SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
+    let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
     let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
     let lowering = lower_physical_plan_to_native(native_physical_plan);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
@@ -69,31 +68,33 @@ async fn native_runtime_phase2_nullable_scalar_expressions_match_cpu() {
 }
 
 #[tokio::test]
-async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
+async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
     let cases = [
-        ("like", SQL_PHASE2_NULL_SEMANTICS_LIKE_QUERY),
-        ("substring", SQL_PHASE2_NULL_SEMANTICS_SUBSTRING_QUERY),
-        ("string-case", SQL_PHASE2_NULL_SEMANTICS_STRING_CASE_QUERY),
-        ("in-list", SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY),
-        ("case", SQL_PHASE2_NULL_SEMANTICS_CASE_QUERY),
-        ("case-no-else", SQL_PHASE2_NULL_SEMANTICS_CASE_NO_ELSE_QUERY),
-        ("extract", SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY),
-        ("interval", SQL_PHASE2_NULL_SEMANTICS_INTERVAL_QUERY),
-        ("modulo", SQL_PHASE2_NULL_SEMANTICS_MODULO_QUERY),
-        ("bitwise", SQL_PHASE7_BITWISE_SCALAR_QUERY),
-        ("is-null", SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY),
-        ("round", SQL_PHASE5_ROUND_SCALAR_QUERY),
-        ("abs", SQL_PHASE7_ABS_SCALAR_QUERY),
-        ("sqrt", SQL_PHASE2_SQRT_SCALAR_QUERY),
-        ("string-concat-operator", SQL_PHASE2_STRING_CONCAT_OPERATOR_QUERY),
-        ("null-aware-comparison", SQL_PHASE2_NULL_AWARE_COMPARISON_QUERY),
-        ("integer-to-timestamp-cast", SQL_PHASE2_INTEGER_TO_TIMESTAMP_CAST_QUERY),
+        ("like", SQL_NULL_SEMANTICS_LIKE_QUERY),
+        ("substring", SQL_NULL_SEMANTICS_SUBSTRING_QUERY),
+        ("string-case", SQL_NULL_SEMANTICS_STRING_CASE_QUERY),
+        ("in-list", SQL_NULL_SEMANTICS_IN_LIST_QUERY),
+        ("case", SQL_NULL_SEMANTICS_CASE_QUERY),
+        ("case-no-else", SQL_NULL_SEMANTICS_CASE_NO_ELSE_QUERY),
+        ("extract", SQL_NULL_SEMANTICS_EXTRACT_QUERY),
+        ("interval", SQL_NULL_SEMANTICS_INTERVAL_QUERY),
+        ("modulo", SQL_NULL_SEMANTICS_MODULO_QUERY),
+        ("bitwise", SQL_BITWISE_SCALAR_QUERY),
+        ("is-null", SQL_NULL_SEMANTICS_IS_NULL_QUERY),
+        ("round", SQL_ROUND_SCALAR_QUERY),
+        ("abs", SQL_ABS_SCALAR_QUERY),
+        ("sqrt", SQL_SQRT_SCALAR_QUERY),
+        ("string-concat-operator", SQL_STRING_CONCAT_OPERATOR_QUERY),
+        ("null-aware-comparison", SQL_NULL_AWARE_COMPARISON_QUERY),
+        ("integer-to-timestamp-cast", SQL_INTEGER_TO_TIMESTAMP_CAST_QUERY),
     ];
 
     for (name, sql) in cases {
-        let dir = unique_temp_dir(format!("datafusion-nexus-native-runtime-phase2-null-semantics-{name}").as_str());
+        let dir = unique_temp_dir(
+            format!("datafusion-nexus-native-runtime-scalar_expression-null-semantics-{name}").as_str(),
+        );
         let path = dir.join("input.parquet");
-        write_nullable_phase2_scalar_input_parquet(&path);
+        write_nullable_scalar_expression_input_parquet(&path);
 
         let cpu_batches = cpu_sql_output(&path, sql).await;
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
@@ -119,7 +120,7 @@ async fn native_runtime_phase2_null_semantics_match_cpu_by_expression_family() {
 }
 
 #[tokio::test]
-async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_execution() {
+async fn native_runtime_invalid_scalar_expressions_reject_before_native_execution() {
     for (name, sql) in [
         ("substring-zero-start", SQL_INVALID_SUBSTRING_ZERO_START_QUERY),
         ("substring-dynamic-start", SQL_INVALID_SUBSTRING_DYNAMIC_START_QUERY),
@@ -129,7 +130,7 @@ async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_e
     ] {
         let dir = unique_temp_dir(format!("datafusion-nexus-native-runtime-invalid-{name}").as_str());
         let path = dir.join("input.parquet");
-        write_phase2_scalar_input_parquet(&path);
+        write_scalar_expression_input_parquet(&path);
 
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let lowering = lower_physical_plan_to_native(native_physical_plan);
@@ -156,7 +157,7 @@ async fn native_runtime_invalid_phase2_scalar_expressions_reject_before_native_e
 async fn native_runtime_substring_max_start_length_one_is_in_contract() {
     let dir = unique_temp_dir("datafusion-nexus-native-runtime-substring-max-start-boundary");
     let path = dir.join("input.parquet");
-    write_phase2_scalar_input_parquet(&path);
+    write_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SUBSTRING_MAX_START_LENGTH_ONE_QUERY).await;
     let lowering = lower_physical_plan_to_native(native_physical_plan);

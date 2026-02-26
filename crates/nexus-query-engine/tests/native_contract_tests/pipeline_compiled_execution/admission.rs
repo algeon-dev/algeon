@@ -757,7 +757,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 }
 
 #[test]
-fn phase_f6_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
+fn strict_preflight_gap_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
         STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
         7,
@@ -834,7 +834,7 @@ fn d5_contract_report_rejects_unresolved_preflight_gate_labeled_exact() {
 }
 
 #[test]
-fn phase_f6_contract_report_rejects_hard_budgeted_quality_without_tracked_gap() {
+fn strict_preflight_gap_contract_report_rejects_hard_budgeted_quality_without_tracked_gap() {
     let invalid = d5_test_gate_row(
         ReservationKind::SourceRead,
         "source_read",

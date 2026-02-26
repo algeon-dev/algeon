@@ -19,7 +19,7 @@ fn large_keyed_join_strategy_gate_accepts_skip_cpu_sf100_matrix_report() {
     assert_eq!(summary.dynamic_filter_evidence.work_avoidance_statuses.get("unknown").copied(), Some(3));
     assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 0);
     assert_eq!(summary.query_ids, vec!["q03", "q04", "q07"]);
-    assert!(summary.progress_line().contains("phase=large_keyed_join_strategy_gate outcome=passed"));
+    assert!(summary.progress_line().contains("stage=large_keyed_join_strategy_gate outcome=passed"));
     assert!(summary.progress_line().contains("dynamic_filter_work_avoidance_statuses=unknown:3"));
     assert!(text.contains("\tcpu_failed\t"));
 }
@@ -126,7 +126,7 @@ fn sf100_bounded_reservation_gate_accepts_q09_q18_q19_skip_cpu_success() {
     assert_eq!(summary.device_budget_bytes, 94_489_280_512);
     assert_eq!(summary.dynamic_filter_evidence.measured_reduction_statuses.get("unknown").copied(), Some(3));
     assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 0);
-    assert!(summary.progress_line().contains("phase=sf100_bounded_reservation_gate outcome=passed"));
+    assert!(summary.progress_line().contains("stage=sf100_bounded_reservation_gate outcome=passed"));
     assert!(summary.progress_line().contains("scope=q09_q18_q19_subset"));
     assert!(summary.progress_line().contains("dynamic_filter_measured_reduction_statuses=unknown:3"));
 }
@@ -199,7 +199,7 @@ fn sf100_full_reservation_health_gate_accepts_all_zero_selected_workload() {
     assert_eq!(summary.device_budget_bytes, 94_489_280_512);
     assert_eq!(summary.dynamic_filter_evidence.work_avoidance_statuses.get("unknown").copied(), Some(4));
     assert_eq!(summary.dynamic_filter_evidence.applied_without_work_avoidance_count, 0);
-    assert!(summary.progress_line().contains("phase=sf100_full_reservation_health_gate outcome=passed"));
+    assert!(summary.progress_line().contains("stage=sf100_full_reservation_health_gate outcome=passed"));
     assert!(summary.progress_line().contains("scope=full_selected"));
 }
 

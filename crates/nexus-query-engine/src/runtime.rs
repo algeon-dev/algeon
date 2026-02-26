@@ -1004,7 +1004,7 @@ mod tests {
     }
 
     #[test]
-    fn source_fetch_config_defaults_match_phase5_contract() {
+    fn source_fetch_config_defaults_match_source_fetch_contract() {
         let config = SourceFetchConfig::default();
         assert_eq!(config.substrate, SourceFetchSubstrate::Auto);
         assert_eq!(config.host_fetch_budget_bytes, None);

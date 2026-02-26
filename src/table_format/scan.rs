@@ -1216,7 +1216,7 @@ impl fmt::Display for TableFormatScanDiagnostics {
     }
 }
 
-/// Resolved table-format scan facts consumed by later native lowering phases.
+/// Resolved table-format scan facts consumed by later native lowering stages.
 ///
 /// The plan is metadata-only: data files, delete files, projected columns, and
 /// pure-filter columns are facts for later source lowering. Unsupported

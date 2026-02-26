@@ -22,10 +22,10 @@ fn query_metrics_records_peak_device_memory_observation() {
 }
 
 #[test]
-fn query_metrics_phase_c_memory_control_defaults_are_zero() {
+fn query_metrics_memory_control_defaults_are_unbounded() {
     let metrics = QueryMetrics::default();
 
-    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "unbounded");
+    assert_eq!(metrics.memory_control_policy.as_str(), "unbounded");
     assert_eq!(metrics.reservation_requested_bytes, 0);
     assert_eq!(metrics.reservation_granted_bytes, 0);
     assert_eq!(metrics.reservation_live_peak_bytes, 0);

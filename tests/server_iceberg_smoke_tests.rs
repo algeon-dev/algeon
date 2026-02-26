@@ -14,7 +14,7 @@ use tonic::transport::Endpoint;
 
 const EXPECTED_TPCH_SF1_LINEITEM_ROWS: i64 = 6_001_215;
 
-/// Phase 1 backward-compatibility smoke test: bare alias via pre-declared
+/// Milestone 1 backward-compatibility smoke test: bare alias via pre-declared
 /// `DATAFUSION_NEXUS_ICEBERG_TABLES`.  Requires the full set of Iceberg env
 /// vars including `DATAFUSION_NEXUS_ICEBERG_TABLES` (or the legacy Glue alias).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -33,7 +33,7 @@ async fn glue_tpch_sf1_lineitem_count_via_flight_sql() {
     server.abort();
 }
 
-/// Phase 2 smoke test: three-part addressing via the dynamic Glue catalog
+/// Milestone 2 smoke test: three-part addressing via the dynamic Glue catalog
 /// provider, **without** pre-declaring any tables in `DATAFUSION_NEXUS_ICEBERG_TABLES`.
 ///
 /// Required env vars:
@@ -88,7 +88,7 @@ async fn glue_three_part_lineitem_count_dynamic_catalog() {
     server.abort();
 }
 
-/// Phase 2 + Phase 1 combined: pre-declared alias AND three-part real-name
+/// Milestone 2 + Milestone 1 combined: pre-declared alias AND three-part real-name
 /// both work in the same server instance.
 ///
 /// Requires `DATAFUSION_NEXUS_ICEBERG_TABLES=lineitem=tpch_sf1_lineitem` plus
@@ -109,11 +109,11 @@ async fn glue_bare_alias_and_three_part_address_both_work() {
     let server = tokio::spawn(async move { serve(config).await });
     let mut client = connect_with_retry(addr).await;
 
-    // Bare alias (Phase 1 backward compat).
+    // Bare alias (Milestone 1 backward compat).
     let bare_count = query_count(&mut client, "SELECT count(*) AS rc FROM lineitem").await;
     assert_eq!(bare_count, EXPECTED_TPCH_SF1_LINEITEM_ROWS, "bare alias count mismatch");
 
-    // Three-part real table name (Phase 2 dynamic catalog + startup seeding).
+    // Three-part real table name (Milestone 2 dynamic catalog + startup seeding).
     let three_part_count =
         query_count(&mut client, "SELECT count(*) AS rc FROM glue.demo_db.tpch_sf1_lineitem").await;
     assert_eq!(three_part_count, EXPECTED_TPCH_SF1_LINEITEM_ROWS, "three-part address count mismatch");

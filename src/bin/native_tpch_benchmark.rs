@@ -65,7 +65,7 @@ async fn main() -> DataFusionResult<()> {
         Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
         Ok(None) => {},
         Err(error) => {
-            eprintln!("[native_tpch_benchmark] phase=large_keyed_join_strategy_gate outcome=failed error={error}");
+            eprintln!("[native_tpch_benchmark] stage=large_keyed_join_strategy_gate outcome=failed error={error}");
             return Err(error);
         },
     }
@@ -73,7 +73,7 @@ async fn main() -> DataFusionResult<()> {
         Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
         Ok(None) => {},
         Err(error) => {
-            eprintln!("[native_tpch_benchmark] phase=sf100_bounded_reservation_gate outcome=failed error={error}");
+            eprintln!("[native_tpch_benchmark] stage=sf100_bounded_reservation_gate outcome=failed error={error}");
             return Err(error);
         },
     }
@@ -81,7 +81,7 @@ async fn main() -> DataFusionResult<()> {
         Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
         Ok(None) => {},
         Err(error) => {
-            eprintln!("[native_tpch_benchmark] phase=sf100_full_reservation_health_gate outcome=failed error={error}");
+            eprintln!("[native_tpch_benchmark] stage=sf100_full_reservation_health_gate outcome=failed error={error}");
             return Err(error);
         },
     }

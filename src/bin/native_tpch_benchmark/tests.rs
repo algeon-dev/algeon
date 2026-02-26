@@ -82,7 +82,7 @@ fn benchmark_query_progress_line_identifies_query_and_profile() {
 
     let line = benchmark_query_progress_line(&config, query, 2, 3);
 
-    assert!(line.starts_with("[native_tpch_benchmark] phase=query_start query=q07 index=3/3"));
+    assert!(line.starts_with("[native_tpch_benchmark] stage=query_start query=q07 index=3/3"));
     assert!(line.contains("dataset_mode=sf100_external"));
     assert!(line.contains("execution_mode=strict_bounded"));
     assert!(line.contains("memory_policy=bounded"));

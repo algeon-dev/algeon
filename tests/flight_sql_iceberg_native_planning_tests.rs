@@ -1,4 +1,4 @@
-//! Phase 3 regression tests for the Flight SQL Iceberg fallback fix
+//! Milestone 3 regression tests for the Flight SQL Iceberg fallback fix
 //! (`docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md`).
 //!
 //! These tests pin the exact regression surface for two scenarios:
@@ -9,7 +9,7 @@
 //! - Under a CPU-style session profile that re-enables DataFusion
 //!   repartitioning, the same `GROUP BY ... ORDER BY` shape is rejected by
 //!   native lowering (full `SortPreservingMergeExec` unsupported) and the
-//!   leftover GPU-only leaf is caught by the Phase 1 leaf guard before
+//!   leftover GPU-only leaf is caught by the Milestone 1 leaf guard before
 //!   `execute()`.
 //! - A leaf-guard unit test asserts that a leftover `CudfTableFormatScanExec`
 //!   beneath a non-rewritable wrapper produces the structured
@@ -82,11 +82,11 @@ async fn native_profile_iceberg_join_group_by_order_by_rewrites_with_no_leftover
 
 #[tokio::test]
 async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
-    // The CPU-style profile mirrors the pre-Phase-2 audit scenario: DataFusion
+    // The CPU-style profile mirrors the pre-Milestone-2 audit scenario: DataFusion
     // is allowed to repartition sorts so an unbounded GROUP BY + ORDER BY plan
     // produces a root SortPreservingMergeExec over the GPU-only
     // CudfTableFormatScanExec. The native rule rejects the full SPM shape, and
-    // the Phase 1 leaf guard converts the leftover leaf into a structured
+    // the Milestone 1 leaf guard converts the leftover leaf into a structured
     // planning error so DataFusion never reaches the leaf's placeholder
     // execute() failure.
     let plan = native_admissible_scan_plan(iceberg_test_schema());
@@ -108,7 +108,7 @@ async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
     assert_eq!(facts.get("table_format").map(String::as_str), Some("iceberg"), "facts={facts:?}");
     assert_eq!(facts.get("cpu_arrow_reader_fallback").map(String::as_str), Some("false"), "facts={facts:?}");
 
-    // Phase 1 quotes the first native rejection reason when the guard fires
+    // Milestone 1 quotes the first native rejection reason when the guard fires
     // after a native rejection. Under the CPU-style profile the root is a full
     // SortPreservingMergeExec which the native rule rejects with
     // `native_sort_preserving_merge_unsupported`.
@@ -127,8 +127,8 @@ async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
 
 #[tokio::test]
 async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
-    // Phase 4 ships a Flight SQL diagnostics helper that the server uses to
-    // emit a `tracing::warn!` line when a query fails because the Phase 1
+    // Milestone 4 ships a Flight SQL diagnostics helper that the server uses to
+    // emit a `tracing::warn!` line when a query fails because the Milestone 1
     // GPU-only leaf guard fired. The macro itself is hard to assert on
     // without a tracing-subscriber, but the helper is a thin wrapper around
     // `log_leaf_guard_rejection` which calls a `pub(crate)`
@@ -158,7 +158,7 @@ async fn cpu_style_profile_rejection_is_recognised_by_diagnostics_helper() {
 
 #[test]
 fn leaf_guard_rejects_leftover_table_format_scan_under_unsupported_wrapper() {
-    // The Phase 1 leaf guard is a `PhysicalOptimizerRule` that runs after the
+    // The Milestone 1 leaf guard is a `PhysicalOptimizerRule` that runs after the
     // native rewrite. This test exercises it directly with a non-rewritable
     // wrapper around a CudfTableFormatScanExec so the leaf survives any
     // upstream rewrite attempt. The wrapper here is a SortPreservingMergeExec
@@ -252,7 +252,7 @@ fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
     }
 }
 
-/// Phase 3 requires the *entire* native-friendly query shape to lower into a
+/// Milestone 3 requires the *entire* native-friendly query shape to lower into a
 /// single native pipeline rather than only rewriting the source leaf. The
 /// optimizer rule does this by replacing the accepted subtree's root with a
 /// [`NativeCudfExec`]; everything between that root and DataFusion's
@@ -264,7 +264,7 @@ fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
 /// boundary, then (2) verifies no aggregate / sort / join / repartition /
 /// SortPreservingMergeExec node is sitting above that boundary. A surviving
 /// `AggregateExec` or `SortPreservingMergeExec` would mean the native rule
-/// only consumed the leaf — that is exactly the regression Phase 3 pins.
+/// only consumed the leaf — that is exactly the regression Milestone 3 pins.
 fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
     let rendered = displayable(plan).indent(false).to_string();
     let native_root = find_native_cudf_exec_root(plan).unwrap_or_else(|| {
@@ -394,7 +394,7 @@ impl TableFormatPlanner for RecordingPlanner {
     }
 }
 
-// Phase 1 retained a sibling reference on the leaf guard so emitted facts can
+// Milestone 1 retained a sibling reference on the leaf guard so emitted facts can
 // quote the first native rejection. The `last_report` accessor is the dependency
 // the guard reads at fire time; the assertion below pins the source of truth so
 // future refactors that drop the accessor surface in CI.

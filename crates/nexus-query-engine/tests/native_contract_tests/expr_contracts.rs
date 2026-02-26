@@ -15,7 +15,7 @@ fn native_expr_can_represent_numeric_cast() {
 }
 
 #[test]
-fn native_expr_can_represent_phase2_core_expression_surface() {
+fn native_expr_can_represent_core_expression_surface() {
     let modulo = Expr::binary(Expr::column("payload"), BinaryOp::Modulo, Expr::literal(LiteralValue::Int64(10)));
     let bitwise_and = Expr::binary(Expr::column("flags"), BinaryOp::BitwiseAnd, Expr::literal(LiteralValue::Int64(3)));
     let bitwise_or = Expr::binary(Expr::column("flags"), BinaryOp::BitwiseOr, Expr::literal(LiteralValue::Int64(8)));

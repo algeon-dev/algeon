@@ -121,7 +121,7 @@ fn grouped_partial_with_zero_input_rows_returns_offset_only_bound_for_strings() 
 #[test]
 fn unsupported_partial_column_dtype_is_rejected() {
     // Binary and nested dtypes are not supported by the strict-bounded
-    // materialize sizing path. Phase 4.D's admission gate (`capability/node.rs
+    // materialize sizing path. Milestone 4.D's admission gate (`capability/node.rs
     // join_node_executable_decision` dtype loop) is expected to reject plans
     // that project these into the partial state, but the helper is the
     // defense-in-depth.

@@ -13,7 +13,7 @@
 //!   server's log filter to `debug` and get one line per statement without
 //!   recompiling.
 //! - [`log_leaf_guard_rejection`] writes a `tracing::warn!` line when planning
-//!   fails because the Phase 1 GPU-only leaf guard fired. The line quotes the
+//!   fails because the Milestone 1 GPU-only leaf guard fired. The line quotes the
 //!   structured facts attached to the guard's [`crate::Error`] (fallback
 //!   reason, first native rejection, physical plan shape, table format, …) so
 //!   the immediate audit follow-up — "what was the planner trying to lower?" —
@@ -21,7 +21,7 @@
 //!
 //! The fifth public surface is [`FlightSqlNativeRejectClass`], which buckets
 //! [`FallbackReason`] codes into the four common Flight SQL rejection classes
-//! the Phase 4 plan calls out plus a residual `Other` bucket. The bucket label
+//! the Milestone 4 plan calls out plus a residual `Other` bucket. The bucket label
 //! goes onto every log line so an operator can grep for one keyword instead of
 //! enumerating every reject code variant.
 
@@ -52,7 +52,7 @@ const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profil
 
 /// Stable bucket for common Flight SQL native-rejection codes.
 ///
-/// The four named variants correspond to the rejection reasons the Phase 4
+/// The four named variants correspond to the rejection reasons the Milestone 4
 /// plan explicitly listed as common when serving Iceberg-backed Flight SQL
 /// queries. Anything else collapses into [`FlightSqlNativeRejectClass::Other`]
 /// so log queries can grep by class without enumerating the full set of
@@ -131,7 +131,7 @@ pub fn log_native_planning_report(query_id: &str, report: Option<&PlanningReport
     );
 }
 
-/// Emit a `tracing::warn!` line when planning fails because the Phase 1
+/// Emit a `tracing::warn!` line when planning fails because the Milestone 1
 /// GPU-only leaf guard fired.
 ///
 /// The function walks the [`DataFusionError`] looking for an adapter
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn leaf_guard_event_fields_defaults_missing_first_native_rejection_to_empty() {
-        // The Phase 1 guard skips the `first_native_rejection` fact when the
+        // The Milestone 1 guard skips the `first_native_rejection` fact when the
         // native rule did not produce a rejection — for example when the leaf
         // survives because an unrelated optimizer rule wrapped it without the
         // native rule ever being invoked.

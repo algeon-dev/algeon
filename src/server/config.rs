@@ -147,7 +147,7 @@ pub enum ServerSessionProfile {
     /// **Without `iceberg-cpu` the Iceberg pairing is testing-only.** The
     /// catalog still hands out the GPU-only `CudfTableFormatScanExec` leaf
     /// which has no CPU `execute()`, so plain `ORDER BY` queries hit the
-    /// Phase 1 leaf guard and fail in planning. The server emits a startup
+    /// Milestone 1 leaf guard and fail in planning. The server emits a startup
     /// WARN flagging this combination; the WARN goes away once `iceberg-cpu`
     /// is compiled in.
     ///
@@ -489,7 +489,7 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
     // Backend-neutral DATAFUSION_NEXUS_ICEBERG_TABLES takes precedence; fall
     // back to the Glue-specific DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES alias.
     // When neither is set the dynamic catalog serves all tables and aliases
-    // are not required (empty vec is valid in Phase 2).
+    // are not required (empty vec is valid in Milestone 2).
     let raw_tables = values
         .string(DATAFUSION_NEXUS_ICEBERG_TABLES_ENV)
         .or_else(|| values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV));

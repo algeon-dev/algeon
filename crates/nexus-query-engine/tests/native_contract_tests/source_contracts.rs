@@ -11,8 +11,8 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     ]));
     let source = LocalParquetSource::from_files(
         vec![
-            LocalParquetFile::new("/tmp/phase4.parquet")
-                .with_stable_id("phase4:3235196281")
+            LocalParquetFile::new("/tmp/source-contract.parquet")
+                .with_stable_id("source_contract:3235196281")
                 .with_file_size_bytes(3_235_196_281)
                 .with_row_groups(vec![0, 2, 4])
                 .with_row_group_bytes(vec![10, 20, 30, 40, 50]),
@@ -23,7 +23,7 @@ fn local_parquet_source_tracks_direct_source_diagnostics() {
     .with_column_roles(vec!["key".to_string()], vec!["payload".to_string()]);
 
     validate_local_parquet_source(&source).unwrap();
-    assert_eq!(source.files[0].stable_id, "phase4:3235196281");
+    assert_eq!(source.files[0].stable_id, "source_contract:3235196281");
     assert!(source.is_direct_device_read());
     assert_eq!(source.read_column_count(), 2);
     assert_eq!(source.read_column_file_indices, vec![0, 1]);
@@ -170,7 +170,7 @@ fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals()
 fn local_parquet_source_represents_order_insensitive_scan_limit() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_group_rows(vec![5, 7])],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_row_group_rows(vec![5, 7])],
         schema,
         vec!["key".to_string()],
     )
@@ -190,7 +190,7 @@ fn local_parquet_source_represents_partition_columns_as_synthetic_source_columns
         Field::new("part", DataType::Int32, false),
     ]));
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_partition_values(vec![LiteralValue::Int32(7)])],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_partition_values(vec![LiteralValue::Int32(7)])],
         schema,
         vec!["key".to_string(), "payload".to_string()],
     )
@@ -216,7 +216,7 @@ fn local_parquet_source_represents_missing_nullable_columns_as_typed_nulls() {
         Field::new("missing_payload", DataType::Int64, true),
     ]));
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_group_rows(vec![3, 4])],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_row_group_rows(vec![3, 4])],
         schema,
         vec!["key".to_string()],
     )
@@ -241,7 +241,7 @@ fn local_parquet_source_rejects_non_nullable_missing_columns() {
         Field::new("missing_payload", DataType::Int64, false),
     ]));
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_group_rows(vec![3])],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_row_group_rows(vec![3])],
         schema,
         vec!["key".to_string()],
     )
@@ -261,7 +261,7 @@ fn local_parquet_source_rejects_invalid_partition_column_contracts() {
         Field::new("part", DataType::Int32, false),
     ]));
     let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet")],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet")],
         Arc::clone(&schema),
         vec!["key".to_string()],
     )
@@ -273,7 +273,7 @@ fn local_parquet_source_rejects_invalid_partition_column_contracts() {
     assert_eq!(error.fact_value("partition_values"), Some("0"));
 
     let wrong_type = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_partition_values(vec![LiteralValue::Int64(7)])],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_partition_values(vec![LiteralValue::Int64(7)])],
         schema,
         vec!["key".to_string()],
     )
@@ -292,7 +292,7 @@ fn local_parquet_source_rejects_null_partition_value_for_non_nullable_column() {
     ]));
     let source = LocalParquetSource::from_files(
         vec![
-            LocalParquetFile::new("/tmp/phase4.parquet")
+            LocalParquetFile::new("/tmp/source-contract.parquet")
                 .with_partition_values(vec![LiteralValue::Null(DataType::Int32)]),
         ],
         schema,
@@ -348,7 +348,7 @@ fn source_disposition_names_are_stable_manifest_values() {
 #[test]
 fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
-    let empty_columns = LocalParquetSource::new("/tmp/phase4.parquet", Arc::clone(&schema), Vec::new());
+    let empty_columns = LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), Vec::new());
 
     let error = validate_local_parquet_source(&empty_columns).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
@@ -357,7 +357,7 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
     assert!(empty_columns.diagnostics.rejected_features.iter().any(|feature| feature.as_str() == "zero_column_count"));
 
     let overflow_row_group = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new("/tmp/phase4.parquet").with_row_groups(vec![usize::MAX])],
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_row_groups(vec![usize::MAX])],
         schema,
         vec!["key".to_string()],
     );
@@ -371,8 +371,8 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
 #[test]
 fn zero_column_count_source_contract_is_represented_without_data_columns() {
     let source = LocalParquetSource::zero_column_count(vec![
-        LocalParquetFile::new("/tmp/phase4.parquet")
-            .with_stable_id("phase4:count")
+        LocalParquetFile::new("/tmp/source-contract.parquet")
+            .with_stable_id("source_contract:count")
             .with_file_size_bytes(300)
             .with_row_groups(vec![0, 2])
             .with_row_group_rows(vec![10, 20, 30]),
@@ -398,7 +398,7 @@ fn zero_column_count_source_contract_is_represented_without_data_columns() {
 #[test]
 fn local_parquet_source_validation_rejects_unhonorable_source_facts_before_execution() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
-    let base = LocalParquetSource::new("/tmp/phase4.parquet", Arc::clone(&schema), vec!["key".to_string()]);
+    let base = LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), vec!["key".to_string()]);
 
     let mut rejected_byte_range = base.clone();
     rejected_byte_range.diagnostics.byte_range_disposition = ByteRangeDisposition::Rejected;
@@ -441,7 +441,7 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     ]));
 
     let mut missing_projected_read =
-        LocalParquetSource::new("/tmp/phase4.parquet", two_column_schema, vec!["key".to_string()])
+        LocalParquetSource::new("/tmp/source-contract.parquet", two_column_schema, vec!["key".to_string()])
             .with_column_roles(vec!["payload".to_string()], Vec::new());
     missing_projected_read.diagnostics.rejected_features.clear();
     missing_projected_read.diagnostics.direct_device_read = true;
@@ -452,7 +452,7 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     assert_eq!(error.fact_value("column"), Some("payload"));
 
     let mut mismatched_diagnostics =
-        LocalParquetSource::new("/tmp/phase4.parquet", Arc::clone(&schema), vec!["key".to_string()]);
+        LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), vec!["key".to_string()]);
     mismatched_diagnostics.diagnostics.read_column_count = 2;
     let error = validate_local_parquet_source(&mismatched_diagnostics).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("diagnostic_column_count_mismatch"));
@@ -460,7 +460,7 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
     assert_eq!(error.fact_value("read_columns"), Some("1"));
 
     let missing_schema_mapping =
-        LocalParquetSource::new("/tmp/phase4.parquet", Arc::clone(&schema), vec!["missing".to_string()]);
+        LocalParquetSource::new("/tmp/source-contract.parquet", Arc::clone(&schema), vec!["missing".to_string()]);
     assert_eq!(missing_schema_mapping.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::Rejected);
     let error = validate_local_parquet_source(&missing_schema_mapping).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("rejected_source_features"));
@@ -468,7 +468,7 @@ fn local_parquet_source_validation_rejects_inconsistent_column_and_row_group_con
 
     let row_group_outside_contract = LocalParquetSource::from_files(
         vec![
-            LocalParquetFile::new("/tmp/phase4.parquet")
+            LocalParquetFile::new("/tmp/source-contract.parquet")
                 .with_row_groups(vec![0, 2])
                 .with_row_group_bytes(vec![100, 200]),
         ],

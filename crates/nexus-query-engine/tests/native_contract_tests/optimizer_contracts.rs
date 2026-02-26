@@ -17,7 +17,7 @@ use nexus_query_engine::{
 use super::*;
 
 #[test]
-fn native_optimizer_phase1_semijoin_entry_point_returns_unchanged_plan_and_empty_diagnostics() {
+fn native_optimizer_semijoin_entry_point_returns_unchanged_plan_and_empty_diagnostics() {
     let plan = single_source_plan();
 
     let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
@@ -96,7 +96,7 @@ fn projection_simplification_options_and_rule_name_are_stable() {
 }
 
 #[test]
-fn semijoin_reduction_phase1_options_and_rule_name_are_stable() {
+fn semijoin_reduction_options_and_rule_name_are_stable() {
     assert_eq!(SEMIJOIN_REDUCTION_RULE_NAME, "semijoin_reduction");
     assert!(SemijoinReductionOptions::default().enabled);
     assert_eq!(

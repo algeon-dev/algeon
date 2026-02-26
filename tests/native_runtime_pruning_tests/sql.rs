@@ -126,7 +126,7 @@ WHERE l_shipdate >= DATE '1994-01-01'
   AND l_shipdate < DATE '1995-01-01'
 ";
 
-pub(super) const SQL_PHASE2_SCALAR_EXPRESSIONS_QUERY: &str = "
+pub(super) const SQL_SCALAR_EXPRESSIONS_QUERY: &str = "
 SELECT status_prefix, ship_year, ship_month, status_label, SUM(order_mod) AS sum_mod
 FROM (
     SELECT
@@ -140,13 +140,13 @@ FROM (
       AND status IS NOT NULL
       AND orderkey IN (1, 3)
       AND orderkey % 2 = 1
-) phase2
+) scalar_expression
 GROUP BY status_prefix, ship_year, ship_month, status_label
 ORDER BY status_prefix ASC, ship_year ASC, ship_month ASC, status_label ASC
 LIMIT 10
 ";
 
-pub(super) const SQL_PHASE2_NULLABLE_SCALAR_EXPRESSIONS_QUERY: &str = "
+pub(super) const SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY: &str = "
 SELECT
     status_prefix,
     ship_year,
@@ -176,7 +176,7 @@ FROM (
         status IS NOT NULL AS status_is_not_null,
         orderkey % 2 AS order_mod
     FROM bench
-) phase2
+) scalar_expression
 GROUP BY
     status_prefix,
     ship_year,
@@ -197,7 +197,7 @@ ORDER BY
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_LIKE_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_LIKE_QUERY: &str = "
 SELECT row_id, like_match, not_like_match, COUNT(*) AS row_count
 FROM (
     SELECT row_id, status LIKE 'O%' AS like_match, status NOT LIKE 'O%' AS not_like_match
@@ -208,7 +208,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_SUBSTRING_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_SUBSTRING_QUERY: &str = "
 SELECT row_id, status_prefix, COUNT(*) AS row_count
 FROM (
     SELECT row_id, SUBSTRING(status FROM 1 FOR 1) AS status_prefix
@@ -219,7 +219,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_STRING_CASE_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_STRING_CASE_QUERY: &str = "
 SELECT row_id, status_lower, status_upper, COUNT(*) AS row_count
 FROM (
     SELECT row_id, LOWER(status) AS status_lower, UPPER(status) AS status_upper
@@ -230,7 +230,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_IN_LIST_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_IN_LIST_QUERY: &str = "
 SELECT row_id, status_in_list, status_not_in_list, COUNT(*) AS row_count
 FROM (
     SELECT row_id, status IN ('O', 'P') AS status_in_list, status NOT IN ('F') AS status_not_in_list
@@ -241,7 +241,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_CASE_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_CASE_QUERY: &str = "
 SELECT row_id, status_label, COUNT(*) AS row_count
 FROM (
     SELECT
@@ -258,7 +258,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_CASE_NO_ELSE_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_CASE_NO_ELSE_QUERY: &str = "
 SELECT row_id, open_code, COUNT(*) AS row_count
 FROM (
     SELECT row_id, CASE WHEN status = 'O' THEN 1 END AS open_code
@@ -269,7 +269,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_EXTRACT_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_EXTRACT_QUERY: &str = "
 SELECT row_id, ship_year, ship_month, ship_day, COUNT(*) AS row_count
 FROM (
     SELECT
@@ -284,7 +284,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_INTERVAL_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_INTERVAL_QUERY: &str = "
 SELECT row_id, shipdate_plus_month, shipdate_minus_day, event_ts_plus_second, event_ts_minus_second, COUNT(*) AS row_count
 FROM (
     SELECT
@@ -300,7 +300,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_MODULO_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_MODULO_QUERY: &str = "
 SELECT row_id, order_mod, COUNT(*) AS row_count
 FROM (
     SELECT row_id, orderkey % 2 AS order_mod
@@ -311,7 +311,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE7_BITWISE_SCALAR_QUERY: &str = "
+pub(super) const SQL_BITWISE_SCALAR_QUERY: &str = "
 SELECT row_id, flags_and, flags_or, flags_shift_left, flags_shift_right, flags_grouping, COUNT(*) AS row_count
 FROM (
     SELECT
@@ -328,7 +328,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_SEMANTICS_IS_NULL_QUERY: &str = "
+pub(super) const SQL_NULL_SEMANTICS_IS_NULL_QUERY: &str = "
 SELECT row_id, status_is_null, status_is_not_null, shipdate_is_null, COUNT(*) AS row_count
 FROM (
     SELECT
@@ -343,7 +343,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE5_ROUND_SCALAR_QUERY: &str = "
+pub(super) const SQL_ROUND_SCALAR_QUERY: &str = "
 SELECT row_id, rounded_orderkey, COUNT(*) AS row_count
 FROM (
     SELECT row_id, ROUND(CAST(orderkey AS DOUBLE) + 0.5, 0) AS rounded_orderkey
@@ -354,7 +354,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE7_ABS_SCALAR_QUERY: &str = "
+pub(super) const SQL_ABS_SCALAR_QUERY: &str = "
 SELECT row_id, abs_order_delta, COUNT(*) AS row_count
 FROM (
     SELECT row_id, ABS(CAST(orderkey AS DOUBLE) - 4.5) AS abs_order_delta
@@ -365,7 +365,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_SQRT_SCALAR_QUERY: &str = "
+pub(super) const SQL_SQRT_SCALAR_QUERY: &str = "
 SELECT row_id, root_orderkey, COUNT(*) AS row_count
 FROM (
     SELECT row_id, SQRT(CAST(orderkey AS DOUBLE)) AS root_orderkey
@@ -376,7 +376,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_STRING_CONCAT_OPERATOR_QUERY: &str = "
+pub(super) const SQL_STRING_CONCAT_OPERATOR_QUERY: &str = "
 SELECT row_id, status_label, COUNT(*) AS row_count
 FROM (
     SELECT row_id, status || '-x' AS status_label
@@ -387,7 +387,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_NULL_AWARE_COMPARISON_QUERY: &str = "
+pub(super) const SQL_NULL_AWARE_COMPARISON_QUERY: &str = "
 SELECT row_id, status_distinct, status_not_distinct, COUNT(*) AS row_count
 FROM (
     SELECT
@@ -401,7 +401,7 @@ ORDER BY row_id ASC
 LIMIT 20
 ";
 
-pub(super) const SQL_PHASE2_INTEGER_TO_TIMESTAMP_CAST_QUERY: &str = "
+pub(super) const SQL_INTEGER_TO_TIMESTAMP_CAST_QUERY: &str = "
 SELECT row_id, order_ts, COUNT(*) AS row_count
 FROM (
     SELECT row_id, CAST(orderkey AS TIMESTAMP) AS order_ts

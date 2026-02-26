@@ -129,11 +129,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     }
 
     fn resource_admission_estimate_bytes(&self, resource: &CompiledGpuResource) -> u64 {
-        // Per Phase 4.B / design v5: scheduler admission consumes the
+        // Per Milestone 4.B / design v5: scheduler admission consumes the
         // worst-case-per-step footprint, not the aggregate. For
         // Vec-backed payloads this equals `aggregate_reservation_bytes`
         // because the consumer holds every frame simultaneously; for
-        // lazy producers (Phase 4.E.3a onward) this is the max
+        // lazy producers (Milestone 4.E.3a onward) this is the max
         // per-partition upper bound.
         match &resource.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),

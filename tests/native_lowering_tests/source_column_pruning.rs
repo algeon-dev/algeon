@@ -67,11 +67,12 @@ fn pushed_scan_projection_reads_only_downstream_required_columns() {
 }
 
 #[tokio::test]
-async fn phase2_filter_predicate_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-filter-columns");
+async fn scalar_expression_filter_predicate_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scalar_expression-filter-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
-    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_FILTER_REQUIRED_COLUMNS_QUERY).await;
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_FILTER_REQUIRED_COLUMNS_QUERY).await;
 
     let result = lower_physical_plan_to_native(plan);
 
@@ -91,12 +92,13 @@ async fn phase2_filter_predicate_required_source_columns_are_exact() {
 }
 
 #[tokio::test]
-async fn phase2_pre_aggregate_projection_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-pre-projection-columns");
+async fn scalar_expression_pre_aggregate_projection_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scalar_expression-pre-projection-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan =
-        sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY).await;
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_PRE_PROJECTION_REQUIRED_COLUMNS_QUERY)
+            .await;
 
     let result = lower_physical_plan_to_native(plan);
 
@@ -113,13 +115,16 @@ async fn phase2_pre_aggregate_projection_required_source_columns_are_exact() {
 }
 
 #[tokio::test]
-async fn phase2_aggregate_argument_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-aggregate-argument-columns");
+async fn scalar_expression_aggregate_argument_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scalar_expression-aggregate-argument-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
-    let plan =
-        sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_AGGREGATE_ARGUMENT_REQUIRED_COLUMNS_QUERY)
-            .await;
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        SQL_SOURCE_COLUMN_AGGREGATE_ARGUMENT_REQUIRED_COLUMNS_QUERY,
+    )
+    .await;
 
     let result = lower_physical_plan_to_native(plan);
 
@@ -139,11 +144,12 @@ async fn phase2_aggregate_argument_required_source_columns_are_exact() {
 }
 
 #[tokio::test]
-async fn phase2_group_expression_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-group-expression-columns");
+async fn scalar_expression_group_expression_required_source_columns_are_exact() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scalar_expression-group-expression-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
-    let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_GROUP_REQUIRED_COLUMNS_QUERY).await;
+    let plan =
+        sql_plan(&path, direct_friendly_sql_session_config(), SQL_SOURCE_COLUMN_GROUP_REQUIRED_COLUMNS_QUERY).await;
 
     let result = lower_physical_plan_to_native(plan);
 
@@ -159,13 +165,16 @@ async fn phase2_group_expression_required_source_columns_are_exact() {
 }
 
 #[tokio::test]
-async fn pushed_scan_projection_prunes_payload_for_nested_phase2_scalars() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-scan-projection-columns");
+async fn pushed_scan_projection_prunes_payload_for_nested_scalar_expression_scalars() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scalar_expression-scan-projection-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
-    let plan =
-        sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_PUSHED_PROJECTION_REQUIRED_COLUMNS_QUERY)
-            .await;
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        SQL_SOURCE_COLUMN_PUSHED_PROJECTION_REQUIRED_COLUMNS_QUERY,
+    )
+    .await;
 
     let result = lower_physical_plan_to_native(plan);
 

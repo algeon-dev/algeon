@@ -159,7 +159,7 @@ fn cpu_runtime_failure_preserves_adapter_error_facts() {
         "cpu collection failed",
     )
     .with_fact("query_id", "q01")
-    .with_fact("phase", "collect");
+    .with_fact("stage", "collect");
     let datafusion_error = DataFusionError::from(adapter_error);
     let details = execution::FailureDetails::from_datafusion_error(&datafusion_error);
     let row = NativeTpchBenchmarkRow::accepted(
@@ -189,6 +189,6 @@ fn cpu_runtime_failure_preserves_adapter_error_facts() {
     assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_kind")], "planning");
     assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_status")], "permanent");
     assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_operation")], "datafusion_nexus.cpu_collect");
-    assert!(facts.contains("phase=collect"));
+    assert!(facts.contains("stage=collect"));
     assert!(facts.contains("query_id=q01"));
 }

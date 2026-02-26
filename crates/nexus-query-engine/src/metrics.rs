@@ -234,8 +234,8 @@ pub struct QueryMetrics {
     pub dynamic_filter_runtime_rows: Vec<DynamicFilterRuntimeMetrics>,
     /// Source-read runtime event rows in observation order.
     pub source_read_runtime_rows: Vec<SourceReadRuntimeMetrics>,
-    /// Memory policy used by the native phase-C/bounded executor.
-    pub phase_c_memory_control_policy: MemoryControlPolicy,
+    /// Memory policy used by the native bounded executor.
+    pub memory_control_policy: MemoryControlPolicy,
     /// Boundary policy used for host/device materialization.
     pub execution_boundary_policy: ExecutionBoundaryPolicy,
     /// Number of input batches observed by native execution.

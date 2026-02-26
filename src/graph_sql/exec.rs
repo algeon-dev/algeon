@@ -381,7 +381,7 @@ impl ExecutionPlan for CugraphAlgoExec {
             let context_lease = execution_config.execution_context().map_err(|error| {
                 DataFusionError::from(
                     error
-                        .with_fact("cugraph_sql_phase", "runtime_context")
+                        .with_fact("cugraph_sql_stage", "runtime_context")
                         .with_fact("cpu_fallback_after_native_start", false),
                 )
             })?;

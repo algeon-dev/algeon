@@ -93,7 +93,7 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
 }
 
 #[test]
-fn bounded_capability_analysis_extracts_phase4_mixed_residual_resident_aggregate_edge_contracts() {
+fn bounded_capability_analysis_extracts_mixed_residual_resident_aggregate_edge_contracts() {
     let plan =
         residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
@@ -158,7 +158,7 @@ fn bounded_capability_analysis_extracts_phase4_mixed_residual_resident_aggregate
 }
 
 #[test]
-fn bounded_mixed_residual_resident_grouped_aggregate_phase6_admission_uses_capability_proof() {
+fn bounded_mixed_residual_resident_grouped_aggregate_admission_uses_capability_proof() {
     let plan =
         residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
@@ -174,7 +174,7 @@ fn bounded_mixed_residual_resident_grouped_aggregate_phase6_admission_uses_capab
 }
 
 #[test]
-fn bounded_mixed_residual_resident_grouped_aggregate_phase6_preserves_node_failure_locality() {
+fn bounded_mixed_residual_resident_grouped_aggregate_preserves_node_failure_locality() {
     let plan = residual_resident_grouped_aggregate_input_plan(
         ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression,
     );

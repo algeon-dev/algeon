@@ -45,7 +45,7 @@ fn parity_specs_reference_existing_datasets() {
 }
 
 #[test]
-fn parity_specs_cover_phase1a_baseline_algorithms() {
+fn parity_specs_cover_baseline_algorithms() {
     let mut algorithms: Vec<_> = CUGRAPH_PARITY_SPECS.iter().map(|spec| spec.algorithm).collect();
     algorithms.sort();
     algorithms.dedup();
@@ -54,13 +54,13 @@ fn parity_specs_cover_phase1a_baseline_algorithms() {
     sorted_registered.sort();
     assert_eq!(
         algorithms, sorted_registered,
-        "Phase 1a parity registry must cover every currently registered cuGraph algorithm exactly once",
+        "Milestone 1a parity registry must cover every currently registered cuGraph algorithm exactly once",
     );
     assert!(
         CUGRAPH_PARITY_SPECS
             .iter()
             .any(|spec| spec.algorithm == CugraphAlgorithm::PageRank && spec.dataset == "karate"),
-        "Phase 1a must keep at least the karate PageRank entry as the canonical baseline",
+        "Milestone 1a must keep at least the karate PageRank entry as the canonical baseline",
     );
 }
 
@@ -105,7 +105,7 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
         // RefCsv-truth specs additionally require their primary
         // reference file to be present and parseable on disk. Surface
         // a missing/invalid ref CSV as a hard test failure: the GPU
-        // comparator path (Phase 1b) relies on this file being
+        // comparator path (Milestone 1b) relies on this file being
         // loadable, and silently degrading would hide that gap.
         if let ParityTruthSource::RefCsv { path } = spec.truth_source
             && let Err(error) = load_ref_csv_vertex_list(&loaded.data_root, path)
@@ -119,7 +119,7 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
     }
     assert!(mismatches.is_empty(), "checked-in oracle JSON disagrees with parity spec:\n{}", mismatches.join("\n"),);
     if !missing.is_empty() {
-        // Phase 1a lands the infrastructure ahead of running Python
+        // Milestone 1a lands the infrastructure ahead of running Python
         // cuGraph against the vendored datasets. The harness reports a
         // structured "needs refresh" message rather than failing the
         // default CPU-only run, but emits it on stderr so refreshes

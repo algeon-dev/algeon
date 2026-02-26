@@ -214,7 +214,7 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
         .unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert_eq!(metrics.phase_c_memory_control_policy.as_str(), "bounded");
+    assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
     assert_eq!(metrics.source_chunks_committed, 3);

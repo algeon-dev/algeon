@@ -66,12 +66,12 @@ pub(super) fn native_query_runtime_error(
     mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
 }
 
-/// Tags an error with `native_datafusion_phase=<phase>` and
+/// Tags an error with `native_datafusion_stage=<stage>` and
 /// `cpu_fallback_after_native_start=false`.
 ///
 /// Callers use these facts to distinguish context setup from query runtime,
 /// and to assert that native execution does not silently fall back to CPU
 /// once started.
-pub(super) fn mark_native_runtime_error(error: Error, phase: &'static str) -> Error {
-    error.with_fact("native_datafusion_phase", phase).with_fact("cpu_fallback_after_native_start", false)
+pub(super) fn mark_native_runtime_error(error: Error, stage: &'static str) -> Error {
+    error.with_fact("native_datafusion_stage", stage).with_fact("cpu_fallback_after_native_start", false)
 }

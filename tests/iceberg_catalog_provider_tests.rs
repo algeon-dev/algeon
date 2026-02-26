@@ -1,4 +1,4 @@
-//! Tests for the dynamic Iceberg catalog/schema provider (Phase 2).
+//! Tests for the dynamic Iceberg catalog/schema provider (Milestone 2).
 //!
 //! All tests in this file are credential-free and use a `MockIcebergCatalogBackend`.
 //! Live Glue/S3 integration tests are marked `#[ignore]`.
@@ -423,7 +423,7 @@ async fn seed_prevents_backend_load_on_first_table_access() {
 // Live smoke tests (require Glue/S3 credentials — ignored by default)
 // ---------------------------------------------------------------------------
 
-/// Full Phase 2 pipeline: backend → catalog provider → schema → table list.
+/// Full Milestone 2 pipeline: backend → catalog provider → schema → table list.
 /// Verifies that `build_scoped_catalog_provider_from_backend` exposes only the
 /// configured namespace and its TPC-H tables from a real Glue catalog.
 #[tokio::test]

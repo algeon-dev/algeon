@@ -82,7 +82,7 @@ pub(super) fn write_decimal32_reader_pushdown_parquet_file(path: &std::path::Pat
     writer.close().unwrap();
 }
 
-pub(super) fn write_phase2_scalar_input_parquet(path: &std::path::Path) {
+pub(super) fn write_scalar_expression_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("orderkey", DataType::Int64, false),
         Field::new("shipdate", DataType::Date32, false),
@@ -144,7 +144,7 @@ pub(super) fn write_q6_lineitem_parquet(path: &std::path::Path) {
     writer.close().unwrap();
 }
 
-pub(super) fn write_nullable_phase2_scalar_input_parquet(path: &std::path::Path) {
+pub(super) fn write_nullable_scalar_expression_input_parquet(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("row_id", DataType::Int32, false),
         Field::new("orderkey", DataType::Int64, true),

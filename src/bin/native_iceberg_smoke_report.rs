@@ -168,14 +168,14 @@ async fn run_report_with_optional_stream(
         return run_tpcds_subset_report(config, stream).await;
     }
     eprintln!(
-        "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
+        "[native_iceberg_smoke_report] stage=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
         config.fixture.mode_code(),
         config.fixture.table_ident_display(),
         config.fixture.credential_source(),
     );
     let table = load_iceberg_table(&config.fixture).await?;
     eprintln!(
-        "[native_iceberg_smoke_report] phase=iceberg_table_load_finish fixture_mode={} table_ident={}",
+        "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
         config.fixture.mode_code(),
         config.fixture.table_ident_display(),
     );
@@ -264,14 +264,14 @@ async fn run_tpch_subset_report_with_execution_mode(
     for table_name in TPCH_TABLES {
         let table_fixture = config.fixture.with_tpch_table(table_name, &config.tpch_scale_factor)?;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
+            "[native_iceberg_smoke_report] stage=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
             table_fixture.credential_source(),
         );
         let table = load_iceberg_table(&table_fixture).await?;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=iceberg_table_load_finish fixture_mode={} table_ident={}",
+            "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
         );
@@ -325,7 +325,7 @@ async fn run_tpch_subset_report_with_execution_mode(
             Ok(row) => row,
             Err(error) if config.continue_on_query_error => {
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=query_error query_id={} error={}",
+                    "[native_iceberg_smoke_report] stage=query_error query_id={} error={}",
                     query_id,
                     stable_tsv_field(&error.to_string()),
                 );
@@ -369,14 +369,14 @@ async fn run_tpcds_subset_report(
     for table_name in TPCDS_TABLES {
         let table_fixture = config.fixture.with_tpcds_table(table_name, &config.tpcds_scale_factor)?;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
+            "[native_iceberg_smoke_report] stage=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
             table_fixture.credential_source(),
         );
         let table = load_iceberg_table(&table_fixture).await?;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=iceberg_table_load_finish fixture_mode={} table_ident={}",
+            "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
             table_fixture.mode_code(),
             table_fixture.table_ident_display(),
         );
@@ -430,7 +430,7 @@ async fn run_tpcds_subset_report(
             Ok(row) => row,
             Err(error) if config.continue_on_query_error => {
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=query_error query_id={} error={}",
+                    "[native_iceberg_smoke_report] stage=query_error query_id={} error={}",
                     query_id,
                     stable_tsv_field(&error.to_string()),
                 );
@@ -554,7 +554,7 @@ async fn run_custom_subset_report(
             Ok(row) => row,
             Err(error) if config.continue_on_query_error => {
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=query_error query_id={} error={}",
+                    "[native_iceberg_smoke_report] stage=query_error query_id={} error={}",
                     query_id,
                     stable_tsv_field(&error.to_string()),
                 );
@@ -589,14 +589,14 @@ async fn register_custom_probe_table(
     staging_records: Arc<Mutex<Vec<StagingRecord>>>,
 ) -> SmokeResult<()> {
     eprintln!(
-        "[native_iceberg_smoke_report] phase=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
+        "[native_iceberg_smoke_report] stage=iceberg_table_load_start fixture_mode={} table_ident={} credential_source={}",
         table_fixture.mode_code(),
         table_fixture.table_ident_display(),
         table_fixture.credential_source(),
     );
     let table = load_iceberg_table(table_fixture).await?;
     eprintln!(
-        "[native_iceberg_smoke_report] phase=iceberg_table_load_finish fixture_mode={} table_ident={}",
+        "[native_iceberg_smoke_report] stage=iceberg_table_load_finish fixture_mode={} table_ident={}",
         table_fixture.mode_code(),
         table_fixture.table_ident_display(),
     );
@@ -1440,7 +1440,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
     ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
         Box::pin(async move {
             eprintln!(
-                "[native_iceberg_smoke_report] phase=table_format_scan_planning_start table_name={} staging_mode={}",
+                "[native_iceberg_smoke_report] stage=table_format_scan_planning_start table_name={} staging_mode={}",
                 self.table_name,
                 self.mode.code(),
             );
@@ -1476,7 +1476,7 @@ impl TableFormatPlanner for StagingTableFormatPlanner {
             });
             let diagnostics = scan_plan.diagnostics();
             eprintln!(
-                "[native_iceberg_smoke_report] phase=table_format_scan_planning_finish table_name={} planned_data_file_count={} planned_bytes={} native_source_read_capability={} staging_status={}",
+                "[native_iceberg_smoke_report] stage=table_format_scan_planning_finish table_name={} planned_data_file_count={} planned_bytes={} native_source_read_capability={} staging_status={}",
                 self.table_name,
                 diagnostics.planned_data_file_count,
                 optional_u64(diagnostics.planned_bytes),
@@ -1534,7 +1534,7 @@ async fn run_query_with_registered_native_tables(
     execution_mode: SmokeQueryExecutionMode,
 ) -> SmokeResult<IcebergNativeSmokeReportRow> {
     eprintln!(
-        "[native_iceberg_smoke_report] phase=query_planning_start query_id={} run_cpu_parity={} credential_source={}",
+        "[native_iceberg_smoke_report] stage=query_planning_start query_id={} run_cpu_parity={} credential_source={}",
         query_id, run_cpu_parity, credential_source,
     );
     let df = ctx.sql(&sql).await?;
@@ -1570,7 +1570,7 @@ async fn run_query_with_registered_native_tables(
     let should_execute_native = planning_row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
         && planning_row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native;
     eprintln!(
-        "[native_iceberg_smoke_report] phase=query_planning_finish query_id={} native_planning_outcome={} post_native_execution_path={} planned_data_file_count={} native_source_read_capability={}",
+        "[native_iceberg_smoke_report] stage=query_planning_finish query_id={} native_planning_outcome={} post_native_execution_path={} planned_data_file_count={} native_source_read_capability={}",
         row.query_id,
         row.native_planning_outcome.as_str(),
         row.post_native_execution_path.as_str(),
@@ -1578,7 +1578,7 @@ async fn run_query_with_registered_native_tables(
         empty_as_none(&row.diagnostics.native_source_read_capability),
     );
     eprintln!(
-        "[native_iceberg_smoke_report] phase=native_optimizer_diagnostics query_id={} shared_subplan_considered_count={} shared_subplan_candidate_count={} shared_subplan_applied_count={} local_source_reuse_considered_count={} local_source_reuse_applied_count={}",
+        "[native_iceberg_smoke_report] stage=native_optimizer_diagnostics query_id={} shared_subplan_considered_count={} shared_subplan_candidate_count={} shared_subplan_applied_count={} local_source_reuse_considered_count={} local_source_reuse_applied_count={}",
         row.query_id,
         planning_row.native_optimizer.shared_subplan_materialization.considered_count,
         planning_row.native_optimizer.shared_subplan_materialization.candidate_count,
@@ -1591,7 +1591,7 @@ async fn run_query_with_registered_native_tables(
     if execution_mode.runs_native() && should_execute_native {
         row.native_runtime_started = true;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=native_runtime_start query_id={} native_source_read_capability={} direct_device_read_disposition={}",
+            "[native_iceberg_smoke_report] stage=native_runtime_start query_id={} native_source_read_capability={} direct_device_read_disposition={}",
             row.query_id,
             empty_as_none(&row.diagnostics.native_source_read_capability),
             row.diagnostics.direct_device_read_disposition.code(),
@@ -1609,7 +1609,7 @@ async fn run_query_with_registered_native_tables(
                 row.comparison_mode = fingerprint.mode;
                 native_batches = Some(batches);
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=native_runtime_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
+                    "[native_iceberg_smoke_report] stage=native_runtime_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
                     row.query_id,
                     row.native_runtime_outcome.as_str(),
                     row.native_runtime_elapsed_ms.unwrap_or(0),
@@ -1622,7 +1622,7 @@ async fn run_query_with_registered_native_tables(
                 row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Failed;
                 row.parity_detail = Some(stable_tsv_field(&error.to_string()));
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=native_runtime_finish query_id={} outcome={} elapsed_ms={} error={}",
+                    "[native_iceberg_smoke_report] stage=native_runtime_finish query_id={} outcome={} elapsed_ms={} error={}",
                     row.query_id,
                     row.native_runtime_outcome.as_str(),
                     row.native_runtime_elapsed_ms.unwrap_or(0),
@@ -1633,7 +1633,7 @@ async fn run_query_with_registered_native_tables(
         if let Some(metrics) = physical_plan.metrics() {
             let native_metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics);
             eprintln!(
-                "[native_iceberg_smoke_report] phase=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} source_cache_hits={} source_cache_misses={} source_cache_inserts={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
+                "[native_iceberg_smoke_report] stage=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} source_cache_hits={} source_cache_misses={} source_cache_inserts={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
                 row.query_id,
                 native_metrics.parquet_files,
                 native_metrics.row_groups_selected,
@@ -1658,27 +1658,27 @@ async fn run_query_with_registered_native_tables(
                 metric_duration_ms_text(&metrics, "materialization_time"),
             );
             eprintln!(
-                "[native_iceberg_smoke_report] phase=native_task_operator_rows query_id={} rows={}",
+                "[native_iceberg_smoke_report] stage=native_task_operator_rows query_id={} rows={}",
                 row.query_id,
                 format_task_operator_rows(&native_metrics),
             );
             eprintln!(
-                "[native_iceberg_smoke_report] phase=native_task_runtime_rows query_id={} rows={}",
+                "[native_iceberg_smoke_report] stage=native_task_runtime_rows query_id={} rows={}",
                 row.query_id,
                 format_task_runtime_rows(&native_metrics),
             );
             eprintln!(
-                "[native_iceberg_smoke_report] phase=native_source_read_runtime_rows query_id={} rows={}",
+                "[native_iceberg_smoke_report] stage=native_source_read_runtime_rows query_id={} rows={}",
                 row.query_id,
                 format_source_read_runtime_rows(&native_metrics),
             );
             eprintln!(
-                "[native_iceberg_smoke_report] phase=native_aggregate_strategy_rows query_id={} rows={}",
+                "[native_iceberg_smoke_report] stage=native_aggregate_strategy_rows query_id={} rows={}",
                 row.query_id,
                 format_aggregate_strategy_rows(&native_metrics),
             );
             eprintln!(
-                "[native_iceberg_smoke_report] phase=native_join_strategy_rows query_id={} rows={}",
+                "[native_iceberg_smoke_report] stage=native_join_strategy_rows query_id={} rows={}",
                 row.query_id,
                 format_join_strategy_rows(&native_metrics),
             );
@@ -1689,7 +1689,7 @@ async fn run_query_with_registered_native_tables(
     if execution_mode.runs_cpu_baseline() && run_cpu_parity && should_execute_native {
         row.cpu_runtime_started = true;
         eprintln!(
-            "[native_iceberg_smoke_report] phase=cpu_s3_baseline_start query_id={} table_count={} session_profile={}",
+            "[native_iceberg_smoke_report] stage=cpu_s3_baseline_start query_id={} table_count={} session_profile={}",
             row.query_id,
             records.iter().map(|record| record.table_name.as_str()).collect::<HashSet<_>>().len(),
             cpu_baseline_session_profile.code(),
@@ -1708,7 +1708,7 @@ async fn run_query_with_registered_native_tables(
                 row.comparison_mode = cpu_fingerprint.mode;
                 if let Some(native_batches) = native_batches.as_ref() {
                     eprintln!(
-                        "[native_iceberg_smoke_report] phase=parity_collection_start query_id={} cpu_output_rows={} native_output_rows={}",
+                        "[native_iceberg_smoke_report] stage=parity_collection_start query_id={} cpu_output_rows={} native_output_rows={}",
                         row.query_id,
                         row.cpu_output_rows.unwrap_or(0),
                         row.native_output_rows.unwrap_or(0),
@@ -1727,7 +1727,7 @@ async fn run_query_with_registered_native_tables(
                     row.native_output_fingerprint = Some(comparison.native_fingerprint);
                     row.comparison_mode = comparison.mode;
                     eprintln!(
-                        "[native_iceberg_smoke_report] phase=parity_collection_finish query_id={} parity_status={} comparison_mode={}",
+                        "[native_iceberg_smoke_report] stage=parity_collection_finish query_id={} parity_status={} comparison_mode={}",
                         row.query_id,
                         row.parity_status.as_str(),
                         row.comparison_mode.as_str(),
@@ -1736,7 +1736,7 @@ async fn run_query_with_registered_native_tables(
                     row.parity_status = ParityStatus::NativeFailed;
                 }
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=cpu_s3_baseline_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
+                    "[native_iceberg_smoke_report] stage=cpu_s3_baseline_finish query_id={} outcome={} elapsed_ms={} output_rows={} output_batches={}",
                     row.query_id,
                     row.cpu_runtime_outcome.as_str(),
                     row.cpu_runtime_elapsed_ms.unwrap_or(0),
@@ -1761,7 +1761,7 @@ async fn run_query_with_registered_native_tables(
                     row.parity_detail = Some(cpu_detail);
                 }
                 eprintln!(
-                    "[native_iceberg_smoke_report] phase=cpu_s3_baseline_finish query_id={} outcome={} elapsed_ms={} error={}",
+                    "[native_iceberg_smoke_report] stage=cpu_s3_baseline_finish query_id={} outcome={} elapsed_ms={} error={}",
                     row.query_id,
                     row.cpu_runtime_outcome.as_str(),
                     row.cpu_runtime_elapsed_ms.unwrap_or(0),
@@ -2171,7 +2171,7 @@ async fn register_cpu_table_from_scan_plan(
 
     let url_count = urls.len();
     eprintln!(
-        "[native_iceberg_smoke_report] phase=cpu_s3_baseline_registration_start table_name={} parquet_file_count={}",
+        "[native_iceberg_smoke_report] stage=cpu_s3_baseline_registration_start table_name={} parquet_file_count={}",
         table_name, url_count,
     );
     register_cpu_object_stores(ctx, &urls).await?;
@@ -2183,7 +2183,7 @@ async fn register_cpu_table_from_scan_plan(
         .with_schema(inferred_schema);
     ctx.register_table(table_name, Arc::new(ListingTable::try_new(config)?))?;
     eprintln!(
-        "[native_iceberg_smoke_report] phase=cpu_s3_baseline_registration_finish table_name={} parquet_file_count={}",
+        "[native_iceberg_smoke_report] stage=cpu_s3_baseline_registration_finish table_name={} parquet_file_count={}",
         table_name, url_count,
     );
     Ok(())

@@ -48,9 +48,9 @@ fi
 #                                          CudfTableFormatScanExec leaf.
 #                                          NOTE: cpu_fallback is **testing-only** while
 #                                          Iceberg is configured — the GPU-only leaf has
-#                                          no CPU Arrow reader yet (tracked as Phase 6 of
+#                                          no CPU Arrow reader yet (tracked as Milestone 6 of
 #                                          docs/plan/2026-05-22-flight-sql-iceberg-cpu-fallback-plan.md),
-#                                          so plain ORDER BY queries hit the Phase 1 leaf
+#                                          so plain ORDER BY queries hit the Milestone 1 leaf
 #                                          guard and fail in planning. The server emits a
 #                                          startup WARN when this combination is selected.
 # ---------------------------------------------------------------------------
