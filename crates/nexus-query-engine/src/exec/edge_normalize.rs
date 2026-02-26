@@ -8,12 +8,17 @@ pub(super) fn execute_edge_normalize(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    // Edge normalization only restructures topology (reverse/dedup); a null
+    // weight or edge_id must not drop an edge here. Weight-null conflicts are
+    // resolved by the weight combiner during deduplication, not by dropping.
+    let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope { weight: false, edge_id: false };
     let frame = super::edge_null_filter::filter_null_edge_rows(
         context,
         node_id,
         "graph_edge_null_filter",
         input.into_frame(),
         &node.spec.edge_columns,
+        null_filter_scope,
         metrics,
     )?;
     let timer = Instant::now();

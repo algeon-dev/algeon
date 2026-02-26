@@ -144,6 +144,14 @@ impl GraphAlgorithm {
     pub fn all() -> impl ExactSizeIterator<Item = Self> + Clone {
         GRAPH_OPERATION_REGISTRY.iter().map(|def| def.algorithm)
     }
+
+    /// Whether this algorithm reads edge weights as a semantic input.
+    ///
+    /// When `false`, a bound `weight` column is irrelevant to the result and a
+    /// null weight must not cause its edge to be dropped from the graph.
+    pub fn consumes_weight(self) -> bool {
+        self.definition().consumes_weight
+    }
 }
 
 impl fmt::Display for GraphAlgorithm {
@@ -199,6 +207,24 @@ pub struct GraphOperationDefinition {
     pub name: &'static str,
     /// cuGraph layout requirement for this operation.
     pub layout_requirement: GraphLayoutRequirement,
+    /// Whether the algorithm consumes edge weights as a semantic input.
+    ///
+    /// Only weighted algorithms (e.g. SSSP, minimum spanning tree) read the
+    /// bound `weight` column. For the remaining algorithms a bound `weight`
+    /// column does not affect the result we currently produce, so a null
+    /// weight on an edge must never cause that edge to be dropped from the
+    /// graph. See [`GraphAlgorithm::consumes_weight`].
+    ///
+    /// Note: some `false` entries (PageRank/PageRankStrict, Louvain/Leiden/ECG,
+    /// spectral modularity maximization) are weight-*capable* in upstream
+    /// cuGraph but are intentionally marked `false` here because their weighted
+    /// variants are not yet wired (weight is deferred to Milestone 2). `false`
+    /// means "this engine does not currently feed weight into the algorithm",
+    /// not "the algorithm is inherently unweighted". When a weighted variant is
+    /// exposed, flip its entry to `true` so the weight column is validated,
+    /// projected, and null-gated like SSSP — otherwise a user-supplied weight
+    /// would be silently ignored.
+    pub consumes_weight: bool,
 }
 
 impl GraphOperationDefinition {
@@ -217,106 +243,127 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         algorithm: GraphAlgorithm::PageRank,
         name: "pagerank",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Bfs,
         name: "bfs",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Louvain,
         name: "louvain",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::EigenvectorCentrality,
         name: "eigenvector_centrality",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::KatzCentrality,
         name: "katz_centrality",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Hits,
         name: "hits",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Sssp,
         name: "sssp",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: true,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::DegreesAll,
         name: "degrees_all",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::InDegreesAll,
         name: "in_degrees_all",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::OutDegreesAll,
         name: "out_degrees_all",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::WeaklyConnectedComponents,
         name: "weakly_connected_components",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::StronglyConnectedComponents,
         name: "strongly_connected_components",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::TriangleCountAll,
         name: "triangle_count_all",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::CoreNumber,
         name: "core_number",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::KCore,
         name: "k_core",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::MinimumSpanningTree,
         name: "minimum_spanning_tree",
         layout_requirement: GraphLayoutRequirement::Any,
+        consumes_weight: true,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::PageRankStrict,
         name: "pagerank_strict",
         layout_requirement: GraphLayoutRequirement::Transposed,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Leiden,
         name: "leiden",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::Ecg,
         name: "ecg",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::SpectralModularityMaximization,
         name: "spectral_modularity_maximization",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: false,
     },
     GraphOperationDefinition {
         algorithm: GraphAlgorithm::BalancedCutClustering,
         name: "balanced_cut_clustering",
         layout_requirement: GraphLayoutRequirement::Forward,
+        consumes_weight: false,
     },
 ];
 
