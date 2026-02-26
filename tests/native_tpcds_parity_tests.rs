@@ -13,7 +13,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, empty::EmptyExec, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TPCDS_PARQUET_DIR_ENV, CudfOptimizerConfig, GpuCandidate, GpuFallbackPolicy, NATIVE_TPCDS_PARITY_TSV_HEADER,
     NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, NativeAdaptivePipelineDiagnostics, NativeCudfExecutionConfig,
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPostNativeExecutionPath,
@@ -96,16 +96,16 @@ fn parity_tsv_header_pins_schema_version_and_columns() {
 fn parity_report_to_tsv_emits_schema_version_and_header() {
     let row = NativeTpcdsParityRow {
         query_id: "q01".to_string(),
-        cpu_planning_status: datafusion_cudf::ParityStageStatus::Succeeded,
-        cpu_runtime_status: datafusion_cudf::ParityStageStatus::Succeeded,
-        native_planning_outcome: datafusion_cudf::NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution,
+        cpu_planning_status: datafusion_nexus::ParityStageStatus::Succeeded,
+        cpu_runtime_status: datafusion_nexus::ParityStageStatus::Succeeded,
+        native_planning_outcome: datafusion_nexus::NativeTpcdsParityPlanningOutcome::RejectedBeforeExecution,
         native_reason_code: Some("unsupported_operator".to_string()),
         native_unsupported_category: Some("operator_join".to_string()),
         post_native_execution_path: NativeDataFusionPostNativeExecutionPath::Cpu,
         native_plan_fragment_count: 0,
         host_datafusion_boundary_count: 0,
         native_runtime_started: false,
-        native_runtime_outcome: datafusion_cudf::NativeDataFusionRuntimeOutcome::NotStarted,
+        native_runtime_outcome: datafusion_nexus::NativeDataFusionRuntimeOutcome::NotStarted,
         parity_status: ParityStatus::NativeRejected,
         parity_detail: None,
         cpu_output_rows: Some(0),
@@ -124,7 +124,7 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
     };
     let report = NativeTpcdsParityReport::from_rows(vec![row], ParityFloatTolerance::exact())
         .with_statistical_aggregate_execution_mode(
-            datafusion_cudf::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+            datafusion_nexus::StatisticalAggregateExecutionMode::GpuNativeTolerant,
         );
     let tsv = report.to_tsv();
     let first_line = tsv.lines().next().unwrap();
@@ -989,15 +989,15 @@ async fn tpcds_sf1_phase3_distributed_aggregate_lowering_admits_shared_resident_
         assert_eq!(lowering.rewritten_count(), 1, "{query_id} outcomes={:?}", lowering.report.outcomes());
         assert_eq!(lowering.rejected_count(), 0, "{query_id} outcomes={:?}", lowering.report.outcomes());
 
-        let optimized = cudf_query_engine::optimize_query_plan(
+        let optimized = nexus_query_engine::optimize_query_plan(
             lowering.plans[0].clone(),
-            &cudf_query_engine::NativeOptimizerOptions::default(),
+            &nexus_query_engine::NativeOptimizerOptions::default(),
         )
         .plan;
         let rendered = optimized.to_string();
         assert!(rendered.contains("Aggregate"), "{query_id} must retain native aggregate lowering:\n{rendered}");
-        let admission =
-            cudf_query_engine::strict_bounded_pipeline_admission(&optimized).expect("strict admission should not fail");
+        let admission = nexus_query_engine::strict_bounded_pipeline_admission(&optimized)
+            .expect("strict admission should not fail");
         assert!(admission.is_some(), "{query_id} strict bounded admission should accept the whole native plan");
 
         if query_id == "q05" {
@@ -1128,13 +1128,13 @@ async fn tpcds_sf1_distinct_aggregate_global_limit_query_matches_as_whole_native
     let lowering = lower_physical_plan_to_native(plain_tpcds_physical_plan(root, "q28").await);
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    let optimized = cudf_query_engine::optimize_query_plan(
+    let optimized = nexus_query_engine::optimize_query_plan(
         lowering.plans[0].clone(),
-        &cudf_query_engine::NativeOptimizerOptions::default(),
+        &nexus_query_engine::NativeOptimizerOptions::default(),
     )
     .plan;
     assert!(
-        plan_contains_aggregate_function(&optimized, cudf_query_engine::AggregateFunction::NUnique),
+        plan_contains_aggregate_function(&optimized, nexus_query_engine::AggregateFunction::NUnique),
         "q28 must retain count-distinct as the native NUnique aggregate:\n{optimized}"
     );
 
@@ -1280,9 +1280,9 @@ async fn tpcds_sf1_q72_outer_hash_join_lowering_admits_whole_native_plan() {
     assert_eq!(lowering.rewritten_count(), 1, "q72 outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.rejected_count(), 0, "q72 outcomes={:?}", lowering.report.outcomes());
 
-    let optimized = cudf_query_engine::optimize_query_plan(
+    let optimized = nexus_query_engine::optimize_query_plan(
         lowering.plans[0].clone(),
-        &cudf_query_engine::NativeOptimizerOptions::default(),
+        &nexus_query_engine::NativeOptimizerOptions::default(),
     )
     .plan;
     let rendered = optimized.to_string();
@@ -1290,7 +1290,7 @@ async fn tpcds_sf1_q72_outer_hash_join_lowering_admits_whole_native_plan() {
 
     let analysis = optimized.capability_analysis();
     let admission =
-        cudf_query_engine::strict_bounded_pipeline_admission(&optimized).expect("strict admission should not fail");
+        nexus_query_engine::strict_bounded_pipeline_admission(&optimized).expect("strict admission should not fail");
     assert!(
         admission.is_some(),
         "q72 strict bounded admission should accept the whole native plan; first_rejection={:?}\n{rendered}",
@@ -1493,8 +1493,8 @@ fn external_oracle_decimal_precision_widening_matches_cpu_value() {
         query_id: "qxx".to_string(),
         sql: "SELECT amount FROM t ORDER BY amount".to_string(),
         cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: cpu_schema, batches: vec![cpu_batch] },
-        native_planning: datafusion_cudf::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
-            datafusion_cudf::NativePlanningFailure {
+        native_planning: datafusion_nexus::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+            datafusion_nexus::NativePlanningFailure {
                 stage: "physical_planning".to_string(),
                 reason_code: "physical_planning_failed".to_string(),
                 message: "not relevant".to_string(),
@@ -1612,13 +1612,13 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
     let item = NativeTpcdsParityWorkloadItem {
         query_id: "q01".to_string(),
         sql: "SELECT 1 ORDER BY 1".to_string(),
-        cpu_outcome: NativeTpcdsParityCpuOutcome::PlanningFailed(datafusion_cudf::NativePlanningFailure {
+        cpu_outcome: NativeTpcdsParityCpuOutcome::PlanningFailed(datafusion_nexus::NativePlanningFailure {
             stage: "sql_to_logical_plan".to_string(),
             reason_code: "sql_planning_failed".to_string(),
             message: "boom".to_string(),
         }),
-        native_planning: datafusion_cudf::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
-            datafusion_cudf::NativePlanningFailure {
+        native_planning: datafusion_nexus::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+            datafusion_nexus::NativePlanningFailure {
                 stage: "sql_to_logical_plan".to_string(),
                 reason_code: "sql_planning_failed".to_string(),
                 message: "boom".to_string(),
@@ -1715,7 +1715,7 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
             input_plan_root: "EmptyExec".to_string(),
             input_plan_shape: "EmptyExec".to_string(),
             report,
-            native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics::default(),
+            native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),
             strict_bounded_contract: NativeStrictBoundedContractDiagnostics::default(),
             adaptive_pipeline: NativeAdaptivePipelineDiagnostics::default(),
@@ -1759,11 +1759,11 @@ fn q72_native_optimizer_config() -> CudfOptimizerConfig {
 }
 
 fn plan_contains_aggregate_function(
-    plan: &cudf_query_engine::QueryPlan,
-    function: cudf_query_engine::AggregateFunction,
+    plan: &nexus_query_engine::QueryPlan,
+    function: nexus_query_engine::AggregateFunction,
 ) -> bool {
     plan.nodes().iter().any(|node| match &node.kind {
-        cudf_query_engine::PlanNode::Aggregate(aggregate) => {
+        nexus_query_engine::PlanNode::Aggregate(aggregate) => {
             aggregate.spec.aggr_exprs.iter().any(|expr| expr.function == function)
         },
         _ => false,

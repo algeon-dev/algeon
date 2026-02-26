@@ -10,7 +10,7 @@ and emits one classification row per query covering:
   float_variance      — engines returned same row count but differ in Float64 value
                         (expected for q04, q10)
   engine_instability  — same engine changed output between iterations
-  correctness_bug     — reference engines agree, datafusion_cudf differs (expected for q23)
+  correctness_bug     — reference engines agree, datafusion_nexus differs (expected for q23)
   insufficient_data   — fewer than two engines with successful output
   unexpected_mismatch — mismatch not explained by known SQL nondeterminism or float variance
 """
@@ -31,7 +31,7 @@ TIE_DIVERGENCE_QUERY_IDS = frozenset(
     ["q18", "q25", "q26", "q31", "q32", "q33", "q39", "q40", "q41", "q42"]
 )
 REFERENCE_ENGINES = ("duckdb", "external-engine", "cpu_datafusion")
-NATIVE_ENGINE = "datafusion_cudf"
+NATIVE_ENGINE = "datafusion_nexus"
 
 OUTPUT_HEADER = [
     "query_id",
@@ -42,7 +42,7 @@ OUTPUT_HEADER = [
     "unstable_engines",
     "mismatched_engines",
     "reference_fingerprint",
-    "datafusion_cudf_fingerprint",
+    "datafusion_nexus_fingerprint",
     "notes",
 ]
 
@@ -65,7 +65,7 @@ class ClassificationRow:
     unstable_engines: str  # comma-sep or "none"
     mismatched_engines: str  # comma-sep or "none"
     reference_fingerprint: str  # consensus fp, "disagreement", or "none"
-    datafusion_cudf_fingerprint: str  # fp or "none"
+    datafusion_nexus_fingerprint: str  # fp or "none"
     notes: str
 
 
@@ -202,7 +202,7 @@ def classify_query(query_id: str, rows: list[dict]) -> ClassificationRow:
         unstable_engines=",".join(unstable_engines) or "none",
         mismatched_engines=",".join(mismatched_engines) or "none",
         reference_fingerprint=ref_fp_field,
-        datafusion_cudf_fingerprint=native_fp or "none",
+        datafusion_nexus_fingerprint=native_fp or "none",
         notes=notes,
     )
 
@@ -275,7 +275,7 @@ def _classify(
         if ref_consensus is not None and native_fp is not None and native_fp != ref_consensus:
             return (
                 "correctness_bug",
-                "reference engines agree; datafusion_cudf returns different COUNT(DISTINCT UserID) values "
+                "reference engines agree; datafusion_nexus returns different COUNT(DISTINCT UserID) values "
                 "— over-count bug in native grouped distinct aggregate",
             )
         if len(ref_fps) > 1:
@@ -284,7 +284,7 @@ def _classify(
                 "q23: reference engines disagree among themselves; inspect raw rows before drawing conclusions",
             )
         if native_fp is None:
-            return "unexpected_mismatch", "q23: datafusion_cudf produced no successful output"
+            return "unexpected_mismatch", "q23: datafusion_nexus produced no successful output"
         # native_fp == ref_consensus: fingerprint_agreement would be "true", caught above.
         return (
             "unexpected_mismatch",

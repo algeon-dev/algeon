@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_predicate(&path);
@@ -26,7 +26,7 @@ fn pushed_down_parquet_predicate_with_filter_is_reader_pushdown() {
 
 #[test]
 fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native_verification() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-subset");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-subset");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_predicate(&path);
@@ -58,7 +58,7 @@ fn pushed_down_parquet_predicate_subset_of_filter_is_reader_pushdown_with_native
 
 #[test]
 fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-filter-schema");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-filter-schema");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let scan = parquet_scan_with_projection_and_pushed_label_predicate(&path);
@@ -89,7 +89,7 @@ fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
 
 #[test]
 fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-without-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-without-filter");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_predicate(&path);
@@ -113,7 +113,7 @@ fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
 
 #[test]
 fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-decimal-post-scan");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-decimal-post-scan");
     let path = dir.join("input.parquet");
     write_decimal_filter_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_decimal_predicate(&path);
@@ -137,7 +137,7 @@ fn pushed_down_scan_only_decimal_predicate_uses_reader_pushdown() {
 
 #[test]
 fn pushed_down_decimal_equality_predicate_uses_reader_pushdown() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-decimal-equality-reader");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-decimal-equality-reader");
     let path = dir.join("input.parquet");
     write_decimal_filter_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_decimal_equality_predicate(&path);
@@ -165,7 +165,7 @@ fn pushed_down_decimal_equality_predicate_uses_reader_pushdown() {
 
 #[test]
 fn pushed_down_decimal_in_list_predicate_uses_reader_pushdown() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-decimal-in-list-reader");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-decimal-in-list-reader");
     let path = dir.join("input.parquet");
     write_decimal_filter_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_decimal_in_list_predicate(&path);
@@ -189,7 +189,7 @@ fn pushed_down_decimal_in_list_predicate_uses_reader_pushdown() {
 
 #[test]
 fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-case-decimal-divide");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-case-decimal-divide");
     let path = dir.join("input.parquet");
     write_household_demographics_like_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_case_decimal_divide_predicate(&path);
@@ -212,7 +212,7 @@ fn pushed_down_case_decimal_divide_predicate_uses_native_post_scan_filter() {
 
 #[test]
 fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_filter() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-pushed-predicate-mismatch");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-mismatch");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_pushed_down_predicate_value(&path, 20);
@@ -236,7 +236,7 @@ fn pushed_down_parquet_predicate_with_different_filter_uses_native_post_scan_fil
 
 #[test]
 fn full_file_byte_range_coalesces_to_native_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-ranged-file");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-file");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_byte_range(&path);
@@ -265,7 +265,7 @@ fn full_file_byte_range_coalesces_to_native_source() {
 
 #[test]
 fn partial_byte_range_is_rejected_with_source_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partial-ranged-file");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partial-ranged-file");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_partial_byte_range(&path);
@@ -289,7 +289,7 @@ fn partial_byte_range_is_rejected_with_source_reason() {
 
 #[test]
 fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-ranged-access-plan");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-ranged-access-plan");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let access_plan = ParquetAccessPlan::new(vec![
@@ -323,7 +323,7 @@ fn partial_byte_range_with_access_plan_lowers_to_selected_row_groups() {
 
 #[test]
 fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-split-ranged-file");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-split-ranged-file");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_split_full_byte_ranges(&path);
@@ -350,7 +350,7 @@ fn split_full_file_byte_ranges_coalesce_without_duplicate_native_files() {
 
 #[test]
 fn overlapping_byte_ranges_are_rejected_with_source_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-overlap-ranged-file");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-overlap-ranged-file");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_overlapping_byte_ranges(&path);
@@ -373,7 +373,7 @@ fn overlapping_byte_ranges_are_rejected_with_source_reason() {
 
 #[test]
 fn remote_parquet_object_store_is_rejected_with_source_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-remote-store");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-remote-store");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_object_store_url(&path, ObjectStoreUrl::parse("test:///").unwrap());
@@ -402,7 +402,7 @@ fn remote_parquet_object_store_is_rejected_with_source_reason() {
 
 #[test]
 fn custom_parquet_file_reader_factory_is_rejected_with_source_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-custom-reader-factory");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-custom-reader-factory");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_custom_reader_factory(&path);
@@ -430,7 +430,7 @@ fn custom_parquet_file_reader_factory_is_rejected_with_source_reason() {
 
 #[test]
 fn parquet_partition_columns_are_represented_in_native_source_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-columns");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(Some(7)));
@@ -455,7 +455,7 @@ fn parquet_partition_columns_are_represented_in_native_source_contract() {
 
 #[test]
 fn parquet_partition_typed_null_values_are_represented_in_native_source_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-typed-null");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-typed-null");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_partition_value(&path, ScalarValue::Int32(None));
@@ -478,7 +478,7 @@ fn parquet_partition_typed_null_values_are_represented_in_native_source_contract
 
 #[test]
 fn parquet_partition_columns_without_literal_values_are_rejected_with_source_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-missing-values");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-missing-values");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_partition_columns(&path);
@@ -500,7 +500,7 @@ fn parquet_partition_columns_without_literal_values_are_rejected_with_source_rea
 
 #[test]
 fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-binary");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-binary");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_typed_partition_value(
@@ -525,7 +525,7 @@ fn unused_parquet_binary_partition_columns_do_not_block_native_lowering() {
 
 #[test]
 fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-utf8");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_typed_partition_value(
@@ -551,7 +551,7 @@ fn unused_parquet_utf8_partition_columns_are_not_represented_in_native_source_co
 
 #[test]
 fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-utf8-view");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_typed_partition_value(
@@ -577,7 +577,7 @@ fn unused_parquet_utf8_view_partition_values_do_not_enter_native_source_contract
 
 #[test]
 fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_source_contract() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-partition-utf8-view-null");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partition-utf8-view-null");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_typed_partition_value(
@@ -603,7 +603,7 @@ fn unused_parquet_utf8_view_partition_typed_null_values_do_not_enter_native_sour
 
 #[test]
 fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-source-binary-schema");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-source-binary-schema");
     let path = dir.join("input.parquet");
     write_binary_schema_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -621,7 +621,7 @@ fn unused_unsupported_binary_schema_fields_do_not_block_native_lowering() {
 
 #[test]
 fn parquet_missing_nullable_columns_are_represented_as_native_typed_nulls() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-missing-nullable-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-missing-nullable-columns");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_missing_nullable_column(&path);

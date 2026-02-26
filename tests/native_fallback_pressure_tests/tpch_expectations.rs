@@ -122,7 +122,7 @@ pub(super) fn expected_tpch_physical_shape_marker(query_id: &str) -> &'static st
 
 pub(super) fn assert_tpch_join_diagnostics(
     query_id: &str,
-    diagnostics: &[datafusion_cudf::NativeJoinDiagnosticSummary],
+    diagnostics: &[datafusion_nexus::NativeJoinDiagnosticSummary],
 ) {
     match query_id {
         "q02" | "q03" | "q04" | "q05" | "q07" | "q08" | "q09" | "q10" | "q12" | "q13" | "q14" | "q15" | "q16"

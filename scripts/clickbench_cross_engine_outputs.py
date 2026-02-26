@@ -103,7 +103,7 @@ def main() -> int:
     if "external-engine" in engines:
         rows.extend(run_external-engine_outputs(args, fixture, out_dir, raw_dir, [queries[q] for q in query_ids]))
 
-    datafusion_engines = [engine for engine in engines if engine in {"cpu_datafusion", "datafusion_cudf"}]
+    datafusion_engines = [engine for engine in engines if engine in {"cpu_datafusion", "datafusion_nexus"}]
     if datafusion_engines:
         rows.extend(run_datafusion_outputs(args, fixture, out_dir, raw_dir, [queries[q] for q in query_ids], datafusion_engines))
 
@@ -130,14 +130,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--query-ids", default=",".join(DEFAULT_QUERY_IDS))
     parser.add_argument(
         "--engines",
-        default="duckdb,external-engine,cpu_datafusion,datafusion_cudf",
-        help="Comma-separated subset of duckdb,external-engine,cpu_datafusion,datafusion_cudf.",
+        default="duckdb,external-engine,cpu_datafusion,datafusion_nexus",
+        help="Comma-separated subset of duckdb,external-engine,cpu_datafusion,datafusion_nexus.",
     )
     parser.add_argument("--iterations", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--duckdb-bin", default=os.environ.get("DUCKDB", "duckdb"))
     parser.add_argument("--cargo-bin", default=os.environ.get("CARGO", "cargo"))
-    parser.add_argument("--release", action="store_true", help="Use cargo run --release for DataFusion/datafusion-cudf.")
+    parser.add_argument("--release", action="store_true", help="Use cargo run --release for DataFusion/datafusion-nexus.")
     parser.add_argument("--no-gpu-flock", action="store_true", help="Do not wrap native GPU runs with flock /tmp/cudf-gpu.lock.")
     parser.add_argument("--native-source-chunk-bytes", default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES", "4294967296"))
     parser.add_argument("--native-row-groups-per-chunk", default=os.environ.get("CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK", "1024"))
@@ -173,7 +173,7 @@ def parse_query_ids(raw: str) -> list[str]:
 
 
 def parse_engines(raw: str) -> list[str]:
-    valid = {"duckdb", "external-engine", "cpu_datafusion", "datafusion_cudf"}
+    valid = {"duckdb", "external-engine", "cpu_datafusion", "datafusion_nexus"}
     engines = dedup_preserving_order([part.strip() for part in raw.split(",") if part.strip()])
     unknown = [engine for engine in engines if engine not in valid]
     if unknown:
@@ -420,7 +420,7 @@ def run_datafusion_outputs(
     )
     if engines == ["cpu_datafusion"]:
         env["CUDF_CLICKBENCH_BENCH_SKIP_NATIVE"] = "1"
-    elif engines == ["datafusion_cudf"]:
+    elif engines == ["datafusion_nexus"]:
         env["CUDF_CLICKBENCH_BENCH_SKIP_CPU"] = "1"
 
     report_path = out_dir / "datafusion_clickbench_benchmark.tsv"
@@ -428,7 +428,7 @@ def run_datafusion_outputs(
     if args.release:
         command.append("--release")
     command.extend(["--bin", "native_clickbench_benchmark", "--quiet"])
-    if "datafusion_cudf" in engines and not args.no_gpu_flock:
+    if "datafusion_nexus" in engines and not args.no_gpu_flock:
         command = ["flock", str(GPU_LOCK), *command]
 
     proc = subprocess.run(
@@ -443,7 +443,7 @@ def run_datafusion_outputs(
 
     progress = parse_datafusion_progress(proc.stderr)
     rows: list[OutputRow] = []
-    engine_map = {"cpu": "cpu_datafusion", "native": "datafusion_cudf"}
+    engine_map = {"cpu": "cpu_datafusion", "native": "datafusion_nexus"}
     for query in queries:
         for engine_short, engine_name in engine_map.items():
             if engine_name not in engines:

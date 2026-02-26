@@ -5,7 +5,7 @@ mod q22;
 
 #[tokio::test]
 async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-recent-topologies");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-recent-topologies");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
 
@@ -27,7 +27,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q02 should be admitted by the capability proof:\n{native_plan}"
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q02 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -43,7 +43,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q15 should lower to the executable keyed hash join resident subplan pipeline:\n{native_plan}"
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q15 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -61,7 +61,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q18 should lower to the executable resident grouped aggregate TopK pipeline:\n{native_plan}"
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q18 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -77,7 +77,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         "q20 should lower to the executable resident grouped aggregate subquery-filter pipeline:\n{native_plan}"
     );
     let facts = native_plan
-        .bounded_join_modeled_facts(cudf_query_engine::ExecutionBoundaryPolicy::default())
+        .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q20 should expose modeled bounded join facts");
     assert_eq!(facts.get("bounded_join_execution_family"), None);
 
@@ -86,7 +86,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
 
 #[tokio::test]
 async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_semi_shape() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q18-pre-semijoin-reduction");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q18-pre-semijoin-reduction");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q18 = items.into_iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
@@ -135,7 +135,7 @@ async fn tpch_q18_direct_lowering_preserves_pre_semijoin_reduction_late_left_sem
 
 #[tokio::test]
 async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q18-semijoin-reduction");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q18-semijoin-reduction");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q18 = items.into_iter().find(|item| item.query_id == "q18").expect("TPC-H workload should include q18");
@@ -145,9 +145,9 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
 
     let result = lower_physical_plan_to_native(plan);
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
-    let optimized = cudf_query_engine::optimize_query_plan(result.plans[0].clone(), &Default::default());
+    let optimized = nexus_query_engine::optimize_query_plan(result.plans[0].clone(), &Default::default());
 
-    assert_eq!(optimized.change, cudf_query_engine::NativeOptimizerChange::Changed);
+    assert_eq!(optimized.change, nexus_query_engine::NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
@@ -181,7 +181,7 @@ fn native_semijoin_reduction_guardrail_has_no_q18_specific_native_path() {
         manifest_dir.join("src/native"),
         manifest_dir.join("src/native_exec"),
         manifest_dir.join("src/planner"),
-        manifest_dir.join("crates/cudf-query-engine/src"),
+        manifest_dir.join("crates/nexus-query-engine/src"),
     ];
 
     let offenders = native_path_roots
@@ -199,7 +199,7 @@ fn native_semijoin_reduction_guardrail_has_no_q18_specific_native_path() {
 
 #[tokio::test]
 async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q21");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q21");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q21 = items.into_iter().find(|item| item.query_id == "q21").expect("TPC-H workload should include q21");
@@ -225,7 +225,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
 }
 
 fn q21_left_only_mixed_residual_join_matches(
-    join: &cudf_query_engine::JoinNode,
+    join: &nexus_query_engine::JoinNode,
     expected_join_type: NativeJoinType,
 ) -> bool {
     join.spec.join_type == expected_join_type
@@ -236,7 +236,7 @@ fn q21_left_only_mixed_residual_join_matches(
         && join.spec.output_projection.iter().all(|column| column.side == NativeJoinSide::Left)
 }
 
-fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &cudf_query_engine::JoinNode)> {
+fn native_join_ids(plan: &QueryPlan, join_type: NativeJoinType) -> Vec<(NodeId, &nexus_query_engine::JoinNode)> {
     plan.nodes()
         .iter()
         .filter_map(|node| match &node.kind {
@@ -281,7 +281,7 @@ fn source_files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 #[tokio::test]
 async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_paths() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q7");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q7");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q7 = items.into_iter().find(|item| item.query_id == "q07").expect("TPC-H workload should include q07");
@@ -331,7 +331,7 @@ async fn tpch_q7_lowers_duplicate_nation_names_through_distinct_native_identity_
 
 #[tokio::test]
 async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q8");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q8");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q8 = items.into_iter().find(|item| item.query_id == "q08").expect("TPC-H workload should include q08");
@@ -371,7 +371,7 @@ async fn tpch_q8_final_mkt_share_projection_preserves_decimal_schema() {
 
 #[tokio::test]
 async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_admission() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q11");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q11");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q11 = items.into_iter().find(|item| item.query_id == "q11").expect("TPC-H workload should include q11");
@@ -393,7 +393,9 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
     let plan = &result.plans[0];
     assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(plan.bounded_join_unsupported_shape_facts(cudf_query_engine::ExecutionBoundaryPolicy::default()).is_none());
+    assert!(
+        plan.bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none()
+    );
     let output_fields = plan.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     assert_eq!(output_fields, vec!["ps_partkey", "value"]);
     assert!(
@@ -462,7 +464,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         BTreeSet::from(["nation".to_string(), "partsupp".to_string(), "supplier".to_string()])
     );
 
-    let optimized = cudf_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
     let materialization = &optimized.diagnostics.shared_subplan_materialization;
     assert_eq!(materialization.applied_count, 1, "optimizer diagnostics={materialization:?}");
     assert!(
@@ -499,7 +501,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
 
 #[tokio::test]
 async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q13");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q13");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q13 = items.into_iter().find(|item| item.query_id == "q13").expect("TPC-H workload should include q13");
@@ -570,7 +572,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
 
 #[tokio::test]
 async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q16");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q16");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q16 = items.into_iter().find(|item| item.query_id == "q16").expect("TPC-H workload should include q16");
@@ -673,7 +675,7 @@ fn projection_wrapped_aggregate<'a>(
     plan: &'a QueryPlan,
     node_id: NodeId,
     context: &str,
-) -> &'a cudf_query_engine::AggregateNode {
+) -> &'a nexus_query_engine::AggregateNode {
     let projection_node = plan.node(node_id).unwrap_or_else(|| panic!("{context} projection should exist"));
     let PlanNode::Projection(projection) = &projection_node.kind else {
         panic!("{context} should be projection-wrapped");

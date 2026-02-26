@@ -27,12 +27,12 @@ use arrow_flight::{
         server::FlightSqlService,
     },
 };
-use cudf_query_engine::ExecutionCancellation;
 use dashmap::DashMap;
 use datafusion::{
     datasource::TableType, error::DataFusionError, execution::SessionStateBuilder, prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
+use nexus_query_engine::ExecutionCancellation;
 use prost::Message;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio_util::sync::CancellationToken;
@@ -52,7 +52,7 @@ use crate::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionSta
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
-const QUERY_ID_METADATA_KEY: &str = "x-datafusion-cudf-query-id";
+const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 
 /// Hard cap on live prepared-statement handles across all connections.
 /// Bounds the worst case for clients that leak handles by disconnecting
@@ -1295,7 +1295,7 @@ fn log_statement_status(query_id: &str, phase: &'static str, started_at: Instant
 
 fn sql_info_data() -> Result<arrow_flight::sql::metadata::SqlInfoData, Status> {
     let mut builder = SqlInfoDataBuilder::new();
-    builder.append(SqlInfo::FlightSqlServerName, "datafusion-cudf");
+    builder.append(SqlInfo::FlightSqlServerName, "datafusion-nexus");
     builder.append(SqlInfo::FlightSqlServerVersion, env!("CARGO_PKG_VERSION"));
     builder.append(SqlInfo::FlightSqlServerArrowVersion, "1.3");
     builder.append(SqlInfo::FlightSqlServerReadOnly, false);

@@ -1,9 +1,6 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef, TimeUnit};
-use cudf_query_engine::{
-    BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
-};
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -14,6 +11,9 @@ use datafusion::{
             LikeExpr, Literal, NotExpr, TryCastExpr,
         },
     },
+};
+use nexus_query_engine::{
+    BinaryOp as NativeBinaryOp, CaseWhen as NativeCaseWhen, DatePart as NativeDatePart, Expr as NativeExpr,
 };
 
 use crate::{
@@ -76,7 +76,7 @@ pub(super) fn lower_physical_expr_with_bindings(
             return Ok(NativeExpr::case(
                 vec![NativeCaseWhen::new(
                     null_guard,
-                    NativeExpr::literal(cudf_query_engine::LiteralValue::Null(output_type)),
+                    NativeExpr::literal(nexus_query_engine::LiteralValue::Null(output_type)),
                 )],
                 NativeExpr::concat(vec![left, right]),
             ));
@@ -178,13 +178,13 @@ fn is_supported_try_cast_pair(source_type: &ArrowDataType, target_type: &ArrowDa
 fn lower_literal_string_date32_cast(
     expr: &Arc<dyn PhysicalExpr>,
     target_type: &ArrowDataType,
-) -> Option<cudf_query_engine::LiteralValue> {
+) -> Option<nexus_query_engine::LiteralValue> {
     if !matches!(target_type, ArrowDataType::Date32) {
         return None;
     }
     expr.as_any().downcast_ref::<Literal>().and_then(|literal| match literal.value() {
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
-            parse_yyyy_mm_dd_date32(value).map(cudf_query_engine::LiteralValue::Date32)
+            parse_yyyy_mm_dd_date32(value).map(nexus_query_engine::LiteralValue::Date32)
         },
         _ => None,
     })
@@ -262,7 +262,7 @@ fn lower_case_expr(
         None => {
             let data_type =
                 case.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
-            NativeExpr::literal(cudf_query_engine::LiteralValue::Null(data_type))
+            NativeExpr::literal(nexus_query_engine::LiteralValue::Null(data_type))
         },
     };
     Ok(NativeExpr::case(branches, else_expr))

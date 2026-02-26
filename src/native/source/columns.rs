@@ -1,14 +1,14 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
-use cudf_query_engine::{
-    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
-    SourceColumnRef as NativeSourceColumnRef,
-};
 use datafusion::{
     datasource::physical_plan::{FileScanConfig, FileSource, ParquetSource},
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::{aggregates::AggregateExec, filter::FilterExec, projection::ProjectionExec},
+};
+use nexus_query_engine::{
+    MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
+    SourceColumnRef as NativeSourceColumnRef,
 };
 use parquet::{
     arrow::parquet_to_arrow_schema,

@@ -9,7 +9,7 @@
 //     (post-physical-opt under GPU session config, WITHOUT our rule)
 //   - GPU physical plan after our rule runs (NativeCudfExec wrappers visible)
 //   - Actual retained planning diagnostics from `CudfNativePhysicalOptimizerRule`
-//   - Lowered native IR (`cudf_query_engine::QueryPlan` per candidate) from
+//   - Lowered native IR (`nexus_query_engine::QueryPlan` per candidate) from
 //     calling `lower_physical_plan_to_native` on the pre-rule plan
 //   - The `PlanningReport` from the lowering call (rewritten / rejected
 //     candidates with `FallbackReason::code()`)
@@ -37,7 +37,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, displayable},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, TPCDS_QUERIES, TPCDS_TABLES,
     TpcdsQuery, discover_tpcds_table_layout, lower_physical_plan_to_native, tpcds_native_optimizer_config,
     tpcds_native_report_session_config,
@@ -239,17 +239,20 @@ async fn dump_engine_plans(ctx: &SessionContext, sql: &str) -> Result<(String, S
     Ok((unopt_logical, opt_logical, physical_text))
 }
 
-fn collect_native_exec_plans(plan: &dyn ExecutionPlan) -> Vec<&cudf_query_engine::QueryPlan> {
+fn collect_native_exec_plans(plan: &dyn ExecutionPlan) -> Vec<&nexus_query_engine::QueryPlan> {
     let mut plans = Vec::new();
     collect_native_exec_plans_inner(plan, &mut plans);
     plans
 }
 
-fn collect_native_exec_plans_inner<'a>(plan: &'a dyn ExecutionPlan, plans: &mut Vec<&'a cudf_query_engine::QueryPlan>) {
-    if let Some(native) = plan.as_any().downcast_ref::<datafusion_cudf::NativeCudfExec>() {
+fn collect_native_exec_plans_inner<'a>(
+    plan: &'a dyn ExecutionPlan,
+    plans: &mut Vec<&'a nexus_query_engine::QueryPlan>,
+) {
+    if let Some(native) = plan.as_any().downcast_ref::<datafusion_nexus::NativeCudfExec>() {
         plans.push(native.native_plan());
     }
-    if let Some(native) = plan.as_any().downcast_ref::<datafusion_cudf::NativeCudfComposedExec>() {
+    if let Some(native) = plan.as_any().downcast_ref::<datafusion_nexus::NativeCudfComposedExec>() {
         plans.push(native.native_plan());
     }
     for child in plan.children() {
@@ -286,7 +289,7 @@ fn describe_session_config(config: &SessionConfig) -> String {
     out
 }
 
-fn format_native_ir(lowering: &datafusion_cudf::NativeLoweringResult) -> String {
+fn format_native_ir(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
     let mut out = String::new();
     out.push_str(&format!("candidate_count={}\n", lowering.candidate_count()));
     out.push_str(&format!("rewritten_count={}\n", lowering.rewritten_count()));
@@ -302,7 +305,7 @@ fn format_native_ir(lowering: &datafusion_cudf::NativeLoweringResult) -> String 
     out
 }
 
-fn format_post_rule_native_ir(plans: &[&cudf_query_engine::QueryPlan]) -> String {
+fn format_post_rule_native_ir(plans: &[&nexus_query_engine::QueryPlan]) -> String {
     let mut out = String::new();
     out.push_str(&format!("native_exec_count={}\n\n", plans.len()));
     if plans.is_empty() {
@@ -314,7 +317,7 @@ fn format_post_rule_native_ir(plans: &[&cudf_query_engine::QueryPlan]) -> String
     out
 }
 
-fn format_post_rule_compiled_pipelines(plans: &[&cudf_query_engine::QueryPlan]) -> String {
+fn format_post_rule_compiled_pipelines(plans: &[&nexus_query_engine::QueryPlan]) -> String {
     let mut out = String::new();
     out.push_str(&format!("native_exec_count={}\n\n", plans.len()));
     if plans.is_empty() {
@@ -322,7 +325,7 @@ fn format_post_rule_compiled_pipelines(plans: &[&cudf_query_engine::QueryPlan]) 
     }
     for (index, plan) in plans.iter().enumerate() {
         let analysis = plan.capability_analysis();
-        match cudf_query_engine::compile_pipeline(plan, &analysis) {
+        match nexus_query_engine::compile_pipeline(plan, &analysis) {
             Ok(pipeline) => out.push_str(&format!("compiled_pipeline[{index}]=\n{}\n", pipeline.debug_render())),
             Err(error) => {
                 out.push_str(&format!("compiled_pipeline[{index}]=<compile failed: {error}>\n\n"));
@@ -332,14 +335,14 @@ fn format_post_rule_compiled_pipelines(plans: &[&cudf_query_engine::QueryPlan]) 
     out
 }
 
-fn format_native_optimizer_diagnostics(diagnostics: &cudf_query_engine::NativeOptimizerDiagnostics) -> String {
+fn format_native_optimizer_diagnostics(diagnostics: &nexus_query_engine::NativeOptimizerDiagnostics) -> String {
     let mut out = String::new();
     out.push_str(&format!("is_empty={}\n", diagnostics.is_empty()));
     out.push_str(&format!("{diagnostics:#?}\n"));
     out
 }
 
-fn format_strict_bounded_contract_diagnostics(diagnostics: &datafusion_cudf::NativePlanningDiagnostics) -> String {
+fn format_strict_bounded_contract_diagnostics(diagnostics: &datafusion_nexus::NativePlanningDiagnostics) -> String {
     let contract = &diagnostics.strict_bounded_contract;
     let mut out = String::new();
     out.push_str(&format!("accepted_count={}\n", contract.accepted_candidates.len()));
@@ -348,13 +351,13 @@ fn format_strict_bounded_contract_diagnostics(diagnostics: &datafusion_cudf::Nat
     out
 }
 
-fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_cudf::NativePlanningDiagnostics) -> String {
+fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_nexus::NativePlanningDiagnostics) -> String {
     let adaptive = &diagnostics.adaptive_pipeline;
     let rejected_count = adaptive
         .candidates
         .iter()
         .filter(|candidate| {
-            candidate.report.row().candidate_status == cudf_query_engine::AdaptiveCandidateStatus::Rejected
+            candidate.report.row().candidate_status == nexus_query_engine::AdaptiveCandidateStatus::Rejected
         })
         .count();
     let mut out = String::new();
@@ -364,14 +367,14 @@ fn format_adaptive_pipeline_diagnostics(diagnostics: &datafusion_cudf::NativePla
     out
 }
 
-fn format_planning_report(lowering: &datafusion_cudf::NativeLoweringResult) -> String {
+fn format_planning_report(lowering: &datafusion_nexus::NativeLoweringResult) -> String {
     let mut out = String::new();
     out.push_str("# Lowering CandidateOutcome list (one per candidate found before execution-boundary admission)\n\n");
     out.push_str(&format_planning_report_from_report(&lowering.report));
     out
 }
 
-fn format_planning_report_from_report(report: &datafusion_cudf::PlanningReport) -> String {
+fn format_planning_report_from_report(report: &datafusion_nexus::PlanningReport) -> String {
     let mut out = String::new();
     out.push_str("# CandidateOutcome list\n\n");
     for (index, outcome) in report.outcomes().iter().enumerate() {
@@ -397,7 +400,7 @@ fn format_planning_report_from_report(report: &datafusion_cudf::PlanningReport) 
     out
 }
 
-fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLoweringResult) -> String {
+fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_nexus::NativeLoweringResult) -> String {
     let mut out = String::new();
     out.push_str(&format!("# TPC-DS {} triage bundle\n\n", query.id));
     out.push_str("## Files\n\n");
@@ -420,7 +423,7 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
     out.push_str(
         "| adaptive_pipeline.gpu.postRule.txt | adaptive admission evidence retained by the post-rule optimizer |\n",
     );
-    out.push_str("| native_ir.gpu.txt | lowered `cudf_query_engine::QueryPlan` per rewritten candidate |\n");
+    out.push_str("| native_ir.gpu.txt | lowered `nexus_query_engine::QueryPlan` per rewritten candidate |\n");
     out.push_str(
         "| native_ir.gpu.postRule.txt | optimized native IR extracted from post-rule `NativeCudfExec` wrappers |\n",
     );
@@ -446,9 +449,9 @@ fn render_query_summary(query: &TpcdsQuery, lowering: &datafusion_cudf::NativeLo
 
     out.push_str("## Decision tree\n\n");
     out.push_str("- If `logical_plan.opt.*` diff is non-trivial → root cause in DataFusion logical optimizer (session config), not in our crates.\n");
-    out.push_str("- If `physical_plan.cpu.txt` vs `physical_plan.gpu.preRule.txt` differs in **shape** (e.g. join order, agg split, repartition placement) → DataFusion physical planning is choosing differently for the GPU session config; fix in datafusion-cudf session config or align partitioning settings.\n");
+    out.push_str("- If `physical_plan.cpu.txt` vs `physical_plan.gpu.preRule.txt` differs in **shape** (e.g. join order, agg split, repartition placement) → DataFusion physical planning is choosing differently for the GPU session config; fix in datafusion-nexus session config or align partitioning settings.\n");
     out.push_str("- If `physical_plan.gpu.postRule.txt` shows large `DataFusion` subtrees not wrapped in `NativeCudfExec` → our rule rejected them; read `planning_report.gpu.postRule.txt` and `strict_bounded_contract.gpu.postRule.txt` to see the actual post-admission reason. `planning_report.gpu.txt` is the direct lowering report before execution-boundary admission.\n");
-    out.push_str("- If `physical_plan.gpu.postRule.txt` is fully native AND `native_ir.gpu.txt` looks reasonable → root cause is at execution time; combine this bundle with the runtime metrics from `tpcds_three_way_bench` (operator class breakdown, source read, materialization, peak memory) and look at **cudf-query-engine** (operator implementation, reservation) or **cudf-rs** (libcudf primitive performance / API gap).\n");
+    out.push_str("- If `physical_plan.gpu.postRule.txt` is fully native AND `native_ir.gpu.txt` looks reasonable → root cause is at execution time; combine this bundle with the runtime metrics from `tpcds_three_way_bench` (operator class breakdown, source read, materialization, peak memory) and look at **nexus-query-engine** (operator implementation, reservation) or **cudf-rs** (libcudf primitive performance / API gap).\n");
 
     out
 }
@@ -465,7 +468,7 @@ fn write_top_summary(cfg: &TriageConfig, rows: &[String]) -> Result<(), Box<dyn 
         out.push('\n');
     }
     out.push_str("\n## Triage decision tree\n\n");
-    out.push_str("Open any query's `SUMMARY.md` for diff commands and the decision tree (logical-divergence → physical-divergence → rule-rejection → cudf-query-engine / cudf-rs).\n");
+    out.push_str("Open any query's `SUMMARY.md` for diff commands and the decision tree (logical-divergence → physical-divergence → rule-rejection → nexus-query-engine / cudf-rs).\n");
     fs::write(cfg.out_dir.join("SUMMARY.md"), out)?;
     Ok(())
 }

@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     NativeDataFusionPlanningOutcome, NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome,
     ParityComparisonMode, ParityStatus, TPCH_QUERIES, TableFormat, TableFormatScanPlan,
 };

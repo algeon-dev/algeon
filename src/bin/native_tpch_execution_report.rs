@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     NativeDataFusionExecutionReport, NativePipelineExecutionMode, TpchDatasetMetadata, prepare_tpch_report_dataset,
     tpch_datafusion_execution_workload_items_with_optimizer_config, tpch_native_optimizer_config,
     tpch_report_session_config,
@@ -13,13 +13,13 @@ const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXEC
 
 #[tokio::main]
 async fn main() {
-    let dir = unique_temp_dir("datafusion-cudf-native-tpch-execution");
+    let dir = unique_temp_dir("datafusion-nexus-native-tpch-execution");
     let TpchExecutionReport { report, metadata } = tpch_report(&dir).await.unwrap();
     print!("{}", report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata()).to_tsv());
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn tpch_report(dir: &std::path::Path) -> datafusion_cudf::TpchWorkloadResult<TpchExecutionReport> {
+async fn tpch_report(dir: &std::path::Path) -> datafusion_nexus::TpchWorkloadResult<TpchExecutionReport> {
     let (root, metadata) = prepare_tpch_report_dataset(dir)?;
     let optimizer_config =
         tpch_native_optimizer_config().with_native_pipeline_execution_mode(native_pipeline_execution_mode_from_env());

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "Vendored cuGraph datasets and curated reference outputs used by the datafusion-cudf cuGraph parity harness. Source: ../cugraph-rs/cugraph/datasets/ (Apache-2.0). Edge CSVs are space-separated 'dst src weight' triples following the cuGraph convention. Reference outputs under ref/ are cuGraph-curated.",
+  "description": "Vendored cuGraph datasets and curated reference outputs used by the datafusion-nexus cuGraph parity harness. Source: ../cugraph-rs/cugraph/datasets/ (Apache-2.0). Edge CSVs are space-separated 'dst src weight' triples following the cuGraph convention. Reference outputs under ref/ are cuGraph-curated.",
   "source_repo": "rapidsai/cugraph (vendored via ../cugraph-rs)",
   "license": "Apache-2.0",
   "datasets": [

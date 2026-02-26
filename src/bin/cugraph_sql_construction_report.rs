@@ -18,7 +18,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, displayable, metrics::MetricsSet},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, CugraphSqlConfig,
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics, NativePipelineExecutionMode,
 };
@@ -54,7 +54,7 @@ const HEADER: &str = concat!(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let rows = env_usize(ROWS_ENV, 4096);
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-construction-report");
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-construction-report");
     let result = run_report(&dir, rows).await;
     fs::remove_dir_all(&dir).ok();
     result

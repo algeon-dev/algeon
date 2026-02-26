@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
-use cudf_query_engine::{
+use datafusion::{
+    datasource::physical_plan::{FileScanConfig, ParquetSource},
+    physical_plan::filter::FilterExec,
+};
+use nexus_query_engine::{
     ByteRangeDisposition as NativeByteRangeDisposition, PartitionColumnDisposition as NativePartitionColumnDisposition,
     PredicateDisposition as NativePredicateDisposition, RejectedSourceFeature as NativeRejectedSourceFeature,
     ScanLimitDisposition as NativeScanLimitDisposition, SchemaMappingDisposition as NativeSchemaMappingDisposition,
     SourceDiagnostics as NativeSourceDiagnostics, ZeroColumnCountDisposition as NativeZeroColumnCountDisposition,
-};
-use datafusion::{
-    datasource::physical_plan::{FileScanConfig, ParquetSource},
-    physical_plan::filter::FilterExec,
 };
 
 use super::{
@@ -257,7 +257,7 @@ pub(in crate::native) fn local_parquet_source_diagnostics(
     rejected_features.dedup();
 
     NativeSourceDiagnostics {
-        format: cudf_query_engine::SourceFormat::Parquet,
+        format: nexus_query_engine::SourceFormat::Parquet,
         source_read_strategy: "local_kvikio".to_string(),
         source_decode_input: "filepath".to_string(),
         credential_mode: "none".to_string(),

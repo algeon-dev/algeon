@@ -1,6 +1,6 @@
 use arrow::datatypes::{DataType, IntervalMonthDayNanoType, TimeUnit};
-use cudf_query_engine::{LiteralValue as NativeLiteralValue, is_supported_arrow_type};
 use datafusion::common::ScalarValue;
+use nexus_query_engine::{LiteralValue as NativeLiteralValue, is_supported_arrow_type};
 
 use crate::policy::FallbackReason;
 

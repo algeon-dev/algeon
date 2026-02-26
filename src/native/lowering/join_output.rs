@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
-use cudf_query_engine::{
+use datafusion::{common::JoinSide as DataFusionJoinSide, logical_expr::JoinType, physical_plan::ExecutionPlan};
+use nexus_query_engine::{
     ColumnRef as NativeColumnRef, JoinOutputColumn as NativeJoinOutputColumn, JoinSide as NativeJoinSide,
 };
-use datafusion::{common::JoinSide as DataFusionJoinSide, logical_expr::JoinType, physical_plan::ExecutionPlan};
 
 use super::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, join::CanonicalJoin};
 use crate::{
@@ -127,7 +127,7 @@ fn hidden_row_count_input<'a>(
 ) -> Option<(DataFusionJoinSide, &'a LoweredNativeInput, &'a FieldBinding)> {
     if matches!(
         canonical.native_join_type(),
-        cudf_query_engine::JoinType::LeftSemi | cudf_query_engine::JoinType::LeftAnti
+        nexus_query_engine::JoinType::LeftSemi | nexus_query_engine::JoinType::LeftAnti
     ) {
         return first_binding_for_side(left, right, canonical.datafusion_side_for_native_left());
     }

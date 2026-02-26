@@ -9,7 +9,8 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use cudf_query_engine::{
+use datafusion_nexus::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
+use nexus_query_engine::{
     GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
     GRAPH_OPERATION_REGISTRY, GpuResidentSource, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec,
     GraphBfsParams, GraphConstructionOptions, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
@@ -21,7 +22,6 @@ use cudf_query_engine::{
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     stable_graph_result_schema,
 };
-use datafusion_cudf::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
 
 /// Build a default params variant for one registered algorithm.
 pub fn default_params(algorithm: GraphAlgorithm) -> GraphAlgorithmParams {
@@ -184,7 +184,7 @@ fn registry_pins_current_cugraph_sql_inventory() {
     // change shows up as a focused test failure here, separate from the cuGraph
     // SQL plumbing tests. Extend this list when a new algorithm lands; the
     // matching native-side pin lives in
-    // `crates/cudf-query-engine/tests/native_contract_tests/graph_algorithm.rs`.
+    // `crates/nexus-query-engine/tests/native_contract_tests/graph_algorithm.rs`.
     let registered: Vec<_> = CUGRAPH_OPERATION_REGISTRY.iter().map(|e| e.algorithm).collect();
     assert_eq!(
         registered,

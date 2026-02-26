@@ -311,7 +311,7 @@ async fn build_alias_provider(
             "iceberg-cpu feature is required to build CPU IcebergStaticTableProvider",
             crate::Error::new(
                 crate::ErrorCode::CudfInvalidInput,
-                "datafusion_cudf.server.session.build_alias_provider",
+                "datafusion_nexus.server.session.build_alias_provider",
                 "iceberg-cpu feature disabled at build time",
             ),
         )),

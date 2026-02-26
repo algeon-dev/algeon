@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion_cudf::{
+use datafusion_nexus::{
     FallbackReason, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
     TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
     TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatPartitionValue,

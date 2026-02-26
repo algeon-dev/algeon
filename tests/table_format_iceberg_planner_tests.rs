@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use datafusion_cudf::{
+use datafusion_nexus::{
     FallbackReason, TableFormatDataFileFormat, TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition,
     TableFormatReadCapability, iceberg::iceberg_file_scan_tasks_to_table_format_scan_plan,
 };

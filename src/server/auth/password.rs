@@ -4,8 +4,9 @@ use std::fmt;
 
 use argon2::{
     Argon2,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng},
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt, SaltString},
 };
+use rand::{TryRng, rngs::SysRng};
 
 #[derive(Debug)]
 pub enum PasswordHashError {
@@ -46,7 +47,12 @@ pub fn verify_password(password: &str, phc_string: &str) -> Result<bool, Passwor
 /// Operators run this once per user when authoring the TOML config and
 /// paste the returned PHC string into `password_hash`.
 pub fn hash_password(password: &str) -> Result<String, PasswordHashError> {
-    let salt = SaltString::generate(&mut OsRng);
+    let mut salt_bytes = [0u8; Salt::RECOMMENDED_LENGTH];
+    SysRng
+        .try_fill_bytes(&mut salt_bytes)
+        .map_err(|error| PasswordHashError::HashFailure(format!("failed to generate password salt: {error}")))?;
+    let salt =
+        SaltString::encode_b64(&salt_bytes).map_err(|error| PasswordHashError::HashFailure(error.to_string()))?;
     Argon2::default()
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())

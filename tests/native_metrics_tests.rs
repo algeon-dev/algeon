@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use cudf_query_engine::{
+use datafusion_nexus::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
+use nexus_query_engine::{
     ExecutionContext, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, LocalParquetFile, LocalParquetSource,
     MemoryControlPolicy, MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, QueryMetrics,
     QueryPlanBuilder, ReservationKind, SourceChunk, SourceNode,
 };
-use datafusion_cudf::NATIVE_CUDF_DATAFUSION_METRIC_NAMES;
 
 #[test]
 fn query_metrics_records_peak_device_memory_observation() {
@@ -134,9 +134,9 @@ fn query_metrics_reservation_timeline_records_live_ledger_deltas() {
 
     metrics.record_reservation_granted_timeline_event(&request, MemoryReservationEventAction::Reserve, 60, 60, 60);
     metrics.record_reservation_granted_timeline_event(&grow, MemoryReservationEventAction::Grow, 20, 20, 80);
-    metrics.record_reservation_timeline_event(cudf_query_engine::MemoryReservationEvent::from_request(
+    metrics.record_reservation_timeline_event(nexus_query_engine::MemoryReservationEvent::from_request(
         &grow,
-        cudf_query_engine::MemoryReservationEventOutcome::Applied,
+        nexus_query_engine::MemoryReservationEventOutcome::Applied,
         MemoryReservationEventAction::Shrink,
         0,
         -30,

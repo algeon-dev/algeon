@@ -11,7 +11,7 @@
 #
 # The script:
 #   1. Resolves DuckDB binary + version.
-#   2. Captures datafusion-cudf git rev + working-tree state.
+#   2. Captures datafusion-nexus git rev + working-tree state.
 #   3. Runs DuckDB's tpcds extension to dump query_nr 1..99 to per-query files.
 #   4. Assembles src/workload/tpcds_queries.rs with a provenance header.
 #
@@ -125,7 +125,7 @@ header = f"""\
 //   duckdb_binary       : {DUCKDB_BIN_ABS}
 //   duckdb_version      : {DUCKDB_VERSION}
 //   extraction_command  : {EXTRACT_CMD}
-//   datafusion_cudf_rev : {GIT_REV}
+//   datafusion_nexus_rev : {GIT_REV}
 //   working_tree        : {GIT_TREE}
 //   rewrite_applied     : {REWRITE}
 //

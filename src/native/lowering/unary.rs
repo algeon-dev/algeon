@@ -1,11 +1,11 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
-use cudf_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
 use datafusion::{
     physical_expr::PhysicalExpr,
     physical_plan::{ExecutionPlan, projection::ProjectionExec},
 };
+use nexus_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
 
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,

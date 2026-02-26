@@ -192,7 +192,7 @@ fn native_tpcds_session_config(mut config: SessionConfig) -> SessionConfig {
 /// from GPU-only `cugraph_*` calls.
 pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
-        cudf_query_engine::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+        nexus_query_engine::StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
     )
 }
 
@@ -206,12 +206,12 @@ pub fn tpcds_native_optimizer_config() -> CudfOptimizerConfig {
 /// DataFusion compatibility.
 pub fn tpcds_native_analytics_optimizer_config() -> CudfOptimizerConfig {
     tpcds_native_optimizer_config_with_statistical_aggregate_default(
-        cudf_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
+        nexus_query_engine::StatisticalAggregateExecutionMode::GpuNativeTolerant,
     )
 }
 
 fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
-    statistical_aggregate_execution_mode_default: cudf_query_engine::StatisticalAggregateExecutionMode,
+    statistical_aggregate_execution_mode_default: nexus_query_engine::StatisticalAggregateExecutionMode,
 ) -> CudfOptimizerConfig {
     let device_budget_bytes = optional_env_u64(CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV)
         .unwrap_or_else(NativeCudfExecutionConfig::auto_sized_device_budget_bytes);
@@ -230,7 +230,7 @@ fn tpcds_native_optimizer_config_with_statistical_aggregate_default(
     // than being routed through DataFusion CPU fallback as a small/selective
     // preference. Leave the env constants above in place so the old benchmark
     // gate can be restored once graph SQL has an explicit GPU-only boundary.
-    let preference_options = cudf_query_engine::NativePlanPreferenceOptions::disabled();
+    let preference_options = nexus_query_engine::NativePlanPreferenceOptions::disabled();
     CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
         .with_native_execution_config(
             NativeCudfExecutionConfig::bounded(
@@ -261,7 +261,8 @@ fn optional_env_usize(name: &'static str) -> Option<usize> {
     })
 }
 
-fn optional_env_statistical_aggregate_execution_mode() -> Option<cudf_query_engine::StatisticalAggregateExecutionMode> {
+fn optional_env_statistical_aggregate_execution_mode() -> Option<nexus_query_engine::StatisticalAggregateExecutionMode>
+{
     optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV)
         .or_else(|| {
             optional_env_statistical_aggregate_execution_mode_for(CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV)
@@ -270,9 +271,9 @@ fn optional_env_statistical_aggregate_execution_mode() -> Option<cudf_query_engi
 
 fn optional_env_statistical_aggregate_execution_mode_for(
     name: &'static str,
-) -> Option<cudf_query_engine::StatisticalAggregateExecutionMode> {
+) -> Option<nexus_query_engine::StatisticalAggregateExecutionMode> {
     std::env::var(name).ok().map(|value| {
-        value.parse::<cudf_query_engine::StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
+        value.parse::<nexus_query_engine::StatisticalAggregateExecutionMode>().unwrap_or_else(|error| {
             panic!("unsupported {name}={value}; expected datafusion_exact_host_welford or gpu_native_tolerant: {error}")
         })
     })

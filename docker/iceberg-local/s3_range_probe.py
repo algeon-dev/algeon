@@ -9,11 +9,11 @@ full-object GET of the data file: RustFS's own logs report storage-shard reads
 for the whole object regardless of the client Range header, so they cannot
 distinguish the two.
 
-Usage (point datafusion-cudf at the proxy instead of RustFS directly):
+Usage (point datafusion-nexus at the proxy instead of RustFS directly):
 
     docker/iceberg-local/s3_range_probe.py --listen 9100 --upstream http://localhost:9000 \
         --log /tmp/s3_range_probe.jsonl &
-    DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT=http://localhost:9100 ... <run the scan>
+    DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9100 ... <run the scan>
 
 Each forwarded request is appended to the log file as one JSON object:
 

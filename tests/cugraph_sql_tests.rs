@@ -20,7 +20,7 @@ use datafusion::{
     physical_plan::displayable,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUGRAPH_BFS_PATH_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
     CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION, CudfOptimizerConfig, CudfSessionStateBuilderExt,
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSourceVertex,
@@ -243,13 +243,13 @@ async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
 
 #[test]
 fn cugraph_sql_operation_registry_matches_native_engine_inventory() {
-    use cudf_query_engine::GRAPH_OPERATION_REGISTRY;
+    use nexus_query_engine::GRAPH_OPERATION_REGISTRY;
 
     let sql_algorithms: Vec<_> = CUGRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.native_algorithm).collect();
     let native_algorithms: Vec<_> = GRAPH_OPERATION_REGISTRY.iter().map(|entry| entry.algorithm).collect();
     assert_eq!(
         sql_algorithms, native_algorithms,
-        "SQL-side cuGraph registry must mirror the cudf-query-engine graph operation registry, in order",
+        "SQL-side cuGraph registry must mirror the nexus-query-engine graph operation registry, in order",
     );
 
     for entry in CUGRAPH_OPERATION_REGISTRY {
@@ -639,7 +639,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(spec.weight_col, Some("weight".to_string()));
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::PageRank(datafusion_cudf::CugraphPageRankParams {
+        CugraphAlgorithmParams::PageRank(datafusion_nexus::CugraphPageRankParams {
             alpha: 0.7,
             epsilon: 0.001,
             max_iterations: 25,
@@ -661,7 +661,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Bfs(datafusion_cudf::CugraphBfsParams {
+        CugraphAlgorithmParams::Bfs(datafusion_nexus::CugraphBfsParams {
             source_vertex: CugraphBfsSourceVertex::Int64(42),
             depth_limit: Some(3),
             ..Default::default()
@@ -803,7 +803,10 @@ fn cugraph_sql_planning_parses_algorithm_options() {
         &config,
     )
     .unwrap();
-    assert_eq!(spec.params, CugraphAlgorithmParams::Louvain(datafusion_cudf::CugraphLouvainParams { resolution: 2.5 }));
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Louvain(datafusion_nexus::CugraphLouvainParams { resolution: 2.5 })
+    );
 
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::EigenvectorCentrality,
@@ -819,7 +822,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::EigenvectorCentrality(datafusion_cudf::CugraphEigenvectorCentralityParams {
+        CugraphAlgorithmParams::EigenvectorCentrality(datafusion_nexus::CugraphEigenvectorCentralityParams {
             epsilon: 0.0005,
             max_iterations: 80,
         })
@@ -877,7 +880,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::KatzCentrality(datafusion_cudf::CugraphKatzCentralityParams {
+        CugraphAlgorithmParams::KatzCentrality(datafusion_nexus::CugraphKatzCentralityParams {
             alpha: 0.02,
             beta: 0.5,
             epsilon: 1.0e-7,
@@ -972,7 +975,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Hits(datafusion_cudf::CugraphHitsParams {
+        CugraphAlgorithmParams::Hits(datafusion_nexus::CugraphHitsParams {
             epsilon: 0.0001,
             max_iterations: 50,
             normalize: true,
@@ -1031,7 +1034,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Sssp(datafusion_cudf::CugraphSsspParams { source_vertex: 5, cutoff: Some(10.5) }),
+        CugraphAlgorithmParams::Sssp(datafusion_nexus::CugraphSsspParams { source_vertex: 5, cutoff: Some(10.5) }),
     );
     // cutoff < 0 rejected.
     assert_error_contains(
@@ -1065,8 +1068,8 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::CoreNumber(datafusion_cudf::CugraphCoreNumberParams {
-            degree_type: datafusion_cudf::CugraphKCoreDegreeType::In,
+        CugraphAlgorithmParams::CoreNumber(datafusion_nexus::CugraphCoreNumberParams {
+            degree_type: datafusion_nexus::CugraphKCoreDegreeType::In,
         }),
     );
 
@@ -1085,9 +1088,9 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::KCore(datafusion_cudf::CugraphKCoreParams {
+        CugraphAlgorithmParams::KCore(datafusion_nexus::CugraphKCoreParams {
             k: 3,
-            degree_type: datafusion_cudf::CugraphKCoreDegreeType::Out,
+            degree_type: datafusion_nexus::CugraphKCoreDegreeType::Out,
         }),
     );
     // k=0 rejected.
@@ -1136,7 +1139,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::PageRankStrict(datafusion_cudf::CugraphPageRankParams {
+        CugraphAlgorithmParams::PageRankStrict(datafusion_nexus::CugraphPageRankParams {
             alpha: 0.9,
             epsilon: 0.0001,
             max_iterations: 50,
@@ -1173,7 +1176,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Leiden(datafusion_cudf::CugraphLeidenParams {
+        CugraphAlgorithmParams::Leiden(datafusion_nexus::CugraphLeidenParams {
             max_level: 50,
             resolution: 0.8,
             theta: 0.5,
@@ -1226,7 +1229,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::Ecg(datafusion_cudf::CugraphEcgParams {
+        CugraphAlgorithmParams::Ecg(datafusion_nexus::CugraphEcgParams {
             min_weight: 0.01,
             ensemble_size: 5,
             max_level: 50,
@@ -1266,7 +1269,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::SpectralModularityMaximization(datafusion_cudf::CugraphSpectralClusteringParams {
+        CugraphAlgorithmParams::SpectralModularityMaximization(datafusion_nexus::CugraphSpectralClusteringParams {
             n_clusters: 4,
             n_eigenvectors: 3,
             seed: 99,
@@ -1304,7 +1307,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     .unwrap();
     assert_eq!(
         spec.params,
-        CugraphAlgorithmParams::BalancedCutClustering(datafusion_cudf::CugraphSpectralClusteringParams {
+        CugraphAlgorithmParams::BalancedCutClustering(datafusion_nexus::CugraphSpectralClusteringParams {
             n_clusters: 3,
             seed: 11,
             ..Default::default()
@@ -1555,7 +1558,7 @@ async fn assert_sql_schema(ctx: &SessionContext, sql: &str, algorithm: CugraphAl
     }
 }
 
-fn assert_error_contains(result: datafusion::common::Result<datafusion_cudf::CugraphAlgorithmSpec>, expected: &str) {
+fn assert_error_contains(result: datafusion::common::Result<datafusion_nexus::CugraphAlgorithmSpec>, expected: &str) {
     let error = result.unwrap_err().to_string();
     assert!(error.contains(expected), "expected error containing {expected:?}, got {error:?}",);
 }
@@ -1662,7 +1665,7 @@ fn cugraph_sql_planning_schema_contracts_are_exact() {
 
 #[tokio::test]
 async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_schema_order() {
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-louvain-planning");
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-louvain-planning");
     let path = dir.join("tiny_communities.parquet");
     write_tiny_communities(&path);
 
@@ -1722,7 +1725,7 @@ async fn cugraph_sql_planning_direct_table_louvain_physical_plan_preserves_edge_
 
 #[tokio::test]
 async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_views() {
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-normalized-planning");
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-normalized-planning");
     let directed_path = dir.join("tiny_directed_edges.parquet");
     let undirected_path = dir.join("tiny_communities.parquet");
     write_tiny_directed_edges(&directed_path);
@@ -1846,7 +1849,7 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
 
 #[tokio::test]
 async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_collect() {
-    let dir = unique_temp_dir("datafusion-cudf-cugraph-pagerank-compose");
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");
     write_tiny_directed_edges(&path);
 

@@ -1,4 +1,3 @@
-use cudf_query_engine::LimitSpec as NativeLimitSpec;
 use datafusion::{
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
@@ -19,6 +18,7 @@ use datafusion::{
         windows::{BoundedWindowAggExec, WindowAggExec},
     },
 };
+use nexus_query_engine::LimitSpec as NativeLimitSpec;
 
 use crate::{
     native_exec::gpu_resident_producer_input_name, policy::FallbackReason, report::GpuCandidate,

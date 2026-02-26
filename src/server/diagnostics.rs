@@ -48,7 +48,7 @@ use crate::{
 /// and this guard does not fire.
 const CPU_FALLBACK_PROFILE_HINT: &str = "expected in cpu_fallback session profile over Iceberg when the \
      `iceberg-cpu` feature was not compiled in — rebuild with --features iceberg-cpu, or switch to \
-     DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native";
+     DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=native";
 
 /// Stable bucket for common Flight SQL native-rejection codes.
 ///
@@ -127,7 +127,7 @@ pub fn log_native_planning_report(query_id: &str, report: Option<&PlanningReport
         rejected_count = report.rejected_count(),
         first_native_rejection = first_rejection.map(FallbackReason::code).unwrap_or(""),
         rejection_class = rejection_class.map(FlightSqlNativeRejectClass::as_str).unwrap_or(""),
-        "datafusion-cudf native planning report"
+        "datafusion-nexus native planning report"
     );
 }
 
@@ -159,7 +159,7 @@ pub fn log_leaf_guard_rejection(query_id: &str, error: &DataFusionError, profile
         rejection_class = fields.rejection_class.as_str(),
         session_profile = profile.as_str(),
         profile_hint = profile_hint(profile),
-        "datafusion-cudf Flight SQL planning rejected by GPU-only table-format leaf guard"
+        "datafusion-nexus Flight SQL planning rejected by GPU-only table-format leaf guard"
     );
 }
 
@@ -327,7 +327,7 @@ mod tests {
     fn find_adapter_error_recurses_through_context_and_collection() {
         let inner = Error::new(
             ErrorCode::NativeCandidateRejected,
-            "datafusion_cudf.planner.table_format_gpu_only_leaf_guard",
+            "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
             "rejected by leaf guard",
         )
         .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code());
@@ -344,7 +344,7 @@ mod tests {
     fn leaf_guard_error(first_native_rejection: Option<&str>) -> DataFusionError {
         let mut error = Error::new(
             ErrorCode::NativeCandidateRejected,
-            "datafusion_cudf.planner.table_format_gpu_only_leaf_guard",
+            "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
             "table-format scan leaf was not rewritten to native",
         )
         .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
@@ -392,7 +392,7 @@ mod tests {
         assert!(leaf_guard_event_fields(&DataFusionError::Plan("not a leaf guard error".to_string())).is_none());
 
         let other_adapter =
-            Error::new(ErrorCode::UnsupportedExpression, "datafusion_cudf.test", "some other adapter error")
+            Error::new(ErrorCode::UnsupportedExpression, "datafusion_nexus.test", "some other adapter error")
                 .with_fact("fallback_reason", FallbackReason::UnsupportedExpression.code());
         let df_error: DataFusionError = other_adapter.into();
         assert!(leaf_guard_event_fields(&df_error).is_none());
@@ -426,7 +426,7 @@ mod tests {
         let cpu_hint = profile_hint(ServerSessionProfile::CpuFallback);
         assert!(!cpu_hint.is_empty(), "cpu_fallback profile must carry a hint");
         assert!(
-            cpu_hint.contains("DATAFUSION_CUDF_SERVER_SESSION_PROFILE=native"),
+            cpu_hint.contains("DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=native"),
             "the hint must point operators back at the env var to fix the profile; got {cpu_hint:?}",
         );
         assert!(

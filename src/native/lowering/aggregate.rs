@@ -1,15 +1,15 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
-use cudf_query_engine::{
+use datafusion::{
+    physical_expr::{expressions::Column, projection::ProjectionExprs},
+    physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec, sorts::sort::SortExec},
+};
+use nexus_query_engine::{
     AggregateExpr as NativeAggregateExpr, AggregateFunction as NativeAggregateFunction,
     AggregateSpec as NativeAggregateSpec, Expr as NativeExpr, GroupingSetsSpec as NativeGroupingSetsSpec,
     NodeId as NativeNodeId, QueryPlanBuilder as NativeQueryPlanBuilder,
     ZERO_COLUMN_COUNT_COLUMN as NATIVE_ZERO_COLUMN_COUNT_COLUMN,
-};
-use datafusion::{
-    physical_expr::{expressions::Column, projection::ProjectionExprs},
-    physical_plan::{ExecutionPlan, aggregates::AggregateExec, projection::ProjectionExec, sorts::sort::SortExec},
 };
 
 use super::{

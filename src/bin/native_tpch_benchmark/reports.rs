@@ -1,5 +1,5 @@
-use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
-use datafusion_cudf::NativeStrictBoundedCompiledGraphDiagnostics;
+use datafusion_nexus::NativeStrictBoundedCompiledGraphDiagnostics;
+use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
 use super::*;
 

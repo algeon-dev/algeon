@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn benchmark_shape_lowers_to_one_native_query_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
@@ -81,7 +81,7 @@ fn benchmark_shape_lowers_to_one_native_query_plan() {
 
 #[test]
 fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-multi-file");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-multi-file");
     let first = dir.join("part-000.parquet");
     let second = dir.join("part-001.parquet");
     write_numeric_parquet_file(&first);
@@ -117,7 +117,7 @@ fn multi_full_file_parquet_scan_lowers_to_one_native_source() {
 
 #[test]
 fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-row-groups");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-row-groups");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let access_plan = ParquetAccessPlan::new(vec![
@@ -156,7 +156,7 @@ fn explicit_parquet_row_group_access_plan_lowers_to_native_row_groups() {
 
 #[test]
 fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-row-selection");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-row-selection");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let selection = RowSelection::from(vec![RowSelector::select(1), RowSelector::skip(1)]);
@@ -181,7 +181,7 @@ fn parquet_row_level_access_plan_is_rejected_with_source_reason() {
 
 #[test]
 fn modulo_projection_expression_lowers_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-unsupported-expression");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-unsupported-expression");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
@@ -197,7 +197,7 @@ fn modulo_projection_expression_lowers_during_native_planning() {
 
 #[test]
 fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-modulo-float");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-modulo-float");
     let path = dir.join("input.parquet");
     write_float_measure_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Modulo);
@@ -216,7 +216,7 @@ fn modulo_with_non_integral_operands_is_rejected_during_native_planning() {
 
 #[test]
 fn tpch_like_source_types_do_not_reject_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-types");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-types");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let scan = parquet_scan(&path);
@@ -237,7 +237,7 @@ fn tpch_like_source_types_do_not_reject_native_planning() {
 
 #[test]
 fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-scan-property");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scan-property");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path).with_fetch(Some(1)).unwrap();
@@ -259,7 +259,7 @@ fn order_insensitive_pushed_down_scan_limit_lowers_to_native_source() {
 
 #[test]
 fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-order-sensitive-scan-limit");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-order-sensitive-scan-limit");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_order_sensitive_limit(&path, 1);
@@ -282,7 +282,7 @@ fn order_sensitive_single_file_group_scan_limit_lowers_to_native_source() {
 
 #[test]
 fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-order-sensitive-multi-group");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-order-sensitive-multi-group");
     write_numeric_parquet_file(&dir.join("part-000.parquet"));
     write_numeric_parquet_file(&dir.join("part-001.parquet"));
     let scan = parquet_scan_with_order_sensitive_limit_one_file_per_group(&dir, 1);
@@ -305,7 +305,7 @@ fn order_sensitive_multi_file_group_scan_limit_remains_rejected() {
 
 #[test]
 fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-topk");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-topk");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = aggregate_topk_plan(parquet_scan(&path), Operator::Plus, 2);
@@ -327,7 +327,7 @@ fn topk_sort_fetch_lowers_to_native_sort_plus_limit() {
 
 #[test]
 fn phase5_sort_without_fetch_over_aggregate_lowers_without_native_limit() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sort-no-fetch");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sort-no-fetch");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
@@ -346,7 +346,7 @@ fn phase5_sort_without_fetch_over_aggregate_lowers_without_native_limit() {
 
 #[test]
 fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-aggregate-root-limit-no-source-pushdown");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-aggregate-root-limit-no-source-pushdown");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let sorted = aggregate_sort_plan_without_filter(parquet_scan(&path), Operator::Plus);
@@ -367,7 +367,7 @@ fn aggregate_root_global_limit_does_not_push_scan_limit_to_source() {
 
 #[test]
 fn nested_limit_offsets_push_enough_rows_to_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-nested-limit-source-pushdown");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nested-limit-source-pushdown");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -389,7 +389,7 @@ fn nested_limit_offsets_push_enough_rows_to_source() {
 
 #[test]
 fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-zero-limit-source-pushdown");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-zero-limit-source-pushdown");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(parquet_scan(&path), 100, Some(0)));
@@ -405,7 +405,7 @@ fn zero_fetch_global_limit_pushes_zero_scan_limit_to_source() {
 
 #[test]
 fn sort_preserving_merge_is_rejected_with_stable_native_reason() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sort-preserving-merge");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sort-preserving-merge");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let sort = aggregate_topk_plan(parquet_scan(&path), Operator::Plus, 2);
@@ -427,7 +427,7 @@ fn sort_preserving_merge_is_rejected_with_stable_native_reason() {
 
 #[test]
 fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sort-preserving-merge-fetch");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sort-preserving-merge-fetch");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let sort = aggregate_sort_plan(parquet_scan(&path), Operator::Plus);
@@ -451,7 +451,7 @@ fn sort_preserving_merge_with_child_fetch_smaller_than_root_fetch_is_rejected() 
 
 #[test]
 fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-aggregate-compacted-bindings");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-aggregate-compacted-bindings");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = grouped_late_column_multi_sum_sort_limit_plan(parquet_scan(&path));

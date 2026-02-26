@@ -24,7 +24,7 @@ pub(super) struct NativeTpchBenchmarkConfig {
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchRuntimeResources {
     pub(super) runtime: Option<Arc<cudf::Runtime>>,
-    pub(super) source_cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+    pub(super) source_cache: Option<Arc<nexus_query_engine::GpuLocalParquetSourceCache>>,
 }
 
 impl NativeTpchBenchmarkConfig {
@@ -94,7 +94,7 @@ impl NativeTpchBenchmarkConfig {
                 max_retry_attempts,
                 min_retry_chunk_row_groups,
             )
-            .with_source_scheduler_policy(cudf_query_engine::SourceSchedulerPolicy::new(
+            .with_source_scheduler_policy(nexus_query_engine::SourceSchedulerPolicy::new(
                 self.max_source_reads_in_flight,
             )),
         };
@@ -112,7 +112,7 @@ impl NativeTpchBenchmarkConfig {
         let source_cache = match self.native_source_cache_policy {
             NativeTpchSourceCachePolicy::Disabled => None,
             NativeTpchSourceCachePolicy::GpuResident { max_retained_bytes } => {
-                Some(Arc::new(cudf_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes)))
+                Some(Arc::new(nexus_query_engine::GpuLocalParquetSourceCache::new(max_retained_bytes)))
             },
         };
         Ok(NativeTpchRuntimeResources { runtime: Some(runtime), source_cache })
@@ -140,7 +140,7 @@ trait NativeExecutionConfigSourceCacheExt {
 
     fn with_optional_local_parquet_source_cache(
         self,
-        cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+        cache: Option<Arc<nexus_query_engine::GpuLocalParquetSourceCache>>,
     ) -> Self;
 }
 
@@ -154,7 +154,7 @@ impl NativeExecutionConfigSourceCacheExt for NativeCudfExecutionConfig {
 
     fn with_optional_local_parquet_source_cache(
         self,
-        cache: Option<Arc<cudf_query_engine::GpuLocalParquetSourceCache>>,
+        cache: Option<Arc<nexus_query_engine::GpuLocalParquetSourceCache>>,
     ) -> Self {
         match cache {
             Some(cache) => self.with_local_parquet_source_cache(cache),

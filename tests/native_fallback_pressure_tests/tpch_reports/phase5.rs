@@ -2,7 +2,7 @@ use super::super::*;
 
 #[tokio::test]
 async fn tpch_phase5_progression_contract_pairs_fallback_pressure_and_bounded_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-tpch-phase5-progression");
+    let dir = unique_temp_dir("datafusion-nexus-tpch-phase5-progression");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let fallback = NativeFallbackPressureReport::collect(

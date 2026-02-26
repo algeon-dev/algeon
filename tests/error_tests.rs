@@ -1,5 +1,5 @@
 use datafusion::common::DataFusionError;
-use datafusion_cudf::{Error, ErrorCode, ErrorKind, ErrorStatus};
+use datafusion_nexus::{Error, ErrorCode, ErrorKind, ErrorStatus};
 
 #[test]
 fn error_code_projections_are_stable_policy_contracts() {
@@ -36,7 +36,7 @@ fn error_code_projections_are_stable_policy_contracts() {
 fn error_keeps_machine_code_operation_and_context_facts() {
     let error = Error::new(
         ErrorCode::NativeCandidateRejected,
-        "datafusion_cudf.native.optimize_plan",
+        "datafusion_nexus.native.optimize_plan",
         "cuDF native candidate rejected by adapter policy",
     )
     .with_fact("fallback_reason", "unsupported_expression")
@@ -45,12 +45,12 @@ fn error_keeps_machine_code_operation_and_context_facts() {
     assert_eq!(error.code(), ErrorCode::NativeCandidateRejected);
     assert_eq!(error.kind(), ErrorKind::Planning);
     assert_eq!(error.status(), ErrorStatus::Permanent);
-    assert_eq!(error.operation(), "datafusion_cudf.native.optimize_plan");
+    assert_eq!(error.operation(), "datafusion_nexus.native.optimize_plan");
     assert_eq!(error.fact_value("fallback_reason"), Some("unsupported_expression"));
 
     let display = error.to_string();
     assert!(display.contains("code=native_candidate_rejected"));
-    assert!(display.contains("operation=datafusion_cudf.native.optimize_plan"));
+    assert!(display.contains("operation=datafusion_nexus.native.optimize_plan"));
     assert!(display.contains("fallback_reason=unsupported_expression"));
 }
 
@@ -58,7 +58,7 @@ fn error_keeps_machine_code_operation_and_context_facts() {
 fn datafusion_conversion_preserves_typed_adapter_error() {
     let error = Error::new(
         ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.native.try_new",
+        "datafusion_nexus.native.try_new",
         "cannot build native cuDF execution plan",
     )
     .with_fact("plan_node", "EmptyExec");
@@ -68,7 +68,7 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
         panic!("adapter errors must cross the DataFusion boundary as typed external errors");
     };
     let adapter_error =
-        source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_cudf::Error");
+        source.downcast_ref::<Error>().expect("DataFusion external error should preserve datafusion_nexus::Error");
 
     assert_eq!(adapter_error.code(), ErrorCode::InvalidExecutionPlan);
     assert_eq!(adapter_error.kind(), ErrorKind::Planning);
@@ -77,12 +77,12 @@ fn datafusion_conversion_preserves_typed_adapter_error() {
 
 #[test]
 fn native_cancelled_error_preserves_adapter_classification_and_facts() {
-    let native_error = cudf_query_engine::ExecutionCancellation::new();
+    let native_error = nexus_query_engine::ExecutionCancellation::new();
     native_error.cancel();
     let adapter_error = Error::from_native(
-        "datafusion_cudf.native_exec.execute",
+        "datafusion_nexus.native_exec.execute",
         "native cudf query execution failed",
-        native_error.check("cudf_query_engine.exec.execute_query_plan").unwrap_err(),
+        native_error.check("nexus_query_engine.exec.execute_query_plan").unwrap_err(),
     );
 
     assert_eq!(adapter_error.code(), ErrorCode::Cancelled);
@@ -95,7 +95,7 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
 #[test]
 fn native_memory_reservation_error_preserves_adapter_classification_and_facts() {
     let native_error =
-        cudf_query_engine::MemoryReservationRequest::new(cudf_query_engine::ReservationKind::FinalSort, 4096, 2048)
+        nexus_query_engine::MemoryReservationRequest::new(nexus_query_engine::ReservationKind::FinalSort, 4096, 2048)
             .with_memory_boundary("final_sort")
             .with_node_id("n5")
             .with_stage("final_sort")
@@ -105,7 +105,7 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
             .denied_error(1024);
 
     let adapter_error =
-        Error::from_native("datafusion_cudf.native.execute", "native cudf query execution failed", native_error);
+        Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
     assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
@@ -123,24 +123,24 @@ fn native_memory_reservation_error_preserves_adapter_classification_and_facts() 
 
 #[test]
 fn native_retry_error_preserves_resume_boundary_facts() {
-    let native_error = cudf_query_engine::RetryFacts::new()
+    let native_error = nexus_query_engine::RetryFacts::new()
         .with_retry_action("reduce_final_sort_fan_in")
         .with_resume_boundary("final_sort")
         .with_committed_chunks(4)
         .with_committed_partials(4)
         .with_merge_level(2)
         .with_merge_fan_in(8)
-        .attach_to_error(cudf_query_engine::QueryError::new(
-            cudf_query_engine::QueryErrorCode::MemoryReservationFailed,
-            "cudf_query_engine.final_sort.topk_concat",
+        .attach_to_error(nexus_query_engine::QueryError::new(
+            nexus_query_engine::QueryErrorCode::MemoryReservationFailed,
+            "nexus_query_engine.final_sort.topk_concat",
             "native final sort exhausted bounded memory",
         ));
 
     let adapter_error =
-        Error::from_native("datafusion_cudf.native_exec.execute", "native cudf query execution failed", native_error);
+        Error::from_native("datafusion_nexus.native_exec.execute", "native cudf query execution failed", native_error);
 
     assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
-    assert_eq!(adapter_error.fact_value("native_operation"), Some("cudf_query_engine.final_sort.topk_concat"));
+    assert_eq!(adapter_error.fact_value("native_operation"), Some("nexus_query_engine.final_sort.topk_concat"));
     assert_eq!(adapter_error.fact_value("retry_action"), Some("reduce_final_sort_fan_in"));
     assert_eq!(adapter_error.fact_value("resume_boundary"), Some("final_sort"));
     assert_eq!(adapter_error.fact_value("committed_chunks"), Some("4"));

@@ -1,8 +1,8 @@
 use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use cudf_query_engine::GraphAlgorithm as NativeGraphAlgorithm;
 use datafusion::common::{DataFusionError, Result};
+use nexus_query_engine::GraphAlgorithm as NativeGraphAlgorithm;
 
 use super::plan_error;
 use crate::NativeCudfExecutionConfig;
@@ -132,7 +132,7 @@ impl CugraphAlgorithm {
 /// Registry-level metadata for a SQL-visible cuGraph operation.
 ///
 /// One entry per [`CugraphAlgorithm`] variant. Mirrors
-/// [`cudf_query_engine::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
+/// [`nexus_query_engine::GRAPH_OPERATION_REGISTRY`]: each SQL UDTF resolves to
 /// the same native algorithm advertised by the engine, and the SQL function
 /// name follows the `cugraph_<native_name>` convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -626,7 +626,7 @@ pub struct CugraphEigenvectorCentralityParams {
 
 impl Default for CugraphEigenvectorCentralityParams {
     fn default() -> Self {
-        // Mirrors `cudf_query_engine::GraphEigenvectorCentralityParams::default`.
+        // Mirrors `nexus_query_engine::GraphEigenvectorCentralityParams::default`.
         Self { epsilon: 1.0e-6, max_iterations: 500 }
     }
 }
@@ -641,7 +641,7 @@ pub struct CugraphKatzCentralityParams {
 
 impl Default for CugraphKatzCentralityParams {
     fn default() -> Self {
-        // Mirrors `cudf_query_engine::GraphKatzCentralityParams::default`.
+        // Mirrors `nexus_query_engine::GraphKatzCentralityParams::default`.
         Self { alpha: 0.01, beta: 1.0, epsilon: 1.0e-6, max_iterations: 1000 }
     }
 }
@@ -655,7 +655,7 @@ pub struct CugraphHitsParams {
 
 impl Default for CugraphHitsParams {
     fn default() -> Self {
-        // Mirrors `cudf_query_engine::GraphHitsParams::default`.
+        // Mirrors `nexus_query_engine::GraphHitsParams::default`.
         Self { epsilon: 1.0e-5, max_iterations: 100, normalize: false }
     }
 }
@@ -687,7 +687,7 @@ pub struct CugraphTriangleCountAllParams;
 
 /// Degree direction for core-number and k-core SQL parameters.
 ///
-/// Mirrors `cudf_query_engine::GraphKCoreDegreeType`.
+/// Mirrors `nexus_query_engine::GraphKCoreDegreeType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CugraphKCoreDegreeType {
     In,
@@ -725,7 +725,7 @@ pub struct CugraphKCoreParams {
 
 impl Default for CugraphKCoreParams {
     fn default() -> Self {
-        // Mirrors `cudf_query_engine::GraphKCoreParams::default`.
+        // Mirrors `nexus_query_engine::GraphKCoreParams::default`.
         Self { k: 2, degree_type: CugraphKCoreDegreeType::InOut }
     }
 }
@@ -748,7 +748,7 @@ pub struct CugraphLeidenParams {
 
 impl Default for CugraphLeidenParams {
     fn default() -> Self {
-        // Matches cudf_query_engine::GraphLeidenParams::default().
+        // Matches nexus_query_engine::GraphLeidenParams::default().
         Self { max_level: 100, resolution: 1.0, theta: 1.0, seed: 0 }
     }
 }
@@ -772,7 +772,7 @@ pub struct CugraphEcgParams {
 
 impl Default for CugraphEcgParams {
     fn default() -> Self {
-        // Matches cudf_query_engine::GraphEcgParams::default().
+        // Matches nexus_query_engine::GraphEcgParams::default().
         Self { min_weight: 0.001, ensemble_size: 10, max_level: 100, threshold: 1.0e-7, resolution: 1.0, seed: 0 }
     }
 }
@@ -798,7 +798,7 @@ pub struct CugraphSpectralClusteringParams {
 
 impl Default for CugraphSpectralClusteringParams {
     fn default() -> Self {
-        // Matches cudf_query_engine::GraphSpectralClusteringParams::default().
+        // Matches nexus_query_engine::GraphSpectralClusteringParams::default().
         Self {
             n_clusters: 2,
             n_eigenvectors: 2,

@@ -197,7 +197,7 @@ impl TpcdsDatasetMetadata {
 
 /// Describes the generated tiny TPC-DS fixture under `root`.
 pub fn tiny_tpcds_dataset_metadata(root: &Path) -> TpcdsWorkloadResult<TpcdsDatasetMetadata> {
-    describe_tpcds_dataset(root, "tiny", "generated_tiny", "datafusion-cudf::write_tiny_tpcds_parquet_dataset")
+    describe_tpcds_dataset(root, "tiny", "generated_tiny", "datafusion-nexus::write_tiny_tpcds_parquet_dataset")
 }
 
 /// Describes an externally supplied TPC-DS Parquet fixture.
@@ -469,7 +469,7 @@ fn tpcds_dataset_metadata_fingerprint(
     tables: &[TpcdsTableMetadata],
 ) -> String {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpcds-dataset-metadata-v1");
+    hasher.update_field("datafusion-nexus-tpcds-dataset-metadata-v1");
     hasher.update_field(scale_factor);
     hasher.update_field(provenance);
     hasher.update_field(generation_command);
@@ -500,7 +500,7 @@ fn tpcds_dataset_metadata_fingerprint(
 
 fn tpcds_dataset_content_fingerprint(tables: &[TpcdsTableMetadata]) -> TpcdsWorkloadResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpcds-dataset-content-v1");
+    hasher.update_field("datafusion-nexus-tpcds-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];
     for table in tables {
         hasher.update_field(&table.table);

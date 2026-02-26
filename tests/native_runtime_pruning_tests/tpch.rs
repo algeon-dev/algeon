@@ -7,7 +7,7 @@ use super::{fixtures::date32, *};
 
 #[tokio::test]
 async fn native_runtime_tpch_q6_tiny_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q6-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q6-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     assert_tpch_q6_native_parity(&dir.join("lineitem.parquet")).await;
@@ -17,7 +17,7 @@ async fn native_runtime_tpch_q6_tiny_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q1_tiny_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q1-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q1-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q1 = TPCH_QUERIES.iter().find(|query| query.id == "q01").expect("TPC-H Q1 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q1.sql).await;
@@ -44,7 +44,7 @@ async fn native_runtime_tpch_q1_tiny_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q3-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q3-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q3 = TPCH_QUERIES.iter().find(|query| query.id == "q03").expect("TPC-H Q3 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q3.sql).await;
@@ -67,7 +67,7 @@ async fn native_runtime_tpch_q3_tiny_join_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q7-tiny-bounded");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q7-tiny-bounded");
     write_q7_nonempty_tpch_parquet_dataset(&dir);
     let q7 = TPCH_QUERIES.iter().find(|query| query.id == "q07").expect("TPC-H Q7 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q7.sql).await;
@@ -104,7 +104,7 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
 
 #[tokio::test]
 async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q2-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q2-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q2 = TPCH_QUERIES.iter().find(|query| query.id == "q02").expect("TPC-H Q2 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q2.sql).await;
@@ -134,7 +134,7 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
 
 #[tokio::test]
 async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q19-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q19-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q19 = TPCH_QUERIES.iter().find(|query| query.id == "q19").expect("TPC-H Q19 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q19.sql).await;
@@ -157,7 +157,7 @@ async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q15_tiny_root_join_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q15-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q15-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q15 = TPCH_QUERIES.iter().find(|query| query.id == "q15").expect("TPC-H Q15 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q15.sql).await;
@@ -180,7 +180,7 @@ async fn native_runtime_tpch_q15_tiny_root_join_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q18-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q18-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q18 = TPCH_QUERIES.iter().find(|query| query.id == "q18").expect("TPC-H Q18 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q18.sql).await;
@@ -203,12 +203,12 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == cudf_query_engine::ReservationKind::OperatorOutput
+            && event.reservation_kind == nexus_query_engine::ReservationKind::OperatorOutput
             && event.memory_boundary == "compiled_aggregate"
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == cudf_query_engine::ReservationKind::FinalSort
+            && event.reservation_kind == nexus_query_engine::ReservationKind::FinalSort
             && event.memory_boundary == "final_sort"
     }));
     assert!(
@@ -240,7 +240,7 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
 
 #[tokio::test]
 async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q20-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q20-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q20 = TPCH_QUERIES.iter().find(|query| query.id == "q20").expect("TPC-H Q20 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q20.sql).await;
@@ -261,12 +261,12 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == cudf_query_engine::ReservationKind::OperatorOutput
+            && event.reservation_kind == nexus_query_engine::ReservationKind::OperatorOutput
             && event.memory_boundary == "compiled_projection"
     }));
     assert!(direct_metrics.reservation_events.iter().any(|event| {
         event.outcome.as_str() == "granted"
-            && event.reservation_kind == cudf_query_engine::ReservationKind::FinalSort
+            && event.reservation_kind == nexus_query_engine::ReservationKind::FinalSort
             && event.memory_boundary == "final_sort"
     }));
     assert!(
@@ -298,7 +298,7 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
 
 #[tokio::test]
 async fn native_runtime_tpch_q16_tiny_distinct_anti_join_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q16-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q16-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q16 = TPCH_QUERIES.iter().find(|query| query.id == "q16").expect("TPC-H Q16 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q16.sql).await;
@@ -321,7 +321,7 @@ async fn native_runtime_tpch_q16_tiny_distinct_anti_join_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q11-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
@@ -344,7 +344,7 @@ async fn native_runtime_tpch_q11_tiny_nested_loop_having_subquery_matches_cpu() 
 
 #[tokio::test]
 async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-bounded");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q11-tiny-bounded");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q11.sql).await;
@@ -370,7 +370,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
 
 #[tokio::test]
 async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservation_facts() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q11-tiny-budget-failure");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q11-tiny-budget-failure");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
 
@@ -406,7 +406,7 @@ async fn native_runtime_tpch_q11_tiny_bounded_budget_failure_preserves_reservati
 
 #[tokio::test]
 async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q17-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q17-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q17 = TPCH_QUERIES.iter().find(|query| query.id == "q17").expect("TPC-H Q17 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q17.sql).await;
@@ -429,7 +429,7 @@ async fn native_runtime_tpch_q17_tiny_bounded_decimal_residual_matches_cpu() {
 
 #[tokio::test]
 async fn native_runtime_tpch_q22_tiny_bounded_scalar_subquery_matches_cpu() {
-    let dir = unique_temp_dir("datafusion-cudf-native-runtime-tpch-q22-tiny");
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q22-tiny");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q22 = TPCH_QUERIES.iter().find(|query| query.id == "q22").expect("TPC-H Q22 query must exist");
     let cpu_batches = cpu_tpch_sql_output(&dir, q22.sql).await;

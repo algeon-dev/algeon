@@ -10,10 +10,6 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{
-    ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LocalParquetFile,
-    LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
-};
 use datafusion::{
     common::{DataFusionError, NullEquality, ScalarValue},
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
@@ -35,8 +31,12 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, TPCH_TABLES, tpch_report_session_config,
+};
+use nexus_query_engine::{
+    ColumnRef, GpuResidentSource, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LocalParquetFile,
+    LocalParquetSource, QueryPlan, QueryPlanBuilder, SourceNode,
 };
 
 pub(super) fn bounded_config() -> NativeCudfExecutionConfig {
@@ -89,7 +89,7 @@ pub(super) fn gpu_resident_host_sink_plan(input_name: &str, schema: Arc<Schema>)
 }
 
 fn local_parquet_source() -> LocalParquetSource {
-    LocalParquetSource::new("/tmp/datafusion-cudf-native-exec-test.parquet", schema(), vec!["key".to_string()])
+    LocalParquetSource::new("/tmp/datafusion-nexus-native-exec-test.parquet", schema(), vec!["key".to_string()])
 }
 
 pub(super) fn int32_array(batch: &RecordBatch, index: usize) -> &Int32Array {
@@ -100,11 +100,11 @@ pub(super) fn int64_array(batch: &RecordBatch, index: usize) -> &Int64Array {
     batch.column(index).as_any().downcast_ref::<Int64Array>().unwrap()
 }
 
-pub(super) fn adapter_error(error: &DataFusionError) -> &datafusion_cudf::Error {
+pub(super) fn adapter_error(error: &DataFusionError) -> &datafusion_nexus::Error {
     let DataFusionError::External(source) = error else {
         panic!("native execution errors should cross DataFusion as external adapter errors: {error}");
     };
-    source.downcast_ref::<datafusion_cudf::Error>().expect("DataFusion external error should preserve adapter Error")
+    source.downcast_ref::<datafusion_nexus::Error>().expect("DataFusion external error should preserve adapter Error")
 }
 
 fn schema() -> Arc<Schema> {

@@ -8,7 +8,7 @@
 
 #![deny(missing_docs)]
 
-use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
+use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
 use super::metrics::NativeDataFusionExecutionMetrics;
 use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
@@ -43,7 +43,7 @@ pub struct NativeDataFusionPlanningRow {
     /// Adaptive-only rows; strict evidence must not be projected here.
     pub adaptive_pipeline_rows: Vec<AdaptivePipelineReportRow>,
     /// Native optimizer diagnostics emitted while preparing the candidate.
-    pub native_optimizer: cudf_query_engine::NativeOptimizerDiagnostics,
+    pub native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics,
     /// Whether the optimized DataFusion plan contains an explicit native edge-list normalization step.
     pub edge_normalize_inserted: bool,
     /// Nested join-shape diagnostics serialized as stable key/value rows.

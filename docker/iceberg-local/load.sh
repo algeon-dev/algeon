@@ -13,7 +13,7 @@
 # map-type encoding is rejected by iceberg-rust 0.9.0's schema deserializer, so
 # DuckDB is used for TPC-DS *generation* only, not for the Iceberg write.
 #
-# Naming contract (must match datafusion-cudf registration):
+# Naming contract (must match datafusion-nexus registration):
 #   catalog   : lake
 #   namespace : tpch_sf<SF> / tpcds_sf<SF>   (scale carried by namespace)
 #   tables    : bare names (lineitem, store_sales, ...)

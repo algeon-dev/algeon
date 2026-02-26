@@ -131,10 +131,10 @@ fn prepare_external_dataset(
 }
 
 fn default_root_for(scale_factor: NativeTpchScaleFactor) -> &'static str {
-    datafusion_cudf::default_tpch_parquet_root(match scale_factor {
-        NativeTpchScaleFactor::Sf1 => datafusion_cudf::TpchDefaultScale::Sf1,
-        NativeTpchScaleFactor::Sf10 => datafusion_cudf::TpchDefaultScale::Sf10,
-        NativeTpchScaleFactor::Sf100 => datafusion_cudf::TpchDefaultScale::Sf100Optimized,
+    datafusion_nexus::default_tpch_parquet_root(match scale_factor {
+        NativeTpchScaleFactor::Sf1 => datafusion_nexus::TpchDefaultScale::Sf1,
+        NativeTpchScaleFactor::Sf10 => datafusion_nexus::TpchDefaultScale::Sf10,
+        NativeTpchScaleFactor::Sf100 => datafusion_nexus::TpchDefaultScale::Sf100Optimized,
     })
 }
 

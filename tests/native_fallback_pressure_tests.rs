@@ -10,14 +10,6 @@ use arrow::{
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
-use cudf_query_engine::{
-    AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy, GpuResidentSource, LocalParquetSource,
-    QueryPlanBuilder, SourceNode, StrictBoundedContractGateId, StrictBoundedContractGateRow,
-    StrictBoundedContractOwner, StrictBoundedContractReport, StrictBoundedExecutionMode,
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
-    pipeline::{ReservationGateId, ReservationGateOwner},
-    runtime::ReservationKind,
-};
 use datafusion::{
     common::{ScalarValue, config::ConfigOptions},
     execution::SessionStateBuilder,
@@ -41,7 +33,7 @@ use datafusion::{
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     AD_HOC_OLAP_QUERIES, AD_HOC_OLAP_QUERY_COUNT, AdHocOlapCapabilityFirstAdmission, AdHocOlapCurrentStrictAdmission,
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, FallbackReason, GpuCandidate,
     GpuFallbackPolicy, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
@@ -62,6 +54,14 @@ use datafusion_cudf::{
     tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_native_optimizer_config,
     tpch_query_ids, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
     write_tiny_tpch_parquet_dataset,
+};
+use nexus_query_engine::{
+    AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy, GpuResidentSource, LocalParquetSource,
+    QueryPlanBuilder, SourceNode, StrictBoundedContractGateId, StrictBoundedContractGateRow,
+    StrictBoundedContractOwner, StrictBoundedContractReport, StrictBoundedExecutionMode,
+    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
+    pipeline::{ReservationGateId, ReservationGateOwner},
+    runtime::ReservationKind,
 };
 
 const EXPECTED_BOUNDED_TPCH_ACCEPTED: &[&str] = &[
@@ -89,7 +89,7 @@ use support::*;
 
 #[tokio::test]
 async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
-    let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure");
+    let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
 
@@ -265,7 +265,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
 
 #[tokio::test]
 async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper() {
-    let dir = unique_temp_dir("datafusion-cudf-native-planning-topk-category");
+    let dir = unique_temp_dir("datafusion-nexus-native-planning-topk-category");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(
@@ -306,7 +306,7 @@ async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper
 
 #[tokio::test]
 async fn adaptive_fallback_pressure_report_projects_adaptive_rows_only_when_selected() {
-    let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure-adaptive");
+    let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure-adaptive");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_numeric_parquet_file(&left);
@@ -335,7 +335,7 @@ async fn adaptive_fallback_pressure_report_projects_adaptive_rows_only_when_sele
 
 #[tokio::test]
 async fn native_fallback_pressure_report_keeps_supported_typed_null_literals_out_of_unsupported_category() {
-    let dir = unique_temp_dir("datafusion-cudf-native-fallback-pressure-typed-null-literal");
+    let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure-typed-null-literal");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path).await;
@@ -359,7 +359,7 @@ async fn native_fallback_pressure_report_keeps_supported_typed_null_literals_out
 
 #[tokio::test]
 async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes() {
-    let dir = unique_temp_dir("datafusion-cudf-native-datafusion-planning-report");
+    let dir = unique_temp_dir("datafusion-nexus-native-datafusion-planning-report");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
 

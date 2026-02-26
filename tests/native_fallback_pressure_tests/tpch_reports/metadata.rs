@@ -2,7 +2,7 @@ use super::super::*;
 
 #[tokio::test]
 async fn tpch_workload_builder_generates_stable_query_items() {
-    let dir = unique_temp_dir("datafusion-cudf-tpch-workload-builder");
+    let dir = unique_temp_dir("datafusion-nexus-tpch-workload-builder");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     for table in TPCH_TABLES {
@@ -11,7 +11,7 @@ async fn tpch_workload_builder_generates_stable_query_items() {
     let metadata = tiny_tpch_dataset_metadata(&dir).unwrap();
     assert_eq!(metadata.scale_factor, "tiny");
     assert_eq!(metadata.provenance, "generated_tiny");
-    assert_eq!(metadata.generation_command, "datafusion-cudf::write_tiny_tpch_parquet_dataset");
+    assert_eq!(metadata.generation_command, "datafusion-nexus::write_tiny_tpch_parquet_dataset");
     assert_eq!(metadata.table_count, TPCH_TABLES.len());
     assert_eq!(metadata.file_count, TPCH_TABLES.len());
     assert_eq!(metadata.total_rows, 26);
@@ -38,9 +38,9 @@ async fn tpch_workload_builder_generates_stable_query_items() {
 
 #[tokio::test]
 async fn tpch_metadata_accepts_directory_layouts_and_pins_fingerprint_semantics() {
-    let source = unique_temp_dir("datafusion-cudf-tpch-directory-layout-source");
-    let layout_a = unique_temp_dir("datafusion-cudf-tpch-directory-layout-a");
-    let layout_b = unique_temp_dir("datafusion-cudf-tpch-directory-layout-b");
+    let source = unique_temp_dir("datafusion-nexus-tpch-directory-layout-source");
+    let layout_a = unique_temp_dir("datafusion-nexus-tpch-directory-layout-a");
+    let layout_b = unique_temp_dir("datafusion-nexus-tpch-directory-layout-b");
     write_tiny_tpch_parquet_dataset(&source).unwrap();
     copy_tiny_tpch_as_directory_layout(&source, &layout_a, &["part-000.parquet"]);
     copy_tiny_tpch_as_directory_layout(&source, &layout_b, &["renamed-000.parquet"]);
@@ -79,8 +79,8 @@ async fn tpch_metadata_accepts_directory_layouts_and_pins_fingerprint_semantics(
 
 #[tokio::test]
 async fn tpch_workload_builder_registers_multi_file_directory_layout() {
-    let source = unique_temp_dir("datafusion-cudf-tpch-multi-file-source");
-    let layout = unique_temp_dir("datafusion-cudf-tpch-multi-file-layout");
+    let source = unique_temp_dir("datafusion-nexus-tpch-multi-file-source");
+    let layout = unique_temp_dir("datafusion-nexus-tpch-multi-file-layout");
     write_tiny_tpch_parquet_dataset(&source).unwrap();
     copy_tiny_tpch_as_directory_layout(&source, &layout, &["part-000.parquet", "part-001.parquet"]);
 
@@ -109,8 +109,8 @@ async fn tpch_workload_builder_registers_multi_file_directory_layout() {
 // logical `lineitem` table.
 #[tokio::test]
 async fn tpch_workload_builder_accepts_sf100_sibling_split_layout() {
-    let source = unique_temp_dir("datafusion-cudf-tpch-sibling-split-source");
-    let layout = unique_temp_dir("datafusion-cudf-tpch-sibling-split-layout");
+    let source = unique_temp_dir("datafusion-nexus-tpch-sibling-split-source");
+    let layout = unique_temp_dir("datafusion-nexus-tpch-sibling-split-layout");
     write_tiny_tpch_parquet_dataset(&source).unwrap();
     copy_tiny_tpch_as_sibling_split_layout(&source, &layout, &["lineitem"], 2);
 

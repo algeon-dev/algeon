@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_grouping() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-tpch-q22");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-tpch-q22");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let items = tpch_fallback_pressure_workload_items(&dir, tpch_report_session_config()).await.unwrap();
     let q22 = items.into_iter().find(|item| item.query_id == "q22").expect("TPC-H workload should include q22");

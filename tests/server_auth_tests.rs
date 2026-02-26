@@ -3,7 +3,7 @@
 use std::{io::Write, net::TcpListener, time::Duration};
 
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
-use datafusion_cudf::server::{AuthConfig, AuthMode, ServerConfig, StaticUserConfig, auth::hash_password, serve};
+use datafusion_nexus::server::{AuthConfig, AuthMode, ServerConfig, StaticUserConfig, auth::hash_password, serve};
 use tonic::{Code, transport::Endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -128,7 +128,7 @@ roles = ["reader"]
     let path_str = path.to_string_lossy().into_owned();
 
     let config = ServerConfig::from_env_get(|name| {
-        if name == "DATAFUSION_CUDF_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
+        if name == "DATAFUSION_NEXUS_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
     })
     .expect("load config with TOML overlay");
 
@@ -157,7 +157,7 @@ password_hash = "plaintext-not-allowed"
     let path_str = path.to_string_lossy().into_owned();
 
     let err = ServerConfig::from_env_get(|name| {
-        if name == "DATAFUSION_CUDF_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
+        if name == "DATAFUSION_NEXUS_SERVER_CONFIG_FILE" { Some(path_str.clone()) } else { None }
     })
     .expect_err("plaintext password must be rejected at load time");
     let msg = err.to_string();

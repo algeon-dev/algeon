@@ -12,7 +12,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use rand::{RngCore, rngs::OsRng};
+use rand::{TryRng, rngs::SysRng};
 
 /// Identity attached to an authenticated request. Populated by the
 /// interceptor and read by any downstream handler that wants to log /
@@ -42,7 +42,7 @@ struct TokenEntry {
 ///
 /// # Token format
 ///
-/// Tokens are 32 random bytes produced by [`rand::rngs::OsRng`], encoded
+/// Tokens are 32 random bytes produced by [`rand::rngs::SysRng`], encoded
 /// as URL-safe base64 without padding. That is 43 characters of
 /// `[A-Za-z0-9_-]`, fits cleanly inside an `Authorization: Bearer <...>`
 /// header, and has 256 bits of entropy.
@@ -61,7 +61,7 @@ impl TokenStore {
     /// string the server should hand to the client.
     pub fn issue(&self, principal: Principal, ttl: Option<Duration>) -> String {
         let mut bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut bytes);
+        SysRng.try_fill_bytes(&mut bytes).expect("system random source must be available to issue bearer tokens");
         let token = base64_url_no_pad(&bytes);
         let expires_at = ttl.map(|ttl| Instant::now() + ttl);
         self.inner.insert(token.clone(), TokenEntry { principal, expires_at });

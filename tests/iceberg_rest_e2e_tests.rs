@@ -11,13 +11,13 @@
 //! nerdctl compose -f docker/iceberg-local/docker-compose.yml up -d
 //! docker/iceberg-local/load.sh            # loader (Phase 3c)
 //! CUDF_ICEBERG_REST_E2E=1 \
-//!   DATAFUSION_CUDF_ICEBERG_REST_URI=http://localhost:8181 \
-//!   DATAFUSION_CUDF_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
-//!   DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
-//!   DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE=true \
-//!   DATAFUSION_CUDF_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
-//!   DATAFUSION_CUDF_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
-//!   DATAFUSION_CUDF_ICEBERG_NAMESPACE=tpch_sf1 \
+//!   DATAFUSION_NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
+//!   DATAFUSION_NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
+//!   DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
+//!   DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE=true \
+//!   DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
+//!   DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
+//!   DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 //!   cargo test --features iceberg --test iceberg_rest_e2e_tests -- --ignored --nocapture
 //! ```
 #![cfg(feature = "iceberg")]
@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use datafusion::catalog::CatalogProvider;
-use datafusion_cudf::iceberg::catalog::{
+use datafusion_nexus::iceberg::catalog::{
     IcebergCatalogBackend, IcebergProviderKind, RestIcebergCatalogBackend, RestIcebergCatalogConfig,
     build_scoped_catalog_provider_from_backend,
 };
@@ -36,22 +36,23 @@ fn e2e_enabled() -> bool {
     std::env::var("CUDF_ICEBERG_REST_E2E").map(|v| v == "1").unwrap_or(false)
 }
 
-/// Builds a REST config from the standard `DATAFUSION_CUDF_ICEBERG_*` env vars.
-/// S3 credentials are resolved from `DATAFUSION_CUDF_ICEBERG_S3_*` by the
+/// Builds a REST config from the standard `DATAFUSION_NEXUS_ICEBERG_*` env vars.
+/// S3 credentials are resolved from `DATAFUSION_NEXUS_ICEBERG_S3_*` by the
 /// backend itself (never `AWS_*`).
 fn rest_config_from_env() -> RestIcebergCatalogConfig {
-    let uri = std::env::var("DATAFUSION_CUDF_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
+    let uri =
+        std::env::var("DATAFUSION_NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
     let warehouse =
-        std::env::var("DATAFUSION_CUDF_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
+        std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
 
     let mut config = RestIcebergCatalogConfig::new("lake", uri, warehouse);
-    if let Ok(endpoint) = std::env::var("DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT") {
+    if let Ok(endpoint) = std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT") {
         config = config.with_s3_endpoint(endpoint);
     }
-    if let Ok(region) = std::env::var("DATAFUSION_CUDF_ICEBERG_S3_REGION") {
+    if let Ok(region) = std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_REGION") {
         config = config.with_s3_region(region);
     }
-    if let Ok(path_style) = std::env::var("DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE") {
+    if let Ok(path_style) = std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE") {
         config = config.with_s3_path_style_access(path_style == "true");
     }
     config
@@ -84,8 +85,8 @@ async fn rest_scoped_catalog_provider_discovers_tables_live() {
         return;
     }
 
-    let namespace = std::env::var("DATAFUSION_CUDF_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_CUDF_ICEBERG_NAMESPACE for live REST test");
+    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
+        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live REST test");
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
@@ -110,7 +111,7 @@ async fn rest_scoped_catalog_provider_discovers_tables_live() {
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
-/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_CUDF_ICEBERG_NAMESPACE=tpch_sf1 \
+/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 ///   CUDF_ICEBERG_REST_E2E_TABLE=nation CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS=25 \
 ///   ... cargo test --features iceberg-cpu --test iceberg_rest_e2e_tests \
 ///   rest_datafusion_scan_live -- --ignored --nocapture
@@ -126,8 +127,8 @@ async fn rest_datafusion_scan_live() {
         return;
     }
 
-    let namespace = std::env::var("DATAFUSION_CUDF_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_CUDF_ICEBERG_NAMESPACE for live REST scan test");
+    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
+        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live REST scan test");
     let table = std::env::var("CUDF_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
     let expected_rows: Option<i64> =
         std::env::var("CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS").ok().and_then(|v| v.parse().ok());
@@ -172,7 +173,7 @@ async fn rest_datafusion_scan_live() {
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
-/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_CUDF_ICEBERG_NAMESPACE=tpch_sf1 \
+/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 ///   ... cargo test --features iceberg --test iceberg_rest_e2e_tests \
 ///   rest_table_metadata_contract_live -- --ignored --nocapture
 /// ```
@@ -184,8 +185,8 @@ async fn rest_table_metadata_contract_live() {
         return;
     }
 
-    let namespace = std::env::var("DATAFUSION_CUDF_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_CUDF_ICEBERG_NAMESPACE for live REST metadata test");
+    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
+        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live REST metadata test");
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
@@ -245,7 +246,7 @@ async fn rest_table_metadata_contract_live() {
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
-/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_CUDF_ICEBERG_NAMESPACE=tpch_sf1 \
+/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 ///   ... cargo test --features iceberg-cpu --test iceberg_rest_e2e_tests \
 ///   rest_native_planning_and_parity_live -- --ignored --nocapture
 /// ```
@@ -258,7 +259,7 @@ async fn rest_native_planning_and_parity_live() {
         physical_plan::displayable,
         prelude::{SessionConfig, SessionContext},
     };
-    use datafusion_cudf::{
+    use datafusion_nexus::{
         CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy, NativeCudfExecutionConfig,
     };
 
@@ -267,8 +268,8 @@ async fn rest_native_planning_and_parity_live() {
         return;
     }
 
-    let namespace = std::env::var("DATAFUSION_CUDF_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_CUDF_ICEBERG_NAMESPACE for live REST planning/parity test");
+    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
+        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for live REST planning/parity test");
     // `nation` is small and has a `n_regionkey` group key — a stable
     // aggregate-over-Iceberg shape the native rule rewrites.
     let table = std::env::var("CUDF_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());

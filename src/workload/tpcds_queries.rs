@@ -8,7 +8,7 @@
 //   duckdb_binary       : /home/ubuntu/bin/duckdb
 //   duckdb_version      : v1.5.2 (Variegata) 8a5851971f
 //   extraction_command  : duckdb <tmpdb> -c "INSTALL tpcds; LOAD tpcds; COPY (SELECT query FROM tpcds_queries() WHERE query_nr = N) TO 'qNN.sql' (HEADER false, QUOTE '', DELIMITER '');" for N in 1..99
-//   datafusion_cudf_rev : 00d7b03fd52c848c4f558ce37f324cda259d963f
+//   datafusion_nexus_rev : 00d7b03fd52c848c4f558ce37f324cda259d963f
 //   working_tree        : dirty
 //   rewrite_applied     : trailing semicolon and trailing whitespace stripped per query; otherwise vendored verbatim
 //

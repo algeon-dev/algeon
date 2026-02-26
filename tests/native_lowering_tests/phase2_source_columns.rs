@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn adapter_validation_rejects_like_over_non_string_input() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-like-type-reject");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-like-type-reject");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -29,7 +29,7 @@ fn adapter_validation_rejects_like_over_non_string_input() {
 
 #[tokio::test]
 async fn adapter_validation_rejects_extract_over_date64_until_native_dtype_contract_exists() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-date64-extract-reject");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-date64-extract-reject");
     let path = dir.join("input.parquet");
     write_date64_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_DATE64_EXTRACT_QUERY).await;
@@ -48,7 +48,7 @@ async fn adapter_validation_rejects_extract_over_date64_until_native_dtype_contr
 
 #[test]
 fn pushed_scan_projection_reads_only_downstream_required_columns() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-scan-projection-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-scan-projection-pruning");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan_with_projection_indices(&path, vec![0, 1, 2, 3]);
@@ -68,7 +68,7 @@ fn pushed_scan_projection_reads_only_downstream_required_columns() {
 
 #[tokio::test]
 async fn phase2_filter_predicate_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-filter-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-filter-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_FILTER_REQUIRED_COLUMNS_QUERY).await;
@@ -92,7 +92,7 @@ async fn phase2_filter_predicate_required_source_columns_are_exact() {
 
 #[tokio::test]
 async fn phase2_pre_aggregate_projection_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-pre-projection-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-pre-projection-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan =
@@ -114,7 +114,7 @@ async fn phase2_pre_aggregate_projection_required_source_columns_are_exact() {
 
 #[tokio::test]
 async fn phase2_aggregate_argument_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-aggregate-argument-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-aggregate-argument-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan =
@@ -140,7 +140,7 @@ async fn phase2_aggregate_argument_required_source_columns_are_exact() {
 
 #[tokio::test]
 async fn phase2_group_expression_required_source_columns_are_exact() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-group-expression-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-group-expression-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_PHASE2_GROUP_REQUIRED_COLUMNS_QUERY).await;
@@ -160,7 +160,7 @@ async fn phase2_group_expression_required_source_columns_are_exact() {
 
 #[tokio::test]
 async fn pushed_scan_projection_prunes_payload_for_nested_phase2_scalars() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-phase2-scan-projection-columns");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-phase2-scan-projection-columns");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan =

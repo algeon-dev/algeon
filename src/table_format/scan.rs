@@ -3,8 +3,8 @@
 use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
-use cudf_query_engine::{CredentialMode, LakehouseCacheStatus, ResolvedParquetSource};
 use futures::future::BoxFuture;
+use nexus_query_engine::{CredentialMode, LakehouseCacheStatus, ResolvedParquetSource};
 
 use crate::{Result, policy::FallbackReason};
 
@@ -251,7 +251,7 @@ pub struct TableFormatParquetReadStrategyConfig {
     pub storage_endpoint: Option<String>,
     /// Execution-time native source storage profile id.
     ///
-    /// This id references a `cudf-query-engine` profile registered on the native
+    /// This id references a `nexus-query-engine` profile registered on the native
     /// execution config. It is not a credential and is safe for diagnostics.
     pub storage_profile_id: Option<String>,
     /// Credential mode used for remote object-store reads.
@@ -310,15 +310,15 @@ fn table_format_parquet_read_strategy_config_from_env(
     };
     let lakehouse_cache_max_bytes =
         get("CUDF_LAKEHOUSE_CACHE_MAX_BYTES").and_then(|value| value.parse::<u64>().ok()).filter(|value| *value > 0);
-    let storage_endpoint = env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT")
+    let storage_endpoint = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT")
         .or_else(|| env_nonempty(&mut get, "AWS_ENDPOINT_URL_S3"))
         .or_else(|| env_nonempty(&mut get, "AWS_ENDPOINT_URL"))
         .map(|endpoint| credential_free_endpoint_identity(&endpoint));
     let storage_profile_id = if storage_endpoint.is_some()
-        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_REGION").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_ACCESS_KEY_ID").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_CUDF_ICEBERG_S3_SESSION_TOKEN").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_REGION").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
+        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN").is_some()
     {
         Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string())
     } else {
@@ -475,13 +475,13 @@ pub fn resolve_table_format_parquet_source_with_metadata(
         },
         TableFormatReadCapability::ObjectStore { scheme } => Err(crate::Error::new(
             crate::ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.table_format.resolve_parquet_source",
+            "datafusion_nexus.table_format.resolve_parquet_source",
             "unsupported table-format object-store parquet source scheme",
         )
         .with_fact("source_location_scheme", scheme.as_str())),
         TableFormatReadCapability::Unsupported { reason } => Err(crate::Error::new(
             crate::ErrorCode::InvalidExecutionPlan,
-            "datafusion_cudf.table_format.resolve_parquet_source",
+            "datafusion_nexus.table_format.resolve_parquet_source",
             "unsupported table-format parquet source location",
         )
         .with_fact("reason", reason.as_str())),
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn table_format_parquet_read_strategy_config_from_env_uses_catalog_endpoint_identity() {
         let env = BTreeMap::from([
-            ("DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT", "http://user:secret@rustfs.local:9000/minio?sig=secret"),
+            ("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT", "http://user:secret@rustfs.local:9000/minio?sig=secret"),
             ("AWS_ENDPOINT_URL_S3", "https://aws.example.invalid"),
         ]);
         let config =

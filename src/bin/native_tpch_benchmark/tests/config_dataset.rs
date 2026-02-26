@@ -128,7 +128,7 @@ fn direct_config_rejects_empty_query_list() {
 async fn benchmark_runner_validates_direct_config_before_selecting_queries() {
     let config =
         NativeTpchBenchmarkConfig { query_ids: vec!["q99".to_string()], ..NativeTpchBenchmarkConfig::default() };
-    let dir = unique_temp_dir("datafusion-cudf-native-tpch-invalid-config");
+    let dir = unique_temp_dir("datafusion-nexus-native-tpch-invalid-config");
     let error = run_native_tpch_benchmark(&config, &dir).await.expect_err("invalid direct configs must not panic");
 
     assert!(error.to_string().contains("unknown TPC-H query id q99"));

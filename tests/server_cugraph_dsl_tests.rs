@@ -14,8 +14,8 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
-use datafusion_cudf::server::{
-    DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve,
+use datafusion_nexus::server::{
+    DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -24,13 +24,13 @@ use tonic::{Code, transport::Endpoint};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     let addr = free_local_addr();
-    let env = BTreeMap::from([(DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 
     let server = tokio::spawn(async move { serve(config).await });
     let mut client = connect_with_retry(addr).await;
-    let dir = unique_temp_dir("datafusion-cudf-server-cugraph-flight");
+    let dir = unique_temp_dir("datafusion-nexus-server-cugraph-flight");
     let parquet_path = dir.join("edges.parquet");
     write_edge_parquet(&parquet_path);
 
@@ -101,8 +101,8 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
     let addr = free_local_addr();
     let env = BTreeMap::from([
-        (DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
+        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
     ]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;

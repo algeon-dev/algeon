@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_host_sink_schema() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-root-aggregate");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-duplicate-root-aggregate");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = duplicate_named_root_aggregate_sort_limit_plan(parquet_scan(&path));
@@ -51,7 +51,7 @@ fn duplicate_named_root_aggregate_uses_unique_executable_schema_and_restores_hos
 
 #[test]
 fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-root-group-aliases");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-duplicate-root-group-aliases");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = duplicate_group_alias_root_aggregate_sort_limit_plan(parquet_scan(&path));
@@ -134,7 +134,7 @@ fn duplicate_group_alias_root_aggregate_uses_unique_synthetic_input_projection()
 
 #[test]
 fn duplicate_group_alias_recursive_aggregate_input_renames_aggregate_spec_outputs() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-recursive-group-aliases");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-duplicate-recursive-group-aliases");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = aggregate_over_duplicate_group_alias_input_sort_limit_plan(parquet_scan(&path));

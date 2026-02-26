@@ -13,7 +13,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
     TpchDatasetMetadata, TpchQuery, prepare_tpch_report_dataset,
 };
@@ -21,7 +21,7 @@ use datafusion_cudf::{
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
     let config = CpuTpchConfig::from_env()?;
-    let work_dir = unique_temp_dir("datafusion-cudf-cpu-tpch-profile-sweep");
+    let work_dir = unique_temp_dir("datafusion-nexus-cpu-tpch-profile-sweep");
     let (_root, metadata) = prepare_tpch_report_dataset(&work_dir)
         .map_err(|error| datafusion::common::DataFusionError::External(Box::new(error)))?;
 

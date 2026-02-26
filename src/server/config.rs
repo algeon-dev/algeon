@@ -10,11 +10,11 @@ use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
 #[cfg(feature = "cugraph")]
 use crate::{CugraphAlgorithm, CugraphGraphConstructionPolicy, CugraphGraphOptions};
 
-pub const DATAFUSION_CUDF_SERVER_BIND_ENV: &str = "DATAFUSION_CUDF_SERVER_BIND";
-pub const DATAFUSION_CUDF_SERVER_LOG_ENV: &str = "DATAFUSION_CUDF_SERVER_LOG";
-pub const DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV: &str = "DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT";
-pub const DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str =
-    "DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS";
+pub const DATAFUSION_NEXUS_SERVER_BIND_ENV: &str = "DATAFUSION_NEXUS_SERVER_BIND";
+pub const DATAFUSION_NEXUS_SERVER_LOG_ENV: &str = "DATAFUSION_NEXUS_SERVER_LOG";
+pub const DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV: &str = "DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT";
+pub const DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str =
+    "DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS";
 /// Selects the DataFusion physical-plan profile applied to the Flight SQL
 /// session. Valid values are `native` and `cpu_fallback`. When unset, the
 /// profile defaults to `native` if an Iceberg catalog is configured and to
@@ -26,53 +26,53 @@ pub const DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str =
 /// `SessionConfig::from_env()` maps option keys to env vars by upper-casing
 /// and replacing `.` with `_`, so single-underscore names like
 /// `DATAFUSION_EXECUTION_TARGET_PARTITIONS` are what actually take effect).
-pub const DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV: &str = "DATAFUSION_CUDF_SERVER_SESSION_PROFILE";
-pub const DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str =
-    "DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES";
-pub const DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV: &str = "DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY";
-pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
-    "DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
-pub const DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
-    "DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+pub const DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV: &str = "DATAFUSION_NEXUS_SERVER_SESSION_PROFILE";
+pub const DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str =
+    "DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES";
+pub const DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV: &str = "DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY";
+pub const DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str =
+    "DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+pub const DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str =
+    "DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES";
 /// Path to a TOML file that supplies the `[auth]` block (and may
 /// supply other future sections). Env vars still override scalar
 /// fields where they exist; TOML is the only way to configure the
 /// `auth` section because it carries a nested user list.
-pub const DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV: &str = "DATAFUSION_CUDF_SERVER_CONFIG_FILE";
+pub const DATAFUSION_NEXUS_SERVER_CONFIG_FILE_ENV: &str = "DATAFUSION_NEXUS_SERVER_CONFIG_FILE";
 
-pub const DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED";
-pub const DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS";
-pub const DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED";
-pub const DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV: &str = "DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER";
-pub const DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str =
-    "DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY";
+pub const DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str = "DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED";
+pub const DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV: &str = "DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS";
+pub const DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV: &str = "DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED";
+pub const DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV: &str = "DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER";
+pub const DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV: &str =
+    "DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY";
 
 // Backend-neutral Iceberg env vars (preferred for new deployments).
-pub const DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEBERG_CATALOG_NAME";
-pub const DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_NAMESPACE";
-pub const DATAFUSION_CUDF_ICEBERG_TABLES_ENV: &str = "DATAFUSION_CUDF_ICEBERG_TABLES";
+pub const DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME";
+pub const DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_NAMESPACE";
+pub const DATAFUSION_NEXUS_ICEBERG_TABLES_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_TABLES";
 
 /// Selects which Iceberg catalog backend the server connects to. Accepts
 /// `glue` (default when unset) or `rest`. Any other value is rejected at
 /// config load time.
-pub const DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV: &str = "DATAFUSION_CUDF_ICEBERG_CATALOG_KIND";
+pub const DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND";
 
 // Glue-specific env vars (retained for backward compatibility).
-pub const DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME";
-pub const DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE";
-pub const DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_WAREHOUSE";
-pub const DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID";
-pub const DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV: &str = "DATAFUSION_CUDF_ICEBERG_GLUE_TABLES";
+pub const DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME";
+pub const DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE";
+pub const DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE";
+pub const DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID";
+pub const DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES";
 
 // REST-specific env vars. The warehouse reuses
-// `DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV` (`DATAFUSION_CUDF_ICEBERG_WAREHOUSE`).
-pub const DATAFUSION_CUDF_ICEBERG_REST_URI_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_URI";
-pub const DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_PREFIX";
-pub const DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_TOKEN";
-pub const DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE";
-pub const DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT";
-pub const DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_REGION";
-pub const DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV: &str = "DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE";
+// `DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV` (`DATAFUSION_NEXUS_ICEBERG_WAREHOUSE`).
+pub const DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_REST_URI";
+pub const DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_REST_PREFIX";
+pub const DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_REST_TOKEN";
+pub const DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE";
+pub const DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT";
+pub const DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_REGION";
+pub const DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE";
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -94,12 +94,12 @@ pub struct ServerConfig {
     pub statement_ticket_ttl: Duration,
     pub native_optimizer_config: CudfOptimizerConfig,
     /// DataFusion physical-plan profile applied to the Flight SQL session.
-    /// See [`DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV`] and
+    /// See [`DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV`] and
     /// [`ServerSessionProfile`].
     pub session_profile: ServerSessionProfile,
     /// Authentication mode applied to incoming Flight SQL RPCs. Loaded
     /// from the TOML overlay pointed to by
-    /// [`DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV`]; defaults to
+    /// [`DATAFUSION_NEXUS_SERVER_CONFIG_FILE_ENV`]; defaults to
     /// [`super::auth::AuthMode::Disabled`] when no file is provided.
     pub auth: AuthConfig,
     #[cfg(feature = "iceberg")]
@@ -109,7 +109,7 @@ pub struct ServerConfig {
 }
 
 /// Raw shape of the optional TOML overlay loaded from
-/// [`DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV`]. Currently only carries
+/// [`DATAFUSION_NEXUS_SERVER_CONFIG_FILE_ENV`]. Currently only carries
 /// the `[auth]` section; expand here when other sections need
 /// TOML-driven config.
 #[derive(Debug, Default, Deserialize)]
@@ -122,7 +122,7 @@ struct ServerFileOverlay {
 ///
 /// Decisions tracked here only affect DataFusion's logical/physical plan shape
 /// for queries served through Flight SQL. They are orthogonal to the native
-/// cudf-query-engine memory budget, which is controlled by the
+/// nexus-query-engine memory budget, which is controlled by the
 /// `NATIVE_*` environment variables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerSessionProfile {
@@ -196,7 +196,7 @@ pub struct IcebergServerConfig {
     pub tables: Vec<IcebergTableRegistrationConfig>,
     /// Backend-specific connection payload. The enum makes invalid
     /// combinations unrepresentable (a Glue payload cannot carry a REST URI and
-    /// vice versa). Selected by [`DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV`].
+    /// vice versa). Selected by [`DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV`].
     pub backend: IcebergCatalogBackendConfig,
 }
 
@@ -253,13 +253,13 @@ impl ServerConfig {
 
     pub fn from_env_get(mut get: impl FnMut(&str) -> Option<String>) -> Result<Self> {
         let mut values = EnvValues::new(&mut get);
-        let bind_addr = values.socket_addr(DATAFUSION_CUDF_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
+        let bind_addr = values.socket_addr(DATAFUSION_NEXUS_SERVER_BIND_ENV, DEFAULT_BIND_ADDR)?;
         let log_filter =
-            values.string(DATAFUSION_CUDF_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
-        let max_in_flight = values.positive_usize(DATAFUSION_CUDF_SERVER_MAX_IN_FLIGHT_ENV, DEFAULT_MAX_IN_FLIGHT)?;
+            values.string(DATAFUSION_NEXUS_SERVER_LOG_ENV).unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
+        let max_in_flight = values.positive_usize(DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV, DEFAULT_MAX_IN_FLIGHT)?;
         let statement_ticket_ttl =
             Duration::from_secs(values.positive_u64(
-                DATAFUSION_CUDF_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+                DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
                 DEFAULT_STATEMENT_TICKET_TTL_SECS,
             )?);
         let mut native_optimizer_config = native_optimizer_config(&mut values)?;
@@ -283,7 +283,7 @@ impl ServerConfig {
         #[cfg(not(feature = "cugraph"))]
         reject_cugraph_env_without_feature(&mut values)?;
 
-        let explicit_profile = values.optional_session_profile(DATAFUSION_CUDF_SERVER_SESSION_PROFILE_ENV)?;
+        let explicit_profile = values.optional_session_profile(DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV)?;
         #[cfg(feature = "iceberg")]
         let default_profile =
             if iceberg.is_some() { ServerSessionProfile::Native } else { ServerSessionProfile::CpuFallback };
@@ -291,7 +291,7 @@ impl ServerConfig {
         let default_profile = ServerSessionProfile::CpuFallback;
         let session_profile = explicit_profile.unwrap_or(default_profile);
 
-        let overlay_path = values.string(DATAFUSION_CUDF_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
+        let overlay_path = values.string(DATAFUSION_NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
         let overlay = match overlay_path {
             Some(path) => load_overlay(&path)?,
             None => ServerFileOverlay::default(),
@@ -328,19 +328,19 @@ fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
 
 fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerConfig> {
     let memory_policy = values
-        .string(DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV)
+        .string(DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV)
         .map(|raw| parse_native_memory_policy(&raw))
         .transpose()?
         .unwrap_or(ServerNativeMemoryPolicy::Bounded);
-    let device_budget = values.optional_u64(DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV)?;
-    let max_source_chunk = values.optional_u64(DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?;
-    let max_row_groups = values.optional_usize(DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?;
+    let device_budget = values.optional_u64(DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV)?;
+    let max_source_chunk = values.optional_u64(DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?;
+    let max_row_groups = values.optional_usize(DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?;
 
     let execution_config = match memory_policy {
         ServerNativeMemoryPolicy::Unbounded => {
             if device_budget.is_some() || max_source_chunk.is_some() || max_row_groups.is_some() {
                 return Err(ServerError::invalid_config(
-                    DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
+                    DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
                     "unbounded native execution cannot be combined with bounded native budget env vars",
                 ));
             }
@@ -351,19 +351,19 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
             (Some(device_budget), Some(max_source_chunk), Some(max_row_groups)) => {
                 if device_budget == 0 {
                     return Err(ServerError::invalid_config(
-                        DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+                        DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
                         "must be greater than zero",
                     ));
                 }
                 if max_source_chunk == 0 {
                     return Err(ServerError::invalid_config(
-                        DATAFUSION_CUDF_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+                        DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
                         "must be greater than zero",
                     ));
                 }
                 if max_row_groups == 0 {
                     return Err(ServerError::invalid_config(
-                        DATAFUSION_CUDF_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+                        DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
                         "must be greater than zero",
                     ));
                 }
@@ -371,7 +371,7 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
             },
             _ => {
                 return Err(ServerError::invalid_config(
-                    DATAFUSION_CUDF_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+                    DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
                     "bounded native execution requires device budget, max source chunk bytes, and max row groups per chunk",
                 ));
             },
@@ -385,7 +385,7 @@ fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerCo
 fn iceberg_source_storage_profile(
     config: &IcebergServerConfig,
     values: &mut EnvValues<'_>,
-) -> cudf_query_engine::SourceStorageProfile {
+) -> nexus_query_engine::SourceStorageProfile {
     match &config.backend {
         IcebergCatalogBackendConfig::Glue(glue) => {
             let mut catalog_config = crate::iceberg::catalog::GlueIcebergCatalogConfig::new(
@@ -418,7 +418,7 @@ fn parse_native_memory_policy(raw: &str) -> Result<ServerNativeMemoryPolicy> {
         "bounded" => Ok(ServerNativeMemoryPolicy::Bounded),
         "unbounded" => Ok(ServerNativeMemoryPolicy::Unbounded),
         other => Err(ServerError::invalid_config(
-            DATAFUSION_CUDF_SERVER_NATIVE_MEMORY_POLICY_ENV,
+            DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
             format!("must be `bounded` or `unbounded`, got `{other}`"),
         )),
     }
@@ -433,13 +433,13 @@ enum IcebergCatalogKind {
 
 #[cfg(feature = "iceberg")]
 fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<IcebergCatalogKind> {
-    match values.string(DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV) {
+    match values.string(DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV) {
         None => Ok(IcebergCatalogKind::Glue),
         Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
             "glue" => Ok(IcebergCatalogKind::Glue),
             "rest" => Ok(IcebergCatalogKind::Rest),
             other => Err(ServerError::invalid_config(
-                DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV,
+                DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
                 format!("must be `glue` or `rest`, got `{other}`"),
             )),
         },
@@ -449,22 +449,22 @@ fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<IcebergCatalogKind
 #[cfg(feature = "iceberg")]
 fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConfig>> {
     let requested = values.any_present([
-        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV,
-        DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
-        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV,
-        DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV,
-        DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV,
-        DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV,
+        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_TABLES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
     ]);
     if !requested {
         return Ok(None);
@@ -472,48 +472,48 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
 
     let kind = iceberg_catalog_kind(values)?;
 
-    // Backend-neutral DATAFUSION_CUDF_ICEBERG_NAMESPACE takes precedence; fall
-    // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE alias.
+    // Backend-neutral DATAFUSION_NEXUS_ICEBERG_NAMESPACE takes precedence; fall
+    // back to the Glue-specific DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE alias.
     let namespace = values
-        .string(DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV)
-        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV))
+        .string(DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV)
+        .or_else(|| values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV))
         .ok_or_else(|| {
             ServerError::invalid_config(
-                DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
-                "is required (also accepted as DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE)",
+                DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+                "is required (also accepted as DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE)",
             )
         })?;
 
-    let warehouse = values.required_string(DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV)?;
+    let warehouse = values.required_string(DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV)?;
 
-    // Backend-neutral DATAFUSION_CUDF_ICEBERG_TABLES takes precedence; fall
-    // back to the Glue-specific DATAFUSION_CUDF_ICEBERG_GLUE_TABLES alias.
+    // Backend-neutral DATAFUSION_NEXUS_ICEBERG_TABLES takes precedence; fall
+    // back to the Glue-specific DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES alias.
     // When neither is set the dynamic catalog serves all tables and aliases
     // are not required (empty vec is valid in Phase 2).
     let raw_tables = values
-        .string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV)
-        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV));
+        .string(DATAFUSION_NEXUS_ICEBERG_TABLES_ENV)
+        .or_else(|| values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV));
     let tables = match raw_tables {
         Some(ref raw) => {
-            let tables_env_name = if values.string(DATAFUSION_CUDF_ICEBERG_TABLES_ENV).is_some() {
-                DATAFUSION_CUDF_ICEBERG_TABLES_ENV
+            let tables_env_name = if values.string(DATAFUSION_NEXUS_ICEBERG_TABLES_ENV).is_some() {
+                DATAFUSION_NEXUS_ICEBERG_TABLES_ENV
             } else {
-                DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV
+                DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV
             };
             parse_iceberg_tables(tables_env_name, raw)?
         },
         None => vec![],
     };
 
-    // Backend-neutral DATAFUSION_CUDF_ICEBERG_CATALOG_NAME takes precedence;
+    // Backend-neutral DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME takes precedence;
     // fall back to the Glue-specific alias, then to the compiled-in default.
     let default_catalog_name = match kind {
         IcebergCatalogKind::Glue => DEFAULT_GLUE_CATALOG_NAME,
         IcebergCatalogKind::Rest => DEFAULT_REST_CATALOG_HANDLE,
     };
     let catalog_name = values
-        .string(DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV)
-        .or_else(|| values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV))
+        .string(DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV)
+        .or_else(|| values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV))
         .unwrap_or_else(|| default_catalog_name.to_string());
 
     let backend = match kind {
@@ -536,14 +536,14 @@ fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -> Result<Gl
     // users can choose a different connector name without changing the Glue
     // catalog identifier.  Controlled only by the Glue-specific env var.
     let catalog_handle = values
-        .string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV)
+        .string(DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV)
         .unwrap_or_else(|| DEFAULT_GLUE_CATALOG_NAME.to_string());
 
     Ok(GlueServerBackendConfig {
         catalog_handle,
         warehouse: warehouse.to_string(),
         region,
-        catalog_id: values.string(DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV),
+        catalog_id: values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV),
         profile: values.string(crate::iceberg::AWS_PROFILE_ENV),
     })
 }
@@ -553,25 +553,25 @@ fn rest_backend_config(
     values: &mut EnvValues<'_>,
     warehouse: String,
 ) -> Result<crate::iceberg::catalog::RestIcebergCatalogConfig> {
-    let uri = values.required_string(DATAFUSION_CUDF_ICEBERG_REST_URI_ENV)?;
+    let uri = values.required_string(DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV)?;
     let catalog_handle = values
-        .string(DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV)
+        .string(DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV)
         .unwrap_or_else(|| DEFAULT_REST_CATALOG_HANDLE.to_string());
 
     let mut config = crate::iceberg::catalog::RestIcebergCatalogConfig::new(catalog_handle, uri, warehouse);
-    if let Some(prefix) = values.string(DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV) {
+    if let Some(prefix) = values.string(DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV) {
         config = config.with_prefix(prefix);
     }
-    if let Some(token) = values.string(DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV) {
+    if let Some(token) = values.string(DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV) {
         config = config.with_token(token);
     }
-    if let Some(endpoint) = values.string(DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV) {
+    if let Some(endpoint) = values.string(DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV) {
         config = config.with_s3_endpoint(endpoint);
     }
-    if let Some(region) = values.string(DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV) {
+    if let Some(region) = values.string(DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV) {
         config = config.with_s3_region(region);
     }
-    if let Some(path_style) = values.optional_bool(DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV)? {
+    if let Some(path_style) = values.optional_bool(DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV)? {
         config = config.with_s3_path_style_access(path_style);
     }
     Ok(config)
@@ -599,16 +599,16 @@ fn parse_iceberg_tables(env_name: &'static str, raw: &str) -> Result<Vec<Iceberg
 #[cfg(feature = "cugraph")]
 fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConfig>> {
     let requested = values.any_present([
-        DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     ]);
-    let enabled = values.optional_bool(DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV)?;
+    let enabled = values.optional_bool(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV)?;
     if enabled != Some(true) {
         if requested {
             return Err(ServerError::invalid_config(
-                DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
+                DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
                 "must be true when cuGraph server settings are provided",
             ));
         }
@@ -616,19 +616,19 @@ fn cugraph_config(values: &mut EnvValues<'_>) -> Result<Option<CugraphServerConf
     }
 
     let allowed_algorithms = values
-        .string(DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV)
-        .map(|raw| parse_cugraph_algorithms(DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV, &raw))
+        .string(DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV)
+        .map(|raw| parse_cugraph_algorithms(DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, &raw))
         .transpose()?;
     let mut default_graph_options = CugraphGraphOptions::default();
-    if let Some(directed) = values.optional_bool(DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV)? {
+    if let Some(directed) = values.optional_bool(DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV)? {
         default_graph_options.directed = directed;
     }
-    if let Some(renumber) = values.optional_bool(DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV)? {
+    if let Some(renumber) = values.optional_bool(DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV)? {
         default_graph_options.renumber = renumber;
     }
-    if let Some(raw) = values.string(DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV) {
+    if let Some(raw) = values.string(DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV) {
         default_graph_options.construction_policy =
-            parse_cugraph_construction_policy(DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, &raw)?;
+            parse_cugraph_construction_policy(DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, &raw)?;
     }
 
     Ok(Some(CugraphServerConfig { allowed_algorithms, default_graph_options }))
@@ -668,25 +668,25 @@ fn parse_cugraph_construction_policy(env_name: &'static str, raw: &str) -> Resul
 #[cfg(not(feature = "iceberg"))]
 fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
     if values.any_present([
-        DATAFUSION_CUDF_ICEBERG_CATALOG_KIND_ENV,
-        DATAFUSION_CUDF_ICEBERG_CATALOG_NAME_ENV,
-        DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_CUDF_ICEBERG_TABLES_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_DATABASE_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
-        DATAFUSION_CUDF_ICEBERG_GLUE_TABLES_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_URI_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_PREFIX_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_TOKEN_ENV,
-        DATAFUSION_CUDF_ICEBERG_REST_CATALOG_HANDLE_ENV,
-        DATAFUSION_CUDF_ICEBERG_S3_ENDPOINT_ENV,
-        DATAFUSION_CUDF_ICEBERG_S3_REGION_ENV,
-        DATAFUSION_CUDF_ICEBERG_S3_PATH_STYLE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
+        DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV,
+        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_TABLES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV,
+        DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
+        DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
     ]) {
         return Err(ServerError::invalid_config(
-            DATAFUSION_CUDF_ICEBERG_NAMESPACE_ENV,
+            DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
             "Iceberg server registration requires building with --features server,iceberg",
         ));
     }
@@ -696,14 +696,14 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
 #[cfg(not(feature = "cugraph"))]
 fn reject_cugraph_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
     if values.any_present([
-        DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_ALGORITHMS_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_DIRECTED_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_RENUMBER_ENV,
-        DATAFUSION_CUDF_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+        DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     ]) {
         return Err(ServerError::invalid_config(
-            DATAFUSION_CUDF_SERVER_CUGRAPH_ENABLED_ENV,
+            DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
             "cuGraph server registration requires building with --features server,cugraph or --features server-cugraph",
         ));
     }

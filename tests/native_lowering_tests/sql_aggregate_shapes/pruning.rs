@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-row-group-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-row-group-pruning");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
@@ -29,7 +29,7 @@ async fn default_sql_pushed_predicate_prunes_native_row_groups_from_metadata() {
 
 #[tokio::test]
 async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_groups_from_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-filter-row-group-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-filter-row-group-pruning");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
@@ -56,7 +56,7 @@ async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_gro
 
 #[tokio::test]
 async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-date-row-group-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-date-row-group-pruning");
     let path = dir.join("lineitem.parquet");
     write_q6_lineitem_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
@@ -80,7 +80,7 @@ async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_meta
 
 #[tokio::test]
 async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-cast-row-group-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-cast-row-group-pruning");
     let path = dir.join("input.parquet");
     write_row_group_pruning_parquet_file(&path);
     let plan = sql_plan(
@@ -110,7 +110,7 @@ async fn direct_friendly_sql_widening_cast_prunes_native_row_groups_from_metadat
 
 #[tokio::test]
 async fn direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-in-list-row-group-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-in-list-row-group-pruning");
     let path = dir.join("input.parquet");
     write_nullable_row_group_pruning_parquet_file(&path);
     let plan = sql_plan(
@@ -140,7 +140,7 @@ async fn direct_friendly_sql_in_list_prunes_native_row_groups_from_metadata() {
 
 #[tokio::test]
 async fn direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-is-null-row-group-pruning");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-is-null-row-group-pruning");
     let path = dir.join("input.parquet");
     write_nullable_row_group_pruning_parquet_file(&path);
     let plan = sql_plan(

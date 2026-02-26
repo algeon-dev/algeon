@@ -1,0 +1,25 @@
+[package]
+name = "nexus-query-engine"
+description = "Native cuDF/cuGraph query engine contracts for DataFusion-free GPU plans."
+version = "0.1.0"
+edition = "2024"
+rust-version = { workspace = true }
+build = "build.rs"
+
+[features]
+default = []
+cugraph = ["dep:cugraph", "dep:cugraph-sys"]
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+bytes = "1"
+cudf = { workspace = true }
+cugraph = { workspace = true, optional = true }
+cugraph-sys = { workspace = true, optional = true }
+nvml-wrapper = "0.12.1"
+object_store = { version = "0.13", default-features = false, features = ["aws"] }
+parquet = { workspace = true }
+tokio = { version = "1.52", features = ["rt-multi-thread"] }

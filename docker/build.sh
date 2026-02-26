@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build datafusion_cudf_server with server+iceberg+cugraph features and stage
+# Build datafusion_nexus_server with server+iceberg+cugraph features and stage
 # the runtime artifacts needed by the Docker image into docker/dist/.
 #
 # The RAPIDS C++ libraries (libcudf.so, libcugraph*.so, librmm.so, ...) are
@@ -16,7 +16,7 @@
 #
 # Usage:
 #   bash docker/build.sh
-#   docker build -t datafusion-cudf-server docker/
+#   docker build -t datafusion-nexus-server docker/
 
 set -euo pipefail
 
@@ -28,18 +28,18 @@ FEATURES="${FEATURES:-server,iceberg,cugraph}"
 
 cd "$REPO_ROOT"
 
-echo "==> Building datafusion_cudf_server (features: $FEATURES) ..."
+echo "==> Building datafusion_nexus_server (features: $FEATURES) ..."
 cargo build --release \
     --features "$FEATURES" \
-    --bin datafusion_cudf_server
+    --bin datafusion_nexus_server
 
-BINARY="$TARGET_ROOT/release/datafusion_cudf_server"
+BINARY="$TARGET_ROOT/release/datafusion_nexus_server"
 
 echo "==> Staging artifacts into $DIST_DIR ..."
 mkdir -p "$DIST_DIR/bin" "$DIST_DIR/lib"
 
 # ── Binary ────────────────────────────────────────────────────────────────
-cp "$BINARY" "$DIST_DIR/bin/datafusion_cudf_server"
+cp "$BINARY" "$DIST_DIR/bin/datafusion_nexus_server"
 
 # ── libcudf_rust.so ───────────────────────────────────────────────────────
 # Locate via the RUNPATH baked into the binary by build.rs, which points at
@@ -77,7 +77,7 @@ cp "$CUDF_RUST_SO" "$DIST_DIR/lib/libcudf_rust.so"
 # The Dockerfile still sets ENV LD_LIBRARY_PATH as a belt-and-suspenders
 # fallback for hosts where patchelf is absent.
 if command -v patchelf &>/dev/null; then
-    patchelf --set-rpath /usr/local/lib "$DIST_DIR/bin/datafusion_cudf_server"
+    patchelf --set-rpath /usr/local/lib "$DIST_DIR/bin/datafusion_nexus_server"
     echo "==> RUNPATH rewritten to /usr/local/lib"
 else
     echo "warning: patchelf not found; container will use ENV LD_LIBRARY_PATH=/usr/local/lib"
@@ -88,4 +88,4 @@ echo "==> Staged artifacts:"
 find "$DIST_DIR" -type f | sort
 echo ""
 echo "==> Build the image with:"
-echo "    docker build -t datafusion-cudf-server docker/"
+echo "    docker build -t datafusion-nexus-server docker/"

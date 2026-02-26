@@ -1,4 +1,4 @@
-use datafusion_cudf::{CandidateOutcome, FallbackReason, GpuCandidate, GpuFallbackPolicy, PlanningReport};
+use datafusion_nexus::{CandidateOutcome, FallbackReason, GpuCandidate, GpuFallbackPolicy, PlanningReport};
 
 #[test]
 fn gpu_preferred_is_default_development_policy() {

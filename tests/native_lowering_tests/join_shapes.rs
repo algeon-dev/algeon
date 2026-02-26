@@ -7,7 +7,7 @@ mod residual_variants;
 
 #[tokio::test]
 async fn physical_cross_join_exec_lowers_to_native_cross_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-cross-join-exec");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-cross-join-exec");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(
@@ -39,7 +39,7 @@ async fn physical_cross_join_exec_lowers_to_native_cross_join() {
 
 #[test]
 fn hash_join_filter_lowers_to_native_residual_predicate() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-hash-join-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -88,7 +88,7 @@ fn hash_join_filter_lowers_to_native_residual_predicate() {
 
 #[test]
 fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-expression-join-key");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-expression-join-key");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -145,7 +145,7 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
 
 #[test]
 fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-left-nlj-scalar-right");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-left-nlj-scalar-right");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -208,7 +208,7 @@ fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross
 
 #[test]
 fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_distinct_native_columns() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-join-fields");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-duplicate-join-fields");
     let left_path = dir.join("supplier_nation.parquet");
     let right_path = dir.join("customer_nation.parquet");
     write_duplicate_nation_parquet_file(&left_path, &["FRANCE", "GERMANY"]);
@@ -309,7 +309,7 @@ fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_dist
 
 #[test]
 fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_executable_name_leak() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-bare-duplicate-join-fields");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-bare-duplicate-join-fields");
     let left_path = dir.join("supplier_nation.parquet");
     let right_path = dir.join("customer_nation.parquet");
     write_duplicate_nation_parquet_file(&left_path, &["FRANCE", "GERMANY"]);
@@ -362,7 +362,7 @@ fn bare_duplicate_frontend_join_fields_restore_at_native_host_sink_without_execu
 
 #[test]
 fn recursive_hash_join_input_filters_lower_to_native_filters() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-recursive-input-filters");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-recursive-input-filters");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -416,7 +416,7 @@ fn recursive_hash_join_input_filters_lower_to_native_filters() {
 
 #[test]
 fn post_join_filter_lowers_to_native_filter_input() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-post-join-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-post-join-filter");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -449,7 +449,7 @@ fn post_join_filter_lowers_to_native_filter_input() {
 
 #[test]
 fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-duplicate-residual-bindings");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-duplicate-residual-bindings");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);
@@ -548,7 +548,7 @@ fn duplicate_named_residual_columns_bind_executable_names_after_canonical_swap()
 
 #[test]
 fn hash_join_aggregate_inputs_lower_to_native_aggregate_inputs() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-join-aggregate-inputs");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-join-aggregate-inputs");
     let left_path = dir.join("left.parquet");
     let right_path = dir.join("right.parquet");
     write_join_left_parquet_file(&left_path);

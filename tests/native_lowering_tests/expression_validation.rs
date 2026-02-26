@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -45,7 +45,7 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
 
 #[test]
 fn decimal_division_lowers_with_declared_binary_output_type() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-decimal-divide");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-decimal-divide");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let scan = parquet_scan(&path);
@@ -74,7 +74,7 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
             if matches!(
                 expr.as_ref(),
                 Expr::Binary {
-                    op: cudf_query_engine::BinaryOp::Divide,
+                    op: nexus_query_engine::BinaryOp::Divide,
                     output_type: Some(DataType::Decimal128(_, _)),
                     ..
                 }
@@ -86,7 +86,7 @@ fn decimal_division_lowers_with_declared_binary_output_type() {
 
 #[tokio::test]
 async fn sql_round_decimal_integral_cast_lowers_to_native_expr() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-round-decimal-integral-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-round-decimal-integral-cast");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_ROUND_DECIMAL_INTEGRAL_CAST_QUERY).await;
@@ -118,7 +118,7 @@ fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
     // Native admission for TRY_CAST is currently limited to `STRING → integer`.
     // Wrapping a numeric column in TRY_CAST keeps the structured rejection so
     // the adapter falls back to CPU instead of treating it as a plain CAST.
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-try-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-try-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -141,7 +141,7 @@ fn try_cast_from_non_string_source_is_rejected_during_native_planning() {
 
 #[test]
 fn in_list_with_null_literal_is_rejected_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-in-list-null");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-in-list-null");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -169,7 +169,7 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
 
 #[test]
 fn dynamic_filter_expression_lowers_as_current_inner_expression() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-dynamic-filter");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-dynamic-filter");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -196,7 +196,7 @@ fn dynamic_filter_expression_lowers_as_current_inner_expression() {
 
 #[test]
 fn substring_unsupported_arity_is_rejected_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-substring-arity");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-substring-arity");
     let path = dir.join("input.parquet");
     write_parquet_file_with_tpch_like_columns(&path);
     let scan = parquet_scan(&path);
@@ -224,7 +224,7 @@ fn substring_unsupported_arity_is_rejected_during_native_planning() {
 
 #[test]
 fn non_numeric_cast_targets_are_rejected_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-string-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-string-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -251,7 +251,7 @@ fn non_numeric_cast_targets_are_rejected_during_native_planning() {
 
 #[test]
 fn integer_to_timestamp_cast_lowers_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-timestamp-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-timestamp-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -276,7 +276,7 @@ fn integer_to_timestamp_cast_lowers_during_native_planning() {
 
 #[test]
 fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-numeric-decimal-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-numeric-decimal-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -296,7 +296,7 @@ fn explicit_numeric_to_decimal_cast_lowers_during_native_planning() {
 
 #[test]
 fn lossy_numeric_cast_is_rejected_during_native_planning() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-lossy-cast");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-lossy-cast");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let scan = parquet_scan(&path);
@@ -319,7 +319,7 @@ fn lossy_numeric_cast_is_rejected_during_native_planning() {
 
 #[tokio::test]
 async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_native_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-sql-rewrite");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-rewrite");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NO_FILTER_BENCHMARK_QUERY).await;
@@ -347,7 +347,7 @@ async fn direct_friendly_sql_physical_plan_without_scan_predicate_lowers_to_nati
 
 #[test]
 fn every_rejected_native_candidate_has_stable_rejection_code() {
-    let dir = unique_temp_dir("datafusion-cudf-native-lowering-rejection-codes");
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-rejection-codes");
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let rejected_results = [lower_physical_plan_to_native(aggregate_sort_limit_plan(

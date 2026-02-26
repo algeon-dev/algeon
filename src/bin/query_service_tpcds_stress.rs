@@ -6,14 +6,13 @@ use std::{
 };
 
 use arrow::{record_batch::RecordBatch, util::display::array_value_to_string};
-use cudf_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::{ExecutionPlan, collect},
     prelude::{ParquetReadOptions, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV,
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
     GpuFallbackPolicy, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
@@ -21,6 +20,7 @@ use datafusion_cudf::{
     TpcdsDatasetMetadata, TpcdsQuery, default_tpcds_sf1_parquet_root, describe_tpcds_dataset,
     discover_tpcds_table_layout, tpcds_native_report_session_config, tpcds_report_session_config,
 };
+use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use tokio::{sync::Barrier, time::timeout};
 
 const TSV_SCHEMA_VERSION: u32 = 1;
@@ -230,7 +230,7 @@ impl StructuredFailure {
             code: Some("query_timeout".to_string()),
             kind: Some("resource_exhausted".to_string()),
             status: Some("temporary".to_string()),
-            operation: Some("datafusion_cudf.query_service_tpcds_stress.native_collect".to_string()),
+            operation: Some("datafusion_nexus.query_service_tpcds_stress.native_collect".to_string()),
             facts,
             message: Some(format!("native query exceeded timeout_ms={}", timeout.as_millis())),
         }
@@ -535,7 +535,7 @@ async fn run_native_request(
 async fn collect_native_with_handle(
     config: &StressConfig,
     query: &TpcdsQuery,
-    handle: Arc<cudf_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
@@ -792,7 +792,7 @@ fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch])
 
 fn fingerprint_batches(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch]) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-query-service-tpcds-output-v1");
+    hasher.update_field("datafusion-nexus-query-service-tpcds-output-v1");
     for batch in batches {
         if batch.schema().as_ref() != schema.as_ref() {
             return Err(plan_error("TPC-DS output fingerprint requires collected batches to match the planned schema"));

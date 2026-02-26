@@ -71,14 +71,14 @@ fn accepted_row_reports_fingerprint_mismatch_without_canonical_output_fingerprin
 #[test]
 fn native_runtime_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        datafusion_cudf::ErrorCode::MemoryReservationFailed,
-        "datafusion_cudf.native_exec.execute",
+        datafusion_nexus::ErrorCode::MemoryReservationFailed,
+        "datafusion_nexus.native_exec.execute",
         "native cudf query execution failed",
     )
     .with_fact("native_code", "memory_reservation_failed")
     .with_fact("native_kind", "resource_exhausted")
     .with_fact("native_status", "temporary")
-    .with_fact("native_operation", "cudf_query_engine.memory.reserve")
+    .with_fact("native_operation", "nexus_query_engine.memory.reserve")
     .with_fact("memory_boundary", "final_sort")
     .with_fact("requested_bytes", 2048)
     .with_fact("granted_bytes", 1024);
@@ -88,7 +88,7 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
     assert_eq!(details.code.as_deref(), Some("memory_reservation_failed"));
     assert_eq!(details.kind.as_deref(), Some("resource_exhausted"));
     assert_eq!(details.status.as_deref(), Some("temporary"));
-    assert_eq!(details.operation.as_deref(), Some("datafusion_cudf.native_exec.execute"));
+    assert_eq!(details.operation.as_deref(), Some("datafusion_nexus.native_exec.execute"));
     assert_eq!(details.facts.get("memory_boundary").map(String::as_str), Some("final_sort"));
     assert_eq!(details.facts.get("requested_bytes").map(String::as_str), Some("2048"));
 
@@ -120,18 +120,18 @@ fn native_runtime_failure_preserves_adapter_error_facts() {
     assert_eq!(row_fields[header_index(&header_fields, "runtime_failure_status")], "temporary");
     assert_eq!(
         row_fields[header_index(&header_fields, "runtime_failure_operation")],
-        "datafusion_cudf.native_exec.execute"
+        "datafusion_nexus.native_exec.execute"
     );
     assert!(facts.contains("memory_boundary=final_sort"));
-    assert!(facts.contains("native_operation=cudf_query_engine.memory.reserve"));
+    assert!(facts.contains("native_operation=nexus_query_engine.memory.reserve"));
     assert!(facts.contains("requested_bytes=2048"));
 }
 
 #[test]
 fn planning_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        datafusion_cudf::ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.native_planner",
+        datafusion_nexus::ErrorCode::InvalidExecutionPlan,
+        "datafusion_nexus.native_planner",
         "native physical planning failed",
     )
     .with_fact("query_id", "q01")
@@ -146,7 +146,7 @@ fn planning_failure_preserves_adapter_error_facts() {
     assert_eq!(row.runtime_failure_details.code.as_deref(), Some("invalid_execution_plan"));
     assert_eq!(row.runtime_failure_details.kind.as_deref(), Some("planning"));
     assert_eq!(row.runtime_failure_details.status.as_deref(), Some("permanent"));
-    assert_eq!(row.runtime_failure_details.operation.as_deref(), Some("datafusion_cudf.native_planner"));
+    assert_eq!(row.runtime_failure_details.operation.as_deref(), Some("datafusion_nexus.native_planner"));
     assert_eq!(row.runtime_failure_details.facts.get("planner_stage").map(String::as_str), Some("native_lowering"));
     assert_eq!(bounded_status(NativeTpchMemoryPolicy::default(), &row), "bounded_planning_failed");
 }
@@ -154,8 +154,8 @@ fn planning_failure_preserves_adapter_error_facts() {
 #[test]
 fn cpu_runtime_failure_preserves_adapter_error_facts() {
     let adapter_error = AdapterError::new(
-        datafusion_cudf::ErrorCode::InvalidExecutionPlan,
-        "datafusion_cudf.cpu_collect",
+        datafusion_nexus::ErrorCode::InvalidExecutionPlan,
+        "datafusion_nexus.cpu_collect",
         "cpu collection failed",
     )
     .with_fact("query_id", "q01")
@@ -188,7 +188,7 @@ fn cpu_runtime_failure_preserves_adapter_error_facts() {
     assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_code")], "invalid_execution_plan");
     assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_kind")], "planning");
     assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_status")], "permanent");
-    assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_operation")], "datafusion_cudf.cpu_collect");
+    assert_eq!(row_fields[header_index(&header_fields, "cpu_failure_operation")], "datafusion_nexus.cpu_collect");
     assert!(facts.contains("phase=collect"));
     assert!(facts.contains("query_id=q01"));
 }

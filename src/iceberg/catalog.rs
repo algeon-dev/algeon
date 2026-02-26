@@ -23,7 +23,6 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cudf_query_engine::{S3SourceStorageProfile, SourceStorageProfile};
 use datafusion::{
     catalog::{CatalogProvider, SchemaProvider},
     common::DataFusionError,
@@ -42,6 +41,7 @@ use iceberg_catalog_glue::{
 };
 use iceberg_catalog_rest::{REST_CATALOG_PROP_URI, REST_CATALOG_PROP_WAREHOUSE, RestCatalogBuilder};
 use iceberg_storage_opendal::OpenDalStorageFactory;
+use nexus_query_engine::{S3SourceStorageProfile, SourceStorageProfile};
 use tokio::sync::RwLock;
 
 use crate::{
@@ -52,7 +52,7 @@ use crate::{
     },
 };
 
-const CATALOG_BACKEND_OP: &str = "datafusion_cudf.iceberg.catalog_backend";
+const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 
 // ---------------------------------------------------------------------------
 // Provider kind
@@ -668,7 +668,7 @@ impl IcebergCatalogBackend for GlueIcebergCatalogBackend {
 /// Unlike the Glue backend, REST has **no default storage factory**, so the
 /// backend constructed from this config always injects an S3 `OpenDalStorage`
 /// factory. The static S3 credentials are read at connect time from explicit
-/// `DATAFUSION_CUDF_ICEBERG_S3_*` environment variables (never the ambient
+/// `DATAFUSION_NEXUS_ICEBERG_S3_*` environment variables (never the ambient
 /// `AWS_*` chain) and are not retained in this struct.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RestIcebergCatalogConfig {
@@ -778,7 +778,7 @@ impl RestIcebergCatalogConfig {
     }
 
     /// Builds the native source storage profile for this REST catalog using the
-    /// explicit `DATAFUSION_CUDF_ICEBERG_S3_*` credential environment.
+    /// explicit `DATAFUSION_NEXUS_ICEBERG_S3_*` credential environment.
     pub fn source_storage_profile_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> SourceStorageProfile {
         let mut s3 = S3SourceStorageProfile::default_chain();
         if let Some(region) = self.s3_region.as_ref().filter(|region| !region.trim().is_empty()) {
@@ -815,7 +815,7 @@ impl RestIcebergCatalogConfig {
 /// [`crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV`] when present. Empty
 /// optional values are omitted rather than inserted as empty strings.
 ///
-/// S3 credentials come ONLY from the explicit `DATAFUSION_CUDF_ICEBERG_S3_*`
+/// S3 credentials come ONLY from the explicit `DATAFUSION_NEXUS_ICEBERG_S3_*`
 /// environment variables read here. To enforce that, the prop map always sets
 /// `s3.disable-config-load=true` and `s3.disable-ec2-metadata=true`, which turn
 /// off OpenDAL's ambient credential discovery (the `AWS_*` environment chain,
@@ -1111,7 +1111,7 @@ mod rest_tests {
         assert_eq!(s3.endpoint.as_deref(), Some("http://localhost:9000"));
         assert_eq!(s3.virtual_hosted_style_request, Some(false));
         match &s3.credential {
-            cudf_query_engine::S3SourceStorageCredential::Static {
+            nexus_query_engine::S3SourceStorageCredential::Static {
                 access_key_id,
                 secret_access_key,
                 session_token,
@@ -1147,7 +1147,7 @@ mod rest_tests {
         assert_eq!(profile.id(), DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID);
         assert_eq!(profile.s3_profile().region.as_deref(), Some("us-west-2"));
         match &profile.s3_profile().credential {
-            cudf_query_engine::S3SourceStorageCredential::Static {
+            nexus_query_engine::S3SourceStorageCredential::Static {
                 access_key_id,
                 secret_access_key,
                 session_token,

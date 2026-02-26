@@ -5,17 +5,17 @@ use std::{
 };
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
-use cudf_query_engine::{
+use datafusion::{
+    datasource::physical_plan::{FileSource, ParquetSource},
+    physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
+    physical_plan::ExecutionPlan,
+};
+use nexus_query_engine::{
     Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
     LocalParquetFile as NativeLocalParquetFile, LocalParquetSource as NativeLocalParquetSource,
     MissingColumn as NativeMissingColumn, PartitionColumn as NativePartitionColumn,
     QueryPlanBuilder as NativeQueryPlanBuilder, SourceColumnRef as NativeSourceColumnRef,
     SourceNode as NativeSourceNode,
-};
-use datafusion::{
-    datasource::physical_plan::{FileSource, ParquetSource},
-    physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
-    physical_plan::ExecutionPlan,
 };
 use parquet::file::reader::FileReader;
 
@@ -729,7 +729,7 @@ fn strip_table_format_schema_metadata(schema: &SchemaRef) -> SchemaRef {
 
 fn project_scan_output_columns(
     builder: &mut NativeQueryPlanBuilder,
-    input_node: cudf_query_engine::NodeId,
+    input_node: nexus_query_engine::NodeId,
     input_schema: SchemaRef,
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
@@ -864,7 +864,7 @@ fn required_source_scan_output_indices(
 
 pub(super) fn add_source_filter_projection(
     builder: &mut NativeQueryPlanBuilder,
-    filtered_node: cudf_query_engine::NodeId,
+    filtered_node: nexus_query_engine::NodeId,
     scan_output: &LoweredNativeInput,
     filter_schema: SchemaRef,
     projection: &[usize],
@@ -880,7 +880,7 @@ pub(super) fn add_source_filter_projection(
             let input_index = projection.get(*output_index).copied().ok_or(FallbackReason::UnsupportedExpression)?;
             let input_binding = scan_output.binding_for_frontend_index(input_index)?;
             Ok(alias_if_needed(
-                cudf_query_engine::Expr::column(input_binding.native_name.as_str()),
+                nexus_query_engine::Expr::column(input_binding.native_name.as_str()),
                 output_binding.native_name.as_str(),
             ))
         })

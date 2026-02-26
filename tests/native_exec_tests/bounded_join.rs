@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-left-semi-join");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-left-semi-join");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_join_left_parquet_file(&left);
@@ -40,7 +40,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_semi_join_plan() {
 
 #[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-left-anti-join");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-left-anti-join");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_join_left_parquet_file(&left);
@@ -67,7 +67,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_left_anti_join_plan() {
 
 #[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-join-aggregate");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-join-aggregate");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
@@ -109,7 +109,7 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_join_aggregate_pipeline()
 
 #[test]
 fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-adaptive-join-planning");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-adaptive-join-planning");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_parquet_file(&left);
@@ -142,7 +142,7 @@ fn native_optimizer_rule_adaptive_mode_rewrites_join_with_adaptive_diagnostics()
 
 #[test]
 fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-q11-admission");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-q11-admission");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
     let q11 = TPCH_QUERIES.iter().find(|query| query.id == "q11").expect("TPC-H Q11 query must exist");
     let plan = tpch_sql_plan(&dir, q11.sql);
@@ -192,7 +192,7 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_strict_report_has_host_sink_boundary(report: &cudf_query_engine::StrictBoundedContractReport) {
+fn assert_strict_report_has_host_sink_boundary(report: &nexus_query_engine::StrictBoundedContractReport) {
     assert!(
         report.gate_rows().iter().any(|row| {
             row.owner.to_string() == "sink_boundary"
@@ -205,7 +205,7 @@ fn assert_strict_report_has_host_sink_boundary(report: &cudf_query_engine::Stric
     );
 }
 
-fn assert_strict_report_has_join_path_gates(report: &cudf_query_engine::StrictBoundedContractReport) {
+fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::StrictBoundedContractReport) {
     for kind in [
         ReservationKind::SourceRead,
         ReservationKind::BuildSide,
@@ -238,13 +238,13 @@ fn assert_strict_report_has_join_path_gates(report: &cudf_query_engine::StrictBo
     }
 }
 
-fn task_kind_count(pipeline: &cudf_query_engine::CompiledPipeline, kind: PipelineTaskKind) -> usize {
+fn task_kind_count(pipeline: &nexus_query_engine::CompiledPipeline, kind: PipelineTaskKind) -> usize {
     pipeline.tasks().iter().filter(|task| task.kind() == kind).count()
 }
 
 #[test]
 fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
-    let dir = unique_temp_dir("datafusion-cudf-native-exec-bounded-root-join");
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-bounded-root-join");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_join_left_parquet_file(&left);
@@ -289,7 +289,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
 
     assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
-    assert_eq!(adapter_error.fact_value("native_operation"), Some("cudf_query_engine.bounded.plan"));
+    assert_eq!(adapter_error.fact_value("native_operation"), Some("nexus_query_engine.bounded.plan"));
     assert_eq!(adapter_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
     assert_eq!(adapter_error.fact_value("bounded_join_enabled"), Some("true"));
     assert_eq!(
@@ -362,7 +362,7 @@ fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime() {
 
 #[test]
 fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection_still_reports_legacy_error_facts() {
-    let dir = unique_temp_dir("datafusion-cudf-bounded-join-rejection-split");
+    let dir = unique_temp_dir("datafusion-nexus-bounded-join-rejection-split");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_join_left_parquet_file(&left);

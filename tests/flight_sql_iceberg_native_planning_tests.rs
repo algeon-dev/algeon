@@ -31,7 +31,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, displayable, sorts::sort_preserving_merge::SortPreservingMergeExec},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
     CudfSessionStateBuilderExt, CudfTableFormatGpuOnlyLeafGuardRule, CudfTableFormatScanExec, FallbackReason,
     GpuFallbackPolicy, TableFormat, TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource,
@@ -312,21 +312,21 @@ fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatSc
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))
 }
 
-fn adapter_error_from(error: &DataFusionError) -> &datafusion_cudf::Error {
+fn adapter_error_from(error: &DataFusionError) -> &datafusion_nexus::Error {
     // `DataFusionError::Context` wraps the inner planning error with the
     // optimizer rule name; recurse into it before downcasting.
     if let DataFusionError::Context(_, inner) = error {
         return adapter_error_from(inner);
     }
     let DataFusionError::External(boxed) = error else {
-        panic!("expected datafusion_cudf::Error to cross DataFusion as `External`, got: {error:?}");
+        panic!("expected datafusion_nexus::Error to cross DataFusion as `External`, got: {error:?}");
     };
     boxed
-        .downcast_ref::<datafusion_cudf::Error>()
-        .expect("external errors emitted by datafusion-cudf must downcast to datafusion_cudf::Error")
+        .downcast_ref::<datafusion_nexus::Error>()
+        .expect("external errors emitted by datafusion-nexus must downcast to datafusion_nexus::Error")
 }
 
-fn collect_facts(error: &datafusion_cudf::Error) -> std::collections::BTreeMap<&'static str, String> {
+fn collect_facts(error: &datafusion_nexus::Error) -> std::collections::BTreeMap<&'static str, String> {
     error.facts().iter().map(|(key, value)| (key, value.to_string())).collect()
 }
 
@@ -386,7 +386,7 @@ impl TableFormatPlanner for RecordingPlanner {
     fn plan_scan<'a>(
         &'a self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_cudf::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
         self.requests.lock().expect("request recorder mutex poisoned").push(request);
         let plan = self.plan.clone().with_scan_limit(scan_limit);

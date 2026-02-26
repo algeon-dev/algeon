@@ -2,7 +2,7 @@
 //!
 //! This layer resolves table-format metadata into frontend facts that native
 //! lowering can inspect later. It does not execute source reads and it stays out
-//! of `cudf-query-engine`, which continues to receive only native source facts.
+//! of `nexus-query-engine`, which continues to receive only native source facts.
 
 #![deny(missing_docs)]
 

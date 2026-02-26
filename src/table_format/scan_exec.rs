@@ -18,7 +18,7 @@ use crate::{
     table_format::{TableFormat, TableFormatScanDiagnostics, TableFormatScanPlan},
 };
 
-const EXECUTE_OPERATION: &str = "datafusion_cudf.table_format.scan_exec.execute";
+const EXECUTE_OPERATION: &str = "datafusion_nexus.table_format.scan_exec.execute";
 
 /// DataFusion physical scan leaf for adapter-owned table-format scan facts.
 ///
@@ -116,7 +116,7 @@ impl ExecutionPlan for CudfTableFormatScanExec {
             return Err(DataFusionError::from(
                 Error::new(
                     ErrorCode::InvalidChildCount,
-                    "datafusion_cudf.table_format.scan_exec.with_new_children",
+                    "datafusion_nexus.table_format.scan_exec.with_new_children",
                     "table-format scan exec expected no children",
                 )
                 .with_fact("actual_child_count", children.len()),

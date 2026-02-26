@@ -5,9 +5,9 @@ use tonic::{Status, metadata::MetadataValue};
 
 use crate::{Error, ErrorCode, ErrorKind};
 
-pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-cudf-error-code";
-pub const ERROR_KIND_METADATA_KEY: &str = "x-datafusion-cudf-error-kind";
-pub const ERROR_STATUS_METADATA_KEY: &str = "x-datafusion-cudf-error-status";
+pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
+pub const ERROR_KIND_METADATA_KEY: &str = "x-datafusion-nexus-error-kind";
+pub const ERROR_STATUS_METADATA_KEY: &str = "x-datafusion-nexus-error-status";
 
 pub type Result<T> = std::result::Result<T, ServerError>;
 
@@ -97,7 +97,7 @@ fn adapter_error_from_datafusion_error(error: DataFusionError) -> Error {
     let code = classify_datafusion_error(&error);
     let message = error.message().into_owned();
     let datafusion_error = datafusion_error_variant(&error);
-    Error::new(code, "datafusion_cudf.server.datafusion_error", message)
+    Error::new(code, "datafusion_nexus.server.datafusion_error", message)
         .with_fact("datafusion_error", datafusion_error)
         .with_source(error)
 }

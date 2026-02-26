@@ -9,8 +9,8 @@
 
 use std::fmt::Write;
 
-use cudf_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 use datafusion::physical_plan::metrics::MetricsSet;
+use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
 use super::*;
 use crate::planner::NativeStrictBoundedCompiledGraphDiagnostics;
@@ -181,7 +181,7 @@ pub(super) fn format_dynamic_filter_runtime_rows(rows: &[NativeDynamicFilterRunt
 }
 
 pub(super) fn format_native_optimizer_diagnostics(
-    diagnostics: &cudf_query_engine::NativeOptimizerDiagnostics,
+    diagnostics: &nexus_query_engine::NativeOptimizerDiagnostics,
 ) -> String {
     if diagnostics.is_empty() {
         return "none".to_string();
@@ -202,7 +202,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::PROJECTION_SIMPLIFICATION_RULE_NAME,
+            nexus_query_engine::PROJECTION_SIMPLIFICATION_RULE_NAME,
             simplification.considered_count,
             simplification.applied_count,
             candidates
@@ -217,7 +217,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::SEMIJOIN_REDUCTION_RULE_NAME,
+            nexus_query_engine::SEMIJOIN_REDUCTION_RULE_NAME,
             semijoin.considered_count,
             semijoin.applied_count,
             candidates
@@ -232,7 +232,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+            nexus_query_engine::JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
             selection.considered_count,
             selection.applied_count,
             candidates
@@ -252,7 +252,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::OUTER_JOIN_NULL_REJECTION_RULE_NAME,
+            nexus_query_engine::OUTER_JOIN_NULL_REJECTION_RULE_NAME,
             null_rejection.considered_count,
             null_rejection.applied_count,
             candidates
@@ -272,7 +272,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::JOIN_FILTER_REASSOCIATION_RULE_NAME,
+            nexus_query_engine::JOIN_FILTER_REASSOCIATION_RULE_NAME,
             reassociation.considered_count,
             reassociation.applied_count,
             candidates
@@ -292,7 +292,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
+            nexus_query_engine::DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
             pruning.considered_count,
             pruning.applied_count,
             candidates
@@ -307,7 +307,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::STREAM_FANOUT_REPLAY_RULE_NAME,
+            nexus_query_engine::STREAM_FANOUT_REPLAY_RULE_NAME,
             replay.considered_count,
             replay.applied_count,
             candidates
@@ -322,7 +322,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},applied_count={},candidates={}",
-            cudf_query_engine::LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
+            nexus_query_engine::LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
             reuse.considered_count,
             reuse.applied_count,
             candidates
@@ -342,7 +342,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},candidate_count={},applied_count={},candidates={}",
-            cudf_query_engine::SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+            nexus_query_engine::SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
             materialization.considered_count,
             materialization.candidate_count,
             materialization.applied_count,
@@ -358,7 +358,7 @@ pub(super) fn format_native_optimizer_diagnostics(
         };
         rows.push(format!(
             "rule={},considered_count={},route_count={},candidates={}",
-            cudf_query_engine::DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
+            nexus_query_engine::DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
             discovery.considered_count,
             discovery.route_count,
             candidates
@@ -368,7 +368,7 @@ pub(super) fn format_native_optimizer_diagnostics(
 }
 
 fn format_projection_simplification_candidate(
-    candidate: &cudf_query_engine::ProjectionSimplificationCandidateDiagnostics,
+    candidate: &nexus_query_engine::ProjectionSimplificationCandidateDiagnostics,
 ) -> String {
     let replacement_node_id = candidate.replacement_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
     let rejected_reason =
@@ -379,7 +379,9 @@ fn format_projection_simplification_candidate(
     )
 }
 
-fn format_semijoin_reduction_candidate(candidate: &cudf_query_engine::SemijoinReductionCandidateDiagnostics) -> String {
+fn format_semijoin_reduction_candidate(
+    candidate: &nexus_query_engine::SemijoinReductionCandidateDiagnostics,
+) -> String {
     let after_root_node_id = candidate.after_root_node_id.map_or_else(|| "none".to_string(), |id| id.to_string());
     let crossed_join_node_ids = if candidate.crossed_join_node_ids.is_empty() {
         "none".to_string()
@@ -424,7 +426,7 @@ fn format_semijoin_reduction_candidate(candidate: &cudf_query_engine::SemijoinRe
 }
 
 fn format_join_build_side_selection_candidate(
-    candidate: &cudf_query_engine::JoinBuildSideSelectionCandidateDiagnostics,
+    candidate: &nexus_query_engine::JoinBuildSideSelectionCandidateDiagnostics,
 ) -> String {
     let after_build_side = candidate.after_build_side.map_or_else(|| "none".to_string(), |side| side.to_string());
     let rejected_reason =
@@ -445,7 +447,7 @@ fn format_join_build_side_selection_candidate(
 }
 
 fn format_dimension_derived_row_group_pruning_candidate(
-    candidate: &cudf_query_engine::DimensionDerivedRowGroupPruningCandidateDiagnostics,
+    candidate: &nexus_query_engine::DimensionDerivedRowGroupPruningCandidateDiagnostics,
 ) -> String {
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
@@ -467,7 +469,7 @@ fn format_dimension_derived_row_group_pruning_candidate(
 }
 
 fn format_stream_fanout_replay_candidate(
-    candidate: &cudf_query_engine::StreamFanoutReplayCandidateDiagnostics,
+    candidate: &nexus_query_engine::StreamFanoutReplayCandidateDiagnostics,
 ) -> String {
     let join_probe_consumer_node_ids = if candidate.join_probe_consumer_node_ids.is_empty() {
         "none".to_string()
@@ -488,7 +490,7 @@ fn format_stream_fanout_replay_candidate(
 }
 
 fn format_local_parquet_source_reuse_candidate(
-    candidate: &cudf_query_engine::LocalParquetSourceReuseCandidateDiagnostics,
+    candidate: &nexus_query_engine::LocalParquetSourceReuseCandidateDiagnostics,
 ) -> String {
     let source_node_ids = candidate.source_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+");
     let stable_file_ids = if candidate.stable_file_ids.is_empty() {
@@ -517,7 +519,7 @@ fn format_local_parquet_source_reuse_candidate(
 }
 
 fn format_shared_subplan_materialization_candidate(
-    candidate: &cudf_query_engine::SharedSubplanMaterializationCandidateDiagnostics,
+    candidate: &nexus_query_engine::SharedSubplanMaterializationCandidateDiagnostics,
 ) -> String {
     let aggregate_node_ids = candidate.aggregate_node_ids.iter().map(ToString::to_string).collect::<Vec<_>>().join("+");
     let group_exprs = if candidate.group_exprs.is_empty() {
@@ -560,7 +562,7 @@ fn format_shared_subplan_materialization_candidate(
 }
 
 fn format_dynamic_filter_route_candidate(
-    candidate: &cudf_query_engine::DynamicFilterRouteCandidateDiagnostics,
+    candidate: &nexus_query_engine::DynamicFilterRouteCandidateDiagnostics,
 ) -> String {
     let dynamic_filter_id = candidate.dynamic_filter_id.map_or_else(|| "none".to_string(), |id| id.to_string());
     let producer_build_side = candidate.producer_build_side.map_or_else(|| "none".to_string(), |side| side.to_string());
@@ -607,7 +609,7 @@ fn format_dynamic_filter_route_candidate(
 }
 
 fn format_outer_join_null_rejection_candidate(
-    candidate: &cudf_query_engine::OuterJoinNullRejectionCandidateDiagnostics,
+    candidate: &nexus_query_engine::OuterJoinNullRejectionCandidateDiagnostics,
 ) -> String {
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
@@ -629,7 +631,7 @@ fn format_outer_join_null_rejection_candidate(
 }
 
 fn format_join_filter_reassociation_candidate(
-    candidate: &cudf_query_engine::JoinFilterReassociationCandidateDiagnostics,
+    candidate: &nexus_query_engine::JoinFilterReassociationCandidateDiagnostics,
 ) -> String {
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
@@ -657,13 +659,13 @@ fn option_usize_text(value: Option<usize>) -> String {
     value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
-fn format_semijoin_key_mapping(mapping: &cudf_query_engine::SemijoinReductionKeyMappingDiagnostics) -> String {
+fn format_semijoin_key_mapping(mapping: &nexus_query_engine::SemijoinReductionKeyMappingDiagnostics) -> String {
     let after_column = mapping.after_column.as_deref().unwrap_or("none");
     let target_subtree_id = mapping.target_subtree_id.map_or_else(|| "none".to_string(), |id| id.to_string());
     format!("{}->{}@{}", stable_tsv_field(&mapping.before_column), stable_tsv_field(after_column), target_subtree_id)
 }
 
-fn format_semijoin_cost_gate(gate: &cudf_query_engine::SemijoinReductionCostGateDiagnostics) -> String {
+fn format_semijoin_cost_gate(gate: &nexus_query_engine::SemijoinReductionCostGateDiagnostics) -> String {
     format!(
         "signal={},threshold_multiplier={},accepted={}",
         format_semijoin_cost_signal(&gate.signal),
@@ -672,16 +674,16 @@ fn format_semijoin_cost_gate(gate: &cudf_query_engine::SemijoinReductionCostGate
     )
 }
 
-fn format_semijoin_cost_signal(signal: &cudf_query_engine::SemijoinReductionCostSignal) -> String {
+fn format_semijoin_cost_signal(signal: &nexus_query_engine::SemijoinReductionCostSignal) -> String {
     match signal {
-        cudf_query_engine::SemijoinReductionCostSignal::RowEstimate { semi_right_rows, target_rows } => {
+        nexus_query_engine::SemijoinReductionCostSignal::RowEstimate { semi_right_rows, target_rows } => {
             format!("row_estimate:semi_right_rows={semi_right_rows}:target_rows={target_rows}")
         },
-        cudf_query_engine::SemijoinReductionCostSignal::ByteEstimate { semi_right_bytes, target_bytes } => {
+        nexus_query_engine::SemijoinReductionCostSignal::ByteEstimate { semi_right_bytes, target_bytes } => {
             format!("byte_estimate:semi_right_bytes={semi_right_bytes}:target_bytes={target_bytes}")
         },
-        cudf_query_engine::SemijoinReductionCostSignal::AggregateKeysetShape => "aggregate_keyset_shape".to_string(),
-        cudf_query_engine::SemijoinReductionCostSignal::FilteredSourceKeysetShape {
+        nexus_query_engine::SemijoinReductionCostSignal::AggregateKeysetShape => "aggregate_keyset_shape".to_string(),
+        nexus_query_engine::SemijoinReductionCostSignal::FilteredSourceKeysetShape {
             filtered_source_count,
             semi_right_source_bytes,
             target_rows,
@@ -693,7 +695,7 @@ fn format_semijoin_cost_signal(signal: &cudf_query_engine::SemijoinReductionCost
             optional_semijoin_u64(*target_rows),
             optional_semijoin_u64(*target_bytes),
         ),
-        cudf_query_engine::SemijoinReductionCostSignal::Unavailable => "unavailable".to_string(),
+        nexus_query_engine::SemijoinReductionCostSignal::Unavailable => "unavailable".to_string(),
     }
 }
 

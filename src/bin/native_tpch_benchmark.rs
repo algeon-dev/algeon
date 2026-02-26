@@ -13,7 +13,7 @@ use datafusion::{
     physical_plan::{ExecutionPlan, collect, metrics::MetricsSet},
     prelude::{SessionConfig, SessionContext},
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV,
     CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error as AdapterError,
     GpuFallbackPolicy, NativeAggregateStrategyMetricRow, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics,
@@ -51,7 +51,7 @@ use reports::*;
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
     let config = NativeTpchBenchmarkConfig::from_env()?;
-    let work_dir = unique_temp_dir("datafusion-cudf-native-tpch-benchmark");
+    let work_dir = unique_temp_dir("datafusion-nexus-native-tpch-benchmark");
     let report = run_native_tpch_benchmark(&config, &work_dir).await?;
     let text = report.to_tsv();
     print!("{text}");

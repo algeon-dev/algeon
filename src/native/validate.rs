@@ -1,7 +1,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
-use cudf_query_engine::{is_supported_arrow_cast, is_supported_arrow_type};
 use datafusion::{
     physical_expr::{
         PhysicalExpr, ScalarFunctionExpr,
@@ -17,6 +16,7 @@ use datafusion::{
         sorts::sort::SortExec,
     },
 };
+use nexus_query_engine::{is_supported_arrow_cast, is_supported_arrow_type};
 
 use crate::policy::FallbackReason;
 

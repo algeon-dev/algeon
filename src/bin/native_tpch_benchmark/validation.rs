@@ -39,7 +39,7 @@ pub(super) fn fingerprint_batches(
     batches: &[RecordBatch],
 ) -> DataFusionResult<String> {
     let mut hasher = StableFnv1a64::new();
-    hasher.update_field("datafusion-cudf-tpch-output-v3");
+    hasher.update_field("datafusion-nexus-tpch-output-v3");
     for batch in batches {
         if batch.schema().as_ref() != schema.as_ref() {
             return Err(DataFusionError::Plan(

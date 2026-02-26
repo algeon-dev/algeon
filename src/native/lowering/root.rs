@@ -1,12 +1,12 @@
 use std::{collections::BTreeSet, sync::Arc};
 
-use cudf_query_engine::{
-    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
-    QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
-};
 use datafusion::{
     datasource::physical_plan::{FileSource, ParquetSource},
     physical_plan::{ExecutionPlan, projection::ProjectionExec},
+};
+use nexus_query_engine::{
+    LocalParquetSource as NativeLocalParquetSource, QueryPlan as NativeQueryPlan,
+    QueryPlanBuilder as NativeQueryPlanBuilder, SourceNode as NativeSourceNode,
 };
 
 use super::{

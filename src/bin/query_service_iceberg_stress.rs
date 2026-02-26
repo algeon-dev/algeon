@@ -5,20 +5,20 @@ use std::{
 };
 
 use arrow::{array::Array, record_batch::RecordBatch};
-use cudf_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     execution::{SessionStateBuilder, context::TaskContext},
     physical_plan::collect,
     prelude::SessionContext,
 };
-use datafusion_cudf::{
+use datafusion_nexus::{
     CudfIcebergTableProvider, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt,
     Error as AdapterError, GlueIcebergCatalogConfig, GlueIcebergTableConfig, GpuFallbackPolicy,
     IcebergTableFormatPlanner, NativeCudfExecutionConfig, NativeDataFusionPlanningOutcome,
     NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionPostNativeExecutionPath,
     TableFormatScanRequest, load_glue_table, tpch_report_session_config,
 };
+use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServiceTenantConfig, TenantId};
 use tokio::sync::Barrier;
 
 const TSV_SCHEMA_VERSION: u32 = 1;
@@ -427,7 +427,7 @@ async fn run_native_request(
 
 async fn collect_native_with_handle(
     config: &StressConfig,
-    handle: Arc<cudf_query_engine::QueryHandle>,
+    handle: Arc<nexus_query_engine::QueryHandle>,
 ) -> DataFusionResult<NativeCollectOutcome> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(
         NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),

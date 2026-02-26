@@ -10,7 +10,6 @@
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
-use cudf_query_engine::{PlanNode, QueryPlan, SourceNode};
 use datafusion::{
     physical_expr::{EquivalenceProperties, Partitioning},
     physical_plan::{
@@ -18,6 +17,7 @@ use datafusion::{
         execution_plan::{Boundedness, EmissionType},
     },
 };
+use nexus_query_engine::{PlanNode, QueryPlan, SourceNode};
 
 use crate::error::Error;
 
@@ -61,7 +61,7 @@ pub(super) fn comma_separated<'a>(values: impl IntoIterator<Item = &'a str>) -> 
 pub(super) fn native_query_runtime_error(
     operation: &'static str,
     message: impl Into<String>,
-    source: cudf_query_engine::QueryError,
+    source: nexus_query_engine::QueryError,
 ) -> Error {
     mark_native_runtime_error(Error::from_native(operation, message, source), "runtime_execution")
 }
