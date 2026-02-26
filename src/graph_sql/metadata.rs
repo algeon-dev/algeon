@@ -15,11 +15,10 @@ use datafusion::{
 use serde_json::{Map, Value, json};
 
 use super::{
-    CUGRAPH_BFS_PATH_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION,
-    CUGRAPH_OPERATION_REGISTRY, CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams,
-    CugraphAlgorithmSpec, CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig,
-    CugraphTableReference, CugraphVertexIdDomain, parse_cugraph_algorithm_spec, parse_cugraph_bfs_path_spec,
-    plan_error, stable_result_schema, vertex_id_domain_for_call,
+    CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_OPERATION_REGISTRY,
+    CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
+    CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig, CugraphTableReference,
+    CugraphVertexIdDomain, parse_cugraph_algorithm_spec, plan_error, stable_result_schema, vertex_id_domain_for_call,
 };
 
 const SEVERITY_OK: &str = "ok";
@@ -164,7 +163,13 @@ impl TableProvider for CugraphMetadataProvider {
 }
 
 fn list_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
+    let mut fields = list_existing_fields();
+    fields.push(Field::new("summary", DataType::Utf8, false));
+    Arc::new(Schema::new(fields))
+}
+
+fn list_existing_fields() -> Vec<Field> {
+    vec![
         Field::new("function_name", DataType::Utf8, false),
         Field::new("algorithm", DataType::Utf8, false),
         Field::new("enabled", DataType::Boolean, false),
@@ -176,7 +181,7 @@ fn list_schema() -> SchemaRef {
         Field::new("output_schema_json", DataType::Utf8, false),
         Field::new("options_schema_json", DataType::Utf8, false),
         Field::new("default_graph_options_json", DataType::Utf8, false),
-    ]))
+    ]
 }
 
 fn describe_schema() -> SchemaRef {
@@ -185,12 +190,16 @@ fn describe_schema() -> SchemaRef {
         Field::new("error_code", DataType::Utf8, false),
         Field::new("message", DataType::Utf8, false),
     ];
-    fields.extend(list_schema().fields().iter().map(|field| field.as_ref().clone()));
+    fields.extend(list_existing_fields());
     fields.extend([
         Field::new("argument_descriptions_json", DataType::Utf8, false),
         Field::new("option_defaults_json", DataType::Utf8, false),
         Field::new("result_field_descriptions_json", DataType::Utf8, false),
         Field::new("limitations_json", DataType::Utf8, false),
+        Field::new("summary", DataType::Utf8, false),
+        Field::new("purpose", DataType::Utf8, false),
+        Field::new("mode_schemas_json", DataType::Utf8, false),
+        Field::new("examples_json", DataType::Utf8, false),
     ]);
     Arc::new(Schema::new(fields))
 }
@@ -233,6 +242,7 @@ fn list_batch(config: &CugraphSqlConfig) -> Result<RecordBatch> {
             strings(rows.iter().map(|row| row.output_schema_json.clone()).collect()),
             strings(rows.iter().map(|row| row.options_schema_json.clone()).collect()),
             strings(rows.iter().map(|row| row.default_graph_options_json.clone()).collect()),
+            strings(rows.iter().map(|row| row.summary.clone()).collect()),
         ],
     )
     .map_err(Into::into)
@@ -259,6 +269,10 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<Reco
                 strings(vec!["{}".to_string()]),
                 strings(vec!["[]".to_string()]),
                 strings(vec!["{}".to_string()]),
+                strings(vec!["{}".to_string()]),
+                strings(vec!["[]".to_string()]),
+                strings(vec!["".to_string()]),
+                strings(vec!["".to_string()]),
                 strings(vec!["{}".to_string()]),
                 strings(vec!["[]".to_string()]),
             ],
@@ -288,6 +302,10 @@ fn describe_batch(function_name: &str, config: &CugraphSqlConfig) -> Result<Reco
             strings(vec![option_defaults_json(algorithm, config)]),
             strings(vec![result_field_descriptions_json(algorithm)]),
             strings(vec![limitations_json(algorithm)]),
+            strings(vec![row.summary]),
+            strings(vec![purpose(algorithm).to_string()]),
+            strings(vec![mode_schemas_json(algorithm)]),
+            strings(vec![examples_json(algorithm)]),
         ],
     )
     .map_err(Into::into)
@@ -338,6 +356,7 @@ struct AlgorithmMetadataRow {
     output_schema_json: String,
     options_schema_json: String,
     default_graph_options_json: String,
+    summary: String,
 }
 
 fn algorithm_row(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> AlgorithmMetadataRow {
@@ -356,6 +375,7 @@ fn algorithm_row(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Algo
             algorithm,
             &config.default_graph_options,
         )),
+        summary: summary(algorithm).to_string(),
     }
 }
 
@@ -422,7 +442,6 @@ async fn validate_call(
             format!("unknown cuGraph algorithm function '{function_name}'"),
         );
     };
-    let force_bfs_path = function_name == CUGRAPH_BFS_PATH_FUNCTION;
     let output_schema_json = schema_json(&stable_result_schema(algorithm));
     if !config.allows(algorithm) {
         return ValidationRow::invalid(
@@ -440,7 +459,7 @@ async fn validate_call(
         },
     };
 
-    let spec = match build_validate_spec(algorithm, table_name, &call, config, force_bfs_path) {
+    let spec = match build_validate_spec(algorithm, table_name, &call, config) {
         Ok(spec) => spec,
         Err(error) => {
             return ValidationRow::invalid(function_name, parse_error_code(&error.to_string()), error.to_string())
@@ -820,7 +839,6 @@ fn build_validate_spec(
     table_name: &str,
     call: &ValidateCallJson,
     config: &CugraphSqlConfig,
-    force_bfs_path: bool,
 ) -> Result<CugraphAlgorithmSpec> {
     let mut args = vec![lit(table_name)];
     if requires_source_vertex(algorithm) {
@@ -837,11 +855,7 @@ fn build_validate_spec(
     if !call.options.is_empty() {
         args.push(lit(Value::Object(call.options.clone()).to_string()));
     }
-    if force_bfs_path {
-        parse_cugraph_bfs_path_spec(&args, config)
-    } else {
-        parse_cugraph_algorithm_spec(algorithm, &args, config)
-    }
+    parse_cugraph_algorithm_spec(algorithm, &args, config)
 }
 
 async fn resolve_table_provider(
@@ -872,9 +886,6 @@ fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {
 }
 
 fn algorithm_for_function_name(function_name: &str) -> Option<CugraphAlgorithm> {
-    if function_name == CUGRAPH_BFS_PATH_FUNCTION {
-        return Some(CugraphAlgorithm::Bfs);
-    }
     CUGRAPH_OPERATION_REGISTRY
         .iter()
         .find(|definition| definition.sql_function_name == function_name)
@@ -900,6 +911,10 @@ fn effective_default_graph_options(algorithm: CugraphAlgorithm, defaults: &Cugra
 }
 
 fn schema_json(schema: &SchemaRef) -> String {
+    schema_json_value(schema).to_string()
+}
+
+fn schema_json_value(schema: &SchemaRef) -> Value {
     json!({
         "fields": schema
             .fields()
@@ -913,10 +928,12 @@ fn schema_json(schema: &SchemaRef) -> String {
             })
             .collect::<Vec<_>>()
     })
-    .to_string()
 }
 
 fn options_schema_json(algorithm: CugraphAlgorithm) -> String {
+    if algorithm == CugraphAlgorithm::Bfs {
+        return bfs_options_schema_json().to_string();
+    }
     json!({
         "graph_options": {
             "directed": {"type": "boolean"},
@@ -926,6 +943,78 @@ fn options_schema_json(algorithm: CugraphAlgorithm) -> String {
         "algorithm_options": algorithm_option_names(algorithm)
     })
     .to_string()
+}
+
+fn bfs_options_schema_json() -> Value {
+    json!({
+        "graph_options": {
+            "directed": {"type": "Boolean", "default": "session default"},
+            "renumber": {"type": "Boolean", "default": "session default"},
+            "construction_policy": {
+                "type": "Utf8",
+                "allowed_values": ["python_cugraph", "raw_libcugraph"],
+                "default": "session default"
+            }
+        },
+        "algorithm_options": {
+            "depth_limit": {"type": "Int64|null", "default": null},
+            "output_mode": {"type": "Utf8", "allowed_values": ["raw", "normalized", "path"], "default": "raw"},
+            "target_vertices_table": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_when": "output_mode=path or return_target_info=true"
+            },
+            "target_vertex_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_when": "output_mode=path or return_target_info=true"
+            },
+            "return_target_info": {
+                "type": "Boolean",
+                "default": false,
+                "valid_when": "output_mode in [raw, normalized]"
+            },
+            "include_vertices_table": {"type": "Utf8|null", "default": null},
+            "include_vertex_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_when": "include_vertices_table is set"
+            },
+            "exclude_vertices_table": {"type": "Utf8|null", "default": null},
+            "exclude_vertex_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_when": "exclude_vertices_table is set"
+            },
+            "edge_id_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "valid_when": "integer vertex domain only"
+            },
+            "include_edge_ids_table": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_with": "edge_id_col"
+            },
+            "include_edge_ids_col": {"type": "Utf8|null", "default": null},
+            "include_edges_table": {"type": "Utf8|null", "default": null},
+            "include_edge_src_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_when": "include_edges_table is set"
+            },
+            "include_edge_dst_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_when": "include_edges_table is set"
+            },
+            "include_edge_id_col": {
+                "type": "Utf8|null",
+                "default": null,
+                "required_with": "edge_id_col"
+            }
+        }
+    })
 }
 
 fn option_defaults_json(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> String {
@@ -1072,13 +1161,27 @@ fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String {
         json!({"name": "table_name", "type": "Utf8", "required": true}),
         json!({"name": "src_col", "type": "Utf8", "required": false, "default": "src"}),
         json!({"name": "dst_col", "type": "Utf8", "required": false, "default": "dst"}),
-        json!({"name": "weight_col", "type": "Utf8", "required": algorithm == CugraphAlgorithm::MinimumSpanningTree}),
+        json!({
+            "name": "weight_col",
+            "type": "Utf8|null",
+            "required": algorithm == CugraphAlgorithm::MinimumSpanningTree,
+            "note": weight_argument_note(algorithm)
+        }),
         json!({"name": "options_json", "type": "Utf8", "required": false}),
     ];
     if requires_source_vertex(algorithm) {
-        args.insert(1, json!({"name": "source_vertex", "type": "Int64", "required": true}));
+        let source_type = if algorithm == CugraphAlgorithm::Bfs { "Int64|Utf8" } else { "Int64" };
+        args.insert(1, json!({"name": "source_vertex", "type": source_type, "required": true}));
     }
     Value::Array(args).to_string()
+}
+
+fn weight_argument_note(algorithm: CugraphAlgorithm) -> &'static str {
+    match algorithm {
+        CugraphAlgorithm::Bfs => "accepted as an edge-column binding but ignored by BFS traversal",
+        CugraphAlgorithm::MinimumSpanningTree => "required edge weight column",
+        _ => "optional edge weight column for graph construction when supported by the algorithm",
+    }
 }
 
 fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> String {
@@ -1093,10 +1196,178 @@ fn result_field_descriptions_json(algorithm: CugraphAlgorithm) -> String {
     .to_string()
 }
 
-fn limitations_json(_algorithm: CugraphAlgorithm) -> String {
-    json!([
+fn limitations_json(algorithm: CugraphAlgorithm) -> String {
+    let mut limitations = vec![
         "dry-run validates table resolution, column presence, static dtypes, and options only",
-        "dry-run does not scan edge data, construct a graph, or prove source-vertex existence"
+        "dry-run does not scan edge data, construct a graph, or prove source-vertex existence",
+    ];
+    if algorithm == CugraphAlgorithm::Bfs {
+        limitations.extend([
+            "BFS traversal ignores edge weights; distance is a hop count",
+            "string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col",
+            "path output requires exactly one target row at execution time",
+            "options_schema_json is typed for BFS; validate_call remains the authoritative call-specific checker",
+        ]);
+    }
+    json!(limitations).to_string()
+}
+
+fn summary(algorithm: CugraphAlgorithm) -> &'static str {
+    match algorithm {
+        CugraphAlgorithm::Bfs => {
+            "Single-source breadth-first search; weight_col is accepted but traversal uses hop counts."
+        },
+        CugraphAlgorithm::PageRank | CugraphAlgorithm::PageRankStrict => "Compute PageRank scores.",
+        CugraphAlgorithm::Louvain => "Detect communities with Louvain modularity optimization.",
+        CugraphAlgorithm::EigenvectorCentrality => "Compute eigenvector centrality scores.",
+        CugraphAlgorithm::KatzCentrality => "Compute Katz centrality scores.",
+        CugraphAlgorithm::Hits => "Compute HITS hub and authority scores.",
+        CugraphAlgorithm::Sssp => "Compute single-source shortest paths.",
+        CugraphAlgorithm::DegreesAll => "Compute in-degree and out-degree for every vertex.",
+        CugraphAlgorithm::InDegreesAll => "Compute in-degree for every vertex.",
+        CugraphAlgorithm::OutDegreesAll => "Compute out-degree for every vertex.",
+        CugraphAlgorithm::WeaklyConnectedComponents => "Compute weakly connected components.",
+        CugraphAlgorithm::StronglyConnectedComponents => "Compute strongly connected components.",
+        CugraphAlgorithm::TriangleCountAll => "Compute triangle counts for every vertex.",
+        CugraphAlgorithm::CoreNumber => "Compute graph core numbers.",
+        CugraphAlgorithm::KCore => "Return the graph k-core edge set.",
+        CugraphAlgorithm::MinimumSpanningTree => "Compute a minimum spanning tree.",
+        CugraphAlgorithm::Leiden => "Detect communities with Leiden optimization.",
+        CugraphAlgorithm::Ecg => "Detect communities with ensemble clustering for graphs.",
+        CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices with spectral modularity maximization.",
+        CugraphAlgorithm::BalancedCutClustering => "Cluster vertices with balanced-cut spectral clustering.",
+    }
+}
+
+fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
+    match algorithm {
+        CugraphAlgorithm::Bfs => {
+            "Run BFS over an edge-list relation and optionally return normalized reachability, target metadata, or one reconstructed source-to-target path."
+        },
+        _ => "Run the named cuGraph algorithm over an edge-list relation using the SQL table-function contract.",
+    }
+}
+
+fn mode_schemas_json(algorithm: CugraphAlgorithm) -> String {
+    if algorithm != CugraphAlgorithm::Bfs {
+        return "{}".to_string();
+    }
+    json!({
+        "raw": bfs_raw_mode_schema(false),
+        "normalized": bfs_normalized_mode_schema(false),
+        "raw_with_target_info": bfs_raw_mode_schema(true),
+        "normalized_with_target_info": bfs_normalized_mode_schema(true),
+        "path": bfs_path_mode_schema()
+    })
+    .to_string()
+}
+
+fn bfs_raw_mode_schema(with_target_info: bool) -> Value {
+    let mut fields = vec![
+        json!({"name": "vertex", "type": "Int64|Utf8", "nullable": false}),
+        json!({"name": "distance", "type": "Int64", "nullable": false}),
+        json!({"name": "predecessor", "type": "Int64|Utf8", "nullable": true}),
+    ];
+    append_bfs_target_info_fields(&mut fields, with_target_info);
+    Value::Array(fields)
+}
+
+fn bfs_normalized_mode_schema(with_target_info: bool) -> Value {
+    let mut fields = vec![
+        json!({"name": "vertex", "type": "Int64|Utf8", "nullable": false}),
+        json!({"name": "distance", "type": "Int64", "nullable": true}),
+        json!({"name": "predecessor", "type": "Int64|Utf8", "nullable": true}),
+        json!({"name": "reachable", "type": "Boolean", "nullable": false}),
+    ];
+    append_bfs_target_info_fields(&mut fields, with_target_info);
+    Value::Array(fields)
+}
+
+fn append_bfs_target_info_fields(fields: &mut Vec<Value>, with_target_info: bool) {
+    if with_target_info {
+        fields.push(json!({"name": "target_found", "type": "Boolean", "nullable": false}));
+        fields.push(json!({"name": "target_distance", "type": "Int64", "nullable": true}));
+    }
+}
+
+fn bfs_path_mode_schema() -> Value {
+    json!([
+        {"name": "path_index", "type": "Int64", "nullable": false},
+        {"name": "source", "type": "Int64|Utf8", "nullable": false},
+        {"name": "target", "type": "Int64|Utf8", "nullable": false},
+        {"name": "vertex", "type": "Int64|Utf8", "nullable": false},
+        {"name": "distance", "type": "Int64", "nullable": false}
+    ])
+}
+
+fn examples_json(algorithm: CugraphAlgorithm) -> String {
+    if algorithm != CugraphAlgorithm::Bfs {
+        return "[]".to_string();
+    }
+    json!([
+        {
+            "name": "basic_bfs",
+            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"depth_limit\":4}')",
+            "call_json": {
+                "source_vertex": 123,
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {"depth_limit": 4}
+            }
+        },
+        {
+            "name": "normalized_bfs",
+            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"depth_limit\":4,\"output_mode\":\"normalized\"}')",
+            "call_json": {
+                "source_vertex": 123,
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {"depth_limit": 4, "output_mode": "normalized"}
+            }
+        },
+        {
+            "name": "target_metadata",
+            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"output_mode\":\"normalized\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex_id\",\"return_target_info\":true}')",
+            "call_json": {
+                "source_vertex": 123,
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {
+                    "output_mode": "normalized",
+                    "target_vertices_table": "targets",
+                    "target_vertex_col": "vertex_id",
+                    "return_target_info": true
+                }
+            }
+        },
+        {
+            "name": "path_output",
+            "sql": "SELECT * FROM cugraph_bfs('target_edges', 123, 'src', 'dst', NULL, '{\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex_id\"}') ORDER BY path_index",
+            "call_json": {
+                "source_vertex": 123,
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {
+                    "output_mode": "path",
+                    "target_vertices_table": "targets",
+                    "target_vertex_col": "vertex_id"
+                }
+            }
+        },
+        {
+            "name": "dry_run_path",
+            "sql": "SELECT valid, error_code, message, output_schema_json, normalized_options_json FROM cugraph_validate_call('cugraph_bfs', 'target_edges', '{\"source_vertex\":123,\"src_col\":\"src\",\"dst_col\":\"dst\",\"options\":{\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex_id\"}}')",
+            "call_json": {
+                "source_vertex": 123,
+                "src_col": "src",
+                "dst_col": "dst",
+                "options": {
+                    "output_mode": "path",
+                    "target_vertices_table": "targets",
+                    "target_vertex_col": "vertex_id"
+                }
+            }
+        }
     ])
     .to_string()
 }
