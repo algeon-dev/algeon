@@ -629,12 +629,6 @@ fn validate_graph_vertex_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field(role, column, input_schema, input_available)?;
-    if field.is_nullable() {
-        return Err(graph_algorithm_error("graph edge vertex columns must be non-null")
-            .with_fact("reason", "nullable_edge_column")
-            .with_fact("edge_column_role", role)
-            .with_fact("column", column));
-    }
     if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -655,12 +649,6 @@ fn validate_graph_weight_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field("weight", column, input_schema, input_available)?;
-    if field.is_nullable() {
-        return Err(graph_algorithm_error("graph edge weight column must be non-null")
-            .with_fact("reason", "nullable_edge_column")
-            .with_fact("edge_column_role", "weight")
-            .with_fact("column", column));
-    }
     if !matches!(field.data_type(), arrow::datatypes::DataType::Float32 | arrow::datatypes::DataType::Float64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -681,12 +669,6 @@ fn validate_graph_edge_id_column(
     input_available: &BTreeSet<String>,
 ) -> Result<()> {
     let field = graph_edge_field("edge_id", column, input_schema, input_available)?;
-    if field.is_nullable() {
-        return Err(graph_algorithm_error("graph edge-id column must be non-null")
-            .with_fact("reason", "nullable_edge_column")
-            .with_fact("edge_column_role", "edge_id")
-            .with_fact("column", column));
-    }
     if !matches!(field.data_type(), arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,

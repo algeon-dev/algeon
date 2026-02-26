@@ -77,9 +77,21 @@ pub(super) fn execute_graph_algorithm(
     let input_rows = input.num_rows() as u64;
     let input_columns = input.num_columns() as u64;
     let boundary_before = metrics.boundary.clone();
-    let timer = Instant::now();
     let executor = graph_algorithm_executor(node.spec.algorithm);
-    let inputs = GraphAlgorithmExecutionInputs { edge_list: input, side_inputs };
+    let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, node.input);
+    let input = super::edge_null_filter::filter_null_edge_rows(
+        context,
+        node_id,
+        "graph_edge_null_filter",
+        input.into_frame(),
+        &node.spec.edge_columns,
+        metrics,
+    )?;
+    let sanitized_input_rows = input.num_rows() as u64;
+    let null_edge_rows_dropped =
+        prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
+    let inputs = GraphAlgorithmExecutionInputs { edge_list: GpuDataFrame::new(input), side_inputs };
+    let timer = Instant::now();
     let result = executor(context, &node.spec, inputs)?;
     let elapsed = timer.elapsed();
     metrics.operator_time += elapsed;
@@ -100,7 +112,7 @@ pub(super) fn execute_graph_algorithm(
         directed: node.spec.graph_options.directed,
         renumber: node.spec.graph_options.renumber,
         algorithm_parameters: graph_algorithm_parameters(&node.spec.params),
-        algorithm_metadata: result.algorithm_metadata,
+        algorithm_metadata: graph_algorithm_metadata_with_null_drops(result.algorithm_metadata, null_edge_rows_dropped),
         input_rows,
         input_columns,
         output_rows: gpu.num_rows() as u64,
@@ -112,6 +124,23 @@ pub(super) fn execute_graph_algorithm(
         device_to_host_materializations: boundary_delta.device_to_host_materializations,
     });
     Ok(gpu)
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_algorithm_metadata_with_null_drops(metadata: String, null_edge_rows_dropped: u64) -> String {
+    let null_metadata = format!("null_edge_rows_dropped={null_edge_rows_dropped}");
+    if metadata.is_empty() { null_metadata } else { format!("{metadata},{null_metadata}") }
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_input_null_edge_rows_dropped(metrics: &QueryMetrics, input: NodeId) -> u64 {
+    let input_node_id = input.to_string();
+    metrics
+        .operators
+        .iter()
+        .filter(|row| row.node_id == input_node_id && row.operator_kind == "graph_edge_null_filter")
+        .map(|row| row.input_rows.saturating_sub(row.output_rows))
+        .sum()
 }
 
 #[cfg(feature = "cugraph")]

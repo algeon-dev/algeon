@@ -8,9 +8,17 @@ pub(super) fn execute_edge_normalize(
     input: GpuDataFrame,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
+    let frame = super::edge_null_filter::filter_null_edge_rows(
+        context,
+        node_id,
+        "graph_edge_null_filter",
+        input.into_frame(),
+        &node.spec.edge_columns,
+        metrics,
+    )?;
     let timer = Instant::now();
     let overrides = execution_overrides(context);
-    let mut frame = project_edge_columns(input.into_frame(), &node.spec, node_id)?;
+    let mut frame = project_edge_columns(frame, &node.spec, node_id)?;
 
     if node.spec.add_reverse {
         let reverse = reverse_edges(&frame, &node.spec, node_id)?;

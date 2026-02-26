@@ -321,13 +321,14 @@ impl Default for CugraphGraphOptions {
 ///   an extra sort + dedup cost and may import borrowed/prepared edge columns
 ///   into owned cudf objects, which breaks the zero-copy ingress path documented in
 ///   `cugraph::cudf_interop`.
-/// - [`RawLibcugraph`](Self::RawLibcugraph): pass the SQL edge list straight
-///   through to libcugraph without ingress-side normalization. Use when the
-///   query plan (or the caller) already guarantees a well-formed edge list:
+/// - [`RawLibcugraph`](Self::RawLibcugraph): pass the SQL edge list to
+///   libcugraph without duplicate-edge or reverse-edge normalization. Use when
+///   the query plan (or the caller) already guarantees a well-formed edge list:
 ///   no duplicate directed edges in simple-graph mode, and reverse edges
-///   already present for undirected simple graphs. Preserves zero-copy
-///   ingress and avoids a second pass of dedup work that DataFusion can
-///   already express.
+///   already present for undirected simple graphs. The native graph boundary
+///   still drops rows whose bound edge columns are actually null, because
+///   libcugraph has no valid null-edge semantics. Clean inputs preserve
+///   zero-copy ingress; dirty inputs require a filtering pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CugraphGraphConstructionPolicy {
     PythonCugraph,

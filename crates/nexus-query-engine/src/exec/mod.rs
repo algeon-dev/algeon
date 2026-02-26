@@ -29,6 +29,7 @@ use cudf::{
 
 mod bounded;
 mod edge_normalize;
+mod edge_null_filter;
 mod graph_algorithm;
 mod join;
 mod lowering;

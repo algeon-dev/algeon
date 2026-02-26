@@ -163,7 +163,6 @@ async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
     register_edge_memtable(&ctx, "bad_edges", DataType::Utf8, DataType::Int64, DataType::Float64);
     register_edge_memtable(&ctx, "mismatch_edges", DataType::Int32, DataType::Int64, DataType::Float64);
     register_edge_memtable(&ctx, "bad_weight_edges", DataType::Int64, DataType::Int64, DataType::Utf8);
-    register_nullable_edge_memtable(&ctx, "nullable_edges", true, false, false);
 
     assert_validate_error(
         &ctx,
@@ -195,14 +194,6 @@ async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
         "bad_edges",
         r#"{"src_col":"missing","dst_col":"dst"}"#,
         "column_not_found",
-    )
-    .await;
-    assert_validate_error(
-        &ctx,
-        "cugraph_pagerank",
-        "nullable_edges",
-        r#"{"src_col":"src","dst_col":"dst","weight_col":"weight"}"#,
-        "nullable_edge_column",
     )
     .await;
     let unsupported = assert_validate_error(
@@ -239,6 +230,60 @@ async fn cugraph_metadata_validate_call_returns_stable_invalid_rows() {
         "unsupported_option",
     )
     .await;
+}
+
+#[tokio::test]
+async fn cugraph_metadata_validate_call_accepts_nullable_edge_schema_for_runtime_drop_policy() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_nullable_edge_memtable(&ctx, "nullable_edges", true, true, true);
+    register_nullable_edge_id_memtable(&ctx, "nullable_edge_ids");
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
+               FROM cugraph_validate_call(
+                 'cugraph_pagerank',
+                 'nullable_edges',
+                 '{"src_col":"src","dst_col":"dst","weight_col":"weight"}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(bool_value(batch, 2, 0));
+    assert_eq!(string_value(batch, 3, 0), "Int64");
+    assert_eq!(string_value(batch, 4, 0), "Int64");
+    assert_eq!(string_value(batch, 5, 0), "Float64");
+    assert!(bool_value(batch, 6, 0));
+
+    let batches = ctx
+        .sql(
+            r#"SELECT valid, error_code, table_resolved, src_dtype, dst_dtype, weight_dtype, would_execute_gpu
+               FROM cugraph_validate_call(
+                 'cugraph_bfs',
+                 'nullable_edge_ids',
+                 '{"source_vertex":0,"src_col":"src","dst_col":"dst","weight_col":"weight","options":{"edge_id_col":"edge_id"}}'
+               )"#,
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert!(bool_value(batch, 0, 0));
+    assert_eq!(string_value(batch, 1, 0), "ok");
+    assert!(bool_value(batch, 2, 0));
+    assert_eq!(string_value(batch, 3, 0), "Int64");
+    assert_eq!(string_value(batch, 4, 0), "Int64");
+    assert_eq!(string_value(batch, 5, 0), "Float64");
+    assert!(bool_value(batch, 6, 0));
 }
 
 #[test]
@@ -2007,6 +2052,36 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_nullable_string_bfs_edges_with_nulls(&ctx, "raw_edges");
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, distance, predecessor, reachable \
+             FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"output_mode\":\"normalized\"}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
+    assert_eq!(string_bfs_distance_for(batch, "b"), Some(1));
+    assert_eq!(string_bfs_distance_for(batch, "c"), Some(2));
+    assert_eq!(string_bfs_distance_for(batch, "d"), Some(3));
+    assert_eq!(string_bfs_distance_for(batch, "x"), None);
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
@@ -2242,6 +2317,27 @@ fn register_nullable_edge_memtable(
     ctx.register_table(table_name, provider).unwrap();
 }
 
+fn register_nullable_edge_id_memtable(ctx: &SessionContext, table_name: &str) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, true),
+        Field::new("dst", DataType::Int64, true),
+        Field::new("weight", DataType::Float64, true),
+        Field::new("edge_id", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10_i64, 12])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
 fn register_vertex_memtable(
     ctx: &SessionContext,
     table_name: &str,
@@ -2297,6 +2393,21 @@ fn register_string_bfs_edges(ctx: &SessionContext, table_name: &str) {
         vec![
             Arc::new(StringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
             Arc::new(StringArray::from(vec!["b", "c", "d", "d"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
+fn register_nullable_string_bfs_edges_with_nulls(ctx: &SessionContext, table_name: &str) {
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, true), Field::new("dst", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec![Some("a"), None, Some("b"), Some("c"), Some("a")])) as ArrayRef,
+            Arc::new(StringArray::from(vec![Some("b"), Some("x"), Some("c"), Some("d"), None])) as ArrayRef,
         ],
     )
     .unwrap();

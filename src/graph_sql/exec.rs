@@ -861,9 +861,6 @@ fn validate_bfs_logical_edge_schema(spec: &CugraphAlgorithmSpec, edge_schema: &S
         let field = edge_schema.field_with_name(column).map_err(|_| {
             plan_error(format!("cuGraph BFS logical vertex mapping could not find edge column '{column}'"))
         })?;
-        if field.is_nullable() {
-            return Err(plan_error(format!("cuGraph BFS logical vertex column '{column}' must be non-null")));
-        }
         if !is_bfs_logical_vertex_type(field.data_type()) {
             return Err(plan_error(format!(
                 "cuGraph BFS logical vertex mapping requires a string edge column '{column}', found {:?}",
