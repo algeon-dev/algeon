@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-#[path = "../src/bin/native_iceberg_tpch_benchmark.rs"]
+#[path = "../../src/bin/native_iceberg_tpch_benchmark.rs"]
 mod native_iceberg_tpch_benchmark;
 
 use std::{collections::HashMap, sync::Arc};

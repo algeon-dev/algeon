@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate TPC-H Parquet datasets under tests/data/tpch/sf<N>/parquet/.
+# Generate TPC-H Parquet datasets under fixture/data/tpch/sf<N>/parquet/.
 #
 # Usage:
 #   scripts/generate_tpch.sh [SCALE_FACTOR]
@@ -18,7 +18,7 @@ if ! command -v tpchgen-cli >/dev/null 2>&1; then
 fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT_DIR="${REPO_ROOT}/tests/data/tpch/sf${SCALE_FACTOR}/parquet"
+OUT_DIR="${REPO_ROOT}/fixture/data/tpch/sf${SCALE_FACTOR}/parquet"
 
 if [[ -d "${OUT_DIR}" && "${FORCE}" != "1" ]]; then
   if compgen -G "${OUT_DIR}/*.parquet" >/dev/null; then

@@ -134,7 +134,7 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
 }
 
 #[test]
-fn parity_data_root_lives_under_workspace_tests_dir() {
+fn parity_data_root_lives_under_workspace_fixture_dir() {
     // `data_root` honors `CUDF_CUGRAPH_DATA_ROOT` so refresh tooling can
     // point at a staging fixture path. The default-case assertion only
     // runs when the override is absent.
@@ -142,6 +142,6 @@ fn parity_data_root_lives_under_workspace_tests_dir() {
         return;
     }
     let root = data_root();
-    let suffix = std::path::Path::new("tests").join("data").join("cugraph");
+    let suffix = std::path::Path::new("fixture").join("data").join("cugraph");
     assert!(root.ends_with(suffix), "parity data root unexpected: {}", root.display());
 }

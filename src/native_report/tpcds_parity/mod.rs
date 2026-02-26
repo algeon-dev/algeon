@@ -1,7 +1,7 @@
 //! TPC-DS parity report contracts.
 //!
 //! This module compares CPU DataFusion output, native GPU output, and optional
-//! external-oracle output for the same TPC-DS query. The TSV surface is stable
+//! DuckDB oracle output for the same TPC-DS query. The TSV surface is stable
 //! within [`NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION`]: column order comes from
 //! [`NATIVE_TPCDS_PARITY_TSV_HEADER`], missing optional values serialize as
 //! `none`, and status enums serialize through their `as_str` methods.
@@ -39,9 +39,9 @@ use crate::{StatisticalAggregateExecutionMode, planner::NativePlanningDiagnostic
 ///
 /// Bump this when a column is added, removed, renamed, reordered, or given a
 /// new meaning that would change downstream parsing.
-pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 3;
-/// TPC-DS parity TSV header. Column order is stable for schema version 3.
-pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\texternal-engine_output_status\texternal-engine_cpu_parity_status\texternal-engine_cpu_parity_detail\texternal-engine_output_rows\texternal-engine_output_batches\texternal-engine_output_fingerprint\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
+pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 4;
+/// TPC-DS parity TSV header. Column order is stable for schema version 4.
+pub const NATIVE_TPCDS_PARITY_TSV_HEADER: &str = "query_id\tcpu_planning_status\tcpu_runtime_status\tnative_planning_outcome\tnative_reason_code\tnative_unsupported_category\tpost_native_execution_path\tnative_plan_fragment_count\thost_datafusion_boundary_count\tnative_runtime_started\tnative_runtime_outcome\tparity_status\tparity_detail\tcpu_output_rows\tnative_output_rows\tcpu_output_batches\tnative_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tduckdb_output_status\tduckdb_cpu_parity_status\tduckdb_cpu_parity_detail\tduckdb_output_rows\tduckdb_output_batches\tduckdb_output_fingerprint\tnative_reservation_live_peak_bytes\tnative_reservation_denied_count\tnative_retry_count\tnative_runtime_failure";
 
 mod canonical;
 mod compare;

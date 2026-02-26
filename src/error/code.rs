@@ -9,7 +9,7 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ErrorCode {
-    /// Query execution was cancelled by the caller.
+    /// Query execution was canceled by the caller.
     Cancelled,
     /// SQL text could not be parsed.
     SqlParse,

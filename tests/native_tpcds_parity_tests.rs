@@ -47,7 +47,7 @@ fn sf1_fixture_root_or_skip() -> Option<PathBuf> {
 
 #[test]
 fn parity_tsv_header_pins_schema_version_and_columns() {
-    assert_eq!(NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, 3);
+    assert_eq!(NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION, 4);
     let columns: Vec<&str> = NATIVE_TPCDS_PARITY_TSV_HEADER.split('\t').collect();
     assert_eq!(
         columns,
@@ -78,12 +78,6 @@ fn parity_tsv_header_pins_schema_version_and_columns() {
             "duckdb_output_rows",
             "duckdb_output_batches",
             "duckdb_output_fingerprint",
-            "external-engine_output_status",
-            "external-engine_cpu_parity_status",
-            "external-engine_cpu_parity_detail",
-            "external-engine_output_rows",
-            "external-engine_output_batches",
-            "external-engine_output_fingerprint",
             "native_reservation_live_peak_bytes",
             "native_reservation_denied_count",
             "native_retry_count",
@@ -116,7 +110,6 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
         native_output_fingerprint: None,
         comparison_mode: ParityComparisonMode::NotApplicable,
         duckdb_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
-        external-engine_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
         native_reservation_live_peak_bytes: None,
         native_reservation_denied_count: None,
         native_retry_count: None,
@@ -136,9 +129,9 @@ fn parity_report_to_tsv_emits_schema_version_and_header() {
     assert!(tsv.contains("# statistical_aggregate_tolerance_contract=float_tolerant\n"));
     assert!(tsv.contains("# stddev_samp_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains(NATIVE_TPCDS_PARITY_TSV_HEADER));
-    // 36 columns separated by tabs in the data row.
+    // 30 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");
-    assert_eq!(data_line.split('\t').count(), 36);
+    assert_eq!(data_line.split('\t').count(), 30);
 }
 
 #[tokio::test]
@@ -1507,7 +1500,6 @@ fn external_oracle_decimal_precision_widening_matches_cpu_value() {
             schema: duckdb_schema,
             batches: vec![duckdb_batch],
         },
-        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
     };
 
     let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::exact());
@@ -1583,7 +1575,6 @@ fn parity_report_retries_unordered_only_for_partial_order_by_ties() {
             metrics: MetricsSet::new(),
         },
         duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
-        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
     };
     let total_item = NativeTpcdsParityWorkloadItem {
         query_id: "total".to_string(),
@@ -1596,7 +1587,6 @@ fn parity_report_retries_unordered_only_for_partial_order_by_ties() {
             metrics: MetricsSet::new(),
         },
         duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
-        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
     };
 
     let report = NativeTpcdsParityReport::collect([partial_item, total_item], ParityFloatTolerance::exact());
@@ -1628,7 +1618,6 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
         ),
         native_runtime: NativeTpcdsParityNativeRuntimeOutcome::NotStarted,
         duckdb_output: NativeTpcdsParityExternalOutput::NotConfigured,
-        external-engine_output: NativeTpcdsParityExternalOutput::NotConfigured,
     };
     let report = NativeTpcdsParityReport::collect([item], ParityFloatTolerance::exact());
     assert_eq!(report.rows.len(), 1);

@@ -14,6 +14,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 
 export AWS_REGION="${AWS_REGION:-us-east-1}"
-export MORRIS_POC_DELTA_FIXTURE_ROOT="${MORRIS_POC_DELTA_FIXTURE_ROOT:-${REPO_ROOT}/tests/data}"
+export MORRIS_POC_DELTA_FIXTURE_ROOT="${MORRIS_POC_DELTA_FIXTURE_ROOT:-${REPO_ROOT}/fixture/data}"
 
 exec "${HERE}/.venv/bin/python" "${HERE}/upload_demo_db_delta.py"

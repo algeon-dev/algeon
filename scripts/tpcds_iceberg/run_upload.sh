@@ -9,8 +9,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
 
 case "${SF}" in
-  sf1)  DEFAULT_DIR="${REPO_ROOT}/tests/data/tpcds/sf1/parquet" ;;
-  sf10) DEFAULT_DIR="${REPO_ROOT}/tests/data/tpcds/sf10/parquet" ;;
+  sf1)  DEFAULT_DIR="${REPO_ROOT}/fixture/data/tpcds/sf1/parquet" ;;
+  sf10) DEFAULT_DIR="${REPO_ROOT}/fixture/data/tpcds/sf10/parquet" ;;
   *)    echo "Unsupported scale factor: ${SF}" >&2; exit 2 ;;
 esac
 

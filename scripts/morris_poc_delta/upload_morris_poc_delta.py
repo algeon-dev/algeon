@@ -7,8 +7,7 @@ Table naming inside demo_db_delta:
 
     demo_db_delta.<workload>_<sf>_<table>   e.g. demo_db_delta.tpch_sf10_lineitem
 
-Source fixtures are the tpchgen-rs output produced by
-`external-engine/test/tpch_performance/generate_tpch_data.sh`, laid out as
+Source fixtures are pre-generated optimized TPC-H Parquet data laid out as
 `<fixture_root>/tpch/sf<n>_optimized/parquet/<table>/part.N.parquet`.
 
 Two-step process:
@@ -19,7 +18,7 @@ Two-step process:
 Env:
   MORRIS_POC_DELTA_GLUE_DB     default demo_db_delta
   MORRIS_POC_DELTA_WAREHOUSE   default s3://example-warehouse/demo_db_delta/
-  MORRIS_POC_DELTA_FIXTURE_ROOT  default <repo>/tests/data
+  MORRIS_POC_DELTA_FIXTURE_ROOT  default <repo>/fixture/data
   MORRIS_POC_DELTA_SCOPE       comma list of <workload>:<sf>, e.g. "tpch:sf1,tpch:sf10"
                                (default: tpch sf1 + sf10)
   MORRIS_POC_DELTA_ONLY        optional comma list of bare table names to filter
@@ -44,7 +43,7 @@ WAREHOUSE = os.environ.get(
     "MORRIS_POC_DELTA_WAREHOUSE",
     "s3://example-warehouse/demo_db_delta/",
 ).rstrip("/") + "/"
-FIXTURE_ROOT = Path(os.environ.get("MORRIS_POC_DELTA_FIXTURE_ROOT", "tests/data")).resolve()
+FIXTURE_ROOT = Path(os.environ.get("MORRIS_POC_DELTA_FIXTURE_ROOT", "fixture/data")).resolve()
 ONLY = {t.strip() for t in os.environ.get("MORRIS_POC_DELTA_ONLY", "").split(",") if t.strip()}
 CATALOG_ID = os.environ.get("MORRIS_POC_DELTA_CATALOG_ID", "123456789012")
 REGION = os.environ.get("MORRIS_POC_DELTA_REGION", "us-east-1")

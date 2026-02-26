@@ -12,7 +12,7 @@ Driven entirely by env vars; run via run_upload.sh.
 Env:
   MORRIS_POC_GLUE_DB       default demo_db
   MORRIS_POC_WAREHOUSE     default s3://example-warehouse/demo_db/
-  MORRIS_POC_FIXTURE_ROOT  default <repo>/tests/data
+  MORRIS_POC_FIXTURE_ROOT  default <repo>/fixture/data
   MORRIS_POC_SCOPE         comma list of <workload>:<sf>, e.g. "tpch:sf1,tpcds:sf10"
                            (default: all combinations that have a fixture dir)
   MORRIS_POC_ONLY          optional comma list of bare table names to filter
@@ -30,7 +30,7 @@ WAREHOUSE = os.environ.get(
     "MORRIS_POC_WAREHOUSE",
     "s3://example-warehouse/demo_db/",
 ).rstrip("/") + "/"
-FIXTURE_ROOT = Path(os.environ.get("MORRIS_POC_FIXTURE_ROOT", "tests/data")).resolve()
+FIXTURE_ROOT = Path(os.environ.get("MORRIS_POC_FIXTURE_ROOT", "fixture/data")).resolve()
 ONLY = {t.strip() for t in os.environ.get("MORRIS_POC_ONLY", "").split(",") if t.strip()}
 CATALOG = "glue_demo_db"
 

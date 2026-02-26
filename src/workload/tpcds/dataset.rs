@@ -60,11 +60,11 @@ pub const DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR: &str = "/opt/dlami/nvme/tpcds/sf1/
 
 /// In-repo fallback Parquet root for the TPC-DS SF1 fixture, used when the
 /// `DEFAULT_NVME_MOUNT_ROOT` mount point is not present on this host.
-pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./tests/data/tpcds/sf1/parquet";
+pub const DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR: &str = "./fixture/data/tpcds/sf1/parquet";
 
 /// Returns the on-host default Parquet root for the TPC-DS SF1 fixture,
 /// picking the NVMe-staged path when `DEFAULT_NVME_MOUNT_ROOT` is mounted and
-/// the in-repo `./tests/data/...` path otherwise. The decision is based solely
+/// the in-repo `./fixture/data/...` path otherwise. The decision is based solely
 /// on whether the NVMe drive is attached — fixture completeness is probed by
 /// the caller.
 pub fn default_tpcds_sf1_parquet_root() -> &'static str {
@@ -243,7 +243,7 @@ pub fn prepare_tpcds_report_dataset(tiny_root: &Path) -> TpcdsWorkloadResult<(Pa
 }
 
 /// Returns the on-host default SF1 fixture when it is complete. The probe
-/// picks between the NVMe-staged root and the in-repo `./tests/data/...`
+/// picks between the NVMe-staged root and the in-repo `./fixture/data/...`
 /// fallback based solely on whether `DEFAULT_NVME_MOUNT_ROOT` is mounted on
 /// this host; fixture completeness is then checked at the chosen root. A
 /// `None` return means "no implicit external fixture available, fall back to

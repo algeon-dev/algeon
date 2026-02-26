@@ -29,7 +29,7 @@ pub const CUDF_TPCH_CONTENT_FINGERPRINT_ENV: &str = "CUDF_TPCH_CONTENT_FINGERPRI
 /// Root of the on-host NVMe mount where `rsync-tpch.service` /
 /// `rsync-tpcds.service` stage the canonical fixtures. When this mount point
 /// is missing (i.e. running on a dev host without the AWS DLAMI NVMe drive),
-/// the dataset probes fall back to the in-repo `./tests/data/...` roots
+/// the dataset probes fall back to the in-repo `./fixture/data/...` roots
 /// below. "Mount missing" is the only fallback trigger — a present mount with
 /// an incomplete fixture is treated as a real fixture problem, not as
 /// "fixture not available here".
@@ -51,24 +51,24 @@ pub const DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "/opt/dlami/nvme
 
 /// In-repo fallback Parquet root for the TPC-H SF1 fixture, used when the
 /// `DEFAULT_NVME_MOUNT_ROOT` mount point is not present on this host.
-pub const DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR: &str = "./tests/data/tpch/sf1/parquet";
+pub const DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR: &str = "./fixture/data/tpch/sf1/parquet";
 
 /// In-repo fallback Parquet root for the TPC-H SF10 fixture.
-pub const DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR: &str = "./tests/data/tpch/sf10/parquet";
+pub const DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR: &str = "./fixture/data/tpch/sf10/parquet";
 
 /// In-repo fallback Parquet root for the TPC-H SF100 `_optimized` fixture.
-pub const DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "./tests/data/tpch/sf100_optimized/parquet";
+pub const DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR: &str = "./fixture/data/tpch/sf100_optimized/parquet";
 
 /// True when `DEFAULT_NVME_MOUNT_ROOT` exists on this host. Used by the
 /// dataset probes to decide between NVMe-staged fixtures and the in-repo
-/// `./tests/data/...` fallback roots.
+/// `./fixture/data/...` fallback roots.
 pub fn default_nvme_mount_present() -> bool {
     Path::new(DEFAULT_NVME_MOUNT_ROOT).is_dir()
 }
 
 /// Returns the on-host default Parquet root for the given TPC-H scale, picking
 /// the NVMe-staged path when `DEFAULT_NVME_MOUNT_ROOT` is mounted and the
-/// in-repo `./tests/data/...` path otherwise. The mount check is purely about
+/// in-repo `./fixture/data/...` path otherwise. The mount check is purely about
 /// whether the NVMe drive is attached — fixture completeness is not consulted
 /// here; the caller probes that separately.
 pub fn default_tpch_parquet_root(scale: TpchDefaultScale) -> &'static str {
@@ -257,7 +257,7 @@ pub fn prepare_tpch_report_dataset(tiny_root: &Path) -> TpchWorkloadResult<(Path
 }
 
 /// Returns the on-host default SF1 fixture when it is complete. The probe
-/// picks between the NVMe-staged root and the in-repo `./tests/data/...`
+/// picks between the NVMe-staged root and the in-repo `./fixture/data/...`
 /// fallback based solely on whether `DEFAULT_NVME_MOUNT_ROOT` is mounted on
 /// this host; fixture completeness is then checked at the chosen root. A
 /// `None` return means "no implicit external fixture available, fall back to

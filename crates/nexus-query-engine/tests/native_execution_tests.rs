@@ -17,16 +17,19 @@ use cudf::DataFrame;
 use nexus_query_engine::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
-    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GraphAlgorithm,
-    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput, JoinKey,
-    JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue,
-    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId,
-    MissingColumn, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder,
-    ReservationKind, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy,
-    StddevSampExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan,
-    execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
-    stable_graph_result_schema,
+    GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, JoinKey, JoinNullEquality,
+    JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue, LocalParquetFile,
+    LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId, MissingColumn,
+    PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind,
+    SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode,
+    WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
+};
+#[cfg(feature = "cugraph")]
+use nexus_query_engine::{
+    GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs,
+    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphEdgePredicateInput,
+    GraphPredicateInput, stable_graph_result_schema,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
