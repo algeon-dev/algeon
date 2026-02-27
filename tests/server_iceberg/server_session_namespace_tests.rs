@@ -94,20 +94,20 @@ fn three_part_catalog_namespace_wiring_creates_schema_in_catalog() {
     // Before registration the catalog should not exist.
     assert!(ctx.catalog("glue").is_none());
 
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", None);
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", None);
 
     let catalog = ctx.catalog("glue").expect("glue catalog must exist after registration");
-    assert!(catalog.schema("demo_db").is_some(), "demo_db schema must exist");
+    assert!(catalog.schema("tpch_sf1").is_some(), "tpch_sf1 schema must exist");
 }
 
 #[test]
 fn three_part_full_reference_resolves_after_registration() {
     let ctx = SessionContext::new();
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", None);
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", None);
 
     // Full three-part reference must resolve.
     assert!(
-        ctx.table_exist(TableReference::full("glue", "demo_db", "tpch_sf1_nation")).unwrap(),
+        ctx.table_exist(TableReference::full("glue", "tpch_sf1", "tpch_sf1_nation")).unwrap(),
         "three-part table reference must resolve"
     );
 }
@@ -116,14 +116,14 @@ fn three_part_full_reference_resolves_after_registration() {
 fn alias_registration_exposes_both_real_name_and_alias() {
     let ctx = SessionContext::new();
     // alias "nation" → real table "tpch_sf1_nation"
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
     assert!(
-        ctx.table_exist(TableReference::full("glue", "demo_db", "tpch_sf1_nation")).unwrap(),
+        ctx.table_exist(TableReference::full("glue", "tpch_sf1", "tpch_sf1_nation")).unwrap(),
         "real table name must resolve under three-part reference"
     );
     assert!(
-        ctx.table_exist(TableReference::full("glue", "demo_db", "nation")).unwrap(),
+        ctx.table_exist(TableReference::full("glue", "tpch_sf1", "nation")).unwrap(),
         "alias must resolve under three-part reference"
     );
     // Bare alias backward compat.
@@ -134,10 +134,10 @@ fn alias_registration_exposes_both_real_name_and_alias() {
 fn table_equals_alias_does_not_double_register_in_schema() {
     let ctx = SessionContext::new();
     // When alias == real table name, only one entry should appear in the schema.
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("tpch_sf1_nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("tpch_sf1_nation"));
 
     let catalog = ctx.catalog("glue").unwrap();
-    let schema = catalog.schema("demo_db").unwrap();
+    let schema = catalog.schema("tpch_sf1").unwrap();
     let names = schema.table_names();
     assert_eq!(names.len(), 1, "only one entry in schema when alias equals real name: {names:?}");
     assert_eq!(names[0], "tpch_sf1_nation");
@@ -146,7 +146,7 @@ fn table_equals_alias_does_not_double_register_in_schema() {
 #[tokio::test]
 async fn information_schema_schemata_lists_namespace() {
     let ctx = SessionContext::new_with_config(SessionConfig::new().with_information_schema(true));
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
     let result = ctx
         .sql("SELECT schema_name FROM information_schema.schemata WHERE catalog_name = 'glue'")
@@ -170,18 +170,18 @@ async fn information_schema_schemata_lists_namespace() {
         })
         .collect();
 
-    assert!(schema_names.contains(&"demo_db".to_string()), "schemata must list demo_db: {schema_names:?}");
+    assert!(schema_names.contains(&"tpch_sf1".to_string()), "schemata must list tpch_sf1: {schema_names:?}");
 }
 
 #[tokio::test]
 async fn information_schema_tables_lists_real_table_name() {
     let ctx = SessionContext::new_with_config(SessionConfig::new().with_information_schema(true));
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
     let result = ctx
         .sql(
             "SELECT table_name FROM information_schema.tables \
-             WHERE table_catalog = 'glue' AND table_schema = 'demo_db'",
+             WHERE table_catalog = 'glue' AND table_schema = 'tpch_sf1'",
         )
         .await
         .unwrap()
@@ -212,10 +212,10 @@ async fn information_schema_tables_lists_real_table_name() {
 #[tokio::test]
 async fn select_from_three_part_name_returns_rows() {
     let ctx = SessionContext::new();
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
     let batches = ctx
-        .sql("SELECT n_nationkey, n_name FROM glue.demo_db.tpch_sf1_nation ORDER BY n_nationkey")
+        .sql("SELECT n_nationkey, n_name FROM glue.tpch_sf1.tpch_sf1_nation ORDER BY n_nationkey")
         .await
         .unwrap()
         .collect()
@@ -229,9 +229,9 @@ async fn select_from_three_part_name_returns_rows() {
 #[tokio::test]
 async fn select_from_three_part_alias_returns_rows() {
     let ctx = SessionContext::new();
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
-    let batches = ctx.sql("SELECT n_nationkey FROM glue.demo_db.nation").await.unwrap().collect().await.unwrap();
+    let batches = ctx.sql("SELECT n_nationkey FROM glue.tpch_sf1.nation").await.unwrap().collect().await.unwrap();
 
     let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
     assert_eq!(row_count, 3, "three-part alias SELECT must return 3 rows");
@@ -240,7 +240,7 @@ async fn select_from_three_part_alias_returns_rows() {
 #[tokio::test]
 async fn select_from_bare_alias_still_works_after_three_part_registration() {
     let ctx = SessionContext::new();
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
     let batches = ctx.sql("SELECT n_nationkey FROM nation").await.unwrap().collect().await.unwrap();
     let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -251,7 +251,7 @@ async fn select_from_bare_alias_still_works_after_three_part_registration() {
 async fn bare_alias_resolves_when_alias_equals_real_table_name() {
     let ctx = SessionContext::new();
     // When no alias is provided (alias == real_table_name), bare path must still work.
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("tpch_sf1_nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("tpch_sf1_nation"));
 
     let batches = ctx.sql("SELECT n_nationkey FROM tpch_sf1_nation").await.unwrap().collect().await.unwrap();
     let row_count: usize = batches.iter().map(|b| b.num_rows()).sum();
@@ -261,10 +261,10 @@ async fn bare_alias_resolves_when_alias_equals_real_table_name() {
 #[tokio::test]
 async fn select_with_where_clause_via_three_part_name() {
     let ctx = SessionContext::new();
-    register_test_table(&ctx, "glue", "demo_db", "tpch_sf1_nation", Some("nation"));
+    register_test_table(&ctx, "glue", "tpch_sf1", "tpch_sf1_nation", Some("nation"));
 
     let batches = ctx
-        .sql("SELECT n_name FROM glue.demo_db.tpch_sf1_nation WHERE n_regionkey = 1")
+        .sql("SELECT n_name FROM glue.tpch_sf1.tpch_sf1_nation WHERE n_regionkey = 1")
         .await
         .unwrap()
         .collect()

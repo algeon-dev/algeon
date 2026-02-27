@@ -12,11 +12,18 @@ use datafusion::{
     datasource::TableProvider,
     prelude::SessionContext,
 };
-use iceberg::{Catalog, CatalogBuilder, TableIdent, table::Table};
+use iceberg::{
+    Catalog, CatalogBuilder, TableIdent,
+    io::{
+        S3_ACCESS_KEY_ID, S3_DISABLE_CONFIG_LOAD, S3_DISABLE_EC2_METADATA, S3_ENDPOINT, S3_PATH_STYLE_ACCESS,
+        S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN,
+    },
+    table::Table,
+};
 use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID as GLUE_AWS_ACCESS_KEY_ID, AWS_PROFILE_NAME, AWS_REGION_NAME,
     AWS_SECRET_ACCESS_KEY as GLUE_AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN as GLUE_AWS_SESSION_TOKEN,
-    GLUE_CATALOG_PROP_CATALOG_ID, GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalogBuilder,
+    GLUE_CATALOG_PROP_CATALOG_ID, GLUE_CATALOG_PROP_URI, GLUE_CATALOG_PROP_WAREHOUSE, GlueCatalogBuilder,
 };
 
 pub use crate::table_format::iceberg::{
@@ -65,6 +72,12 @@ pub const CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_NEXUS_ICEBER
 /// Optional explicit S3 session token for the REST FileIO path. Secret;
 /// consumed at connect time and never retained in diagnostics.
 pub const CUDF_ICEBERG_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN";
+/// Optional S3-compatible endpoint for Glue/REST FileIO.
+pub const CUDF_ICEBERG_S3_ENDPOINT_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT";
+/// Optional S3 region for Glue/REST FileIO.
+pub const CUDF_ICEBERG_S3_REGION_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_REGION";
+/// Optional S3 path-style flag for Glue/REST FileIO.
+pub const CUDF_ICEBERG_S3_PATH_STYLE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE";
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.
@@ -90,7 +103,7 @@ pub fn register_table(
 /// This struct stores table/catalog options and non-secret auth selectors such
 /// as profile and region. Raw AWS key material is read only at load time and is
 /// not retained here.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GlueIcebergTableConfig {
     /// Iceberg catalog name passed to `iceberg-catalog-glue`.
     pub catalog_name: String,
@@ -106,6 +119,32 @@ pub struct GlueIcebergTableConfig {
     pub region: String,
     /// Optional AWS profile selector; raw credentials are still read only at load time.
     pub profile: Option<String>,
+    /// Optional Glue-compatible endpoint URI, e.g. a local Moto server.
+    pub uri: Option<String>,
+    /// Optional FileIO `s3.endpoint` for S3-compatible object stores.
+    pub s3_endpoint: Option<String>,
+    /// Optional FileIO `s3.region`; defaults to [`Self::region`] when unset.
+    pub s3_region: Option<String>,
+    /// Optional FileIO `s3.path-style-access`.
+    pub s3_path_style_access: Option<bool>,
+}
+
+impl fmt::Debug for GlueIcebergTableConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GlueIcebergTableConfig")
+            .field("catalog_name", &self.catalog_name)
+            .field("database", &self.database)
+            .field("table", &self.table)
+            .field("warehouse", &self.warehouse)
+            .field("catalog_id", &self.catalog_id)
+            .field("region", &self.region)
+            .field("profile", &self.profile)
+            .field("uri", &self.uri.as_ref().map(|_| "<redacted>"))
+            .field("s3_endpoint", &self.s3_endpoint.as_ref().map(|_| "<redacted>"))
+            .field("s3_region", &self.s3_region)
+            .field("s3_path_style_access", &self.s3_path_style_access)
+            .finish()
+    }
 }
 
 impl GlueIcebergTableConfig {
@@ -125,6 +164,10 @@ impl GlueIcebergTableConfig {
             catalog_id: None,
             region: region.into(),
             profile: None,
+            uri: None,
+            s3_endpoint: None,
+            s3_region: None,
+            s3_path_style_access: None,
         }
     }
 
@@ -170,6 +213,46 @@ impl GlueIcebergTableConfig {
 
     pub fn without_profile(mut self) -> Self {
         self.profile = None;
+        self
+    }
+
+    pub fn with_uri(mut self, uri: impl Into<String>) -> Self {
+        self.uri = Some(uri.into());
+        self
+    }
+
+    pub fn without_uri(mut self) -> Self {
+        self.uri = None;
+        self
+    }
+
+    pub fn with_s3_endpoint(mut self, endpoint: impl Into<String>) -> Self {
+        self.s3_endpoint = Some(endpoint.into());
+        self
+    }
+
+    pub fn without_s3_endpoint(mut self) -> Self {
+        self.s3_endpoint = None;
+        self
+    }
+
+    pub fn with_s3_region(mut self, region: impl Into<String>) -> Self {
+        self.s3_region = Some(region.into());
+        self
+    }
+
+    pub fn without_s3_region(mut self) -> Self {
+        self.s3_region = None;
+        self
+    }
+
+    pub fn with_s3_path_style_access(mut self, path_style: bool) -> Self {
+        self.s3_path_style_access = Some(path_style);
+        self
+    }
+
+    pub fn without_s3_path_style_access(mut self) -> Self {
+        self.s3_path_style_access = None;
         self
     }
 
@@ -329,6 +412,9 @@ async fn load_glue_table_with_env(
         (GLUE_CATALOG_PROP_WAREHOUSE.to_string(), config.warehouse.clone()),
         (AWS_REGION_NAME.to_string(), config.region.clone()),
     ]);
+    if let Some(uri) = config.uri.as_ref().filter(|value| !value.trim().is_empty()) {
+        props.insert(GLUE_CATALOG_PROP_URI.to_string(), uri.clone());
+    }
     if let Some(catalog_id) = config.catalog_id.as_ref().filter(|value| !value.trim().is_empty()) {
         props.insert(GLUE_CATALOG_PROP_CATALOG_ID.to_string(), catalog_id.clone());
     }
@@ -343,6 +429,28 @@ async fn load_glue_table_with_env(
     }
     if let Some(session_token) = non_empty(get(AWS_SESSION_TOKEN_ENV).or_else(|| get(AWS_SECURITY_TOKEN_ENV))) {
         props.insert(GLUE_AWS_SESSION_TOKEN.to_string(), session_token);
+    }
+    if let Some(endpoint) = config.s3_endpoint.as_ref().filter(|value| !value.trim().is_empty()) {
+        props.insert(S3_ENDPOINT.to_string(), endpoint.clone());
+        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+    }
+    if let Some(region) = config.s3_region.as_ref().filter(|value| !value.trim().is_empty()) {
+        props.insert(S3_REGION.to_string(), region.clone());
+    }
+    if let Some(path_style) = config.s3_path_style_access {
+        props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
+    }
+    if let (Some(access_key_id), Some(secret_access_key)) =
+        (non_empty(get(CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)), non_empty(get(CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)))
+    {
+        props.insert(S3_ACCESS_KEY_ID.to_string(), access_key_id);
+        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret_access_key);
+        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+    }
+    if let Some(session_token) = non_empty(get(CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+        props.insert(S3_SESSION_TOKEN.to_string(), session_token);
     }
 
     let catalog = GlueCatalogBuilder::default().load(config.catalog_name.clone(), props).await.map_err(|error| {

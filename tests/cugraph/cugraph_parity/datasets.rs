@@ -3,7 +3,7 @@
 //! The default `cargo test --features cugraph` invocation reaches this
 //! module only through the CPU-only manifest verification tests in
 //! `tests/cugraph/cugraph_parity.rs`. GPU execution paths (currently
-//! `#[ignore]`) will reuse the same dataset loading entry points so the
+//! opt-in checks) will reuse the same dataset loading entry points so the
 //! Rust and Python sides observe byte-identical input.
 
 use std::{
@@ -29,7 +29,10 @@ pub enum LoadAndVerifyError {
 impl std::fmt::Display for LoadAndVerifyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Manifest(source) => write!(f, "{source}"),
+            Self::Manifest(source) => write!(
+                f,
+                "{source}. Run `fixture/scripts/run_gen.sh cugraph` to copy cuGraph datasets from ../cugraph-rs/cugraph"
+            ),
             Self::DatasetMissing { id, path, source } => {
                 write!(f, "cuGraph dataset '{id}' missing at {}: {source}", path.display())
             },

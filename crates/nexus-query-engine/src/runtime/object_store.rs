@@ -99,6 +99,12 @@ impl S3SourceStorageProfile {
         self
     }
 
+    /// Uses unsigned S3 requests without consulting ambient AWS credentials.
+    pub fn with_unsigned_requests(mut self) -> Self {
+        self.credential = S3SourceStorageCredential::Unsigned;
+        self
+    }
+
     /// Uses explicit static credentials for this profile.
     pub fn with_static_credentials(
         mut self,
@@ -132,6 +138,8 @@ impl fmt::Debug for S3SourceStorageProfile {
 pub enum S3SourceStorageCredential {
     /// Use the object-store crate's default AWS credential/config chain.
     DefaultChain,
+    /// Use unsigned S3 requests and do not consult ambient AWS credentials.
+    Unsigned,
     /// Use explicit static credentials supplied by the adapter/catalog layer.
     Static {
         /// Access key id. Redacted from [`Debug`] to keep logs uniformly secret-free.
@@ -147,6 +155,7 @@ impl fmt::Debug for S3SourceStorageCredential {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DefaultChain => f.write_str("DefaultChain"),
+            Self::Unsigned => f.write_str("Unsigned"),
             Self::Static { session_token, .. } => f
                 .debug_struct("Static")
                 .field("access_key_id", &"<redacted>")
@@ -259,6 +268,9 @@ fn build_s3_store(
                 builder = builder.with_token(token);
             }
             builder
+        },
+        Some(S3SourceStorageCredential::Unsigned) => {
+            object_store::aws::AmazonS3Builder::new().with_skip_signature(true)
         },
         _ => object_store::aws::AmazonS3Builder::from_env(),
     }

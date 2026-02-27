@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, fmt, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::Deserialize;
 
@@ -63,6 +63,7 @@ pub const DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV: &str = "DATAFUSION_NEXUS_I
 pub const DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE";
 pub const DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID";
 pub const DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES";
+pub const DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_URI";
 
 // REST-specific env vars. The warehouse reuses
 // `DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV` (`DATAFUSION_NEXUS_ICEBERG_WAREHOUSE`).
@@ -187,7 +188,7 @@ pub struct IcebergServerConfig {
     /// DataFusion catalog name (e.g. "iceberg" or "glue").  Exposed as the
     /// first part of `catalog.namespace.table` three-part addressing.
     pub catalog_name: String,
-    /// Iceberg namespace / Glue database name (e.g. "demo_db"). This is the
+    /// Iceberg namespace / Glue database name (e.g. "tpch_sf1"). This is the
     /// dynamic catalog visibility scope and the second part of three-part addressing.
     pub namespace: String,
     /// Pre-declared table alias registrations seeded before catalog
@@ -217,15 +218,37 @@ pub enum IcebergCatalogBackendConfig {
 /// `GlueCatalogBuilder`; it is independent of the DataFusion `catalog_name` so
 /// operators can choose a Trino-style connector name without changing the Glue
 /// catalog identifier. `region` is required for Glue. `catalog_id` / `profile`
-/// are optional AWS scoping knobs.
+/// are optional AWS scoping knobs. `uri` and `s3_*` fields support local
+/// Glue-compatible tests against Moto plus an S3-compatible object store.
 #[cfg(feature = "iceberg")]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct GlueServerBackendConfig {
     pub catalog_handle: String,
     pub warehouse: String,
     pub region: String,
     pub catalog_id: Option<String>,
     pub profile: Option<String>,
+    pub uri: Option<String>,
+    pub s3_endpoint: Option<String>,
+    pub s3_region: Option<String>,
+    pub s3_path_style_access: Option<bool>,
+}
+
+#[cfg(feature = "iceberg")]
+impl fmt::Debug for GlueServerBackendConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GlueServerBackendConfig")
+            .field("catalog_handle", &self.catalog_handle)
+            .field("warehouse", &self.warehouse)
+            .field("region", &self.region)
+            .field("catalog_id", &self.catalog_id)
+            .field("profile", &self.profile)
+            .field("uri", &self.uri.as_ref().map(|_| "<redacted>"))
+            .field("s3_endpoint", &self.s3_endpoint.as_ref().map(|_| "<redacted>"))
+            .field("s3_region", &self.s3_region)
+            .field("s3_path_style_access", &self.s3_path_style_access)
+            .finish()
+    }
 }
 
 #[cfg(feature = "iceberg")]
@@ -399,6 +422,18 @@ fn iceberg_source_storage_profile(
             if let Some(profile) = glue.profile.as_ref() {
                 catalog_config = catalog_config.with_profile(profile.clone());
             }
+            if let Some(uri) = glue.uri.as_ref() {
+                catalog_config = catalog_config.with_uri(uri.clone());
+            }
+            if let Some(endpoint) = glue.s3_endpoint.as_ref() {
+                catalog_config = catalog_config.with_s3_endpoint(endpoint.clone());
+            }
+            if let Some(region) = glue.s3_region.as_ref() {
+                catalog_config = catalog_config.with_s3_region(region.clone());
+            }
+            if let Some(path_style) = glue.s3_path_style_access {
+                catalog_config = catalog_config.with_s3_path_style_access(path_style);
+            }
             catalog_config.source_storage_profile_with_env(|name| values.string_uncached(name))
         },
         IcebergCatalogBackendConfig::Rest(rest) => {
@@ -458,6 +493,7 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
         DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
         DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV,
         DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
         DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV,
         DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV,
@@ -545,6 +581,10 @@ fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -> Result<Gl
         region,
         catalog_id: values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV),
         profile: values.string(crate::iceberg::AWS_PROFILE_ENV),
+        uri: values.string(DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV),
+        s3_endpoint: values.string(DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV),
+        s3_region: values.string(DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV),
+        s3_path_style_access: values.optional_bool(DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV)?,
     })
 }
 
@@ -677,6 +717,7 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
         DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
         DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV,
+        DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV,
         DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
         DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV,
         DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV,

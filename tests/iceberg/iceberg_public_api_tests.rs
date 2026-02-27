@@ -32,7 +32,7 @@ fn glue_config_env_overlay_keeps_only_profile_and_region_diagnostics() {
     let env = HashMap::from([
         ("CUDF_ICEBERG_GLUE_DATABASE", "analytics_db"),
         ("CUDF_ICEBERG_GLUE_TABLE", "orders_sf10"),
-        ("AWS_PROFILE", "xdr-int"),
+        ("AWS_PROFILE", "local-dev"),
         ("AWS_REGION", "us-west-2"),
     ]);
 
@@ -48,7 +48,7 @@ fn glue_config_env_overlay_keeps_only_profile_and_region_diagnostics() {
 
     assert_eq!(config.table_ident_display(), "analytics_db.orders_sf10");
     assert_eq!(diagnostics.region, "us-west-2");
-    assert_eq!(diagnostics.profile.as_deref(), Some("xdr-int"));
+    assert_eq!(diagnostics.profile.as_deref(), Some("local-dev"));
     assert_eq!(diagnostics.credential_source, GlueIcebergCredentialSource::AwsProfileEnv);
     assert_eq!(diagnostics.credential_source.code(), "aws_profile_env");
 }

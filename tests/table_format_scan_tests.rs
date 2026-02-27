@@ -89,14 +89,14 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let data_file = TableFormatDataFile::new(
         "data-0001",
-        "s3://example-warehouse/tpch_sf1/lineitem/data-0001.parquet",
+        "s3://lakehouse/warehouse/tpch_sf1/lineitem/data-0001.parquet",
         TableFormatDataFileFormat::Parquet,
         TableFormatReadCapability::object_store("s3"),
     )
     .with_size_bytes(2048);
     let delete_file = TableFormatDeleteFile::new(
         "delete-0001",
-        "s3://example-warehouse/tpch_sf1/lineitem/delete-0001.parquet",
+        "s3://lakehouse/warehouse/tpch_sf1/lineitem/delete-0001.parquet",
         TableFormatDataFileFormat::Parquet,
         TableFormatDeleteFileContent::PositionDeletes,
     )
@@ -149,7 +149,7 @@ fn delete_file_scan_facts_preserve_rejection_without_reading_credentials() {
     assert!(!rendered.contains("AWS_ACCESS_KEY_ID"));
     assert!(!rendered.contains("AWS_SECRET_ACCESS_KEY"));
     assert!(!rendered.contains("AWS_SESSION_TOKEN"));
-    assert!(!rendered.contains("xdr-int"));
+    assert!(!rendered.contains("local-dev"));
 }
 
 #[test]
