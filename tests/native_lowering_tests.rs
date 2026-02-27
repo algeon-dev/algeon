@@ -51,12 +51,14 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
+    CandidateOutcome, FallbackReason, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
+    NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem, NativeLoweringResult,
+    lower_physical_plan_to_native,
+};
+use datafusion_nexus_bench::{
     ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapLoweringExpectation, CandidateOutcome, FallbackReason, NativeFallbackPressureOutcome,
-    NativeFallbackPressureReport, NativeFallbackPressureWorkloadInput, NativeFallbackPressureWorkloadItem,
-    NativeLoweringResult, analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,
-    lower_physical_plan_to_native, tpch_fallback_pressure_workload_items, tpch_report_session_config,
-    write_tiny_tpch_parquet_dataset,
+    AnalyticalOlapLoweringExpectation, analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids,
+    tpch_fallback_pressure_workload_items, tpch_report_session_config, write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
     AggregateFunction, Expr, JoinNullEquality as NativeJoinNullEquality, JoinOutputColumn as NativeJoinOutputColumn,

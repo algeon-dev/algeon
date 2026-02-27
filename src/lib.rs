@@ -13,8 +13,6 @@
 //! - [`native_report`] defines the TSV/report contracts emitted by benchmark
 //!   and diagnostic binaries. Column order and schema-version constants are
 //!   part of the public surface.
-//! - [`tpch`], [`tpcds`], and [`clickbench`] provide workload metadata,
-//!   fixture discovery, session configs, and workload-item builders.
 //!
 //! DataFusion-specific planning belongs here. DataFusion-free native IR,
 //! runtime policy, capability admission, and cudf-rs execution live in
@@ -37,25 +35,7 @@ pub mod report;
 pub mod server;
 pub mod session;
 pub mod table_format;
-mod workload;
 
-pub use clickbench::{
-    CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE,
-    CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV, CUDF_CLICKBENCH_GENERATION_COMMAND_ENV,
-    CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, CUDF_CLICKBENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
-    CUDF_CLICKBENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    CUDF_CLICKBENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, CUDF_CLICKBENCH_PARQUET_DIR_ENV, ClickbenchDatasetMetadata,
-    ClickbenchExecutionProgressEvent, ClickbenchLayout, ClickbenchQuery, ClickbenchWorkloadError,
-    ClickbenchWorkloadResult, DEFAULT_LOCAL_CLICKBENCH_PARTITIONED_DIR, DEFAULT_LOCAL_CLICKBENCH_SINGLE_DIR,
-    DEFAULT_LOCAL_CLICKBENCH_SINGLE_PARQUET, DEFAULT_NVME_CLICKBENCH_PARTITIONED_DIR,
-    clickbench_datafusion_execution_workload_items, clickbench_datafusion_execution_workload_items_filtered,
-    clickbench_datafusion_execution_workload_items_with_optimizer_config,
-    clickbench_datafusion_planning_workload_items, clickbench_datafusion_planning_workload_items_with_optimizer_config,
-    clickbench_fallback_pressure_workload_items, clickbench_native_optimizer_config, clickbench_query_ids,
-    clickbench_report_session_config, clickbench_tuned_cpu_session_config, describe_clickbench_dataset,
-    describe_clickbench_dataset_with_content_fingerprint, discover_clickbench_layout,
-    external_clickbench_dataset_metadata, prepare_clickbench_report_dataset, register_clickbench_table,
-};
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
 #[cfg(feature = "cugraph")]
 pub use graph_sql::{
@@ -87,7 +67,8 @@ pub use iceberg::catalog::{
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::{
-    CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, CUDF_ICEBERG_S3_SESSION_TOKEN_ENV,
+    CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, CUDF_ICEBERG_S3_ENDPOINT_ENV, CUDF_ICEBERG_S3_PATH_STYLE_ENV,
+    CUDF_ICEBERG_S3_REGION_ENV, CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, CUDF_ICEBERG_S3_SESSION_TOKEN_ENV,
     CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig, GlueIcebergTableDiagnostics,
     GlueIcebergTableRegistration, IcebergTableFormatPlanner, LoadedGlueIcebergTable,
     iceberg_file_scan_tasks_to_table_format_scan_plan, iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
@@ -149,45 +130,3 @@ pub use table_format::{
     TableFormatUnsupportedFeatureCode, resolve_table_format_parquet_source,
     resolve_table_format_parquet_source_with_metadata,
 };
-pub use tpcds::{
-    CUDF_TPCDS_CONTENT_FINGERPRINT_ENV, CUDF_TPCDS_GENERATION_COMMAND_ENV, CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
-    CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
-    CUDF_TPCDS_PARQUET_DIR_ENV, CUDF_TPCDS_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCDS_SF1_PARQUET_DIR,
-    DEFAULT_NVME_TPCDS_SF1_PARQUET_DIR, TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, TpcdsDatasetMetadata,
-    TpcdsExecutionProgressEvent, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, TpcdsQuery,
-    TpcdsTableFileMetadata, TpcdsTableLayout, TpcdsTableMetadata, TpcdsWorkloadError, TpcdsWorkloadResult,
-    default_tpcds_sf1_parquet_root, describe_tpcds_dataset, describe_tpcds_dataset_with_content_fingerprint,
-    discover_tpcds_table_layout, external_tpcds_dataset_metadata, prepare_tpcds_report_dataset,
-    tiny_tpcds_dataset_metadata, tpcds_datafusion_execution_workload_items,
-    tpcds_datafusion_execution_workload_items_filtered,
-    tpcds_datafusion_execution_workload_items_with_optimizer_config, tpcds_datafusion_planning_workload_items,
-    tpcds_datafusion_planning_workload_items_with_optimizer_config, tpcds_fallback_pressure_workload_items,
-    tpcds_native_analytics_optimizer_config, tpcds_native_optimizer_config, tpcds_native_report_session_config,
-    tpcds_parity_workload_items, tpcds_parity_workload_items_with_external_oracles,
-    tpcds_parity_workload_items_with_session_configs, tpcds_query_ids, tpcds_report_session_config,
-    write_tiny_tpcds_parquet_dataset,
-};
-pub use tpch::{
-    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapCurrentStrictAdmission, AnalyticalOlapLoweringExpectation, AnalyticalOlapQuery,
-    AnalyticalOlapWorkloadClass, CUDF_TPCH_CONTENT_FINGERPRINT_ENV, CUDF_TPCH_GENERATION_COMMAND_ENV,
-    CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, DEFAULT_LOCAL_TPCH_SF1_PARQUET_DIR,
-    DEFAULT_LOCAL_TPCH_SF10_PARQUET_DIR, DEFAULT_LOCAL_TPCH_SF100_OPTIMIZED_PARQUET_DIR, DEFAULT_NVME_MOUNT_ROOT,
-    DEFAULT_NVME_TPCH_SF1_PARQUET_DIR, DEFAULT_NVME_TPCH_SF10_PARQUET_DIR,
-    DEFAULT_NVME_TPCH_SF100_OPTIMIZED_PARQUET_DIR, TPCH_QUERIES, TPCH_QUERY_COUNT, TPCH_TABLES, TpchDatasetMetadata,
-    TpchDefaultScale, TpchQuery, TpchTableFileMetadata, TpchTableLayout, TpchTableMetadata, TpchWorkloadError,
-    TpchWorkloadResult, analytical_olap_datafusion_planning_workload_items,
-    analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
-    analytical_olap_fallback_pressure_workload_items, analytical_olap_query_ids, default_nvme_mount_present,
-    default_nvme_tpch_dataset, default_nvme_tpch_dataset_with_fingerprint, default_tpch_parquet_root,
-    describe_tpch_dataset, describe_tpch_dataset_with_content_fingerprint, discover_tpch_table_layout,
-    external_tpch_dataset_metadata, prepare_tpch_report_dataset, register_tpch_table_layout,
-    tiny_tpch_dataset_metadata, tpch_datafusion_execution_workload_items,
-    tpch_datafusion_execution_workload_items_with_optimizer_config, tpch_datafusion_planning_workload_items,
-    tpch_datafusion_planning_workload_items_with_optimizer_config, tpch_fallback_pressure_workload_items,
-    tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
-    tpch_scalar_fallback_pressure_workload_items, tpch_tuned_cpu_session_config, write_tiny_tpch_parquet_dataset,
-};
-pub use workload::{clickbench, tpcds, tpch};

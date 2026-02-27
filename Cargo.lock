@@ -2141,6 +2141,7 @@ dependencies = [
  "cugraph-sys",
  "dashmap",
  "datafusion",
+ "datafusion-nexus-bench",
  "futures",
  "hex",
  "iceberg",
@@ -2164,6 +2165,47 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "datafusion-nexus-bench"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "aws-config",
+ "aws-credential-types",
+ "cudf",
+ "cudf-sys",
+ "cugraph",
+ "cugraph-sys",
+ "datafusion",
+ "datafusion-nexus",
+ "futures",
+ "iceberg",
+ "nexus-query-engine",
+ "object_store",
+ "parquet",
+ "serde_json",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "datafusion-nexus-tools"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-flight",
+ "datafusion",
+ "datafusion-nexus",
+ "futures",
+ "iceberg",
+ "iceberg-catalog-glue",
+ "parquet",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "url",
 ]
 
 [[package]]

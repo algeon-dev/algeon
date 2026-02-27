@@ -34,10 +34,8 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
-    AnalyticalOlapCurrentStrictAdmission, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-    CudfSessionStateBuilderExt, FallbackReason, GpuCandidate, GpuFallbackPolicy,
-    NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, FallbackReason, GpuCandidate,
+    GpuFallbackPolicy, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION,
     NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION,
     NativeAdaptivePipelineCandidateDiagnostics, NativeAdaptivePipelineDiagnostics, NativeCudfComposedExec,
@@ -48,13 +46,16 @@ use datafusion_nexus::{
     NativeFallbackPressureOutcome, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
     NativePipelineExecutionMode, NativePlanningDiagnostics, NativeStrictBoundedAcceptedCandidateDiagnostics,
     NativeStrictBoundedCompiledGraphDiagnostics, NativeStrictBoundedContractDiagnostics,
-    NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport, TPCH_QUERY_COUNT, TPCH_TABLES,
-    analytical_olap_datafusion_planning_workload_items,
+    NativeStrictBoundedRejectedCandidateDiagnostics, PlanningReport,
+};
+use datafusion_nexus_bench::{
+    ANALYTICAL_OLAP_QUERIES, ANALYTICAL_OLAP_QUERY_COUNT, AnalyticalOlapCapabilityFirstAdmission,
+    AnalyticalOlapCurrentStrictAdmission, TPCH_QUERY_COUNT, analytical_olap_datafusion_planning_workload_items,
     analytical_olap_datafusion_planning_workload_items_with_optimizer_config,
-    analytical_olap_fallback_pressure_workload_items, describe_tpch_dataset_with_content_fingerprint,
-    tiny_tpch_dataset_metadata, tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items,
-    tpch_native_optimizer_config, tpch_query_ids, tpch_report_session_config,
-    tpch_scalar_fallback_pressure_workload_items, write_tiny_tpch_parquet_dataset,
+    analytical_olap_fallback_pressure_workload_items, tiny_tpch_dataset_metadata,
+    tpch_datafusion_planning_workload_items, tpch_fallback_pressure_workload_items, tpch_native_optimizer_config,
+    tpch_query_ids, tpch_report_session_config, tpch_scalar_fallback_pressure_workload_items,
+    write_tiny_tpch_parquet_dataset,
 };
 use nexus_query_engine::{
     AdaptiveCandidateStatus, AdaptivePipelineReport, AdaptiveStrategy, GpuResidentSource, LocalParquetSource,

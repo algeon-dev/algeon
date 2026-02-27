@@ -17,8 +17,9 @@ use datafusion_nexus::{
     CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, ErrorCode, FallbackReason,
     GpuFallbackPolicy, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, NativeCudfGpuProducerExec,
     NativePipelineExecutionMode, NativePlanPreferenceOptions, STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
-    TPCH_QUERIES, cudf_native_physical_optimizer_rules, lower_physical_plan_to_native, write_tiny_tpch_parquet_dataset,
+    cudf_native_physical_optimizer_rules, lower_physical_plan_to_native,
 };
+use datafusion_nexus_bench::{TPCH_QUERIES, write_tiny_tpch_parquet_dataset};
 use nexus_query_engine::{
     BoundedJoinReservationContract, MemoryControlPolicy, PipelineTaskKind, ReservationKind, StrictBoundedExecutionMode,
     capability::ContractQuality, compile_pipeline,
