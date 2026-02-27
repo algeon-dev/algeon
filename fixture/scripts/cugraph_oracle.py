@@ -2,10 +2,10 @@
 """cuGraph oracle driver for the datafusion-nexus parity harness.
 
 Produces deterministic JSON output for a single (dataset, algorithm,
-params) triple by running RAPIDS Python cuGraph on a vendored CSV
-fixture. The Rust parity harness reads these JSON files (checked into
-``fixture/data/cugraph/oracle/``) and compares the native cuGraph
-execution path against them.
+params) triple by running RAPIDS Python cuGraph on a local CSV fixture
+prepared from the sibling cuGraph checkout. The Rust parity harness reads
+these JSON files from ``fixture/data/cugraph/oracle/`` and compares the
+native cuGraph execution path against them.
 
 The script intentionally has a narrow interface so the Rust
 ``refresh_cugraph_oracle`` binary and the parity harness can both invoke
@@ -770,8 +770,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--data-root",
-        default=str(Path(__file__).resolve().parent.parent / "tests" / "data" / "cugraph"),
-        help="Directory holding manifest.json and vendored datasets.",
+        default=str(Path(__file__).resolve().parent.parent / "data" / "cugraph"),
+        help="Directory holding manifest.json and local cuGraph datasets.",
     )
     parser.add_argument("--dataset", required=True, help="Dataset id (e.g. karate).")
     parser.add_argument(

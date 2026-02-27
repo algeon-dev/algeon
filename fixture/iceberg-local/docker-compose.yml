@@ -2,24 +2,26 @@
 #
 # Brings up:
 #   - rustfs       : S3-compatible object store (data plane)
-#   - rustfs-init  : one-shot bucket creation via AWS CLI (NOT MinIO `mc`)
+#   - rustfs-init  : one-shot bucket creation via AWS CLI
 #   - iceberg-rest : apache/iceberg-rest-fixture, FileIO pointed at RustFS
+#   - moto         : AWS Glue-compatible mock catalog endpoint
 #
 # Endpoint identities:
 #   - in-network: http://rustfs:9000  (S3), http://iceberg-rest:8181 (REST)
 #   - host-side : http://localhost:9000,        http://localhost:8181
 #
-# Metadata is ephemeral (SQLite in-memory inside the REST fixture): always run
-# the loader after `up`. Tags are pinned for reproducibility.
+# Metadata is ephemeral for normal development (SQLite file inside the REST
+# fixture container): always run the loader after a fresh `up`. Tags are pinned
+# for reproducibility.
 #
 # Usage:
-#   nerdctl compose -f docker/iceberg-local/docker-compose.yml up -d
+#   docker compose -f fixture/iceberg-local/docker-compose.yml up -d
 #   # ... run the loader ...
-#   nerdctl compose -f docker/iceberg-local/docker-compose.yml down -v
+#   docker compose -f fixture/iceberg-local/docker-compose.yml down -v
 
 services:
   rustfs:
-    image: rustfs/rustfs:1.0.0-beta.5
+    image: rustfs/rustfs:1.0.0-beta.6
     container_name: cudf-iceberg-rustfs
     ports:
       - "9000:9000"   # S3 API
@@ -33,7 +35,7 @@ services:
     healthcheck:
       # RustFS exposes the S3 endpoint on :9000; a TCP/HTTP probe on the root
       # is enough to know it is accepting connections.
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/ -o /dev/null || curl -s http://localhost:9000/ -o /dev/null"]
+      test: [ "CMD-SHELL", "curl -sf http://localhost:9000/ -o /dev/null || curl -s http://localhost:9000/ -o /dev/null" ]
       interval: 3s
       timeout: 3s
       retries: 20
@@ -51,7 +53,7 @@ services:
       AWS_REGION: "us-east-1"
     # Create the `lakehouse` bucket idempotently against the RustFS endpoint.
     # `mb` returns non-zero if the bucket already exists, so swallow that.
-    entrypoint: ["/bin/sh", "-c"]
+    entrypoint: [ "/bin/sh", "-c" ]
     command:
       - >
         aws --endpoint-url http://rustfs:9000 s3 mb s3://lakehouse 2>/dev/null;
@@ -81,7 +83,22 @@ services:
       AWS_SECRET_ACCESS_KEY: "${RUSTFS_SECRET_KEY:-cudfadminsecret}"
       AWS_REGION: "us-east-1"
     healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:8181/v1/config || exit 1"]
+      test: [ "CMD-SHELL", "curl --fail http://localhost:8181/v1/config || exit 1" ]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  moto:
+    image: motoserver/moto:5.0.3
+    container_name: cudf-iceberg-moto
+    ports:
+      - "5001:5001"
+    environment:
+      # Avoid Moto's default 5000, which commonly conflicts with host services.
+      MOTO_PORT: "5001"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl --fail http://localhost:5001/moto-api/ || exit 1" ]
       interval: 3s
       timeout: 3s
       retries: 20

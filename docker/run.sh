@@ -61,31 +61,45 @@ DATAFUSION__EXECUTION__TARGET_PARTITIONS=16
 DATAFUSION__EXECUTION__BATCH_SIZE=8192
 
 # ---------------------------------------------------------------------------
-# Iceberg / AWS Glue
+# Iceberg / AWS Glue or local Glue-compatible catalog
 #
+# DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND   Catalog backend: rest or glue
 # DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME   DataFusion catalog name (first segment of catalog.ns.table)
 # DATAFUSION_NEXUS_ICEBERG_NAMESPACE      Iceberg namespace / Glue database name
-# DATAFUSION_NEXUS_ICEBERG_WAREHOUSE      S3 warehouse root (required)
+# DATAFUSION_NEXUS_ICEBERG_WAREHOUSE      S3 warehouse root
 # DATAFUSION_NEXUS_ICEBERG_TABLES         Pre-load list: "alias=table,table2"
 #                                        Omit (empty) → all tables served dynamically
-# DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID  AWS Glue catalog account ID (omit = caller's account)
+# DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID  AWS Glue catalog account ID (omit = caller's account or local mock)
+# DATAFUSION_NEXUS_ICEBERG_REST_URI      Local REST fixture endpoint when kind=rest
+# DATAFUSION_NEXUS_ICEBERG_GLUE_URI      Local Moto endpoint when kind=glue
+# DATAFUSION_NEXUS_ICEBERG_S3_*          RustFS/S3-compatible endpoint and credentials
 #
 # AWS_DEFAULT_REGION   REQUIRED for KvikIO S3 (KvikIO reads ONLY this var;
 #                      AWS_REGION alone → silent unsigned requests → 403 on private buckets)
 # AWS_REGION           Used by iceberg-rust catalog; set both.
 #
-# AWS credentials are short-lived STS tokens — pass from the host environment,
-# never hardcode here.  Set before running:
+# Real AWS credentials, when used, must be passed from the host environment.
+# The defaults below target the public local lakehouse fixture namespace. Set
+# before running against real AWS:
 #   export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...  AWS_SESSION_TOKEN=...
 # ---------------------------------------------------------------------------
-ICEBERG_CATALOG_NAME="glue"
-ICEBERG_NAMESPACE="demo_db"
-ICEBERG_WAREHOUSE="s3://example-warehouse/demo_db/"
-ICEBERG_TABLES=""          # empty = dynamic; e.g. "lineitem=tpch_sf1_lineitem,orders=tpch_sf1_orders"
-ICEBERG_GLUE_CATALOG_ID="" # empty = use caller's own AWS account
+ICEBERG_CATALOG_KIND="${DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND:-rest}"
+ICEBERG_CATALOG_NAME="${DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME:-lake}"
+ICEBERG_NAMESPACE="${DATAFUSION_NEXUS_ICEBERG_NAMESPACE:-tpch_sf1}"
+ICEBERG_WAREHOUSE="${DATAFUSION_NEXUS_ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}"
+ICEBERG_TABLES="${DATAFUSION_NEXUS_ICEBERG_TABLES:-}"                 # empty = dynamic; e.g. "lineitem,orders"
+ICEBERG_GLUE_CATALOG_ID="${DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID:-}" # empty = use caller's own AWS account
+ICEBERG_REST_URI="${DATAFUSION_NEXUS_ICEBERG_REST_URI:-http://localhost:8181}"
+ICEBERG_GLUE_URI="${DATAFUSION_NEXUS_ICEBERG_GLUE_URI:-}"
+ICEBERG_S3_ENDPOINT="${DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT:-http://localhost:9000}"
+ICEBERG_S3_REGION="${DATAFUSION_NEXUS_ICEBERG_S3_REGION:-us-east-1}"
+ICEBERG_S3_PATH_STYLE="${DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE:-true}"
+ICEBERG_S3_ACCESS_KEY_ID="${DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID:-cudfadmin}"
+ICEBERG_S3_SECRET_ACCESS_KEY="${DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY:-cudfadminsecret}"
+ICEBERG_S3_SESSION_TOKEN="${DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN:-}"
 
-AWS_DEFAULT_REGION="us-east-1"
-AWS_REGION="us-east-1"
+AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+AWS_REGION="${AWS_REGION:-us-east-1}"
 
 # ---------------------------------------------------------------------------
 # cuGraph SQL DSL
@@ -132,10 +146,16 @@ ARGS=(
     -e "DATAFUSION__EXECUTION__TARGET_PARTITIONS=${DATAFUSION__EXECUTION__TARGET_PARTITIONS}"
     -e "DATAFUSION__EXECUTION__BATCH_SIZE=${DATAFUSION__EXECUTION__BATCH_SIZE}"
 
-    # Iceberg / Glue
+    # Iceberg / local REST or Glue-compatible catalog
+    -e "DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND=${ICEBERG_CATALOG_KIND}"
     -e "DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME=${ICEBERG_CATALOG_NAME}"
     -e "DATAFUSION_NEXUS_ICEBERG_NAMESPACE=${ICEBERG_NAMESPACE}"
     -e "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE=${ICEBERG_WAREHOUSE}"
+    -e "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT=${ICEBERG_S3_ENDPOINT}"
+    -e "DATAFUSION_NEXUS_ICEBERG_S3_REGION=${ICEBERG_S3_REGION}"
+    -e "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE=${ICEBERG_S3_PATH_STYLE}"
+    -e "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID=${ICEBERG_S3_ACCESS_KEY_ID}"
+    -e "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=${ICEBERG_S3_SECRET_ACCESS_KEY}"
     -e "AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION}"
     -e "AWS_REGION=${AWS_REGION}"
 
@@ -148,6 +168,9 @@ ARGS=(
 
 # Glue catalog account ID only when explicitly set.
 [[ -n "${ICEBERG_GLUE_CATALOG_ID}" ]] && ARGS+=(-e "DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID=${ICEBERG_GLUE_CATALOG_ID}")
+[[ -n "${ICEBERG_REST_URI}" ]] && ARGS+=(-e "DATAFUSION_NEXUS_ICEBERG_REST_URI=${ICEBERG_REST_URI}")
+[[ -n "${ICEBERG_GLUE_URI}" ]] && ARGS+=(-e "DATAFUSION_NEXUS_ICEBERG_GLUE_URI=${ICEBERG_GLUE_URI}")
+[[ -n "${ICEBERG_S3_SESSION_TOKEN}" ]] && ARGS+=(-e "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN=${ICEBERG_S3_SESSION_TOKEN}")
 
 # Optional cuGraph defaults.
 [[ -n "${CUGRAPH_ALGORITHMS}" ]] && ARGS+=(-e "DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS=${CUGRAPH_ALGORITHMS}")
