@@ -5,8 +5,6 @@
 //! aggregate keyset narrow a downstream consumer such as a Parquet source or a
 //! join probe before expensive work starts.
 
-#![deny(missing_docs)]
-
 use std::{collections::BTreeMap, fmt};
 
 use arrow::{
@@ -31,12 +29,10 @@ use crate::{
 pub struct DynamicFilterId(pub(crate) usize);
 
 impl DynamicFilterId {
-    /// Builds a plan-local dynamic-filter id from a route index.
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
 
-    /// Returns the route index inside the plan-local dynamic-filter list.
     pub const fn index(self) -> usize {
         self.0
     }

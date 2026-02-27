@@ -87,11 +87,11 @@ nexus-query-engine = { path = "crates/nexus-query-engine", default-features = fa
 dashmap = { version = "6.2", optional = true }
 datafusion = "53.1"
 futures = "0.3"
-iceberg = { version = "0.9", optional = true }
-iceberg-catalog-glue = { version = "0.9", optional = true }
-iceberg-catalog-rest = { version = "0.9", optional = true }
-iceberg-datafusion = { version = "0.9", optional = true }
-iceberg-storage-opendal = { version = "0.9", optional = true }
+iceberg = { git = "https://github.com/apache/iceberg-rust.git", optional = true }
+iceberg-catalog-glue = {git = "https://github.com/apache/iceberg-rust.git", optional = true }
+iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", optional = true }
+iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", optional = true }
+iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", optional = true }
 object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
 parquet = { workspace = true }
 prost = { version = "0.14", optional = true }
@@ -159,15 +159,3 @@ required-features = ["server", "iceberg"]
 [[test]]
 name = "server_cugraph_tests"
 required-features = ["server", "cugraph"]
-
-# Patch iceberg-datafusion's `datafusion = "53.1.0"` (declared in the sibling
-# iceberg-rust workspace) over to the same path-dep this adapter uses. Without
-# this redirect cargo treats the registry copy and the path-dep copy as two
-# distinct crate instances, so traits like `TableProvider` are not interchange-
-# able between the two and `Arc::new(IcebergStaticTableProvider) as Arc<dyn TableProvider>`
-# fails to unify. Patching only the top-level `datafusion` crate is enough
-# because all its sub-crates (datafusion-catalog, datafusion-physical-plan,
-# ...) are referenced via `workspace = true` inside the sibling datafusion
-# workspace, so they automatically inherit the path-dep selection.
-[patch.crates-io]
-datafusion = { path = "../datafusion/datafusion/core" }

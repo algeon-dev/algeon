@@ -8,8 +8,6 @@
 //! error. Once a native execution node starts running, CPU fallback is no
 //! longer attempted.
 
-#![deny(missing_docs)]
-
 use std::{
     collections::BTreeSet,
     fmt,

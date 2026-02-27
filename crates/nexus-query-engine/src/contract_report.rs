@@ -3,7 +3,6 @@
 //! The report model is DataFusion-free and gate-first: it projects capability
 //! requirements and compiled reservation gates without routing through bounded
 //! join family/path compatibility vocabulary.
-#![deny(missing_docs)]
 
 use std::fmt;
 

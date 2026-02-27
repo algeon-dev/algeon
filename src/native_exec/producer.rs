@@ -4,8 +4,6 @@
 //! wrapper type is exposed for diagnostics and plan inspection, but executing
 //! them through the ordinary DataFusion streaming path is invalid.
 
-#![deny(missing_docs)]
-
 use std::{any::Any, sync::Arc};
 
 use datafusion::{
@@ -91,12 +89,10 @@ impl NativeCudfGpuProducerExec {
         })
     }
 
-    /// Local GPU input name exposed to the composed native consumer.
     pub fn input_name(&self) -> &str {
         &self.input_name
     }
 
-    /// Native producer plan whose result stays device-resident.
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }

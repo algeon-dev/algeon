@@ -3,7 +3,7 @@
 //! The binary iterates [`CUGRAPH_PARITY_SPECS`] and invokes
 //! `scripts/cugraph_oracle.py` for every row's `oracle_relpath` slot,
 //! regardless of
-//! [`ParityTruthSource`](datafusion_nexus::cugraph_parity::ParityTruthSource).
+//! [`ParityTruthSource`](datafusion_nexus::graph_sql::parity::ParityTruthSource).
 //! RefCsv-truth rows (e.g. Katz)
 //! still carry a secondary oracle JSON cross-check, so refreshing
 //! them as well lets `--check` catch a missing secondary file. Python
@@ -37,7 +37,7 @@ use std::{
     process::{Command, ExitCode},
 };
 
-use datafusion_nexus::cugraph_parity::{CUGRAPH_PARITY_SPECS, ParitySpec, data_root, load_manifest, oracle_path};
+use datafusion_nexus::graph_sql::parity::{CUGRAPH_PARITY_SPECS, ParitySpec, data_root, load_manifest, oracle_path};
 
 const ORACLE_SCRIPT_REL: &str = "scripts/cugraph_oracle.py";
 

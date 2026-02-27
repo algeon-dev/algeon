@@ -6,8 +6,6 @@
 //! adapter diagnostics. Treat those strings as stable diagnostic contracts:
 //! change them only with the same care as a report schema change.
 
-#![deny(missing_docs)]
-
 use std::{
     sync::{
         Arc,

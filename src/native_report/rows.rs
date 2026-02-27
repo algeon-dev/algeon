@@ -6,8 +6,6 @@
 //! accounting over the query lifetime; live peak and retained-byte fields
 //! describe instantaneous resident device memory.
 
-#![deny(missing_docs)]
-
 use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
 
 use super::metrics::NativeDataFusionExecutionMetrics;

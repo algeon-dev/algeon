@@ -11,8 +11,6 @@
 //! planning error tagged with [`FallbackReason::TableFormatGpuOnlyLeafNotRewritten`]
 //! so callers see a real native rejection reason rather than the placeholder.
 
-#![deny(missing_docs)]
-
 use std::sync::Arc;
 
 use datafusion::{

@@ -3,8 +3,6 @@
 //! This module is available with the `iceberg` Cargo feature. Lower-level,
 //! format-neutral scan facts remain under [`crate::table_format`].
 
-#![deny(missing_docs)]
-
 pub mod catalog;
 
 use std::{collections::HashMap, fmt, sync::Arc};
@@ -130,61 +128,51 @@ impl GlueIcebergTableConfig {
         }
     }
 
-    /// Replaces the Iceberg catalog name.
     pub fn with_catalog_name(mut self, catalog_name: impl Into<String>) -> Self {
         self.catalog_name = catalog_name.into();
         self
     }
 
-    /// Replaces the Glue database namespace.
     pub fn with_database(mut self, database: impl Into<String>) -> Self {
         self.database = database.into();
         self
     }
 
-    /// Replaces the Glue table name.
     pub fn with_table(mut self, table: impl Into<String>) -> Self {
         self.table = table.into();
         self
     }
 
-    /// Replaces the Iceberg warehouse URI.
     pub fn with_warehouse(mut self, warehouse: impl Into<String>) -> Self {
         self.warehouse = warehouse.into();
         self
     }
 
-    /// Sets an explicit Glue catalog id.
     pub fn with_catalog_id(mut self, catalog_id: impl Into<String>) -> Self {
         self.catalog_id = Some(catalog_id.into());
         self
     }
 
-    /// Clears the explicit Glue catalog id.
     pub fn without_catalog_id(mut self) -> Self {
         self.catalog_id = None;
         self
     }
 
-    /// Replaces the AWS region.
     pub fn with_region(mut self, region: impl Into<String>) -> Self {
         self.region = region.into();
         self
     }
 
-    /// Sets an AWS profile selector.
     pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
         self.profile = Some(profile.into());
         self
     }
 
-    /// Clears the AWS profile selector.
     pub fn without_profile(mut self) -> Self {
         self.profile = None;
         self
     }
 
-    /// Returns `database.table` for diagnostics.
     pub fn table_ident_display(&self) -> String {
         format!("{}.{}", self.database, self.table)
     }
@@ -297,7 +285,6 @@ impl GlueIcebergTableDiagnostics {
 
 /// Loaded Glue Iceberg table and credential-safe diagnostics.
 pub struct LoadedGlueIcebergTable {
-    /// Loaded `iceberg-rust` table handle.
     pub table: Table,
     /// Credential-safe load diagnostics.
     pub diagnostics: GlueIcebergTableDiagnostics,

@@ -2,8 +2,6 @@
 //!
 //! See [`ColumnRef`] for the lookup/display-name split and qualifier rules.
 
-#![deny(missing_docs)]
-
 use std::fmt;
 
 /// Column identity in the native expression IR.
@@ -65,22 +63,18 @@ impl ColumnRef {
         }
     }
 
-    /// Return the optional namespace qualifier.
     pub fn qualifier(&self) -> Option<&ColumnQualifier> {
         self.qualifier.as_ref()
     }
 
-    /// Return the source/input field name used for lookup.
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Return the user-visible or projected field name.
     pub fn display_name(&self) -> &str {
         &self.display_name
     }
 
-    /// Return true when this reference carries an explicit namespace.
     pub fn is_qualified(&self) -> bool {
         self.qualifier.is_some()
     }

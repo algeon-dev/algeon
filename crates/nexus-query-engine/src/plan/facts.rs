@@ -4,8 +4,6 @@
 //! placement, ordering, and schema provenance. They are not hidden optimizer
 //! hints.
 
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Planner/executor facts attached to a node's output.

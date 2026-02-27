@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use std::{any::Any, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
@@ -42,7 +40,6 @@ impl CudfTableFormatScanExec {
         &self.scan_plan
     }
 
-    /// Returns the table format that produced the scan facts.
     pub fn table_format(&self) -> &TableFormat {
         &self.scan_plan.format
     }

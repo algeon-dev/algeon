@@ -5,8 +5,6 @@
 //! are replaced with spaces before serialization so they cannot break the
 //! outer TSV grid; empty nested rows serialize as `none`.
 
-#![deny(missing_docs)]
-
 use std::fmt::Write;
 
 use datafusion::physical_plan::metrics::MetricsSet;

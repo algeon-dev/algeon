@@ -4,8 +4,6 @@
 //! underlying cuDF resources; host materialization is explicit. Cache byte
 //! counters are observed retained device bytes, not reservation totals.
 
-#![deny(missing_docs)]
-
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::Write,

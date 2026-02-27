@@ -3,7 +3,6 @@
 //! These helpers define the native engine's admitted Arrow surface before a
 //! plan reaches cudf-rs. Returning `false` or `None` means the query should be
 //! rejected by capability analysis rather than attempted at execution time.
-#![deny(missing_docs)]
 
 use arrow::datatypes::{
     DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, TimeUnit, validate_decimal_precision_and_scale,

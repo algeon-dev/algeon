@@ -4,8 +4,6 @@
 //! stable parser surface. Bump the relevant report TSV schema instead of
 //! parsing display output.
 
-#![deny(missing_docs)]
-
 use std::fmt;
 
 use super::{HashJoinBuildArtifactId, JoinOutputColumn, PlanNode, QueryNode, QueryPlan, ResultSink, SortExpr};

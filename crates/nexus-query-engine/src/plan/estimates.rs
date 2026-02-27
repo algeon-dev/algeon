@@ -5,8 +5,6 @@
 //! `None` rather than zero so callers can distinguish "missing evidence"
 //! from "empty".
 
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Returns a conservative row-count estimate for a plan node when available.

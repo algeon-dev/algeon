@@ -6,8 +6,6 @@
 //! whether a literal is supported in a given expression context is decided
 //! during expression lowering, not here.
 
-#![deny(missing_docs)]
-
 use std::fmt;
 
 use arrow::datatypes::{DataType, IntervalUnit, TimeUnit};

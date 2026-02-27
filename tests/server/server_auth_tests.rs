@@ -96,7 +96,6 @@ async fn query_without_handshake_rejects_with_unauthenticated() {
     let server = tokio::spawn(async move { serve(config).await });
     let mut client = connect_with_retry(addr).await;
 
-    // Skip handshake — client has no token attached.
     let err = client.execute("select 1".to_string(), None).await.expect_err("query without token must fail");
     server.abort();
 

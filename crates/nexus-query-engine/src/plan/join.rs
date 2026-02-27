@@ -4,8 +4,6 @@
 //! null equality, and durable build-cache identity are represented separately so
 //! optimizers and executors do not infer one contract from another.
 
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Binary join operation.
@@ -148,12 +146,10 @@ impl JoinSpec {
 pub struct HashJoinBuildArtifactId(String);
 
 impl HashJoinBuildArtifactId {
-    /// Creates a new cache identifier.
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
-    /// Returns the raw identifier string.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -184,7 +180,6 @@ pub struct JoinKey {
 }
 
 impl JoinKey {
-    /// Creates one left/right equality key pair.
     pub fn new(left: ColumnRef, right: ColumnRef) -> Self {
         Self { left, right }
     }
@@ -206,17 +201,14 @@ pub struct JoinOutputColumn {
 }
 
 impl JoinOutputColumn {
-    /// Creates a projected column from either semantic input side.
     pub fn new(side: JoinSide, column: ColumnRef, output_name: impl Into<String>) -> Self {
         Self { side, column, output_name: output_name.into() }
     }
 
-    /// Creates a projected column from the semantic left input.
     pub fn left(column: ColumnRef, output_name: impl Into<String>) -> Self {
         Self::new(JoinSide::Left, column, output_name)
     }
 
-    /// Creates a projected column from the semantic right input.
     pub fn right(column: ColumnRef, output_name: impl Into<String>) -> Self {
         Self::new(JoinSide::Right, column, output_name)
     }

@@ -3,8 +3,6 @@
 //! See [`NativeDataFusionExecutionMetrics`] for the per-field unit and
 //! cumulative-versus-instantaneous semantics.
 
-#![deny(missing_docs)]
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use datafusion::physical_plan::metrics::MetricsSet;

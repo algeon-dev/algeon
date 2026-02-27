@@ -4,8 +4,6 @@
 //! The consumer plan then uses those handles as GPU inputs and materializes the
 //! final result back to host Arrow for DataFusion.
 
-#![deny(missing_docs)]
-
 use std::{any::Any, collections::BTreeSet, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
@@ -124,7 +122,6 @@ impl NativeCudfComposedExec {
         })
     }
 
-    /// Native consumer plan executed after all GPU-resident producers finish.
     pub fn native_plan(&self) -> &QueryPlan {
         &self.plan
     }
@@ -199,7 +196,6 @@ impl ExecutionPlan for NativeCudfComposedExec {
     }
 
     fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> DataFusionResult<SendableRecordBatchStream> {
-        // Composed native execution also presents one final DataFusion output partition.
         if partition != 0 {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,

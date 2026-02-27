@@ -118,14 +118,11 @@ impl NativeOptimizerOptions {
 /// Whether an optimizer invocation changed the native IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeOptimizerChange {
-    /// No native IR nodes were changed.
     Unchanged,
-    /// At least one optimizer rule changed the native IR.
     Changed,
 }
 
 impl NativeOptimizerChange {
-    /// Returns true when an optimizer pass changed the native IR.
     pub fn changed(self) -> bool {
         matches!(self, Self::Changed)
     }
@@ -143,7 +140,6 @@ pub struct NativeOptimizerResult {
 }
 
 impl NativeOptimizerResult {
-    /// Returns true when any optimizer pass changed the native IR.
     pub fn changed(&self) -> bool {
         self.change.changed()
     }

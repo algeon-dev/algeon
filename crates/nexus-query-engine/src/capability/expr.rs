@@ -3,8 +3,6 @@
 //! Classifies whether each native [`Expr`] form is supported and, when not,
 //! produces a stable `(reason, expression_family)` rejection for reports.
 
-#![deny(missing_docs)]
-
 use super::{model::*, *};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

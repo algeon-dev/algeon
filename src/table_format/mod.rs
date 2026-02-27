@@ -4,13 +4,9 @@
 //! lowering can inspect later. It does not execute source reads and it stays out
 //! of `nexus-query-engine`, which continues to receive only native source facts.
 
-#![deny(missing_docs)]
-
 #[cfg(feature = "iceberg")]
 pub mod iceberg;
-/// Format-neutral table-format scan facts and diagnostics.
 pub mod scan;
-/// DataFusion physical planning leaf for table-format scan facts.
 pub mod scan_exec;
 
 #[cfg(feature = "iceberg")]

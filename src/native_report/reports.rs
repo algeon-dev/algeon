@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use super::*;
 use crate::StatisticalAggregateExecutionMode;
 
@@ -111,7 +109,6 @@ pub struct NativeDataFusionPlanningReport {
 }
 
 impl NativeDataFusionPlanningReport {
-    /// Collects planning rows from captured workload items.
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionPlanningWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_planning_rows_for_item).collect();
         Self { rows, workload_dataset: None }
@@ -212,7 +209,6 @@ pub struct NativeDataFusionExecutionReport {
 }
 
 impl NativeDataFusionExecutionReport {
-    /// Collects execution rows from captured planning/runtime workload items.
     pub fn collect(items: impl IntoIterator<Item = NativeDataFusionExecutionWorkloadItem>) -> Self {
         let rows = items.into_iter().flat_map(datafusion_execution_rows_for_item).collect();
         Self { rows, workload_dataset: None, statistical_aggregate_execution_mode: None }

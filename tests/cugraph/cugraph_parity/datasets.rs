@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use datafusion_nexus::cugraph_parity::{ParityManifest, ParityManifestError, data_root, load_manifest};
+use datafusion_nexus::graph_sql::parity::{ParityManifest, ParityManifestError, data_root, load_manifest};
 use sha2::{Digest, Sha256};
 
 pub struct LoadedDatasets {

@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Reservation request submitted to bounded execution admission.

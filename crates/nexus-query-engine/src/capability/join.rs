@@ -5,8 +5,6 @@
 //! consumed by capability admission, the bounded executor's strategy
 //! selection, and the join-strategy metric rows.
 
-#![deny(missing_docs)]
-
 use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType;

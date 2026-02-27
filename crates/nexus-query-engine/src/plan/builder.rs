@@ -4,8 +4,6 @@
 //! stable and forward references are impossible. Equivalent nodes (same kind
 //! and facts) are interned as a small CSE step.
 
-#![deny(missing_docs)]
-
 use super::*;
 
 /// Builder for native query plans.
@@ -21,7 +19,6 @@ pub struct QueryPlanBuilder {
 }
 
 impl QueryPlanBuilder {
-    /// Creates an empty plan builder.
     pub fn new() -> Self {
         Self::default()
     }

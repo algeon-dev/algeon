@@ -3,8 +3,6 @@
 //! [`ResultSink`]; native execution is GPU-resident until the sink chooses
 //! otherwise.
 
-#![deny(missing_docs)]
-
 use super::*;
 use crate::dynamic_filter::DynamicFilterRoute;
 
@@ -105,22 +103,18 @@ impl QueryPlan {
         }
     }
 
-    /// Returns the number of nodes in the append-only DAG.
     pub fn node_count(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Returns true when the plan contains at least one native join node.
     pub fn contains_join(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::Join(_)))
     }
 
-    /// Returns true when the plan contains at least one native graph algorithm node.
     pub fn contains_graph_algorithm(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
     }
 
-    /// Returns true when the plan contains an explicit edge-list normalization node.
     pub fn contains_edge_normalize(&self) -> bool {
         self.nodes.iter().any(|node| matches!(node.kind, PlanNode::EdgeNormalize(_)))
     }

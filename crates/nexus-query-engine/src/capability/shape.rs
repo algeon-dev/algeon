@@ -4,8 +4,6 @@
 //! residual, keyless conditional, etc.) and exposes its recognisers to
 //! [`super::admission`].
 
-#![deny(missing_docs)]
-
 use super::{edge::*, expr::*, graph::*, invariant::expr_references_input, model::*, *};
 
 mod access;

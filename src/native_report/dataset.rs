@@ -1,5 +1,3 @@
-#![deny(missing_docs)]
-
 use std::path::PathBuf;
 
 /// Workload-agnostic dataset metadata for shared report TSV output.

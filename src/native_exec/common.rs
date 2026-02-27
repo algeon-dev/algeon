@@ -5,8 +5,6 @@
 //! `PlanProperties` and uses the same error tagging at the DataFusion runtime
 //! boundary, so those concerns live here rather than being duplicated.
 
-#![deny(missing_docs)]
-
 use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::SchemaRef;
