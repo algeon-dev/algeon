@@ -36,27 +36,15 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 );
             }
             let input = execute_bounded_generic_union(context, node_id, frames, reservations, metrics)?;
-            return execute_bounded_generic_unary(
+            return execute_compiled_bounded_aggregate_consuming_frame(
                 context,
                 node_id,
-                "compiled_floating_statistical_aggregate",
-                "compiled_floating_statistical_aggregate_output",
+                aggregate,
+                input_schema,
+                output_schema,
                 input,
                 reservations,
                 metrics,
-                true,
-                |context, input, token, metrics| {
-                    execute_aggregate_with_budget_for_node(
-                        context,
-                        Some(node_id),
-                        aggregate,
-                        input_schema,
-                        input,
-                        output_schema,
-                        token.expect("budget token is created for compiled bounded stddev aggregate stages"),
-                        metrics,
-                    )
-                },
             );
         }
         if aggregate_spec_has_distinct(&aggregate.spec) {

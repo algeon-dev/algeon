@@ -105,7 +105,6 @@ pub(in crate::exec::bounded) fn capability_first_bounded_pipeline_admission(
         );
         return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
     }
-
     let pipeline = match compile_pipeline(plan, &analysis) {
         Ok(pipeline) => pipeline,
         Err(error) if compiled_pipeline_graph_is_unsupported_envelope(&error) => {
@@ -178,10 +177,29 @@ mod tests {
             DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
             DynamicFilterProducer, DynamicFilterRoute,
         },
-        expr::ColumnRef,
-        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlan, QueryPlanBuilder},
+        expr::{AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, Expr, SortExpr, SortSpec},
+        plan::{
+            JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder,
+        },
         source::{LocalParquetSource, SourceNode},
     };
+
+    #[test]
+    fn strict_admission_accepts_root_full_sort_left_semi_grouped_aggregate() {
+        let plan = root_full_sort_left_semi_grouped_aggregate_plan();
+
+        let admission = capability_first_bounded_pipeline_admission(&plan)
+            .expect("left-semi full-sort aggregate admission should not error")
+            .expect("join plan should produce strict admission evidence");
+
+        assert!(
+            matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Admitted),
+            "rejection={:?}",
+            admission.rejection_projection()
+        );
+        assert_eq!(admission.envelope(), Some(StrictBoundedEnvelope::RootFullSortJoinAggregate));
+        assert!(admission.pipeline().is_some());
+    }
 
     #[test]
     fn strict_admission_demotes_dynamic_filter_control_cycle_to_unsupported_envelope() {
@@ -224,6 +242,68 @@ mod tests {
                 .get("bounded_join_rejection_facts")
                 .is_some_and(|facts| facts.contains("pipeline_compile_error="))
         );
+    }
+
+    fn root_full_sort_left_semi_grouped_aggregate_plan() -> QueryPlan {
+        let left_schema = Arc::new(Schema::new(vec![
+            Field::new("order_key", DataType::Int64, false),
+            Field::new("priority", DataType::Utf8, false),
+        ]));
+        let right_schema = Arc::new(Schema::new(vec![Field::new("order_key", DataType::Int64, false)]));
+        let aggregate_schema = Arc::new(Schema::new(vec![
+            Field::new("priority", DataType::Utf8, false),
+            Field::new("order_count", DataType::UInt64, false),
+        ]));
+
+        let mut builder = QueryPlanBuilder::new();
+        let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/orders.parquet",
+            Arc::clone(&left_schema),
+            vec!["order_key".to_string(), "priority".to_string()],
+        )));
+        let right = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            "/tmp/lineitem.parquet",
+            Arc::clone(&right_schema),
+            vec!["order_key".to_string()],
+        )));
+        let semi = builder.add_join(
+            left,
+            right,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "order_key", "order_key"),
+                    ColumnRef::input(1, "order_key", "order_key"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "order_key", "order_key"), "order_key"),
+                JoinOutputColumn::left(ColumnRef::input(0, "priority", "priority"), "priority"),
+            ])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&left_schema),
+        );
+        let aggregate = builder.add_aggregate(
+            semi,
+            AggregateSpec::new(
+                vec![Expr::column("priority")],
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("order_key"), "order_count")],
+            ),
+            Arc::clone(&aggregate_schema),
+        );
+        let projection = builder.add_projection(
+            aggregate,
+            vec![
+                ProjectionOutput::new(Expr::column("priority"), Field::new("priority", DataType::Utf8, false)),
+                ProjectionOutput::new(Expr::column("order_count"), Field::new("order_count", DataType::UInt64, false)),
+            ],
+        );
+        let sort = builder.add_sort(
+            projection,
+            SortSpec::new(vec![SortExpr::new(Expr::column("priority"), false, false)]),
+            aggregate_schema,
+        );
+        builder.finish_with_host_sink(sort)
     }
 
     fn dynamic_filter_control_cycle_plan() -> QueryPlan {

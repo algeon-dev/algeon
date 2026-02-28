@@ -19,14 +19,17 @@ use super::{
     compiled::execute_compiled_pipeline_to_host,
 };
 use crate::{
-    capability::{CapabilityAnalysis, CapabilityRejectionProjection, StrictBoundedEnvelope},
+    capability::{
+        CapabilityAnalysis, CapabilityRejectionProjection, ContractQuality, ContractStatus, ReservationRequirement,
+        StrictBoundedEnvelope, SubgraphInvariantKind,
+    },
     error::{QueryError, QueryErrorCode, Result},
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
-    mode::NativePipelineExecutionMode,
-    pipeline::CompiledPipeline,
+    mode::{NativePipelineExecutionMode, StatisticalAggregateExecutionMode},
+    pipeline::{CompiledPipeline, compile_pipeline},
     plan::{QueryPlan, ResultSink},
-    runtime::ExecutionContext,
+    runtime::{ExecutionContext, ReservationKind},
 };
 
 /// Strict bounded admission evidence for a compiled bounded pipeline.
@@ -77,12 +80,37 @@ pub fn strict_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Stri
                 Err(compiled_bounded_pipeline_required_error(
                     plan,
                     admission.pipeline(),
-                    admission.rejection_reason().unwrap_or("unknown"),
+                    admission
+                        .rejection_projection()
+                        .expect("rejected capability-first admission should carry a projection"),
                 ))
             },
             _ => Ok(None),
         },
     }
+}
+
+/// Run strict bounded admission for a query plan under the caller-selected
+/// floating statistical aggregate execution contract.
+///
+/// Shape-only admission remains available through
+/// [`strict_bounded_pipeline_admission`]. This mode-aware facade is the
+/// execution/report boundary: exact statistical final-sort shapes are admitted
+/// under either their exact host-Welford contract or a separate GPU-native
+/// tolerant contract.
+pub fn strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+    plan: &QueryPlan,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> Result<Option<StrictBoundedPipelineAdmission>> {
+    let Some(admission) = strict_bounded_pipeline_admission(plan)? else {
+        return Ok(None);
+    };
+    if admission.envelope() == StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort
+        && !statistical_aggregate_execution_mode.is_datafusion_exact()
+    {
+        return tolerant_statistical_join_final_full_sort_admission(plan, admission).map(Some);
+    }
+    Ok(Some(admission))
 }
 
 /// Returns the shared strict bounded rejection projection for a join plan.
@@ -95,6 +123,85 @@ pub fn strict_bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<
         return Ok(None);
     };
     Ok(admission.rejection_projection().cloned())
+}
+
+/// Returns the strict bounded rejection projection after applying the
+/// caller-selected floating statistical aggregate execution contract.
+pub fn strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+    plan: &QueryPlan,
+    statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+) -> Result<Option<CapabilityRejectionProjection>> {
+    let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
+        return Ok(None);
+    };
+    if admission.envelope() == Some(StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort)
+        && !statistical_aggregate_execution_mode.is_datafusion_exact()
+    {
+        return Ok(None);
+    }
+    Ok(admission.rejection_projection().cloned())
+}
+
+fn tolerant_statistical_join_final_full_sort_admission(
+    plan: &QueryPlan,
+    admission: StrictBoundedPipelineAdmission,
+) -> Result<StrictBoundedPipelineAdmission> {
+    let mut analysis = admission.analysis;
+    rewrite_exact_statistical_join_final_sort_requirements_for_tolerant_mode(&mut analysis);
+    let pipeline = compile_pipeline(plan, &analysis)?;
+    match compiled_bounded_query_plan_support(plan, &pipeline)? {
+        CompiledBoundedPipelineSupport::Supported => Ok(StrictBoundedPipelineAdmission {
+            analysis,
+            envelope: StrictBoundedEnvelope::TolerantStatisticalJoinFinalFullSort,
+            pipeline,
+        }),
+        CompiledBoundedPipelineSupport::Unsupported => Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.bounded.strict_tolerant_statistical_admission",
+            "tolerant statistical join final full sort requires compiled bounded pipeline support",
+        )
+        .with_fact("strict_bounded_envelope", StrictBoundedEnvelope::TolerantStatisticalJoinFinalFullSort.as_str())
+        .with_fact("compiled_task_count", pipeline.tasks().len())
+        .with_fact("compiled_edge_count", pipeline.edges().len())),
+    }
+}
+
+fn rewrite_exact_statistical_join_final_sort_requirements_for_tolerant_mode(analysis: &mut CapabilityAnalysis) {
+    for invariant in &mut analysis.invariants {
+        if invariant.kind != SubgraphInvariantKind::StatisticalJoinFinalSortExactness {
+            continue;
+        }
+        invariant
+            .reservation_requirements
+            .retain(|requirement| requirement.required_contract == "final_full_sort_output_cardinality_bound");
+        invariant.reservation_requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            StrictBoundedEnvelope::TolerantStatisticalJoinFinalFullSort.as_str(),
+            "gpu_native_tolerant_statistical_aggregate_contract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+
+    analysis.requirements = analysis
+        .nodes
+        .iter()
+        .flat_map(|node| node.local_requirements.iter())
+        .chain(analysis.edges.iter().flat_map(|edge| edge.reservation_requirements.iter()))
+        .chain(analysis.invariants.iter().flat_map(|invariant| invariant.reservation_requirements.iter()))
+        .cloned()
+        .collect();
+    debug_assert!(
+        analysis.requirements.iter().all(|requirement| {
+            !matches!(
+                (requirement.status, requirement.required_contract),
+                (
+                    ContractStatus::Modeled,
+                    "host_welford_input_materialization_preflight" | "host_welford_output_upload_reservation"
+                )
+            )
+        }),
+        "tolerant statistical contract must not carry exact host-Welford gates"
+    );
 }
 
 fn strict_admission_from_capability_first(
@@ -128,7 +235,11 @@ pub(in crate::exec) fn try_execute_strict_bounded_pipeline(
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<QueryOutput>> {
-    let Some(admission) = strict_bounded_pipeline_admission(plan)? else {
+    let Some(admission) = strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+        plan,
+        context.statistical_aggregate_execution_mode(),
+    )?
+    else {
         return Ok(None);
     };
     debug_assert_eq!(admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
@@ -138,7 +249,7 @@ pub(in crate::exec) fn try_execute_strict_bounded_pipeline(
 fn compiled_bounded_pipeline_required_error(
     plan: &QueryPlan,
     pipeline: Option<&crate::pipeline::CompiledPipeline>,
-    reason: &'static str,
+    projection: &CapabilityRejectionProjection,
 ) -> QueryError {
     let sink_kind = match plan.sink() {
         ResultSink::GpuResident { .. } => "gpu_resident",
@@ -150,9 +261,13 @@ fn compiled_bounded_pipeline_required_error(
         "capability-admitted bounded join execution requires the compiled bounded pipeline runtime",
     )
     .with_fact("compiled_pipeline_required", "true")
-    .with_fact("compiled_pipeline_rejection_reason", reason)
+    .with_fact("compiled_pipeline_rejection_reason", projection.reason)
     .with_fact("legacy_bounded_join_path_bridge", "disabled")
     .with_fact("result_sink_kind", sink_kind);
+
+    for (key, value) in &projection.facts {
+        error = error.with_fact_if_absent(key, value.as_str());
+    }
 
     if let Some(pipeline) = pipeline {
         error = error

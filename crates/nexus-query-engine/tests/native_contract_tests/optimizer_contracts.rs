@@ -10,8 +10,8 @@ use nexus_query_engine::{
     GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions, GraphEdgeColumnBindings,
     GraphPredicateInput, JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
     JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions, JoinFilterReassociationDiagnostics,
-    LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseDiagnostics, LocalParquetSourceReuseOptions,
-    NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NodeId,
+    LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSource, LocalParquetSourceReuseDiagnostics,
+    LocalParquetSourceReuseOptions, NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NodeId,
     OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionDiagnostics, OuterJoinNullRejectionRejectedReason,
     PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions,
     SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
@@ -1050,6 +1050,24 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     assert!(
         result.plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Filter(_))),
         "reader predicate should be replayed as a branch-local native filter"
+    );
+}
+
+#[test]
+fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_source() {
+    let plan = compatible_small_local_parquet_source_variants_with_max_rows_plan();
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 1);
+    let sources = local_parquet_sources_for_stable_id(&result.plan, "customer_address");
+    let [shared_source] = sources.as_slice() else {
+        panic!("source reuse should produce exactly one shared customer_address source, got {}", sources.len());
+    };
+    assert_eq!(
+        shared_source.max_rows, None,
+        "branch-local max_rows is valid only after the branch predicate and must not be lifted to the shared source"
     );
 }
 
@@ -2781,6 +2799,27 @@ fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::
     builder.finish_gpu_resident(union)
 }
 
+fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let full = builder.add_source(customer_address_source(&["id", "state"], &[0, 1], None));
+    let filtered = builder.add_source(customer_address_source_with_max_rows(
+        &["id", "zip"],
+        &[0, 2],
+        Some(Expr::binary(Expr::column("zip"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(30301)))),
+        Some(1),
+    ));
+    let full_id = builder.add_projection(
+        full,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let filtered_id = builder.add_projection(
+        filtered,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"]));
+    builder.finish_gpu_resident(union)
+}
+
 fn graph_bfs_local_source_reuse_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(graph_reuse_source(&["src", "dst", "weight"], &[0, 1, 2]));
@@ -2849,6 +2888,15 @@ fn large_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
 }
 
 fn customer_address_source(columns: &[&str], file_indices: &[usize], predicate: Option<Expr>) -> SourceNode {
+    customer_address_source_with_max_rows(columns, file_indices, predicate, None)
+}
+
+fn customer_address_source_with_max_rows(
+    columns: &[&str],
+    file_indices: &[usize],
+    predicate: Option<Expr>,
+    max_rows: Option<usize>,
+) -> SourceNode {
     let fields = columns.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>();
     let schema = Arc::new(Schema::new(fields));
     let file = LocalParquetFile::new("/tmp/customer_address.parquet")
@@ -2865,6 +2913,7 @@ fn customer_address_source(columns: &[&str], file_indices: &[usize], predicate: 
         source =
             source.with_column_roles(vec!["id".to_string()], vec!["zip".to_string()]).with_reader_predicate(predicate);
     }
+    source = source.with_max_rows(max_rows);
     SourceNode::LocalParquet(source)
 }
 
@@ -2914,16 +2963,25 @@ fn assert_all_node_inputs_exist(plan: &nexus_query_engine::QueryPlan) {
 }
 
 fn local_parquet_source_count_for_stable_id(plan: &nexus_query_engine::QueryPlan, stable_id: &str) -> usize {
+    local_parquet_sources_for_stable_id(plan, stable_id).len()
+}
+
+fn local_parquet_sources_for_stable_id<'a>(
+    plan: &'a nexus_query_engine::QueryPlan,
+    stable_id: &str,
+) -> Vec<&'a LocalParquetSource> {
     plan.nodes()
         .iter()
-        .filter(|node| match &node.kind {
+        .filter_map(|node| match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source) => source.files.iter().any(|file| file.stable_id == stable_id),
-                _ => false,
+                SourceNode::LocalParquet(source) if source.files.iter().any(|file| file.stable_id == stable_id) => {
+                    Some(source)
+                },
+                _ => None,
             },
-            _ => false,
+            _ => None,
         })
-        .count()
+        .collect()
 }
 
 fn assert_source_input(plan: &nexus_query_engine::QueryPlan, node_id: nexus_query_engine::NodeId, name: &str) {

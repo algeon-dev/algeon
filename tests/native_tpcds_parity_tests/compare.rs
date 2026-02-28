@@ -348,6 +348,7 @@ fn accepted_native_planning(schema: &Arc<Schema>) -> NativeTpcdsParityNativePlan
         diagnostics: Box::new(NativePlanningDiagnostics {
             input_plan_root: "EmptyExec".to_string(),
             input_plan_shape: "EmptyExec".to_string(),
+            input_join_diagnostics: Vec::new(),
             report,
             native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics::default(),
             source_diagnostics: Vec::new(),

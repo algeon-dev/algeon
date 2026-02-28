@@ -80,7 +80,9 @@ pub use exec::{
     adaptive_bounded_pipeline_admission, adaptive_bounded_pipeline_admission_with_memory_history, execute_query_plan,
     execute_query_plan_with_gpu_inputs, join_output_upper_bound_bytes, materialize_gpu_result_to_host,
     partial_aggregate_upper_bound_bytes, read_gpu_resident_source, read_local_parquet_source,
-    strict_bounded_pipeline_admission, strict_bounded_pipeline_rejection_projection, validate_local_parquet_source,
+    strict_bounded_pipeline_admission, strict_bounded_pipeline_admission_with_statistical_aggregate_mode,
+    strict_bounded_pipeline_rejection_projection,
+    strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode, validate_local_parquet_source,
 };
 pub use expr::{
     AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart, Expr,

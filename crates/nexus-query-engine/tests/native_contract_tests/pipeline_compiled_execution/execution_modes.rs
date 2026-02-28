@@ -108,6 +108,70 @@ fn adaptive_admission_unsupported_adaptive_rows_reference_strict_gaps_without_st
 }
 
 #[test]
+fn adaptive_admission_keeps_rollup_rank_topk_phase2_support_strict_only() {
+    let optimized =
+        optimize_query_plan(selected_q86_class_rollup_rank_topk_plan(), &NativeOptimizerOptions::default()).plan;
+    let strict_admission = strict_bounded_pipeline_admission(&optimized)
+        .expect("strict admission should not fail")
+        .expect("Phase 2 rollup/rank/top-k should have strict compiled runtime support");
+    assert_eq!(strict_admission.envelope(), StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
+
+    let adaptive_admission = adaptive_bounded_pipeline_admission(&optimized)
+        .expect("adaptive admission should not fail")
+        .expect("join plan should produce adaptive report evidence");
+    let row = adaptive_admission.report().row();
+    assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
+    assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
+    assert!(adaptive_admission.pipeline().is_none());
+    assert_eq!(
+        row.rejection_reason,
+        Some("adaptive_rollup_rank_topk_after_aggregate_join_pushdown_requires_explicit_contract")
+    );
+}
+
+#[test]
+fn adaptive_admission_keeps_projection_global_limit_support_strict_only() {
+    let plan = projection_root_global_limit_join_aggregate_plan();
+    let strict_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("projection/global-limit should have strict compiled runtime support");
+    assert_eq!(strict_admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit);
+
+    let adaptive_admission = adaptive_bounded_pipeline_admission(&plan)
+        .expect("adaptive admission should not fail")
+        .expect("join plan should produce adaptive report evidence");
+    let row = adaptive_admission.report().row();
+    assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
+    assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
+    assert!(adaptive_admission.pipeline().is_none());
+    assert_eq!(row.rejection_reason, Some("adaptive_projection_global_limit_requires_explicit_contract"));
+}
+
+#[test]
+fn adaptive_admission_keeps_exact_statistical_final_sort_support_strict_only() {
+    let plan = statistical_join_final_full_sort_plan();
+    let strict_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("exact statistical final-sort should have strict compiled runtime support");
+    assert_eq!(strict_admission.envelope(), StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort);
+
+    let adaptive_admission = adaptive_bounded_pipeline_admission(&plan)
+        .expect("adaptive admission should not fail")
+        .expect("join plan should produce adaptive report evidence");
+    let row = adaptive_admission.report().row();
+    assert_eq!(row.execution_mode, AdaptiveExecutionMode::UnsupportedAdaptive);
+    assert_eq!(row.candidate_status, AdaptiveCandidateStatus::Rejected);
+    assert_eq!(row.adaptive_strategy, AdaptiveStrategy::Unsupported);
+    assert!(adaptive_admission.pipeline().is_none());
+    assert_eq!(
+        row.rejection_reason,
+        Some("adaptive_exact_statistical_join_final_full_sort_requires_explicit_contract")
+    );
+}
+
+#[test]
 fn adaptive_memory_history_lookup_miss_is_adaptive_evidence_only() {
     let plan = root_join_plan();
     let memory_history = AdaptiveMemoryHistory::new();

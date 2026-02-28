@@ -20,10 +20,14 @@ mod partial_strategy;
 mod tests;
 mod validate;
 
-use filter_inputs::prepare_filtered_aggregate_frame;
+pub(in crate::exec) use filter_inputs::prepare_filtered_aggregate_frame;
 pub(in crate::exec) use groupby::{execute_groupby_aggregate, execute_groupby_aggregate_with_budget};
 use grouping_sets::{execute_grouping_sets_aggregate, execute_grouping_sets_partial_aggregate_with_budget};
 use host_exact::{execute_datafusion_exact_host_aggregate, host_group_expr_output_name};
+pub(in crate::exec) use host_exact::{
+    execute_datafusion_exact_host_aggregate_batch, materialize_datafusion_exact_host_aggregate_input,
+    prepare_datafusion_exact_host_aggregate_input_frame, upload_datafusion_exact_host_aggregate_output,
+};
 use partial_execute::{
     execute_encoded_key_partial_aggregate_with_budget, execute_prepared_sort_groupby_partial_aggregate_with_budget,
     execute_prepared_sort_groupby_single_aggregate_with_budget,
@@ -350,7 +354,10 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     Ok(GpuDataFrame::new(output))
 }
 
-fn should_execute_datafusion_exact_stddev(context: &ExecutionContext, spec: &AggregateSpec) -> bool {
+pub(in crate::exec) fn should_execute_datafusion_exact_stddev(
+    context: &ExecutionContext,
+    spec: &AggregateSpec,
+) -> bool {
     aggregate_spec_has_floating_statistical_aggregate(spec)
         && context.stddev_samp_execution_mode().is_datafusion_exact()
 }

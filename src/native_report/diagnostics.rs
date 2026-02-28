@@ -56,7 +56,7 @@ fn count_host_datafusion_boundaries(plan: &dyn ExecutionPlan) -> usize {
         + children.iter().map(|child| count_host_datafusion_boundaries(child.as_ref())).sum::<usize>()
 }
 
-pub(super) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {
+pub(crate) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {
     let mut diagnostics = Vec::new();
     collect_join_diagnostics(plan, &mut diagnostics);
     diagnostics

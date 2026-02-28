@@ -23,7 +23,7 @@ use nexus_query_engine::{
     ReservationKind, ResultMaterializationBoundary, ResultSink, RetryFacts, ScanLimitDisposition, SchemaBehavior,
     SchemaMappingDisposition, SortExpr, SortSpec, SourceChunkPlanningPolicy, SourceColumnRef, SourceMetadataCache,
     SourceNode, SourceReadBoundary, SourceSchedulerPolicy, SourceTaskMemoryModel, StrictBoundedContractOwner,
-    StrictBoundedExecutionMode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    StrictBoundedExecutionMode, WindowFunction, WindowSpec, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
     capability::{
         AggregateExecutionStage, AggregateExecutionStrategy, CapabilityDecision, ContractQuality, ContractStatus,
         EdgeConsumer, EdgeContractKind, InputRole, NodeOperator, OrderingRequirement, RequiredProperty,

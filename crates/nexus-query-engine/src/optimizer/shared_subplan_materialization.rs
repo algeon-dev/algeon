@@ -411,8 +411,9 @@ fn local_parquet_rowset_signature(source: &LocalParquetSource) -> String {
     let files = file_signatures.join("+");
     let predicate = source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     format!(
-        "local_parquet(files={files};predicate={predicate};scan_limit={};zero_column_count={})",
+        "local_parquet(files={files};predicate={predicate};scan_limit={};max_rows={};zero_column_count={})",
         source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
+        source.max_rows.map_or_else(|| "none".to_string(), |rows| rows.to_string()),
         source.is_zero_column_count_source(),
     )
 }
@@ -692,8 +693,9 @@ fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalS
         .collect::<Vec<_>>()
         .join(",");
     let common = format!(
-        "files={files};read={read_columns};projected={projected_output_columns};pure_filter={pure_filter_columns};partition={partition_columns};missing={missing_columns};scan_limit={}",
-        source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string())
+        "files={files};read={read_columns};projected={projected_output_columns};pure_filter={pure_filter_columns};partition={partition_columns};missing={missing_columns};scan_limit={};max_rows={}",
+        source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
+        source.max_rows.map_or_else(|| "none".to_string(), |rows| rows.to_string())
     );
     let predicate = source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let selected_source_bytes =

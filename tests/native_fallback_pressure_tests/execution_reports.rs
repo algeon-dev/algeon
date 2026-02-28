@@ -520,6 +520,7 @@ fn native_datafusion_reports_scope_strict_contract_rows_to_join_candidates() {
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "SortExec".to_string(),
         input_plan_shape: "SortExec(fetch)(AggregateExec(HashJoinExec(LocalParquetScan,LocalParquetScan)))".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
@@ -570,6 +571,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "UnionExec".to_string(),
         input_plan_shape: "UnionExec(HashJoinExec(...),NestedLoopJoinExec(...))".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
@@ -638,6 +640,7 @@ fn native_datafusion_reports_project_adaptive_rows_without_strict_contract_rows(
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: Default::default(),
         source_diagnostics: Vec::new(),
@@ -681,6 +684,7 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(HashJoinExec,GpuKeyset)".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: optimizer_result.diagnostics,
         source_diagnostics: Vec::new(),
@@ -721,6 +725,7 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "ProjectionExec".to_string(),
         input_plan_shape: "ProjectionExec(GpuResidentSource)".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: optimizer_result.diagnostics,
         source_diagnostics: Vec::new(),
@@ -758,6 +763,7 @@ fn native_datafusion_planning_report_projects_dynamic_filter_route_diagnostics()
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "HashJoinExec".to_string(),
         input_plan_shape: "HashJoinExec(LocalParquetScan,LocalParquetScan)".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: optimizer_result.diagnostics,
         source_diagnostics: Vec::new(),
@@ -793,6 +799,7 @@ fn native_datafusion_planning_report_uses_native_optimizer_stable_rule_rows() {
     let diagnostics = NativePlanningDiagnostics {
         input_plan_root: "AggregateExec".to_string(),
         input_plan_shape: "AggregateExec(HashJoinExec)".to_string(),
+        input_join_diagnostics: Vec::new(),
         report,
         native_optimizer: nexus_query_engine::NativeOptimizerDiagnostics {
             aggregate_join_pushdown: nexus_query_engine::AggregateJoinPushdownDiagnostics {

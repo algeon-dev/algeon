@@ -206,6 +206,1486 @@ fn compiled_bounded_support_accepts_grouped_aggregate_join_build_input_without_l
 }
 
 #[test]
+fn compiled_bounded_support_accepts_root_topk_join_aggregate_graph() {
+    let plan = root_topk_join_aggregate_plan();
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_root_topk_join_aggregate_pipeline());
+    let pipeline = compile_pipeline(&plan, &analysis).expect("root TopK join/aggregate plan should compile");
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let final_sort_gate =
+        runtime_visible_gate_for_task_kind(&pipeline, PipelineTaskKind::FinalSort, ReservationKind::FinalSort)
+            .expect("root TopK plan should retain a final-sort gate");
+    assert_eq!(final_sort_gate.status(), ContractStatus::Modeled);
+    assert_eq!(final_sort_gate.quality(), ContractQuality::HardBudgetedReportWithUnresolvedPreflight);
+
+    let rendered = pipeline.debug_render();
+    assert!(!rendered.contains("BoundedJoinExecutionFamily"));
+    assert!(!rendered.contains("BoundedJoinExecutionPath"));
+}
+
+#[test]
+fn strict_admission_accepts_projection_root_global_limit_join_aggregate_with_modeled_gates() {
+    let plan = projection_root_global_limit_join_aggregate_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_projection_global_limit_pipeline());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!(
+            "expected projection/global-limit selected envelope, got {:?}",
+            analysis.strict_bounded_envelope_admission()
+        );
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::ProjectionGlobalLimit);
+    assert_eq!(envelope.as_str(), "projection_global_limit");
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("projection/global-limit join aggregate should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Limit, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Unary, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled projection/global-limit report should be valid");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_modeled_gate_row("projection/global-limit", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        "projection/global-limit",
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_limit_bounded_projection_output_boundary",
+    );
+    assert_modeled_gate_row(
+        "projection/global-limit",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_accepts_limit_root_projected_global_hash_join_aggregate_with_sibling_input() {
+    let plan = limit_root_projected_global_hash_join_aggregate_with_sibling_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_projection_global_limit_pipeline(),
+        "limit-root projection/global-limit sibling shape rejected with {:?}",
+        analysis.projection_global_limit_admission
+    );
+    assert!(!analysis.admits_root_join(), "limit-root sibling shape must not admit through generic root-join");
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!(
+            "expected projection/global-limit selected envelope, got {:?}",
+            analysis.strict_bounded_envelope_admission()
+        );
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::ProjectionGlobalLimit);
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("limit-root projection/global-limit sibling shape should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit);
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 4);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Limit, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled limit-root projection/global-limit report should be valid");
+    assert_modeled_gate_row(
+        "limit-root projection/global-limit sibling",
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_global_limit_output_boundary",
+    );
+    assert_modeled_gate_row(
+        "limit-root projection/global-limit sibling",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "limit-root projection/global-limit sibling",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn projection_scalar_setop_scalar_fanout_without_cardinality_proof_is_parked() {
+    let plan = projection_root_scalar_fanout_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_contract_not_implemented")
+    );
+    assert_projection_scalar_setop_contract_not_implemented_projection(&plan, &analysis, "scalar fanout");
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_scalar_fanout_with_one_row_driver() {
+    assert_projection_scalar_setop_scalar_fanout_admission(
+        projection_root_scalar_fanout_one_row_driver_plan(),
+        "literal one-row driver",
+        1,
+        1,
+        0,
+        2,
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_scalar_fanout_with_scan_limit_driver() {
+    assert_projection_scalar_setop_scalar_fanout_admission(
+        projection_root_scalar_fanout_scan_limit_driver_plan(),
+        "scan-limit driver",
+        0,
+        2,
+        0,
+        2,
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_scalar_fanout_with_max_rows_driver() {
+    assert_projection_scalar_setop_scalar_fanout_admission(
+        projection_root_scalar_fanout_max_rows_driver_plan(),
+        "max-rows driver",
+        0,
+        2,
+        0,
+        2,
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_scalar_fanout_with_limit_driver() {
+    assert_projection_scalar_setop_scalar_fanout_admission(
+        projection_root_scalar_fanout_limit_driver_plan(),
+        "limit driver",
+        0,
+        2,
+        1,
+        2,
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_repeated_scalar_fanout() {
+    assert_projection_scalar_setop_scalar_fanout_admission(
+        projection_root_repeated_scalar_fanout_plan(),
+        "repeated scalar fanout",
+        0,
+        1,
+        0,
+        1,
+    );
+}
+
+#[test]
+fn projection_scalar_setop_repeated_scalar_fanout_with_unbounded_input_is_parked() {
+    let plan = projection_root_repeated_scalar_fanout_unbounded_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_contract_not_implemented")
+    );
+    assert_projection_scalar_setop_contract_not_implemented_projection(&plan, &analysis, "unbounded repeated fanout");
+}
+
+fn assert_projection_scalar_setop_scalar_fanout_admission(
+    plan: QueryPlan,
+    label: &str,
+    expected_literal_sources: usize,
+    expected_source_reads: usize,
+    expected_limits: usize,
+    expected_aggregates: usize,
+) {
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_projection_scalar_setop_pipeline(),
+        "{label}: scalar fanout should admit through projection-scalar/setop, got {:?}",
+        analysis.strict_bounded_envelope_admission()
+    );
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!(
+            "{label}: expected projection-scalar/setop selected envelope, got {:?}",
+            analysis.strict_bounded_envelope_admission()
+        );
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::ProjectionScalarSetop);
+    assert_eq!(envelope.as_str(), "projection_scalar_setop");
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .unwrap_or_else(|| panic!("{label}: scalar fanout should be admitted"));
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::LiteralBatchSource, expected_literal_sources);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, expected_source_reads);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Limit, expected_limits);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, expected_aggregates);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert!(
+        pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinMaterialize).count() >= 1,
+        "{label}: scalar fanout should retain join materialization tasks"
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .unwrap_or_else(|error| panic!("{label}: compiled projection-scalar/setop report should be valid: {error}"));
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_modeled_gate_row(label, &report, ReservationKind::SourceRead, "source_contract");
+    assert_modeled_gate_row(label, &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_projection_scalar_setop_final_projection_output_boundary",
+    );
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_dedup_scalar_with_modeled_gates() {
+    let plan = projection_root_setop_dedup_scalar_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_projection_scalar_setop_pipeline(),
+        "setop/dedup scalar should admit through projection-scalar/setop, got {:?}",
+        analysis.strict_bounded_envelope_admission()
+    );
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("setop/dedup scalar should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 3);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled setop/dedup scalar report should be valid");
+    assert_modeled_gate_row(
+        "setop/dedup scalar",
+        &report,
+        ReservationKind::PartialState,
+        "distinct_dedup_aggregate_state_materialization_contract",
+    );
+    assert_modeled_gate_row("setop/dedup scalar", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        "setop/dedup scalar",
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_projection_scalar_setop_final_projection_output_boundary",
+    );
+    assert_modeled_gate_row(
+        "setop/dedup scalar",
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "setop/dedup scalar",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn projection_scalar_setop_dedup_scalar_rejects_non_dedup_left_anti_input() {
+    let plan = projection_root_setop_dedup_scalar_non_dedup_left_anti_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_contract_not_implemented")
+    );
+    let projection = assert_projection_scalar_setop_contract_not_implemented_projection(
+        &plan,
+        &analysis,
+        "non-dedup left anti input",
+    );
+    assert_eq!(
+        projection.facts.get("shape_kind").map(String::as_str),
+        Some("setop_dedup_scalar"),
+        "setop/dedup scalar should require each left-anti input to be a group-only dedup aggregate"
+    );
+}
+
+#[test]
+fn projection_scalar_setop_distinct_admission_is_parked_until_cardinality_contract_lands() {
+    let plan = projection_root_setop_distinct_aggregate_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_contract_not_implemented")
+    );
+    assert_projection_scalar_setop_contract_not_implemented_projection(&plan, &analysis, "distinct aggregate");
+}
+
+#[test]
+fn projection_scalar_setop_setop_input_candidate_is_owned_before_root_join() {
+    let plan = projection_root_setop_dedup_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_contract_not_implemented")
+    );
+    let projection =
+        assert_projection_scalar_setop_contract_not_implemented_projection(&plan, &analysis, "setop dedup input");
+    assert_eq!(
+        projection.facts.get("shape_kind").map(String::as_str),
+        Some("setop_dedup_input"),
+        "setop/dedup input should be owned locally before generic root-join admission"
+    );
+}
+
+#[test]
+fn projection_scalar_setop_keyless_input_candidate_is_owned_before_root_join() {
+    let plan = projection_root_keyless_grouped_aggregate_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(!analysis.admits_projection_scalar_setop_pipeline());
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_contract_not_implemented")
+    );
+    let projection =
+        assert_projection_scalar_setop_contract_not_implemented_projection(&plan, &analysis, "keyless grouped input");
+    assert_eq!(
+        projection.facts.get("shape_kind").map(String::as_str),
+        Some("keyless_or_cross_join_input"),
+        "keyless/cross input should be owned locally before generic root-join admission"
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_scalar_join_aggregate_input_with_modeled_gates() {
+    let plan = projection_root_scalar_join_aggregate_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_projection_scalar_setop_pipeline(),
+        "scalar join aggregate should admit through projection-scalar/setop, got {:?}",
+        analysis.strict_bounded_envelope_admission()
+    );
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("scalar join aggregate should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 3);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled scalar join aggregate report should be valid");
+    assert_modeled_gate_row("scalar join aggregate", &report, ReservationKind::SourceRead, "source_contract");
+    assert_modeled_gate_row("scalar join aggregate", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        "scalar join aggregate",
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_projection_scalar_setop_final_projection_output_boundary",
+    );
+    assert_modeled_gate_row(
+        "scalar join aggregate",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn projection_scalar_setop_does_not_claim_plain_keyed_grouped_aggregate_projection() {
+    let plan = projection_root_keyed_grouped_aggregate_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_requires_scalar_or_setop_contract")
+    );
+    assert_ne!(
+        analysis.first_rejection_projection().map(|projection| projection.owner),
+        Some(nexus_query_engine::capability::CapabilityRejectionOwner::Admission("projection_scalar_setop_admission")),
+        "plain keyed grouped aggregate projections must keep their existing non-PSS ownership"
+    );
+}
+
+fn assert_projection_scalar_setop_contract_not_implemented_projection(
+    plan: &QueryPlan,
+    analysis: &nexus_query_engine::capability::CapabilityAnalysis,
+    label: &str,
+) -> nexus_query_engine::capability::CapabilityRejectionProjection {
+    let projection = analysis.first_rejection_projection().unwrap_or_else(|| {
+        panic!(
+            "{label}: scalar/setop parked contract should project locally; admission={:?}",
+            analysis.strict_bounded_envelope_admission()
+        )
+    });
+    assert!(
+        matches!(
+            projection.owner,
+            nexus_query_engine::capability::CapabilityRejectionOwner::Admission("projection_scalar_setop_admission")
+        ),
+        "{label}: projection={projection:?}"
+    );
+    assert_eq!(projection.memory_boundary, "admission_capability", "{label}");
+    assert_eq!(projection.category.as_str(), "missing_subgraph_invariant", "{label}");
+    assert_eq!(projection.reason, "projection_scalar_setop_contract_not_implemented", "{label}");
+    assert_eq!(
+        projection.facts.get("required_remediation").map(String::as_str),
+        Some("projection_scalar_setop_cardinality_contract"),
+        "{label}"
+    );
+    assert_eq!(
+        analysis.projection_global_limit_admission.rejection_reason(),
+        Some("projection_global_limit_requires_projection_input_limit"),
+        "{label}: global-limit should recognize this is not its direct limit-projection shape"
+    );
+    assert!(
+        matches!(
+            analysis.strict_bounded_envelope_admission(),
+            CapabilityEnvelopeAdmission::Rejected {
+                projection: nexus_query_engine::capability::CapabilityRejectionProjection {
+                    owner: nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
+                        "projection_scalar_setop_admission"
+                    ),
+                    ..
+                }
+            }
+        ),
+        "{label}: scalar/setop parked contract must be selected as a strict rejection"
+    );
+    assert!(
+        strict_bounded_pipeline_admission(plan).expect("strict admission should not fail").is_none(),
+        "scalar/setop placeholder must not compile through generic strict admission"
+    );
+    assert_ne!(
+        projection.reason, "root_join_admission_requires_sink_root_join",
+        "{label}: scalar/setop candidates must not fall through to generic root-join rejection"
+    );
+    projection
+}
+
+#[test]
+fn strict_admission_accepts_projection_root_global_limit_distinct_and_dedup_aggregate_state() {
+    assert_projection_global_limit_distinct_or_dedup_admission(
+        projection_root_global_limit_distinct_join_aggregate_plan(),
+        "nunique aggregate",
+    );
+    assert_projection_global_limit_distinct_or_dedup_admission(
+        projection_root_global_limit_count_distinct_join_aggregate_plan(),
+        "count distinct aggregate",
+    );
+    assert_projection_global_limit_distinct_or_dedup_admission(
+        projection_root_global_limit_dedup_join_aggregate_plan(),
+        "dedup aggregate",
+    );
+}
+
+fn assert_projection_global_limit_distinct_or_dedup_admission(plan: QueryPlan, label: &str) {
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_projection_global_limit_pipeline(),
+        "{label}: projection/global-limit admission rejected with {:?}",
+        analysis.projection_global_limit_admission
+    );
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .unwrap_or_else(|| panic!("{label}: distinct/dedup aggregate state should be admitted"));
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionGlobalLimit, "{label}");
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+        .unwrap_or_else(|error| panic!("{label}: compiled report should be valid: {error}"));
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::PartialState,
+        "distinct_dedup_aggregate_state_materialization_contract",
+    );
+    assert_modeled_gate_row(label, &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_limit_bounded_projection_output_boundary",
+    );
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_rejects_projection_root_global_limit_unsafe_distinct_variants() {
+    let filtered = projection_root_global_limit_filtered_distinct_join_aggregate_plan();
+    let filtered_analysis = filtered.capability_analysis();
+    assert!(!filtered_analysis.admits_projection_global_limit_pipeline());
+    assert_eq!(
+        filtered_analysis.projection_global_limit_admission.rejection_reason(),
+        Some("projection_global_limit_rejects_unsupported_distinct_or_dedup_aggregate")
+    );
+    let filtered_projection = filtered_analysis
+        .first_rejection_projection()
+        .expect("filtered distinct should project as projection/global-limit rejection");
+    assert_eq!(filtered_projection.reason, "projection_global_limit_rejects_unsupported_distinct_or_dedup_aggregate");
+    assert_eq!(
+        filtered_projection.facts.get("aggregate_state_contract_rejection").map(String::as_str),
+        Some("filtered_distinct")
+    );
+    assert!(
+        strict_bounded_pipeline_admission(&filtered).expect("strict admission should not fail").is_none(),
+        "filtered distinct must not compile through generic strict admission"
+    );
+
+    let non_count = projection_root_global_limit_non_count_distinct_join_aggregate_plan();
+    let non_count_analysis = non_count.capability_analysis();
+    assert!(!non_count_analysis.admits_projection_global_limit_pipeline());
+    assert_eq!(
+        non_count_analysis
+            .nodes
+            .iter()
+            .find_map(|node| node.executable.rejection_facts())
+            .and_then(|facts| facts.get("reason"))
+            .map(String::as_str),
+        Some("distinct_aggregate_requires_count")
+    );
+    assert!(
+        strict_bounded_pipeline_admission(&non_count).expect("strict admission should not fail").is_none(),
+        "non-count distinct must stay rejected by local aggregate expression capability"
+    );
+}
+
+#[test]
+fn projection_global_limit_recognizer_rejects_boundary_variants() {
+    for (label, build_plan, expected_reason) in [
+        (
+            "offset-only limit",
+            projection_root_no_fetch_limit_join_aggregate_plan as fn() -> QueryPlan,
+            "projection_global_limit_requires_fetch_limit",
+        ),
+        (
+            "no pre-limit aggregate",
+            projection_root_global_limit_join_without_aggregate_plan as fn() -> QueryPlan,
+            "projection_global_limit_requires_pre_limit_aggregate",
+        ),
+        (
+            "no join fragment",
+            projection_root_global_limit_aggregate_without_join_plan as fn() -> QueryPlan,
+            "projection_global_limit_requires_join_fragment",
+        ),
+        (
+            "sort/top-k overlap",
+            projection_root_global_limit_over_sort_join_aggregate_plan as fn() -> QueryPlan,
+            "projection_global_limit_requires_non_sort_limit_input",
+        ),
+        (
+            "hidden sort/top-k overlap",
+            projection_root_global_limit_over_filter_sort_join_aggregate_plan as fn() -> QueryPlan,
+            "projection_global_limit_requires_non_sort_limit_input",
+        ),
+    ] {
+        let analysis = build_plan().capability_analysis();
+
+        assert!(!analysis.admits_projection_global_limit_pipeline(), "{label}");
+        assert_eq!(analysis.projection_global_limit_admission.rejection_reason(), Some(expected_reason), "{label}");
+        assert!(
+            matches!(
+                analysis.strict_bounded_envelope_admission(),
+                CapabilityEnvelopeAdmission::Rejected {
+                    projection: nexus_query_engine::capability::CapabilityRejectionProjection {
+                        owner: nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
+                            "projection_global_limit_admission"
+                        ),
+                        ..
+                    }
+                }
+            ),
+            "{label}: projection/global-limit boundary miss must not fall through to generic strict admission"
+        );
+        assert!(
+            strict_bounded_pipeline_admission(&build_plan()).expect("strict admission should not fail").is_none(),
+            "{label}: projection/global-limit boundary miss must not compile through generic strict admission"
+        );
+    }
+}
+
+#[test]
+fn compiled_support_rejects_post_limit_filter_on_projection_sink_path() {
+    let plan = projection_root_filter_after_global_limit_join_aggregate_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.projection_global_limit_admission.rejection_reason(),
+        Some("projection_global_limit_requires_projection_input_limit")
+    );
+
+    let pipeline = compile_pipeline(&plan, &analysis).expect("post-limit filter pipeline should compile");
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline).expect("graph-only support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Unsupported,
+        "compiled strict execution must not accept arbitrary post-limit unary nodes on the sink path"
+    );
+}
+
+#[test]
+fn strict_admission_rejects_root_full_sort_join_aggregate_with_local_envelope_reason() {
+    for (label, plan, expected_subcontract, generic_single_join_overlap) in [(
+        "unproven keyless/cross full-sort",
+        root_full_sort_keyless_join_grouped_aggregate_plan(),
+        "keyless_or_cross_join",
+        false,
+    )] {
+        let analysis = plan.capability_analysis();
+
+        assert!(!analysis.admits_root_join(), "{label}");
+        assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{label}");
+        assert!(!analysis.admits_root_full_sort_join_aggregate_pipeline(), "{label}");
+        assert_eq!(
+            analysis.root_full_sort_join_aggregate_admission.rejection_reason(),
+            Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract"),
+            "{label}"
+        );
+        if generic_single_join_overlap {
+            assert_eq!(
+                analysis.single_join_post_root_pipeline_admission,
+                CapabilityDecision::Satisfied,
+                "{label}: fixture must pin the overlap with generic single-join post-root admission"
+            );
+        }
+
+        let projection = analysis.first_rejection_projection().unwrap_or_else(|| {
+            panic!(
+                "{label}: full-sort envelope should project locally; admission={:?}",
+                analysis.strict_bounded_envelope_admission()
+            )
+        });
+        assert!(
+            matches!(
+                projection.owner,
+                nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
+                    "root_full_sort_join_aggregate_admission"
+                )
+            ),
+            "{label}"
+        );
+        assert_eq!(projection.memory_boundary, "admission_capability", "{label}");
+        assert_eq!(projection.category.as_str(), "missing_subgraph_invariant", "{label}");
+        assert_eq!(projection.reason, "root_full_sort_join_aggregate_rejects_unsupported_subcontract", "{label}");
+        assert_eq!(projection.facts.get("subcontract").map(String::as_str), Some(expected_subcontract), "{label}");
+        assert_ne!(
+            projection.reason, "root_join_admission_requires_sink_root_join",
+            "{label}: root full-sort candidates must not fall through to the generic root-join rejection"
+        );
+
+        assert!(
+            strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+            "{label}: Phase 1 owns and rejects the full-sort shape before whole-native execution"
+        );
+
+        let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+            .expect("rejected full-sort envelope should still produce a contract report");
+        let blocking_row = report
+            .gate_rows()
+            .iter()
+            .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
+            .expect("strict report should preserve the full-sort envelope rejection");
+        assert_eq!(
+            blocking_row.required_contract, "root_full_sort_join_aggregate_rejects_unsupported_subcontract",
+            "{label}"
+        );
+        assert_eq!(blocking_row.memory_boundary, "admission_capability", "{label}");
+    }
+}
+
+#[test]
+fn strict_admission_rejects_statistical_root_full_sort_when_subcontract_is_unproven() {
+    let plan = root_full_sort_keyless_join_statistical_grouped_aggregate_plan();
+    let rendered = plan.to_string();
+    assert!(rendered.contains("StddevSamp"), "fixture must exercise statistical aggregate:\n{rendered}");
+
+    let analysis = plan.capability_analysis();
+    assert_eq!(
+        analysis.root_full_sort_join_aggregate_admission.rejection_reason(),
+        Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract")
+    );
+    assert_eq!(
+        analysis.exact_statistical_join_final_full_sort_admission.rejection_reason(),
+        Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract")
+    );
+
+    let projection = analysis
+        .first_rejection_projection()
+        .expect("unproven statistical full-sort shape should project a local rejection");
+    assert!(
+        matches!(
+            projection.owner,
+            nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
+                "root_full_sort_join_aggregate_admission"
+            )
+        ),
+        "root-full-sort subcontract rejection must own the failure before exact statistical admission: {projection:?}"
+    );
+    assert_eq!(projection.reason, "root_full_sort_join_aggregate_rejects_unsupported_subcontract");
+    assert_ne!(
+        analysis.strict_bounded_envelope_admission(),
+        CapabilityEnvelopeAdmission::Admitted { envelope: StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort }
+    );
+    assert!(
+        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        "unproven root full-sort subcontract must not be admitted through the exact statistical envelope"
+    );
+}
+
+#[test]
+fn strict_admission_accepts_root_full_sort_shared_aggregate_fanout_with_modeled_gates() {
+    let plan = root_full_sort_shared_aggregate_fanout_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
+    assert!(analysis.invariants.iter().any(|invariant| {
+        invariant.kind == SubgraphInvariantKind::SharedResidentSubplan
+            && invariant.nodes.first().is_some_and(|producer| producer.to_string() == "n3")
+            && invariant.decision == CapabilityDecision::Satisfied
+    }));
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("shared aggregate fanout root full-sort join/aggregate should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled root full-sort report should be valid");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_modeled_gate_row(
+        "root full-sort shared aggregate fanout",
+        &report,
+        ReservationKind::SourceRead,
+        "source_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort shared aggregate fanout",
+        &report,
+        ReservationKind::CapabilityContract,
+        "root_full_sort_shared_aggregate_fanout_subcontract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort shared aggregate fanout",
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "root full-sort shared aggregate fanout",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort shared aggregate fanout",
+        &report,
+        ReservationKind::FinalSort,
+        "final_sort_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort shared aggregate fanout",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_accepts_root_full_sort_keyed_join_aggregate_with_modeled_gates() {
+    let plan = root_full_sort_single_keyed_join_grouped_aggregate_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.single_join_post_root_pipeline_admission,
+        CapabilityDecision::Satisfied,
+        "fixture must pin the overlap with generic single-join post-root admission"
+    );
+    assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(envelope.as_str(), "root_full_sort_join_aggregate");
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("keyed root full-sort join/aggregate should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled root full-sort report should be valid");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_modeled_gate_row(
+        "root full-sort keyed join",
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyed join",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row("root full-sort keyed join", &report, ReservationKind::FinalSort, "final_sort_contract");
+    assert_modeled_gate_row(
+        "root full-sort keyed join",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_accepts_root_full_sort_keyless_scalar_projection_fanout_with_modeled_gates() {
+    let plan = root_full_sort_keyless_scalar_projection_fanout_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("keyless scalar root full-sort join/aggregate should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, admission.pipeline())
+            .expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+        .expect("compiled root full-sort report should be valid");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_modeled_gate_row(
+        "root full-sort keyless scalar",
+        &report,
+        ReservationKind::CapabilityContract,
+        "root_full_sort_keyless_or_cross_join_subcontract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyless scalar",
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyless scalar",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyless scalar",
+        &report,
+        ReservationKind::FinalSort,
+        "final_sort_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort keyless scalar",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_accepts_root_full_sort_repeated_projection_fanout_with_modeled_gates() {
+    let plan = root_full_sort_repeated_projection_fanout_grouped_aggregate_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!("expected root full-sort selected envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::RootFullSortJoinAggregate);
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("repeated projection fanout root full-sort join/aggregate should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::RootFullSortJoinAggregate);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, admission.pipeline())
+            .expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+        .expect("compiled root full-sort report should be valid");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert_modeled_gate_row(
+        "root full-sort repeated projection fanout",
+        &report,
+        ReservationKind::CapabilityContract,
+        "root_full_sort_repeated_projection_fanout_subcontract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort repeated projection fanout",
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "root full-sort repeated projection fanout",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort repeated projection fanout",
+        &report,
+        ReservationKind::FinalSort,
+        "final_sort_contract",
+    );
+    assert_modeled_gate_row(
+        "root full-sort repeated projection fanout",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn root_full_sort_recognizer_does_not_claim_topk_or_projection_roots() {
+    let topk = root_topk_join_aggregate_plan();
+    let topk_analysis = topk.capability_analysis();
+    assert!(topk_analysis.admits_root_topk_join_aggregate_pipeline());
+    assert_eq!(
+        topk_analysis.root_full_sort_join_aggregate_admission.rejection_reason(),
+        Some("root_full_sort_join_aggregate_requires_sink_full_sort")
+    );
+    assert!(
+        topk_analysis
+            .first_rejection_projection()
+            .is_none_or(|projection| projection.reason != "root_full_sort_join_aggregate_requires_sink_full_sort"),
+        "TopK roots must keep root TopK ownership"
+    );
+
+    let projection_root = projection_root_over_full_sort_join_aggregate_plan();
+    let projection_root_analysis = projection_root.capability_analysis();
+    assert_eq!(
+        projection_root_analysis.root_full_sort_join_aggregate_admission.rejection_reason(),
+        Some("root_full_sort_join_aggregate_requires_sink_full_sort")
+    );
+    assert!(
+        projection_root_analysis.first_rejection_projection().is_none_or(|projection| {
+            projection.reason != "root_full_sort_join_aggregate_requires_sink_full_sort"
+                && projection.reason != "root_full_sort_join_aggregate_rejects_unsupported_subcontract"
+        }),
+        "projection roots must not be classified by the root full-sort recognizer"
+    );
+}
+
+#[test]
+fn compiled_bounded_support_accepts_root_topk_shared_resident_fanout_graph() {
+    for variant in [
+        RootTopKJoinAggregateVariant::SharedComputedFanout,
+        RootTopKJoinAggregateVariant::SharedGroupedAggregateFanout,
+        RootTopKJoinAggregateVariant::SharedProjectionAggregateFanout,
+    ] {
+        let plan = root_topk_join_aggregate_variant_plan(variant);
+        let analysis = plan.capability_analysis();
+        assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
+        assert!(analysis.invariants.iter().any(|invariant| {
+            matches!(invariant.kind, SubgraphInvariantKind::SharedResidentSubplan)
+                && invariant.decision == CapabilityDecision::Satisfied
+        }));
+        let pipeline = compile_pipeline(&plan, &analysis)
+            .unwrap_or_else(|error| panic!("{variant:?} root TopK shared-fanout plan should compile: {error}"));
+
+        assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+        assert_eq!(sink_input_edge_count(&pipeline), 1, "{variant:?}: expected one explicit host sink path");
+        let shared_edges = pipeline
+            .edges()
+            .iter()
+            .filter(|edge| edge.kind() == PipelineEdgeKind::SharedResidentProducer)
+            .collect::<Vec<_>>();
+        assert!(!shared_edges.is_empty(), "{variant:?}: shared producer must remain explicit in the compiled graph");
+        let shared_producer = shared_edges[0].from();
+        assert_eq!(shared_edges[0].resources().len(), 1, "{variant:?}: shared edge should carry one resource");
+        let shared_resource = shared_edges[0].resources()[0];
+        assert!(
+            shared_edges.iter().all(|edge| edge.from() == shared_producer && edge.resources() == [shared_resource]),
+            "{variant:?}: shared edges must preserve one producer/resource identity"
+        );
+        assert_eq!(
+            compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{variant:?}"
+        );
+        assert_eq!(
+            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{variant:?}"
+        );
+
+        let rendered = pipeline.debug_render();
+        assert_no_legacy_execution_selection_terms("root TopK shared resident fanout", &rendered);
+    }
+}
+
+#[test]
+fn compiled_bounded_support_accepts_root_topk_distinct_and_keyless_subcontract_graphs() {
+    for (variant, expected_contract) in [
+        (RootTopKJoinAggregateVariant::DistinctAggregate, "root_topk_distinct_aggregate_subcontract"),
+        (
+            RootTopKJoinAggregateVariant::DistinctAggregateBuildSideKeyedOuterJoin,
+            "root_topk_distinct_aggregate_subcontract",
+        ),
+        (
+            RootTopKJoinAggregateVariant::DistinctAggregatePreservedSideAggregateOuterJoin,
+            "root_topk_distinct_aggregate_subcontract",
+        ),
+        (RootTopKJoinAggregateVariant::KeylessJoin, "root_topk_keyless_or_cross_join_subcontract"),
+        (RootTopKJoinAggregateVariant::ProjectedCrossJoin, "root_topk_keyless_or_cross_join_subcontract"),
+    ] {
+        let plan = root_topk_join_aggregate_variant_plan(variant);
+        let analysis = plan.capability_analysis();
+        assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
+        let pipeline = compile_pipeline(&plan, &analysis)
+            .unwrap_or_else(|error| panic!("{variant:?} root TopK RTK-3 plan should compile: {error}"));
+
+        assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+        assert_eq!(sink_input_edge_count(&pipeline), 1, "{variant:?}: expected one explicit host sink path");
+        assert_eq!(
+            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{variant:?}"
+        );
+
+        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+            .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::CapabilityContract,
+            expected_contract,
+        );
+        if matches!(variant, RootTopKJoinAggregateVariant::KeylessJoin) {
+            assert_modeled_gate_row(
+                "keyless root TopK",
+                &report,
+                ReservationKind::MixedSizeData,
+                "mixed_keyed_residual_or_conditional_full_retained_size_data",
+            );
+            assert!(
+                pipeline.gates().iter().any(|gate| {
+                    gate.reservation_kind() == ReservationKind::GatherMap && gate.status() == ContractStatus::Modeled
+                }),
+                "keyless root TopK should retain a modeled gather-map gate"
+            );
+        }
+        if matches!(variant, RootTopKJoinAggregateVariant::ProjectedCrossJoin) {
+            assert!(
+                pipeline.gates().iter().any(|gate| {
+                    gate.reservation_kind() == ReservationKind::JoinOutput
+                        && gate.required_contract() == "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes"
+                        && gate.status() == ContractStatus::Modeled
+                        && gate.quality() == ContractQuality::ExactPreflight
+                }),
+                "projected-cross root TopK should retain an exact join-output bound"
+            );
+        }
+    }
+}
+
+#[test]
+fn compiled_bounded_support_accepts_root_topk_sort_fetch_hash_join_input_subcontract_graph() {
+    let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchHashJoinInput);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_root_topk_join_aggregate_pipeline());
+    let pipeline =
+        compile_pipeline(&plan, &analysis).expect("sort-fetch hash-join-input root TopK plan should compile");
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(sink_input_edge_count(&pipeline), 1, "expected one explicit host sink path");
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported,
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        .expect("sort-fetch hash-join-input compiled report should be valid");
+    assert_modeled_gate_row(
+        "sort-fetch hash-join-input",
+        &report,
+        ReservationKind::CapabilityContract,
+        "root_topk_sort_fetch_hash_join_input_subcontract",
+    );
+    assert_modeled_gate_row("sort-fetch hash-join-input", &report, ReservationKind::SourceRead, "source_contract");
+    assert_modeled_gate_row(
+        "sort-fetch hash-join-input",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "sort-fetch hash-join-input",
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_final_topk_output_boundary",
+    );
+    assert_modeled_gate_row("sort-fetch hash-join-input", &report, ReservationKind::FinalSort, "final_sort_contract");
+    assert_modeled_gate_row(
+        "sort-fetch hash-join-input",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn compiled_bounded_support_accepts_root_topk_rtk9_subcontract_graphs() {
+    for (variant, expected_contract) in [
+        (
+            RootTopKJoinAggregateVariant::SortFetchHashJoinAggregate,
+            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSmallExact,
+            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSourceAdjacentFilters,
+            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
+        ),
+        (RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput, "root_topk_keyed_filtered_semi_join_subcontract"),
+    ] {
+        let plan = root_topk_join_aggregate_variant_plan(variant);
+        let analysis = plan.capability_analysis();
+        assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
+        let pipeline = compile_pipeline(&plan, &analysis)
+            .unwrap_or_else(|error| panic!("{variant:?} root TopK plan should compile: {error}"));
+
+        assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+        assert_eq!(sink_input_edge_count(&pipeline), 1, "{variant:?}: expected one explicit host sink path");
+        assert_eq!(
+            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{variant:?}",
+        );
+
+        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+            .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::CapabilityContract,
+            expected_contract,
+        );
+        assert!(
+            report.gate_rows().iter().any(|row| {
+                row.reservation_kind == ReservationKind::SourceRead
+                    && (row.required_contract == "source_contract"
+                        || row.required_contract == "parquet_source_read_exact_preflight")
+                    && row.contract_status == ContractStatus::Modeled
+            }),
+            "{variant:?}: expected modeled source-read gate row; rows={:?}",
+            report.gate_rows()
+        );
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::OperatorOutput,
+            "aggregate_contract",
+        );
+        if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput) {
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::HashTable,
+                "hash_join_pre_build_reservation_size_bytes",
+            );
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::FilteredProbeState,
+                "filtered_join_retained_probe_state",
+            );
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::GatherMap,
+                "join_gather_map_reservation_size_bytes",
+            );
+        }
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::OperatorOutput,
+            "query_engine_final_topk_output_boundary",
+        );
+        assert_modeled_gate_row(&format!("{variant:?}"), &report, ReservationKind::FinalSort, "final_sort_contract");
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::Materialization,
+            "query_engine_explicit_sink_materialization_reservation",
+        );
+    }
+}
+
+#[test]
+fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_in_graph() {
+    let plan =
+        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_root_topk_join_aggregate_pipeline());
+    let pipeline =
+        compile_pipeline(&plan, &analysis).expect("RTK-10 null-filtered aggregate fan-in plan should compile");
+
+    assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 8);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 3);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(sink_input_edge_count(&pipeline), 1, "expected one explicit host sink path");
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported,
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        .expect("RTK-10 compiled report should be valid");
+    assert_modeled_gate_row(
+        "rtk10 null-filtered aggregate fan-in",
+        &report,
+        ReservationKind::CapabilityContract,
+        "root_topk_null_filtered_left_join_fan_in_subcontract",
+    );
+    assert_modeled_gate_row(
+        "rtk10 null-filtered aggregate fan-in",
+        &report,
+        ReservationKind::OperatorOutput,
+        "aggregate_contract",
+    );
+    assert_modeled_gate_row(
+        "rtk10 null-filtered aggregate fan-in",
+        &report,
+        ReservationKind::FinalSort,
+        "final_sort_contract",
+    );
+    assert_modeled_gate_row(
+        "rtk10 null-filtered aggregate fan-in",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn compiled_bounded_support_accepts_root_topk_window_subcontract_graphs() {
+    for variant in [
+        RootTopKJoinAggregateVariant::Window,
+        RootTopKJoinAggregateVariant::BranchLocalWindow,
+        RootTopKJoinAggregateVariant::KeylessOuterCrossWindow,
+        RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin,
+        RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection,
+    ] {
+        let plan = root_topk_join_aggregate_variant_plan(variant);
+        let analysis = plan.capability_analysis();
+        assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
+        let pipeline = compile_pipeline(&plan, &analysis)
+            .unwrap_or_else(|error| panic!("{variant:?} root TopK window plan should compile: {error}"));
+
+        let expected_window_count = match variant {
+            RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin => 2,
+            RootTopKJoinAggregateVariant::Window
+            | RootTopKJoinAggregateVariant::BranchLocalWindow
+            | RootTopKJoinAggregateVariant::KeylessOuterCrossWindow
+            | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection => 1,
+            _ => unreachable!("window subcontract variants are enumerated above"),
+        };
+        let expected_sort_count = match variant {
+            RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin => 3,
+            RootTopKJoinAggregateVariant::Window
+            | RootTopKJoinAggregateVariant::BranchLocalWindow
+            | RootTopKJoinAggregateVariant::KeylessOuterCrossWindow
+            | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection => 2,
+            _ => unreachable!("window subcontract variants are enumerated above"),
+        };
+        assert_task_kind_count(&pipeline, PipelineTaskKind::Window, expected_window_count);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, expected_sort_count);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+        assert_task_kind_count(&pipeline, PipelineTaskKind::SinkMaterialize, 1);
+        assert_eq!(sink_input_edge_count(&pipeline), 1, "{variant:?}: expected one explicit host sink path");
+        assert_eq!(
+            compiled_bounded_query_plan_support(&plan, &pipeline).expect("plan-aware support check should not fail"),
+            CompiledBoundedPipelineSupport::Supported,
+            "{variant:?}"
+        );
+
+        let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+            .unwrap_or_else(|error| panic!("{variant:?} compiled report should be valid: {error}"));
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::CapabilityContract,
+            "root_topk_window_subcontract",
+        );
+        if matches!(variant, RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin) {
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::CapabilityContract,
+                "root_topk_window_full_outer_join_subcontract",
+            );
+        }
+        if matches!(variant, RootTopKJoinAggregateVariant::KeylessOuterCrossWindow) {
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::CapabilityContract,
+                "root_topk_keyless_outer_cross_window_subcontract",
+            );
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::GatherMap,
+                "join_gather_map_reservation_size_bytes",
+            );
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::JoinOutput,
+                "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+            );
+        }
+        assert_modeled_gate_row(&format!("{variant:?}"), &report, ReservationKind::OperatorOutput, "window_contract");
+        if matches!(variant, RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection) {
+            assert_modeled_gate_row(
+                &format!("{variant:?}"),
+                &report,
+                ReservationKind::OperatorOutput,
+                "query_engine_rank_filter_output_boundary",
+            );
+        }
+        assert_modeled_gate_row(
+            &format!("{variant:?}"),
+            &report,
+            ReservationKind::OperatorOutput,
+            "query_engine_final_topk_output_boundary",
+        );
+    }
+}
+
+#[test]
 fn compiled_bounded_support_rejects_unmodeled_reservation_gates_before_execution() {
     let pipeline = root_join_shaped_pipeline_with_blocked_gate();
 
@@ -397,7 +1877,7 @@ fn strict_admission_rejects_q86_class_rollup_rank_topk_selected_scan() {
 }
 
 #[test]
-fn strict_admission_rejects_q86_class_rollup_rank_topk_without_envelope_after_aggregate_join_pushdown() {
+fn strict_admission_selects_q86_class_rollup_rank_topk_envelope_after_aggregate_join_pushdown() {
     let plan = selected_q86_class_rollup_rank_topk_plan();
     let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
 
@@ -426,15 +1906,24 @@ fn strict_admission_rejects_q86_class_rollup_rank_topk_without_envelope_after_ag
         invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
     });
     assert!(rejection.is_none(), "source reduced by pre-aggregate should not trip the blocking-shape guard");
-    let first_rejection = analysis.first_rejection_projection().expect("optimized shape still needs envelope proof");
-    assert!(
-        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_none(),
-        "optimized q86-class shape must stay out of strict execution until one envelope authority admits it: {first_rejection:?}"
+    assert_rollup_rank_topk_after_pushdown_envelope(
+        &optimized.plan,
+        &analysis,
+        "q86-class",
+        ExpectedCompiledGraph {
+            tasks: 13,
+            edges: 13,
+            barriers: 10,
+            resources: 10,
+            gates: 15,
+            sink: SinkBoundaryKind::HostArrowMaterialization,
+            capability_contract: None,
+        },
     );
 }
 
 #[test]
-fn strict_admission_rejects_q70_class_left_semi_rollup_rank_topk_without_envelope_after_aggregate_join_pushdown() {
+fn strict_admission_selects_q70_class_left_semi_rollup_rank_topk_envelope_after_aggregate_join_pushdown() {
     let plan = selected_q70_class_left_semi_rollup_rank_topk_plan();
     let raw_analysis = plan.capability_analysis();
     assert!(
@@ -473,16 +1962,24 @@ fn strict_admission_rejects_q70_class_left_semi_rollup_rank_topk_without_envelop
         invariant.decision.rejection_reason() == Some("blocking_rollup_rank_full_scan_requires_exact_contracts")
     });
     assert!(rejection.is_none(), "left-semi source reduced by pre-aggregate should not trip the guard");
-    let first_rejection = analysis.first_rejection_projection().expect("optimized shape still needs envelope proof");
-    assert!(
-        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_none(),
-        "optimized q70-class left-semi shape must stay out of strict execution until one envelope authority admits it: {first_rejection:?}"
+    assert_rollup_rank_topk_after_pushdown_envelope(
+        &optimized.plan,
+        &analysis,
+        "q70-class left-semi",
+        ExpectedCompiledGraph {
+            tasks: 13,
+            edges: 12,
+            barriers: 10,
+            resources: 10,
+            gates: 16,
+            sink: SinkBoundaryKind::HostArrowMaterialization,
+            capability_contract: None,
+        },
     );
 }
 
 #[test]
-fn strict_admission_rejects_q67_class_rollup_rank_topk_projection_chain_without_envelope_after_aggregate_join_pushdown()
-{
+fn strict_admission_selects_q67_class_rollup_rank_topk_projection_chain_envelope_after_aggregate_join_pushdown() {
     let plan = selected_q67_class_rollup_rank_topk_projection_chain_plan();
 
     // Sanity: before the rewrite the q67-class shape (projection chain over a
@@ -564,15 +2061,336 @@ fn strict_admission_rejects_q67_class_rollup_rank_topk_projection_chain_without_
         rejection.is_none(),
         "q67-class projection-chain source reduced by pre-aggregate should not trip the blocking-shape guard"
     );
-    let first_rejection = analysis.first_rejection_projection();
+    assert_rollup_rank_topk_after_pushdown_envelope(
+        &optimized.plan,
+        &analysis,
+        "q67-class projection-chain",
+        ExpectedCompiledGraph {
+            tasks: 14,
+            edges: 14,
+            barriers: 10,
+            resources: 11,
+            gates: 15,
+            sink: SinkBoundaryKind::HostArrowMaterialization,
+            capability_contract: None,
+        },
+    );
+}
+
+#[test]
+fn strict_admission_selects_wide_rollup_rank_topk_envelope_after_aggregate_join_pushdown() {
+    let plan = selected_wide_q67_class_rollup_rank_topk_plan();
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "aggregate-join pushdown should rewrite the wide q67-class shape");
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+
+    let final_rollup = optimized
+        .plan
+        .nodes()
+        .iter()
+        .find_map(|node| match &node.kind {
+            PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_some() => Some(aggregate),
+            _ => None,
+        })
+        .expect("optimized wide rollup plan should retain the final grouping-set aggregate");
+    assert_eq!(final_rollup.spec.group_exprs.len(), 8);
+    assert_eq!(final_rollup.spec.grouping_sets.as_ref().expect("grouping sets").groups.len(), 9);
     assert!(
-        strict_bounded_pipeline_admission(&optimized.plan).expect("strict admission should not fail").is_none(),
-        "optimized q67-class projection-chain shape must stay out of strict execution until one envelope authority admits it\n\
-         has_rejections={} first_rejection={:?}\n\
-         plan:\n{}",
-        analysis.has_rejections(),
-        first_rejection,
-        optimized.plan
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_none())),
+        "optimized wide rollup plan should contain a detail-level pre-aggregate"
+    );
+
+    let analysis = optimized.plan.capability_analysis();
+    assert_rollup_rank_topk_after_pushdown_envelope(
+        &optimized.plan,
+        &analysis,
+        "wide rollup/rank/top-k",
+        ExpectedCompiledGraph {
+            tasks: 13,
+            edges: 13,
+            barriers: 10,
+            resources: 10,
+            gates: 16,
+            sink: SinkBoundaryKind::HostArrowMaterialization,
+            capability_contract: Some("rollup_rank_topk_wide_final_rollup_subcontract"),
+        },
+    );
+}
+
+#[test]
+fn strict_admission_rejects_too_wide_rollup_rank_topk_without_explicit_width_contract() {
+    let plan = selected_too_wide_rollup_rank_topk_plan();
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "aggregate-join pushdown should rewrite the too-wide rollup/rank/top-k shape");
+    let analysis = optimized.plan.capability_analysis();
+    assert_eq!(
+        analysis.rollup_rank_topk_after_aggregate_join_pushdown_admission.rejection_reason(),
+        Some("rollup_rank_topk_after_pushdown_requires_bounded_final_rollup_width"),
+        "a 9-key/10-set rollup must stay rejected until a separate width contract is modeled"
+    );
+    assert!(
+        !analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
+        "too-wide rollup must not be admitted through the q67-wide subcontract"
+    );
+}
+
+#[test]
+fn strict_admission_rejects_wide_non_rollup_grouping_sets_without_explicit_width_contract() {
+    let plan = selected_wide_non_rollup_grouping_sets_rank_topk_plan();
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "aggregate-join pushdown should rewrite the wide non-rollup grouping-set shape");
+    let analysis = optimized.plan.capability_analysis();
+    assert_eq!(
+        analysis.rollup_rank_topk_after_aggregate_join_pushdown_admission.rejection_reason(),
+        Some("rollup_rank_topk_after_pushdown_requires_bounded_final_rollup_width"),
+        "an 8-key/9-set grouping aggregate must still prove the modeled suffix-rollup mask contract"
+    );
+    assert!(
+        !analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
+        "same-width non-rollup grouping sets must not be admitted through the q67-wide subcontract"
+    );
+}
+
+#[test]
+fn strict_admission_accepts_exact_statistical_join_final_full_sort_envelope() {
+    let plan = statistical_join_final_full_sort_plan();
+    let rendered = plan.to_string();
+    assert!(rendered.contains("StddevSamp"), "fixture must exercise q39-class statistical aggregate:\n{rendered}");
+    assert!(rendered.contains("Sort"), "fixture must retain the final full sort:\n{rendered}");
+
+    let analysis = plan.capability_analysis();
+    let statistical_invariant = analysis
+        .invariants
+        .iter()
+        .find(|invariant| invariant.kind == SubgraphInvariantKind::StatisticalJoinFinalSortExactness)
+        .expect("q39-class shape should carry a statistical/final-sort exactness invariant");
+    assert_eq!(statistical_invariant.decision, CapabilityDecision::Satisfied);
+    let exact_contracts = statistical_invariant
+        .reservation_requirements
+        .iter()
+        .map(|requirement| {
+            assert_eq!(requirement.kind, ReservationKind::CapabilityContract);
+            assert_eq!(requirement.status, ContractStatus::Modeled);
+            requirement.required_contract
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        exact_contracts,
+        BTreeSet::from([
+            "host_welford_input_materialization_preflight",
+            "host_welford_output_upload_reservation",
+            "final_full_sort_output_cardinality_bound",
+        ])
+    );
+    assert!(analysis.first_rejection_projection().is_none(), "{:?}", analysis.first_rejection_projection());
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("q39-class exact statistical final-sort shape should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort);
+    assert_eq!(
+        compiled_bounded_pipeline_support(admission.pipeline()).expect("support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), admission.pipeline())
+        .expect("accepted statistical final-sort capability analysis should produce a strict contract report");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    for required_contract in [
+        "host_welford_input_materialization_preflight",
+        "host_welford_output_upload_reservation",
+        "final_full_sort_output_cardinality_bound",
+        "final_sort_contract",
+        "query_engine_explicit_sink_materialization_reservation",
+    ] {
+        assert!(
+            report.gate_rows().iter().any(|row| {
+                row.required_contract == required_contract && row.contract_status == ContractStatus::Modeled
+            }),
+            "missing compiled strict gate {required_contract}: {:?}",
+            report.gate_rows()
+        );
+    }
+}
+
+#[test]
+fn strict_admission_mode_boundary_accepts_tolerant_statistical_envelope_without_exact_host_gates() {
+    let plan = statistical_join_final_full_sort_plan();
+    let shape_admission = strict_bounded_pipeline_admission(&plan)
+        .expect("shape-only strict admission should not fail")
+        .expect("shape-only exact statistical envelope should be admitted");
+    assert_eq!(shape_admission.envelope(), StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort);
+
+    let tolerant_admission = strict_bounded_pipeline_admission_with_statistical_aggregate_mode(
+        &plan,
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
+    )
+    .expect("mode-aware strict admission should not fail")
+    .expect("tolerant statistical envelope should be admitted");
+    assert_eq!(tolerant_admission.envelope(), StrictBoundedEnvelope::TolerantStatisticalJoinFinalFullSort);
+
+    let projection = strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
+        &plan,
+        StatisticalAggregateExecutionMode::GpuNativeTolerant,
+    )
+    .expect("mode-aware rejection projection should not fail");
+    assert_eq!(projection, None);
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(
+        tolerant_admission.analysis(),
+        tolerant_admission.pipeline(),
+    )
+    .expect("accepted tolerant statistical final-sort admission should produce a strict contract report");
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert!(report.gate_rows().iter().any(|row| {
+        row.required_contract == "gpu_native_tolerant_statistical_aggregate_contract"
+            && row.memory_boundary == "tolerant_statistical_join_final_full_sort"
+            && row.contract_status == ContractStatus::Modeled
+    }));
+    assert!(report.gate_rows().iter().any(|row| {
+        row.required_contract == "final_full_sort_output_cardinality_bound"
+            && row.contract_status == ContractStatus::Modeled
+    }));
+    assert_eq!(
+        report
+            .gate_rows()
+            .iter()
+            .filter(|row| matches!(
+                row.required_contract,
+                "host_welford_input_materialization_preflight" | "host_welford_output_upload_reservation"
+            ))
+            .count(),
+        0,
+        "tolerant mode must not publish exact host-Welford gates"
+    );
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExpectedCompiledGraph {
+    tasks: usize,
+    edges: usize,
+    barriers: usize,
+    resources: usize,
+    gates: usize,
+    sink: SinkBoundaryKind,
+    capability_contract: Option<&'static str>,
+}
+
+fn assert_rollup_rank_topk_after_pushdown_envelope(
+    plan: &QueryPlan,
+    analysis: &nexus_query_engine::capability::CapabilityAnalysis,
+    label: &str,
+    expected_graph: ExpectedCompiledGraph,
+) {
+    assert!(
+        !analysis.has_rejections(),
+        "{label}: optimized rollup/rank/top-k shape should have satisfied local capability facts; first_rejection={:?}",
+        analysis.first_rejection_projection()
+    );
+    assert!(
+        analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
+        "{label}: expected rollup/rank/top-k post-pushdown envelope admission; rollup_decision={:?}; first_rejection={:?}",
+        analysis.rollup_rank_topk_after_aggregate_join_pushdown_admission,
+        analysis.first_rejection_projection()
+    );
+    let CapabilityEnvelopeAdmission::Admitted { envelope } = analysis.strict_bounded_envelope_admission() else {
+        panic!("{label}: expected selected strict envelope, got {:?}", analysis.strict_bounded_envelope_admission());
+    };
+    assert_eq!(envelope, StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
+    assert_eq!(envelope.as_str(), "rollup_rank_topk_after_aggregate_join_pushdown");
+
+    let report = StrictBoundedContractReport::from_capability_analysis(analysis)
+        .unwrap_or_else(|error| panic!("{label}: capability contract report failed: {error}"));
+    assert_eq!(report.execution_mode(), StrictBoundedExecutionMode::StrictBounded);
+    assert!(report.is_strict_bounded_ready(), "{label}: capability gate rows should be strict-ready");
+
+    let aggregate_rows = report
+        .gate_rows()
+        .iter()
+        .filter(|row| {
+            row.reservation_kind == ReservationKind::OperatorOutput && row.required_contract == "aggregate_contract"
+        })
+        .count();
+    assert!(
+        aggregate_rows == 2,
+        "{label}: detail and final grouping aggregates should both contribute modeled aggregate gate rows"
+    );
+    assert_modeled_gate_row(label, &report, ReservationKind::SourceRead, "source_contract");
+    assert_modeled_gate_row(label, &report, ReservationKind::OperatorOutput, "window_contract");
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_rank_filter_output_boundary",
+    );
+    assert_modeled_gate_row(label, &report, ReservationKind::FinalSort, "final_sort_contract");
+    assert_modeled_gate_row(label, &report, ReservationKind::OperatorOutput, "query_engine_final_topk_output_boundary");
+    if let Some(required_contract) = expected_graph.capability_contract {
+        assert_modeled_gate_row(label, &report, ReservationKind::CapabilityContract, required_contract);
+    }
+    assert_modeled_gate_row(
+        label,
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+
+    let pipeline = compile_pipeline(plan, analysis)
+        .unwrap_or_else(|error| panic!("{label}: rollup/rank/top-k pipeline should compile: {error}"));
+    pipeline
+        .validate()
+        .unwrap_or_else(|error| panic!("{label}: rollup/rank/top-k compiled pipeline should validate: {error}"));
+    assert_compiled_graph_counts(label, &pipeline, expected_graph);
+    assert_eq!(
+        compiled_bounded_pipeline_support(&pipeline)
+            .unwrap_or_else(|error| panic!("{label}: graph support check failed: {error}")),
+        CompiledBoundedPipelineSupport::Supported,
+        "{label}: compiled graph should be inside the strict runtime envelope"
+    );
+    assert_eq!(
+        compiled_bounded_query_plan_support(plan, &pipeline)
+            .unwrap_or_else(|error| panic!("{label}: plan-aware support check failed: {error}")),
+        CompiledBoundedPipelineSupport::Supported,
+        "{label}: compiled plan should be inside the strict runtime envelope"
+    );
+    let runtime_admission = strict_bounded_pipeline_admission(plan)
+        .unwrap_or_else(|error| panic!("{label}: strict bounded runtime admission failed: {error}"))
+        .unwrap_or_else(|| panic!("{label}: strict bounded runtime admission should be selected"));
+    assert_eq!(runtime_admission.envelope(), StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown);
+    assert_compiled_graph_counts(label, runtime_admission.pipeline(), expected_graph);
+}
+
+fn assert_compiled_graph_counts(label: &str, pipeline: &CompiledPipeline, expected: ExpectedCompiledGraph) {
+    assert_eq!(pipeline.tasks().len(), expected.tasks, "{label}: compiled task count changed");
+    assert_eq!(pipeline.edges().len(), expected.edges, "{label}: compiled edge count changed");
+    assert_eq!(pipeline.barriers().len(), expected.barriers, "{label}: compiled barrier count changed");
+    assert_eq!(pipeline.resources().len(), expected.resources, "{label}: compiled resource count changed");
+    assert_eq!(pipeline.gates().len(), expected.gates, "{label}: compiled gate count changed");
+    assert_eq!(pipeline.sink().kind(), expected.sink, "{label}: compiled sink kind changed");
+}
+
+fn assert_modeled_gate_row(
+    label: &str,
+    report: &StrictBoundedContractReport,
+    kind: ReservationKind,
+    required_contract: &str,
+) {
+    assert!(
+        report.gate_rows().iter().any(|row| {
+            row.reservation_kind == kind
+                && row.required_contract == required_contract
+                && row.contract_status == ContractStatus::Modeled
+        }),
+        "{label}: expected modeled {kind:?} gate row for {required_contract}; rows={:?}",
+        report.gate_rows()
     );
 }
 

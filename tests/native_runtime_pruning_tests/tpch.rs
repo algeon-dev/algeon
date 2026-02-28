@@ -1,6 +1,6 @@
 use std::fs::File;
 
-use arrow::array::{Date32Array, Int64Array, StringArray};
+use arrow::array::{Date32Array, Int32Array, Int64Array, StringArray};
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 use super::{fixtures::date32, *};
@@ -151,6 +151,50 @@ async fn native_runtime_tpch_q19_tiny_join_residual_in_list_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal(&cpu_batches, &native_batches);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() {
+    let dir = unique_temp_dir("datafusion-nexus-native-runtime-tpch-q04-tiny-bounded");
+    write_q04_nonempty_tpch_parquet_dataset(&dir);
+    let q4 = TPCH_QUERIES.iter().find(|query| query.id == "q04").expect("TPC-H Q4 query must exist");
+    let cpu_batches = cpu_tpch_sql_output(&dir, q4.sql).await;
+    assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q4 CPU output should be non-empty");
+
+    let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q4.sql).await;
+    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(lowering.rejected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert!(
+        lowering.plans[0].capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
+        "Q4 should use the bounded full-sort left-semi grouped aggregate path:\n{}",
+        lowering.plans[0]
+    );
+    let direct_result = execute_query_plan(&bounded_execution_context(), &lowering.plans[0]).unwrap();
+    let direct_metrics = direct_result.metrics();
+    assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
+    assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
+    let QueryOutput::HostArrow(direct_batches) = direct_result.output() else {
+        panic!("Q4 direct native query should materialize a host batch");
+    };
+    assert_batches_equal(&cpu_batches, std::slice::from_ref(direct_batches));
+
+    let native_plan = native_datafusion_tpch_sql_plan(&dir, q4.sql, native_datafusion_config()).await;
+    assert_native_cudf_exec(&native_plan, "bounded TPC-H Q4 should be replaced by NativeCudfExec");
+
+    let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    let native_batches = collect(Arc::clone(&native_plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
+    assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
+
+    let metrics = native_plan.metrics().expect("NativeCudfExec should expose DataFusion metrics");
+    assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
+    assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
+    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -497,7 +541,7 @@ async fn assert_tpch_q6_native_parity(lineitem_path: &std::path::Path) {
 
 fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
     write_tiny_tpch_parquet_dataset(root).unwrap();
-    write_q7_table(
+    write_tpch_test_table(
         &root.join("customer.parquet"),
         Arc::new(Schema::new(vec![
             Field::new("c_custkey", DataType::Int64, false),
@@ -505,7 +549,7 @@ fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
         ])),
         vec![Arc::new(Int64Array::from(vec![10, 20])), Arc::new(Int64Array::from(vec![3, 4]))],
     );
-    write_q7_table(
+    write_tpch_test_table(
         &root.join("supplier.parquet"),
         Arc::new(Schema::new(vec![
             Field::new("s_suppkey", DataType::Int64, false),
@@ -513,7 +557,7 @@ fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
         ])),
         vec![Arc::new(Int64Array::from(vec![100, 200])), Arc::new(Int64Array::from(vec![3, 4]))],
     );
-    write_q7_table(
+    write_tpch_test_table(
         &root.join("orders.parquet"),
         Arc::new(Schema::new(vec![
             Field::new("o_orderkey", DataType::Int64, false),
@@ -521,7 +565,7 @@ fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
         ])),
         vec![Arc::new(Int64Array::from(vec![1000, 2000, 3000])), Arc::new(Int64Array::from(vec![20, 10, 20]))],
     );
-    write_q7_table(
+    write_tpch_test_table(
         &root.join("nation.parquet"),
         Arc::new(Schema::new(vec![
             Field::new("n_nationkey", DataType::Int64, false),
@@ -529,7 +573,7 @@ fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
         ])),
         vec![Arc::new(Int64Array::from(vec![3, 4])), Arc::new(StringArray::from(vec!["FRANCE", "GERMANY"]))],
     );
-    write_q7_table(
+    write_tpch_test_table(
         &root.join("lineitem.parquet"),
         Arc::new(Schema::new(vec![
             Field::new("l_orderkey", DataType::Int64, false),
@@ -550,7 +594,105 @@ fn write_q7_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
     );
 }
 
-fn write_q7_table(path: &std::path::Path, schema: Arc<Schema>, columns: Vec<ArrayRef>) {
+fn write_q04_nonempty_tpch_parquet_dataset(root: &std::path::Path) {
+    write_tiny_tpch_parquet_dataset(root).unwrap();
+    write_tpch_test_table(
+        &root.join("lineitem.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("l_orderkey", DataType::Int64, false),
+            Field::new("l_partkey", DataType::Int64, false),
+            Field::new("l_suppkey", DataType::Int64, false),
+            Field::new("l_linenumber", DataType::Int32, false),
+            Field::new("l_quantity", DataType::Decimal128(15, 2), false),
+            Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),
+            Field::new("l_discount", DataType::Decimal128(15, 2), false),
+            Field::new("l_tax", DataType::Decimal128(15, 2), false),
+            Field::new("l_returnflag", DataType::Utf8, false),
+            Field::new("l_linestatus", DataType::Utf8, false),
+            Field::new("l_shipdate", DataType::Date32, false),
+            Field::new("l_commitdate", DataType::Date32, false),
+            Field::new("l_receiptdate", DataType::Date32, false),
+            Field::new("l_shipinstruct", DataType::Utf8, false),
+            Field::new("l_shipmode", DataType::Utf8, false),
+            Field::new("l_comment", DataType::Utf8, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 2, 3])),
+            Arc::new(Int64Array::from(vec![1, 2, 2, 3])),
+            Arc::new(Int64Array::from(vec![1, 2, 2, 3])),
+            Arc::new(Int32Array::from(vec![1, 1, 2, 1])),
+            Arc::new(
+                Decimal128Array::from_iter_values([1_700, 3_600, 3_700, 800]).with_precision_and_scale(15, 2).unwrap(),
+            ),
+            Arc::new(
+                Decimal128Array::from_iter_values([211_685, 459_831, 459_832, 133_096])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Decimal128Array::from_iter_values([6, 9, 4, 2]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(Decimal128Array::from_iter_values([2, 6, 1, 1]).with_precision_and_scale(15, 2).unwrap()),
+            Arc::new(StringArray::from(vec!["N", "R", "R", "A"])),
+            Arc::new(StringArray::from(vec!["O", "F", "F", "F"])),
+            Arc::new(Date32Array::from(vec![
+                date32(1994, 3, 13),
+                date32(1995, 9, 18),
+                date32(1995, 9, 19),
+                date32(1998, 8, 2),
+            ])),
+            Arc::new(Date32Array::from(vec![
+                date32(1994, 2, 12),
+                date32(1995, 9, 10),
+                date32(1995, 9, 11),
+                date32(1998, 7, 20),
+            ])),
+            Arc::new(Date32Array::from(vec![
+                date32(1994, 3, 22),
+                date32(1995, 10, 1),
+                date32(1995, 10, 2),
+                date32(1998, 8, 15),
+            ])),
+            Arc::new(StringArray::from(vec!["DELIVER IN PERSON", "TAKE BACK RETURN", "TAKE BACK RETURN", "NONE"])),
+            Arc::new(StringArray::from(vec!["TRUCK", "MAIL", "SHIP", "AIR"])),
+            Arc::new(StringArray::from(vec![
+                "lineitem one",
+                "lineitem two",
+                "lineitem two duplicate",
+                "lineitem three",
+            ])),
+        ],
+    );
+    write_tpch_test_table(
+        &root.join("orders.parquet"),
+        Arc::new(Schema::new(vec![
+            Field::new("o_orderkey", DataType::Int64, false),
+            Field::new("o_custkey", DataType::Int64, false),
+            Field::new("o_orderstatus", DataType::Utf8, false),
+            Field::new("o_totalprice", DataType::Decimal128(15, 2), false),
+            Field::new("o_orderdate", DataType::Date32, false),
+            Field::new("o_orderpriority", DataType::Utf8, false),
+            Field::new("o_clerk", DataType::Utf8, false),
+            Field::new("o_shippriority", DataType::Int32, false),
+            Field::new("o_comment", DataType::Utf8, false),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+            Arc::new(StringArray::from(vec!["O", "F", "O"])),
+            Arc::new(
+                Decimal128Array::from_iter_values([17_279_949, 3_842_632, 20_565_430])
+                    .with_precision_and_scale(15, 2)
+                    .unwrap(),
+            ),
+            Arc::new(Date32Array::from(vec![date32(1995, 3, 15), date32(1993, 8, 14), date32(1994, 7, 30)])),
+            Arc::new(StringArray::from(vec!["1-URGENT", "2-HIGH", "5-LOW"])),
+            Arc::new(StringArray::from(vec!["Clerk#000000001", "Clerk#000000002", "Clerk#000000003"])),
+            Arc::new(Int32Array::from(vec![0, 0, 0])),
+            Arc::new(StringArray::from(vec!["order one", "special requests", "order three"])),
+        ],
+    );
+}
+
+fn write_tpch_test_table(path: &std::path::Path, schema: Arc<Schema>, columns: Vec<ArrayRef>) {
     let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
     let file = File::create(path).unwrap();

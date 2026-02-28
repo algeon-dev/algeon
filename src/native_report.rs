@@ -63,9 +63,10 @@ mod tsv;
 mod workload;
 
 pub use dataset::WorkloadDatasetMetadata;
+pub(crate) use diagnostics::join_diagnostics as physical_join_diagnostics;
 use diagnostics::{
-    candidate_shape_family, join_diagnostics, physical_plan_shape, post_native_plan_coverage,
-    summarize_source_diagnostics, unsupported_category,
+    candidate_shape_family, physical_plan_shape, post_native_plan_coverage, summarize_source_diagnostics,
+    unsupported_category,
 };
 pub use metrics::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDynamicFilterMeasuredReductionStatus,
@@ -134,7 +135,7 @@ fn report_rows_for_plan(
 ) -> Vec<NativeFallbackPressureRow> {
     let physical_root = plan.name().to_string();
     let physical_shape = physical_plan_shape(plan.as_ref());
-    let join_diagnostics = join_diagnostics(plan.as_ref());
+    let join_diagnostics = physical_join_diagnostics(plan.as_ref());
     let source_diagnostics_plan = Arc::clone(&plan);
     let result = lower_physical_plan_to_native(plan);
     let source_diagnostics = result.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
@@ -286,7 +287,12 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
     let post_native_plan_root = planned_plan.name().to_string();
     let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let edge_normalize_inserted = post_native_plan_edge_normalize_inserted(planned_plan.as_ref());
-    let join_diagnostics = join_diagnostics(planned_plan.as_ref());
+    let post_native_join_diagnostics = physical_join_diagnostics(planned_plan.as_ref());
+    let input_join_diagnostics = if native_diagnostics.input_join_diagnostics.is_empty() {
+        post_native_join_diagnostics.clone()
+    } else {
+        native_diagnostics.input_join_diagnostics.clone()
+    };
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
 
@@ -320,7 +326,13 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
-                join_diagnostics: join_diagnostics.clone(),
+                join_diagnostics: if post_native_coverage.execution_path
+                    == NativeDataFusionPostNativeExecutionPath::Native
+                {
+                    post_native_join_diagnostics.clone()
+                } else {
+                    input_join_diagnostics.clone()
+                },
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path: post_native_coverage.execution_path,
@@ -353,7 +365,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 ),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
-                join_diagnostics: join_diagnostics.clone(),
+                join_diagnostics: input_join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
                 post_native_execution_path: post_native_coverage.execution_path,

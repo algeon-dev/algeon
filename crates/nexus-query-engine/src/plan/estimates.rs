@@ -22,7 +22,8 @@ pub(crate) fn estimated_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option
                         file.row_group_rows.as_ref()?.iter().try_fold(0_u64, |sum, rows| sum.checked_add(*rows))
                     })
                     .try_fold(0_u64, |sum, rows| sum.checked_add(rows?))?;
-                Some(source.scan_limit.map_or(rows, |limit| rows.min(limit as u64)))
+                let rows = source.scan_limit.map_or(rows, |limit| rows.min(limit as u64));
+                Some(source.max_rows.map_or(rows, |max_rows| rows.min(max_rows as u64)))
             },
             SourceNode::GpuResident(_) => None,
             SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),

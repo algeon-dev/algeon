@@ -50,10 +50,15 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
     append_projection_transparent_residency_invariants(plan, &mut invariants);
     append_resident_unary_chain_preserves_residency_invariants(plan, &mut invariants);
     append_final_barrier_order_invariants(plan, &mut invariants);
+    append_limit_bounded_projection_invariants(plan, &mut invariants);
     append_mixed_residual_post_root_stage_order_invariant(plan, &mut invariants);
     append_hash_join_resident_grouped_aggregate_topk_post_root_stage_order_invariant(plan, &mut invariants);
+    append_rollup_rank_topk_after_aggregate_join_pushdown_post_root_stage_order_invariant(plan, &mut invariants);
     append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(plan, &mut invariants);
+    append_root_topk_join_aggregate_post_root_stage_order_invariant(plan, &mut invariants);
+    append_root_full_sort_join_aggregate_post_root_stage_order_invariant(plan, &mut invariants);
     append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(plan, &mut invariants);
+    append_statistical_join_final_sort_exactness_invariant(plan, &mut invariants);
     append_blocking_rollup_rank_full_scan_invariant(plan, &mut invariants);
 
     if reachable_join_count_from_sink(plan).unwrap_or(0) > 1 {
@@ -100,6 +105,87 @@ pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Ve
         });
     }
     invariants
+}
+
+#[derive(Debug, Clone)]
+struct StatisticalJoinFinalSortExactnessShape {
+    aggregate_ids: Vec<NodeId>,
+    join_ids: Vec<NodeId>,
+    final_sort_id: NodeId,
+}
+
+fn append_statistical_join_final_sort_exactness_invariant(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    let Some(shape) = statistical_join_final_sort_exactness_shape(plan) else {
+        return;
+    };
+    let mut nodes = shape.aggregate_ids.clone();
+    nodes.extend(shape.join_ids.iter().copied());
+    nodes.push(shape.final_sort_id);
+    nodes.sort_unstable();
+    nodes.dedup();
+
+    let invariant_id = InvariantId(invariants.len());
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::StatisticalJoinFinalSortExactness,
+        nodes,
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.final_sort_id)],
+        reservation_requirements: vec![
+            ReservationRequirement::modeled(
+                ReservationKind::CapabilityContract,
+                "datafusion_exact_host_welford_input_materialization",
+                "host_welford_input_materialization_preflight",
+                ContractQuality::QueryEngineOwnedBoundary,
+            ),
+            ReservationRequirement::modeled(
+                ReservationKind::CapabilityContract,
+                "datafusion_exact_host_welford_output_upload",
+                "host_welford_output_upload_reservation",
+                ContractQuality::QueryEngineOwnedBoundary,
+            ),
+            ReservationRequirement::modeled(
+                ReservationKind::CapabilityContract,
+                "final_full_sort_output_cardinality",
+                "final_full_sort_output_cardinality_bound",
+                ContractQuality::CapabilityProof,
+            ),
+        ],
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
+fn statistical_join_final_sort_exactness_shape(plan: &QueryPlan) -> Option<StatisticalJoinFinalSortExactnessShape> {
+    let final_sort_id = plan.sink().input();
+    match plan.node(final_sort_id).map(|node| &node.kind)? {
+        PlanNode::Sort(_) => {},
+        _ => return None,
+    };
+    let reachable = collect_reachable_node_ids(plan).ok()?;
+    let mut aggregate_ids = Vec::new();
+    let mut join_ids = Vec::new();
+
+    for node_id in &reachable {
+        let node = plan.node(*node_id)?;
+        match &node.kind {
+            PlanNode::Aggregate(aggregate)
+                if aggregate.spec.aggr_exprs.iter().any(|expr| expr.function.is_floating_statistical())
+                    && collect_reachable_node_ids_from(plan, aggregate.input).ok()?.iter().any(|input_id| {
+                        matches!(plan.node(*input_id).map(|input| &input.kind), Some(PlanNode::Join(_)))
+                    }) =>
+            {
+                aggregate_ids.push(*node_id);
+            },
+            PlanNode::Join(_) => join_ids.push(*node_id),
+            _ => {},
+        }
+    }
+
+    if aggregate_ids.is_empty() || join_ids.is_empty() {
+        return None;
+    }
+
+    Some(StatisticalJoinFinalSortExactnessShape { aggregate_ids, join_ids, final_sort_id })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -521,6 +607,93 @@ pub(super) fn append_final_barrier_order_invariants(plan: &QueryPlan, invariants
     }
 }
 
+pub(super) fn append_limit_bounded_projection_invariants(plan: &QueryPlan, invariants: &mut Vec<SubgraphInvariant>) {
+    for projection_node in plan.nodes() {
+        let PlanNode::Projection(projection) = &projection_node.kind else {
+            continue;
+        };
+        let Some(limit_node) = plan.node(projection.input) else {
+            continue;
+        };
+        let PlanNode::Limit(limit) = &limit_node.kind else {
+            continue;
+        };
+        if limit.spec.fetch.is_none() {
+            continue;
+        }
+        let invariant_id = InvariantId(invariants.len());
+        invariants.push(SubgraphInvariant {
+            invariant_id,
+            kind: SubgraphInvariantKind::LimitBoundedProjection,
+            nodes: vec![projection.input, projection_node.id],
+            required_schedule: ScheduleConstraint::None,
+            required_resources: vec![ResidentResource::NodeOutput(projection.input)],
+            reservation_requirements: Vec::new(),
+            decision: solve_limit_bounded_projection_invariant(plan, projection.input, projection_node.id),
+        });
+    }
+}
+
+fn solve_limit_bounded_projection_invariant(
+    plan: &QueryPlan,
+    limit_id: NodeId,
+    projection_id: NodeId,
+) -> CapabilityDecision {
+    let Some(limit_node) = plan.node(limit_id) else {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_missing_limit",
+            [("limit_id", limit_id.to_string()), ("projection_id", projection_id.to_string())],
+        );
+    };
+    let Some(projection_node) = plan.node(projection_id) else {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_missing_projection",
+            [("limit_id", limit_id.to_string()), ("projection_id", projection_id.to_string())],
+        );
+    };
+    let PlanNode::Limit(limit) = &limit_node.kind else {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_requires_limit_input",
+            [("limit_id", limit_id.to_string()), ("operator", node_operator_fact(&limit_node.kind).to_string())],
+        );
+    };
+    if limit.spec.fetch.is_none() {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_requires_fetch_limit",
+            [("limit_id", limit_id.to_string()), ("skip", limit.spec.skip.to_string())],
+        );
+    }
+    let PlanNode::Projection(projection) = &projection_node.kind else {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_requires_projection_consumer",
+            [
+                ("projection_id", projection_id.to_string()),
+                ("operator", node_operator_fact(&projection_node.kind).to_string()),
+            ],
+        );
+    };
+    if projection.input != limit_id {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_requires_direct_limit_input",
+            [("limit_id", limit_id.to_string()), ("projection_input", projection.input.to_string())],
+        );
+    }
+    let limit_resident = produced_properties(limit_node).contains(&ProducedProperty::ResidentFrame);
+    let projection_resident = produced_properties(projection_node).contains(&ProducedProperty::ResidentFrame);
+    if !limit_resident || !projection_resident {
+        return CapabilityDecision::rejected(
+            "limit_bounded_projection_requires_resident_frames",
+            [
+                ("limit_id", limit_id.to_string()),
+                ("projection_id", projection_id.to_string()),
+                ("limit_resident", limit_resident.to_string()),
+                ("projection_resident", projection_resident.to_string()),
+            ],
+        );
+    }
+    CapabilityDecision::Satisfied
+}
+
 pub(super) fn append_mixed_residual_post_root_stage_order_invariant(
     plan: &QueryPlan,
     invariants: &mut Vec<SubgraphInvariant>,
@@ -571,6 +744,60 @@ pub(super) fn append_hash_join_resident_grouped_aggregate_topk_post_root_stage_o
     });
 }
 
+pub(super) fn append_rollup_rank_topk_after_aggregate_join_pushdown_post_root_stage_order_invariant(
+    plan: &QueryPlan,
+    invariants: &mut Vec<SubgraphInvariant>,
+) {
+    let Ok(shape) = rollup_rank_topk_after_aggregate_join_pushdown_shape_decision(plan) else {
+        return;
+    };
+    let invariant_id = InvariantId(invariants.len());
+    let mut nodes = vec![
+        shape.detail_pre_aggregate_id,
+        shape.root_join_id,
+        shape.final_grouping_aggregate_id,
+        shape.rank_sort_id,
+        shape.rank_window_id,
+    ];
+    if let Some(rank_filter_id) = shape.rank_filter_id {
+        nodes.push(rank_filter_id);
+    }
+    if let Some(consumer_id) = shape.rank_output_residency_consumer_id
+        && !nodes.contains(&consumer_id)
+    {
+        nodes.push(consumer_id);
+    }
+    if let Some(final_sort_id) = shape.final_sort_id {
+        nodes.push(final_sort_id);
+    }
+    if let Some(final_limit_id) = shape.final_limit_id {
+        nodes.push(final_limit_id);
+    }
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
+        nodes,
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: rollup_rank_topk_after_aggregate_join_pushdown_subcontract_requirements(&shape),
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
+fn rollup_rank_topk_after_aggregate_join_pushdown_subcontract_requirements(
+    shape: &RollupRankTopKAfterAggregateJoinPushdownShape,
+) -> Vec<ReservationRequirement> {
+    match shape.final_rollup_width {
+        FinalRollupWidthClass::Narrow => Vec::new(),
+        FinalRollupWidthClass::Wide => vec![ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "rollup_rank_topk_wide_final_rollup_subcontract",
+            "rollup_rank_topk_wide_final_rollup_subcontract",
+            ContractQuality::CapabilityProof,
+        )],
+    }
+}
+
 pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage_order_invariant(
     plan: &QueryPlan,
     invariants: &mut Vec<SubgraphInvariant>,
@@ -593,6 +820,167 @@ pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage
         reservation_requirements: Vec::new(),
         decision: CapabilityDecision::Satisfied,
     });
+}
+
+pub(super) fn append_root_topk_join_aggregate_post_root_stage_order_invariant(
+    plan: &QueryPlan,
+    invariants: &mut Vec<SubgraphInvariant>,
+) {
+    let Ok(shape) = root_topk_join_aggregate_shape_decision(plan) else {
+        return;
+    };
+    let invariant_id = InvariantId(invariants.len());
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
+        nodes: {
+            let mut nodes = vec![shape.root_join_id];
+            nodes.extend(shape.window_input_sort_ids.iter().copied());
+            nodes.extend(shape.window_ids.iter().copied());
+            if shape.sort_fetch_hash_join_aggregate_subcontract {
+                nodes.push(shape.aggregate_id);
+            }
+            nodes.extend(shape.post_root_projection_ids.iter().rev().copied());
+            nodes.push(shape.final_sort_id);
+            nodes.extend(shape.final_topk_projection_ids.iter().rev().copied());
+            nodes.push(shape.final_limit_id);
+            nodes
+        },
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: root_topk_join_aggregate_subcontract_requirements(&shape),
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
+fn root_topk_join_aggregate_subcontract_requirements(
+    shape: &RootTopKJoinAggregateShape,
+) -> Vec<ReservationRequirement> {
+    let mut requirements = Vec::new();
+    if shape.sort_fetch_hash_join_input_subcontract {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_sort_fetch_hash_join_input_subcontract",
+            "root_topk_sort_fetch_hash_join_input_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if shape.sort_fetch_hash_join_aggregate_subcontract {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
+            "root_topk_sort_fetch_hash_join_aggregate_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.distinct_aggregate_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_distinct_aggregate_subcontract",
+            "root_topk_distinct_aggregate_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.keyed_filtered_semi_join_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_keyed_filtered_semi_join_subcontract",
+            "root_topk_keyed_filtered_semi_join_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.null_filtered_left_join_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_null_filtered_left_join_fan_in_subcontract",
+            "root_topk_null_filtered_left_join_fan_in_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.keyless_or_cross_join_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_keyless_or_cross_join_subcontract",
+            "root_topk_keyless_or_cross_join_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.window_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_window_subcontract",
+            "root_topk_window_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.window_full_outer_join_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_window_full_outer_join_subcontract",
+            "root_topk_window_full_outer_join_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    if !shape.keyless_outer_cross_window_join_ids.is_empty() {
+        requirements.push(ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_topk_keyless_outer_cross_window_subcontract",
+            "root_topk_keyless_outer_cross_window_subcontract",
+            ContractQuality::CapabilityProof,
+        ));
+    }
+    requirements
+}
+
+pub(super) fn append_root_full_sort_join_aggregate_post_root_stage_order_invariant(
+    plan: &QueryPlan,
+    invariants: &mut Vec<SubgraphInvariant>,
+) {
+    let Ok(shape) = root_full_sort_join_aggregate_shape_decision(plan) else {
+        return;
+    };
+    let invariant_id = InvariantId(invariants.len());
+    invariants.push(SubgraphInvariant {
+        invariant_id,
+        kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
+        nodes: {
+            let mut nodes = vec![shape.root_join_id];
+            nodes.extend(shape.post_root_projection_ids.iter().rev().copied());
+            nodes.push(shape.final_sort_id);
+            nodes
+        },
+        required_schedule: ScheduleConstraint::Barrier,
+        required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
+        reservation_requirements: root_full_sort_join_aggregate_subcontract_requirements(&shape),
+        decision: CapabilityDecision::Satisfied,
+    });
+}
+
+fn root_full_sort_join_aggregate_subcontract_requirements(
+    shape: &RootFullSortJoinAggregateShape,
+) -> Vec<ReservationRequirement> {
+    match shape.subcontract {
+        RootFullSortJoinAggregateSubcontract::KeyedHashGroupedAggregate => Vec::new(),
+        RootFullSortJoinAggregateSubcontract::KeylessOrCrossJoin => vec![ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_full_sort_keyless_or_cross_join_subcontract",
+            "root_full_sort_keyless_or_cross_join_subcontract",
+            ContractQuality::CapabilityProof,
+        )],
+        RootFullSortJoinAggregateSubcontract::RepeatedProjectionFanout => vec![ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_full_sort_repeated_projection_fanout_subcontract",
+            "root_full_sort_repeated_projection_fanout_subcontract",
+            ContractQuality::CapabilityProof,
+        )],
+        RootFullSortJoinAggregateSubcontract::SharedAggregateFanout => vec![ReservationRequirement::modeled(
+            ReservationKind::CapabilityContract,
+            "root_full_sort_shared_aggregate_fanout_subcontract",
+            "root_full_sort_shared_aggregate_fanout_subcontract",
+            ContractQuality::CapabilityProof,
+        )],
+        RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout => Vec::new(),
+    }
 }
 
 pub(super) fn append_keyless_aggregate_over_join_subplan_inputs_post_root_stage_order_invariant(

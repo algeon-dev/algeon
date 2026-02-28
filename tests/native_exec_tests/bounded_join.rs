@@ -148,13 +148,23 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     let plan = tpch_sql_plan(&dir, q11.sql);
     let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
     assert_eq!(lowering.rewritten_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert!(
-        lowering.plans[0]
-            .capability_analysis()
-            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-        "direct Q11 lowering should be bounded executable:\n{}",
+    let analysis = lowering.plans[0].capability_analysis();
+    assert_eq!(
+        analysis.keyless_conditional_join_aggregate_over_join_subplan_inputs_admission,
+        nexus_query_engine::capability::CapabilityDecision::Satisfied,
+        "direct Q11 lowering should retain the keyless aggregate-over-join proof:\n{}",
         lowering.plans[0]
     );
+    let nexus_query_engine::capability::CapabilityEnvelopeAdmission::Admitted { envelope } =
+        analysis.strict_bounded_envelope_admission()
+    else {
+        panic!(
+            "direct Q11 lowering should be bounded executable: {:?}\n{}",
+            analysis.strict_bounded_envelope_admission(),
+            lowering.plans[0]
+        );
+    };
+    assert_eq!(envelope, nexus_query_engine::capability::StrictBoundedEnvelope::RootFullSortJoinAggregate);
     let rule = CudfNativePhysicalOptimizerRule::new(native_optimizer_config());
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();

@@ -4,7 +4,7 @@
 //! executable decision, produced properties (ordering, partitioning, etc.),
 //! local requirements on inputs, and any local reservation requirements.
 
-use super::{expr::*, model::*, *};
+use super::{aggregate::*, expr::*, model::*, shape::*, *};
 use crate::plan::UnionNode;
 
 pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {
@@ -719,22 +719,91 @@ pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
 
 fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<ReservationRequirement> {
     match &node.kind {
+        PlanNode::Projection(projection)
+            if plan.sink().input() == node.id
+                && matches!(plan.node(projection.input).map(|input| &input.kind), Some(PlanNode::Limit(limit)) if limit.spec.fetch.is_some()) =>
+        {
+            let mut requirements = vec![ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "final_projection_output",
+                "query_engine_limit_bounded_projection_output_boundary",
+                ContractQuality::QueryEngineOwnedBoundary,
+            )];
+            if projection_contains_regexp_replace(projection) {
+                requirements.extend(regexp_replace_requirements());
+            }
+            requirements
+        },
+        PlanNode::Projection(projection) if projection_is_scalar_setop_final_projection(plan, node.id) => {
+            let mut requirements = vec![ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "final_projection_output",
+                "query_engine_projection_scalar_setop_final_projection_output_boundary",
+                ContractQuality::QueryEngineOwnedBoundary,
+            )];
+            if projection_contains_regexp_replace(projection) {
+                requirements.extend(regexp_replace_requirements());
+            }
+            requirements
+        },
         PlanNode::Filter(filter) if expr_contains_regexp_replace(&filter.predicate) => regexp_replace_requirements(),
         PlanNode::Projection(projection) if projection_contains_regexp_replace(projection) => {
             regexp_replace_requirements()
         },
-        PlanNode::Aggregate(_) => vec![ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            "operator_output",
-            "aggregate_contract",
-            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        )],
+        PlanNode::Filter(filter) if input_is_rank_window(plan, filter.input) => {
+            vec![ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "rank_filter_output",
+                "query_engine_rank_filter_output_boundary",
+                ContractQuality::QueryEngineOwnedBoundary,
+            )]
+        },
+        PlanNode::Aggregate(aggregate) => {
+            let mut requirements = vec![ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "operator_output",
+                "aggregate_contract",
+                ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            )];
+            if matches!(
+                aggregate_state_contract(&aggregate.spec),
+                Ok(AggregateStateContract::DedupGroupOnly | AggregateStateContract::ExactDistinctCount)
+            ) {
+                requirements.push(ReservationRequirement::modeled(
+                    ReservationKind::PartialState,
+                    "distinct_dedup_aggregate_state",
+                    "distinct_dedup_aggregate_state_materialization_contract",
+                    ContractQuality::QueryEngineOwnedBoundary,
+                ));
+            }
+            requirements
+        },
         PlanNode::Window(_) => vec![ReservationRequirement::modeled(
             ReservationKind::OperatorOutput,
             "operator_output",
             "window_contract",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
+        PlanNode::Limit(limit)
+            if limit.spec.fetch.is_some()
+                && plan.sink().input() == node.id
+                && final_topk_sort_before_limit(plan, limit.input).is_some() =>
+        {
+            vec![ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "final_topk_output",
+                "query_engine_final_topk_output_boundary",
+                ContractQuality::QueryEngineOwnedBoundary,
+            )]
+        },
+        PlanNode::Limit(limit) if limit.spec.fetch.is_some() && plan.sink().input() == node.id => {
+            vec![ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "global_limit_output",
+                "query_engine_global_limit_output_boundary",
+                ContractQuality::QueryEngineOwnedBoundary,
+            )]
+        },
         PlanNode::Join(join)
             if matches!(
                 keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
@@ -825,6 +894,40 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
         )],
         _ => Vec::new(),
     }
+}
+
+fn projection_is_scalar_setop_final_projection(plan: &QueryPlan, node_id: NodeId) -> bool {
+    projection_scalar_setop_shape_decision(plan).is_ok_and(|shape| shape.final_projection_id == node_id)
+}
+
+fn final_topk_sort_before_limit(plan: &QueryPlan, limit_input: NodeId) -> Option<NodeId> {
+    let mut current = limit_input;
+    let mut visited = BTreeSet::new();
+    loop {
+        if !visited.insert(current) {
+            return None;
+        }
+        match plan.node(current).map(|node| &node.kind)? {
+            PlanNode::Sort(_) => return Some(current),
+            PlanNode::Projection(projection) => current = projection.input,
+            PlanNode::Source(_)
+            | PlanNode::Filter(_)
+            | PlanNode::Aggregate(_)
+            | PlanNode::Join(_)
+            | PlanNode::Window(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_) => return None,
+        }
+    }
+}
+
+fn input_is_rank_window(plan: &QueryPlan, input: NodeId) -> bool {
+    let Some(PlanNode::Window(window)) = plan.node(input).map(|node| &node.kind) else {
+        return false;
+    };
+    window.spec.functions.iter().any(|function| matches!(function, WindowFunction::Rank { .. }))
 }
 
 fn regexp_replace_requirements() -> Vec<ReservationRequirement> {

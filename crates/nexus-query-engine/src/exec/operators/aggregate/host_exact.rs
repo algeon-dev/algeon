@@ -186,23 +186,43 @@ pub(super) fn execute_datafusion_exact_host_aggregate(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     let timer = Instant::now();
-    let frame = sort_by_datafusion_order_if_present(context, input.into_frame(), metrics)?;
-    let schema = schema_with_datafusion_order_columns(&frame, input_schema);
-    let handle = GpuResultHandle::new(context, GpuDataFrame::new(frame), schema)?;
-    let batch = handle.to_host_record_batch()?;
-    let output = execute_datafusion_exact_host_aggregate_batch(context, node_id, spec, &batch, output_schema, metrics)?;
+    let (frame, schema) = prepare_datafusion_exact_host_aggregate_input_frame(context, input, input_schema, metrics)?;
+    let batch = materialize_datafusion_exact_host_aggregate_input(context, frame, schema)?;
+    let output_batch =
+        execute_datafusion_exact_host_aggregate_batch(context, node_id, spec, &batch, output_schema, metrics)?;
+    let output = upload_datafusion_exact_host_aggregate_output(context, &output_batch)?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
 }
 
-fn execute_datafusion_exact_host_aggregate_batch(
+pub(in crate::exec) fn prepare_datafusion_exact_host_aggregate_input_frame(
+    context: &ExecutionContext,
+    input: GpuDataFrame,
+    input_schema: &arrow::datatypes::SchemaRef,
+    metrics: &mut QueryMetrics,
+) -> Result<(GpuDataFrame, arrow::datatypes::SchemaRef)> {
+    let frame = sort_by_datafusion_order_if_present(context, input.into_frame(), metrics)?;
+    let schema = schema_with_datafusion_order_columns(&frame, input_schema);
+    Ok((GpuDataFrame::new(frame), schema))
+}
+
+pub(in crate::exec) fn materialize_datafusion_exact_host_aggregate_input(
+    context: &ExecutionContext,
+    input: GpuDataFrame,
+    schema: arrow::datatypes::SchemaRef,
+) -> Result<RecordBatch> {
+    let handle = GpuResultHandle::new(context, input, schema)?;
+    handle.to_host_record_batch()
+}
+
+pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
     batch: &RecordBatch,
     output_schema: &arrow::datatypes::SchemaRef,
     metrics: &mut QueryMetrics,
-) -> Result<DataFrame> {
+) -> Result<RecordBatch> {
     let key_columns = spec
         .group_exprs
         .iter()
@@ -295,7 +315,14 @@ fn execute_datafusion_exact_host_aggregate_batch(
         )
         .with_source(error)
     })?;
-    DataFrame::from_record_batch(context.runtime(), &output).map_err(|error| {
+    Ok(output)
+}
+
+pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
+    context: &ExecutionContext,
+    output: &RecordBatch,
+) -> Result<DataFrame> {
+    DataFrame::from_record_batch(context.runtime(), output).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.aggregate.stddev_exact.output",
             "failed to upload DataFusion-exact stddev aggregate output",

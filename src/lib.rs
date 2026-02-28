@@ -34,6 +34,7 @@ pub mod report;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod session;
+mod source_cardinality;
 pub mod table_format;
 
 pub use error::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts, Result};
@@ -119,6 +120,9 @@ pub use report::{CandidateOutcome, GpuCandidate, PlanningReport};
 pub use session::{
     CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt, PhysicalOptimizerRules,
     cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
+};
+pub use source_cardinality::{
+    SOURCE_UNIQUE_KEYS_METADATA_KEY, register_source_unique_keys_for_path, schema_with_source_unique_keys,
 };
 pub use table_format::{
     AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,

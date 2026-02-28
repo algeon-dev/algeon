@@ -16,7 +16,10 @@ use crate::{
         AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, ColumnQualifier, Expr, GroupingSetsSpec,
         LiteralValue,
     },
-    plan::{GraphAlgorithm, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan},
+    plan::{
+        AggregateNode, GraphAlgorithm, JoinNode, JoinSide, JoinType, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan,
+        WindowFunction,
+    },
     runtime::ReservationKind,
     source::SourceNode,
 };
@@ -55,10 +58,10 @@ pub use model::{
     ConstraintRef, ConstraintScope, ContractQuality, ContractStatus, EdgeConsumer, EdgeContract, EdgeContractKind,
     InputRole, InvariantId, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty, RequiredProperty,
     ReservationRequirement, ReservationRequirementScope, ResidentResource, ResidualRequirement, ResultSinkKind,
-    STRICT_UNRESOLVED_PREFLIGHT_GAPS, ScheduleConstraint, SharedProducerIdentity, SourceFormatCapability,
-    StrictBoundedEnvelope, StrictUnresolvedPreflightGap, SubgraphInvariant, SubgraphInvariantKind,
-    lower_level_unresolved_preflight_gap, lower_level_unresolved_preflight_gap_for_contract,
-    strict_unresolved_preflight_gap,
+    STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS, STRICT_UNRESOLVED_PREFLIGHT_GAPS, ScheduleConstraint,
+    SharedProducerIdentity, SourceFormatCapability, StrictBoundedEnvelope, StrictUnresolvedPreflightGap,
+    SubgraphInvariant, SubgraphInvariantKind, lower_level_unresolved_preflight_gap,
+    lower_level_unresolved_preflight_gap_for_contract, strict_unresolved_preflight_gap,
 };
 pub use requirements::reservation_requirement_scope;
 pub(crate) use shape::strict_bounded_shape_contract_projection_ids;

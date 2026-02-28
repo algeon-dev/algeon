@@ -861,6 +861,9 @@ fn invariant_matches_barrier_node(
         (SubgraphInvariantKind::FinalBarrierOrder, PipelineBarrierKind::SortBoundary) => {
             invariant.nodes.contains(&node_id)
         },
+        (SubgraphInvariantKind::StatisticalJoinFinalSortExactness, PipelineBarrierKind::SortBoundary) => {
+            invariant.nodes.contains(&node_id)
+        },
         (SubgraphInvariantKind::PostRootStageOrder { root_join_id }, PipelineBarrierKind::JoinMaterialization) => {
             *root_join_id == node_id
         },
@@ -1029,7 +1032,9 @@ fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
         SubgraphInvariantKind::ProjectionTransparentResidency => "projection_transparent_residency",
         SubgraphInvariantKind::ResidentUnaryChainPreservesResidency => "resident_unary_chain_preserves_residency",
         SubgraphInvariantKind::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
+        SubgraphInvariantKind::LimitBoundedProjection => "limit_bounded_projection",
         SubgraphInvariantKind::BlockingRollupRankTopKFullScan => "blocking_rollup_rank_topk_full_scan",
+        SubgraphInvariantKind::StatisticalJoinFinalSortExactness => "statistical_join_final_sort_exactness",
         SubgraphInvariantKind::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
     }
 }

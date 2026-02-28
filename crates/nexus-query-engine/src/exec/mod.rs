@@ -45,7 +45,8 @@ pub use bounded::strict::{
     CompiledPipelineState, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
     ResidentFrameStreamProducerTestHarness, StrictBoundedPipelineAdmission, YieldedFrameCounterTestHarness,
     compiled_bounded_pipeline_support, compiled_bounded_query_plan_support, strict_bounded_pipeline_admission,
-    strict_bounded_pipeline_rejection_projection,
+    strict_bounded_pipeline_admission_with_statistical_aggregate_mode, strict_bounded_pipeline_rejection_projection,
+    strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
 };
 pub use bounded::{
     AdaptivePipelineAdmission, JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES,
