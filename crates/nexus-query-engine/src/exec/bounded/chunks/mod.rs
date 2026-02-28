@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use parquet::file::reader::FileReader;
+
 use super::{
     super::source::{
         ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, local_parquet_execution_frame_schema,
@@ -32,6 +34,11 @@ pub(super) use source_read::{
 pub(in crate::exec::bounded) use source_read::{
     insert_bounded_local_parquet_source_cache, try_read_cached_local_parquet_chunk,
 };
+
+pub(in crate::exec::bounded) struct RawSourceInput {
+    pub(in crate::exec::bounded) partial: CommittedPartial,
+    pub(in crate::exec::bounded) source_row_group_count: u64,
+}
 
 pub(super) fn execute_bounded_chunk_with_retry(
     context: &ExecutionContext,
@@ -364,7 +371,7 @@ fn release_committed_partials_reverse(
 
 /// Reads a source chunk with its pre-aggregate filter and projection stages
 /// applied, without running a partial aggregate. Returns the raw filtered and
-/// projected data as a [`CommittedPartial`].
+/// projected data with the represented source row-group count.
 ///
 /// Used by the distinct aggregate path where all raw source data must be
 /// concatenated before a single groupby can produce a correct COUNT(DISTINCT).
@@ -374,7 +381,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
     chunk: &SourceChunk,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
+) -> Result<RawSourceInput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.raw_source_chunk")?;
     let source = read_bounded_chunk_source(
         context,
@@ -387,8 +394,10 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
         !bounded.has_source_adjacent_stages(),
     )
     .map_err(|error| attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, metrics))?;
+    let source_row_group_count = reported_source_chunk_read_row_groups(chunk, source.observed_row_group_count);
     let input = CommittedPartial { frame: source.frame, reservation: source.reservation };
-    execute_source_adjacent_chunk_stages(context, bounded, chunk, input, reservations, metrics, 1, 1)
+    let partial = execute_source_adjacent_chunk_stages(context, bounded, chunk, input, reservations, metrics, 1, 1)?;
+    Ok(RawSourceInput { partial, source_row_group_count })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
@@ -397,7 +406,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
     batch: &SourceChunkBatch,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<CommittedPartial> {
+) -> Result<RawSourceInput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.raw_source_chunk_batch")?;
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     let source = read_local_parquet_chunk_batch_required_only_no_commit(
@@ -410,8 +419,11 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
         !bounded.has_source_adjacent_stages(),
     )
     .map_err(|error| attach_chunk_resource_facts(error, first_chunk, "source_chunk_read", 1, 1, metrics))?;
+    let source_row_group_count = reported_source_chunk_batch_read_row_groups(batch, source.observed_row_group_count);
     let input = CommittedPartial { frame: source.frame, reservation: source.reservation };
-    execute_source_adjacent_chunk_stages(context, bounded, first_chunk, input, reservations, metrics, 1, 1)
+    let partial =
+        execute_source_adjacent_chunk_stages(context, bounded, first_chunk, input, reservations, metrics, 1, 1)?;
+    Ok(RawSourceInput { partial, source_row_group_count })
 }
 
 pub(super) fn execute_bounded_chunk_attempt(
@@ -458,6 +470,7 @@ fn read_bounded_chunk_source(
 ) -> Result<ScheduledLocalParquetReadOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.source_chunk_read")?;
     metrics.record_source_chunk_attempt();
+    let selected_row_groups_before_read = metrics.row_groups_selected;
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         return Ok(output);
     }
@@ -506,6 +519,7 @@ fn read_bounded_chunk_source(
         frame,
         reservation: source_reservation,
         observed_bytes: 0,
+        observed_row_group_count: source_chunk_read_row_groups(chunk, selected_row_groups_before_read, metrics),
     };
     if grow_source_to_observed {
         output.observed_bytes = grow_source_reservation_to_observed(
@@ -552,6 +566,61 @@ fn read_bounded_chunk_source(
     }
     Ok(output)
 }
+
+fn source_chunk_read_row_groups(
+    chunk: &SourceChunk,
+    selected_row_groups_before_read: u64,
+    metrics: &QueryMetrics,
+) -> Option<u64> {
+    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
+    if observed_delta > 0 {
+        return Some(observed_delta);
+    }
+    source_chunk_static_read_row_groups(chunk)
+}
+
+fn source_chunk_static_read_row_groups(chunk: &SourceChunk) -> Option<u64> {
+    if let Some(row_groups) = chunk.known_read_row_group_count() {
+        return Some(row_groups as u64);
+    }
+    if chunk.reads_all_row_groups && chunk.path.is_file() {
+        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+            .ok()
+            .map(|reader| reader.metadata().num_row_groups() as u64);
+    }
+    None
+}
+
+fn reported_source_chunk_read_row_groups(chunk: &SourceChunk, observed_row_group_count: Option<u64>) -> u64 {
+    observed_row_group_count
+        .or_else(|| source_chunk_static_read_row_groups(chunk))
+        .unwrap_or_else(|| chunk.row_group_count() as u64)
+}
+
+fn reported_source_chunk_batch_read_row_groups(batch: &SourceChunkBatch, observed_row_group_count: Option<u64>) -> u64 {
+    observed_row_group_count
+        .or_else(|| source_chunk_batch_static_read_row_groups(batch))
+        .unwrap_or_else(|| batch.row_group_count() as u64)
+}
+
+fn source_chunk_batch_read_row_groups(
+    batch: &SourceChunkBatch,
+    selected_row_groups_before_read: u64,
+    metrics: &QueryMetrics,
+) -> Option<u64> {
+    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
+    if observed_delta > 0 {
+        return Some(observed_delta);
+    }
+    source_chunk_batch_static_read_row_groups(batch)
+}
+
+fn source_chunk_batch_static_read_row_groups(batch: &SourceChunkBatch) -> Option<u64> {
+    batch.chunks.iter().try_fold(0u64, |total, chunk| {
+        source_chunk_static_read_row_groups(chunk).map(|count| total.saturating_add(count))
+    })
+}
+
 fn execute_bounded_chunk_operator_from_source(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,
@@ -562,7 +631,13 @@ fn execute_bounded_chunk_operator_from_source(
     max_attempts: usize,
     before_operator: impl FnOnce(&mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
 ) -> Result<CommittedPartial> {
-    let ScheduledLocalParquetReadOutput { chunk, frame, reservation: source_reservation, observed_bytes: _ } = source;
+    let ScheduledLocalParquetReadOutput {
+        chunk,
+        frame,
+        reservation: source_reservation,
+        observed_bytes: _,
+        observed_row_group_count,
+    } = source;
     if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.chunk_operator") {
         drop(frame);
         reservations.release(source_reservation, metrics);
@@ -621,10 +696,11 @@ fn execute_bounded_chunk_operator_from_source(
 
     let partial_input_rows = frame.num_rows() as u64;
     let source_chunk_fingerprint = partial_aggregate_source_chunk_fingerprint(std::slice::from_ref(&chunk));
+    let source_chunk_row_group_count = reported_source_chunk_read_row_groups(&chunk, observed_row_group_count);
     let input_evidence = PartialAggregateInputEvidence {
         source_chunk_fingerprint,
         source_adjacent_partial: bounded.has_source_adjacent_stages(),
-        source_chunk_row_group_count: chunk.row_group_count() as u64,
+        source_chunk_row_group_count,
         source_chunk_reads_all_row_groups: chunk.reads_all_row_groups,
         source_chunk_known_row_count: chunk.known_row_count,
         source_chunk_estimated_source_read_bytes: chunk.estimated_source_read_bytes,
@@ -672,7 +748,7 @@ fn execute_bounded_chunk_operator_from_source(
         max_attempts,
     );
     let partial_reservation = reservations.try_reserve(partial_request, metrics)?;
-    metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+    metrics.record_source_chunk_commit(source_chunk_row_group_count);
     metrics.record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_reservation.bytes());
 
     Ok(CommittedPartial { frame, reservation: partial_reservation })

@@ -21,7 +21,9 @@ pub(in crate::exec) fn record_bounded_parquet_source_metrics(
 
     metrics.parquet_files = metrics.parquet_files.saturating_add(source.file_count() as u64);
     metrics.parquet_bytes_known = metrics.parquet_bytes_known.saturating_add(known_file_bytes.max(planned_chunk_bytes));
-    metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(chunk_plan.row_group_count() as u64);
+    metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(
+        chunk_plan.chunks.iter().map(|chunk| chunk.known_read_row_group_count().unwrap_or(0) as u64).sum::<u64>(),
+    );
     metrics.read_columns =
         metrics.read_columns.saturating_add((source.file_count() * source.read_column_count()) as u64);
     metrics.source_metadata_load_time += chunk_plan.metadata_load_time;

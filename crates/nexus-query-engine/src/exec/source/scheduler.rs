@@ -3,6 +3,8 @@ use std::{
     time::Instant,
 };
 
+use parquet::file::reader::FileReader;
+
 use super::*;
 use crate::{
     exec::bounded::{
@@ -39,11 +41,13 @@ pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
     pub(in crate::exec) frame: GpuDataFrame,
     pub(in crate::exec) reservation: ActiveReservation,
     pub(in crate::exec) observed_bytes: u64,
+    pub(in crate::exec) observed_row_group_count: Option<u64>,
 }
 
 struct ScheduledLocalParquetReadResult {
     frame: Result<GpuDataFrame>,
     metrics: QueryMetrics,
+    observed_row_group_count: Option<u64>,
 }
 
 impl ScheduledLocalParquetRead {
@@ -64,6 +68,7 @@ impl ScheduledLocalParquetRead {
         let thread_source = source.clone();
         let handle = thread::spawn(move || {
             let mut metrics = QueryMetrics::default();
+            let selected_row_groups_before_read = metrics.row_groups_selected;
             let frame = read_local_parquet_chunk(
                 &thread_context,
                 &thread_source,
@@ -82,7 +87,11 @@ impl ScheduledLocalParquetRead {
                 })?;
                 Ok(frame)
             });
-            ScheduledLocalParquetReadResult { frame, metrics }
+            let observed_row_group_count = metrics
+                .row_groups_selected
+                .checked_sub(selected_row_groups_before_read)
+                .filter(|row_groups| *row_groups > 0);
+            ScheduledLocalParquetReadResult { frame, metrics, observed_row_group_count }
         });
         Ok(Self {
             chunk,
@@ -152,10 +161,16 @@ impl ScheduledLocalParquetRead {
         metrics.record_source_read_queue_wait(wait_timer.elapsed());
         metrics.merge_from(result.metrics);
         match result.frame {
-            Ok(frame) => Ok(ScheduledLocalParquetReadOutput { chunk, frame, reservation, observed_bytes: 0 }),
+            Ok(frame) => Ok(ScheduledLocalParquetReadOutput {
+                chunk,
+                frame,
+                reservation,
+                observed_bytes: 0,
+                observed_row_group_count: result.observed_row_group_count,
+            }),
             Err(error) => {
                 if let Some((source_read_lease, source, attempt, max_attempts)) = retry_context
-                    && let Some(frame) = try_finish_scheduled_source_read_with_corrected_budget(
+                    && let Some(retry) = try_finish_scheduled_source_read_with_corrected_budget(
                         source_read_lease.context(),
                         &source,
                         &chunk,
@@ -168,7 +183,13 @@ impl ScheduledLocalParquetRead {
                         max_attempts,
                     )?
                 {
-                    return Ok(ScheduledLocalParquetReadOutput { chunk, frame, reservation, observed_bytes: 0 });
+                    return Ok(ScheduledLocalParquetReadOutput {
+                        chunk,
+                        frame: retry.frame,
+                        reservation,
+                        observed_bytes: 0,
+                        observed_row_group_count: retry.observed_row_group_count,
+                    });
                 }
                 reservations.release(reservation, metrics);
                 Err(error)
@@ -209,7 +230,7 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     error: &QueryError,
     attempt: usize,
     max_attempts: usize,
-) -> Result<Option<GpuDataFrame>> {
+) -> Result<Option<ScheduledLocalParquetReadRetryOutput>> {
     context.check_cancellation("nexus_query_engine.source_scheduler.budget_retry")?;
     if attempt >= max_attempts {
         return Ok(None);
@@ -237,7 +258,41 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     }
     try_grow_source_read_reservation_for_budget_correction(reservations, reservation, correction, request, metrics)?;
     metrics.record_source_chunk_attempt();
-    read_local_parquet_chunk(context, source, chunk, correction.corrected_budget_bytes(), budget_boundary, metrics)
-        .map(Some)
-        .map_err(|error| correction.attach_to_error(error))
+    let selected_row_groups_before_read = metrics.row_groups_selected;
+    let frame =
+        read_local_parquet_chunk(context, source, chunk, correction.corrected_budget_bytes(), budget_boundary, metrics)
+            .map_err(|error| correction.attach_to_error(error))?;
+    Ok(Some(ScheduledLocalParquetReadRetryOutput {
+        frame,
+        observed_row_group_count: scheduled_source_chunk_read_row_groups(
+            chunk,
+            selected_row_groups_before_read,
+            metrics,
+        ),
+    }))
+}
+
+struct ScheduledLocalParquetReadRetryOutput {
+    frame: GpuDataFrame,
+    observed_row_group_count: Option<u64>,
+}
+
+fn scheduled_source_chunk_read_row_groups(
+    chunk: &SourceChunk,
+    selected_row_groups_before_read: u64,
+    metrics: &QueryMetrics,
+) -> Option<u64> {
+    if let Some(row_groups) = chunk.known_read_row_group_count() {
+        return Some(row_groups as u64);
+    }
+    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
+    if observed_delta > 0 {
+        return Some(observed_delta);
+    }
+    if chunk.reads_all_row_groups && chunk.path.is_file() {
+        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+            .ok()
+            .map(|reader| reader.metadata().num_row_groups() as u64);
+    }
+    None
 }

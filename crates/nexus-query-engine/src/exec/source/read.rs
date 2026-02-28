@@ -1,3 +1,5 @@
+use parquet::file::reader::FileReader;
+
 use super::*;
 
 pub(super) fn read_local_parquet_file(
@@ -50,10 +52,34 @@ pub(super) fn read_local_parquet_file(
     metrics.source_read_time += read_elapsed;
     metrics.parquet_files += 1;
     metrics.parquet_bytes_known += file.file_size_bytes.unwrap_or(0);
-    metrics.row_groups_selected += file.selected_row_group_count() as u64;
+    metrics.row_groups_selected += local_file_selected_row_group_count(file);
     metrics.read_columns += columns.len() as u64;
     metrics.record_input_batch(frame.num_rows() as u64);
     Ok(frame)
+}
+
+fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
+    if let Some(row_groups) = &file.row_groups {
+        return row_groups.len() as u64;
+    }
+    if let Some(count) = represented_file_row_group_count(file) {
+        return count as u64;
+    }
+    parquet::file::reader::SerializedFileReader::try_from(file.path.as_path())
+        .ok()
+        .map(|reader| reader.metadata().num_row_groups() as u64)
+        .unwrap_or(0)
+}
+
+fn represented_file_row_group_count(file: &LocalParquetFile) -> Option<usize> {
+    file.row_group_bytes
+        .as_ref()
+        .or(file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(file.projected_row_group_compressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
+        .or(file.row_group_rows.as_ref())
+        .map(Vec::len)
 }
 
 pub(super) fn cudf_row_groups(file: &LocalParquetFile) -> Result<Option<Vec<i32>>> {

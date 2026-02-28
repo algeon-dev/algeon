@@ -371,8 +371,8 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
     for chunk in chunks {
         match execute_bounded_raw_source_chunk(context, bounded, chunk, reservations, metrics) {
             Ok(raw) => {
-                metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
-                raw_frames.push(raw);
+                metrics.record_source_chunk_commit(raw.source_row_group_count);
+                raw_frames.push(raw.partial);
             },
             Err(error) => {
                 release_partials_reverse(reservations, raw_frames, metrics);

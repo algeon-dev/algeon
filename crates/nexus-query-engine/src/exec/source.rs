@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use parquet::file::reader::FileReader;
+
 use super::*;
 
 mod validate;
@@ -462,28 +464,32 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             .with_fact("row_groups", format_row_groups(chunk))
         })?;
     let read_timer = Instant::now();
-    let outcome = if chunk.resolved_source.uses_host_buffer() {
-        read_object_store_parquet_chunk(context, source, chunk, &cudf_source, &cudf_chunk, &token, metrics)?
+    let (outcome, observed_row_group_count) = if chunk.resolved_source.uses_host_buffer() {
+        let read = read_object_store_parquet_chunk(context, source, chunk, &cudf_source, &cudf_chunk, &token, metrics)?;
+        (read.outcome, read.observed_row_group_count.and_then(|count| usize::try_from(count).ok()))
     } else {
-        DataFrame::read_parquet_source_chunk_with_budget(
-            context.runtime(),
-            &cudf_source,
-            &cudf_chunk,
-            SourceReadMode::ExecutionFrame,
-            &token,
-        )
-        .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
-                "nexus_query_engine.local_parquet_chunk.read",
-                "failed to read bounded native local parquet source chunk with cudf",
-                error,
+        (
+            DataFrame::read_parquet_source_chunk_with_budget(
+                context.runtime(),
+                &cudf_source,
+                &cudf_chunk,
+                SourceReadMode::ExecutionFrame,
+                &token,
             )
-            .with_fact("path", chunk.path.display())
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("read_columns", chunk.read_columns.len())
-            .with_fact("row_groups", format_row_groups(chunk))
-        })?
+            .map_err(|error| {
+                QueryError::from_cudf_with_budget_details(
+                    "nexus_query_engine.local_parquet_chunk.read",
+                    "failed to read bounded native local parquet source chunk with cudf",
+                    error,
+                )
+                .with_fact("path", chunk.path.display())
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("read_columns", chunk.read_columns.len())
+                .with_fact("row_groups", format_row_groups(chunk))
+            })?,
+            None,
+        )
     };
     metrics.record_budgeted_execution("nexus_query_engine.local_parquet_chunk.read", outcome.report());
     let read_elapsed = read_timer.elapsed();
@@ -493,9 +499,18 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     let frame = apply_source_chunk_scan_limit(context, chunk, frame, metrics)?;
     let frame = append_source_order_columns(context, frame, chunk.chunk_index)?;
+    if !chunk.resolved_source.uses_host_buffer()
+        && chunk.reads_all_row_groups
+        && chunk.row_group_indexes.is_empty()
+        && chunk.known_read_row_group_count().is_none()
+        && let Some(row_group_count) = observed_chunk_row_group_count(chunk)
+    {
+        metrics.row_groups_selected += row_group_count as u64;
+    }
     record_source_chunk_read_runtime(
         source,
         chunk,
+        observed_row_group_count,
         frame.num_rows() as u64,
         read_elapsed,
         reader_dynamic_filter_count,
@@ -707,6 +722,7 @@ fn read_optimized_local_cache_chunk_batch(
 fn record_source_chunk_read_runtime(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
+    observed_row_group_count: Option<usize>,
     output_rows: u64,
     elapsed: Duration,
     reader_dynamic_filter_count: usize,
@@ -723,7 +739,9 @@ fn record_source_chunk_read_runtime(
         first_file_index: chunk.file_index as u64,
         last_file_index: chunk.file_index as u64,
         file_count: 1,
-        row_group_count: chunk.row_group_count() as u64,
+        row_group_count: observed_row_group_count
+            .or_else(|| observed_chunk_row_group_count(chunk))
+            .unwrap_or_else(|| chunk.row_group_count()) as u64,
         read_columns_per_file: chunk.read_columns.len() as u64,
         read_columns_total: chunk.read_columns.len() as u64,
         known_file_bytes: chunk.known_file_bytes.unwrap_or(0),
@@ -741,6 +759,18 @@ fn record_source_chunk_read_runtime(
         source_chunk_planning_reason: chunk.source_chunk_planning_reason.clone(),
         elapsed,
     });
+}
+
+fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Option<usize> {
+    chunk.known_read_row_group_count().or_else(|| {
+        (chunk.reads_all_row_groups && chunk.path.is_file())
+            .then(|| {
+                parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+                    .ok()
+                    .map(|reader| reader.metadata().num_row_groups())
+            })
+            .flatten()
+    })
 }
 
 fn record_source_chunk_batch_read_runtime(

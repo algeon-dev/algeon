@@ -1,3 +1,5 @@
+use parquet::file::reader::FileReader;
+
 use super::*;
 
 pub(super) fn read_join_leaf_source_chunks_serial(
@@ -328,9 +330,14 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
     metrics.record_source_chunk_attempt();
     if let Some(output) = try_read_cached_local_parquet_chunk(context, source, chunk, reservations, metrics)? {
         record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &output.frame, metrics);
-        metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+        metrics.record_source_chunk_commit(committed_join_source_chunk_row_groups(
+            chunk,
+            metrics.row_groups_selected,
+            metrics,
+        ));
         return Ok((output.frame, output.reservation));
     }
+    let selected_row_groups_before_read = metrics.row_groups_selected;
     let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
     let mut reservation = reservations.try_reserve(
         join_source_read_reservation_request(
@@ -426,8 +433,33 @@ pub(super) fn read_join_leaf_source_chunk_attempt(
         return Err(error);
     }
     record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, chunk, &frame, metrics);
-    metrics.record_source_chunk_commit(chunk.row_group_count() as u64);
+    metrics.record_source_chunk_commit(committed_join_source_chunk_row_groups(
+        chunk,
+        selected_row_groups_before_read,
+        metrics,
+    ));
     Ok((frame, reservation))
+}
+
+fn committed_join_source_chunk_row_groups(
+    chunk: &SourceChunk,
+    selected_row_groups_before_read: u64,
+    metrics: &QueryMetrics,
+) -> u64 {
+    if let Some(row_groups) = chunk.known_read_row_group_count() {
+        return row_groups as u64;
+    }
+    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
+    if observed_delta > 0 {
+        return observed_delta;
+    }
+    if chunk.reads_all_row_groups && chunk.path.is_file() {
+        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+            .ok()
+            .map(|reader| reader.metadata().num_row_groups() as u64)
+            .unwrap_or(0);
+    }
+    chunk.row_group_count() as u64
 }
 
 pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(

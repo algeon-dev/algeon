@@ -13,6 +13,7 @@ use super::{
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
+    parquet_metadata::parse_complete_parquet_metadata,
     runtime::S3ObjectStoreKey,
 };
 
@@ -574,7 +575,7 @@ pub(super) fn finish_object_store_parquet_file_fetch(
     metrics.source_read_time += decode_elapsed;
     metrics.parquet_files += 1;
     metrics.parquet_bytes_known += fetch.actual_bytes;
-    metrics.row_groups_selected += file.selected_row_group_count() as u64;
+    metrics.row_groups_selected += fetched_file_row_group_count(file, &fetch);
     metrics.read_columns += source.read_columns.len() as u64;
     metrics.record_input_batch(frame.num_rows() as u64);
     fetch.release_after_decode();
@@ -589,7 +590,7 @@ pub(super) fn read_object_store_parquet_chunk(
     cudf_chunk: &cudf::io::source::SourceChunk,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
-) -> Result<BudgetedExecutionOutcome<DataFrame>> {
+) -> Result<ObjectStoreParquetChunkRead> {
     let estimated_fetch_bytes = chunk.known_file_bytes.or(chunk.estimated_source_read_bytes);
     let mut fetch = if let Some(selector) = ranged_scan_limit_chunk_selector(source, chunk) {
         start_host_parquet_buffer_ranged_fetch(context, &chunk.location, &chunk.resolved_source, selector)?.finish()?
@@ -646,8 +647,66 @@ pub(super) fn read_object_store_parquet_chunk(
         }
     })?;
     metrics.record_source_decode_time(decode_timer.elapsed());
+    let observed_row_group_count = fetched_chunk_row_group_count(chunk, &fetch);
+    if chunk.reads_all_row_groups
+        && chunk.row_group_indexes.is_empty()
+        && let Some(row_group_count) = observed_row_group_count
+    {
+        metrics.row_groups_selected += row_group_count;
+    }
     fetch.release_after_decode();
-    Ok(outcome)
+    Ok(ObjectStoreParquetChunkRead { outcome, observed_row_group_count })
+}
+
+pub(super) struct ObjectStoreParquetChunkRead {
+    pub(super) outcome: BudgetedExecutionOutcome<DataFrame>,
+    pub(super) observed_row_group_count: Option<u64>,
+}
+
+fn fetched_file_row_group_count(file: &LocalParquetFile, fetch: &HostParquetBuffer) -> u64 {
+    if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+        return ranged_fetch.selected_original_row_groups.len() as u64;
+    }
+    if let Some(row_groups) = &file.row_groups {
+        return row_groups.len() as u64;
+    }
+    represented_file_row_group_count(file)
+        .or_else(|| {
+            parse_complete_parquet_metadata(
+                fetch.bytes(),
+                "nexus_query_engine.source_decode.host_buffer_file_metadata",
+                file.path.display(),
+            )
+            .ok()
+            .map(|metadata| metadata.num_row_groups())
+        })
+        .unwrap_or(0) as u64
+}
+
+fn fetched_chunk_row_group_count(chunk: &SourceChunk, fetch: &HostParquetBuffer) -> Option<u64> {
+    if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+        return Some(ranged_fetch.selected_original_row_groups.len() as u64);
+    }
+    chunk.known_read_row_group_count().map(|count| count as u64).or_else(|| {
+        parse_complete_parquet_metadata(
+            fetch.bytes(),
+            "nexus_query_engine.source_decode.host_buffer_chunk_metadata",
+            chunk.path.display(),
+        )
+        .ok()
+        .map(|metadata| metadata.num_row_groups() as u64)
+    })
+}
+
+fn represented_file_row_group_count(file: &LocalParquetFile) -> Option<usize> {
+    file.row_group_bytes
+        .as_ref()
+        .or(file.projected_row_group_uncompressed_bytes.as_ref())
+        .or(file.projected_row_group_compressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
+        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
+        .or(file.row_group_rows.as_ref())
+        .map(Vec::len)
 }
 
 fn ranged_scan_limit_chunk_selector(
@@ -1193,7 +1252,7 @@ fn start_host_parquet_buffer_ranged_fetch(
     let bucket_for_error = fetch_location.bucket.clone();
     let region_for_error = fetch_location.region.clone();
     let (sender, receiver) = std::sync::mpsc::channel();
-    context.spawn_object_store_custom_fetch(
+    let _fetch_handle = context.spawn_object_store_custom_fetch(
         move || ranged_parquet::fetch_ranged_parquet(store, key, selector),
         move |fetch_result| {
             let fetch_elapsed = fetch_result.elapsed;

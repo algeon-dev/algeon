@@ -38,6 +38,7 @@ pub mod expr;
 pub mod metrics;
 pub mod mode;
 pub mod optimizer;
+pub(crate) mod parquet_metadata;
 pub mod pipeline;
 /// DataFusion-free query plan IR and graph operators.
 pub mod plan;
@@ -57,7 +58,8 @@ pub use adaptive_runtime::{
 };
 pub use chunk::{
     SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache, SourceTaskMemoryModel,
-    plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_metadata_cache,
+    plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_execution_context,
+    plan_local_parquet_source_chunks_with_metadata_cache,
 };
 pub use contract_report::{
     StrictBoundedContractGateId, StrictBoundedContractGateRow, StrictBoundedContractOwner, StrictBoundedContractReport,

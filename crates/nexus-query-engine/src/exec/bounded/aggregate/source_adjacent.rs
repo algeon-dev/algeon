@@ -10,6 +10,7 @@ const SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 struct SourceAdjacentPartitionInput {
     chunks: Vec<SourceChunk>,
     partial: CommittedPartial,
+    source_row_group_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -61,7 +62,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
     let mut aggregate_outputs = Vec::with_capacity(partition_count);
 
     let source_batches = source_adjacent_raw_source_batches(context, bounded, chunks);
-    let mut committed_source_batches = Vec::with_capacity(source_batches.len());
+    let mut committed_source_batch_row_groups = Vec::with_capacity(source_batches.len());
     for batch in source_batches {
         let raw_inputs = match execute_source_adjacent_raw_source_batch(context, bounded, batch, reservations, metrics)
         {
@@ -78,7 +79,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
                 context,
                 bounded.aggregate_id,
                 chunk_index,
-                raw,
+                raw.partial,
                 partition_count,
                 &partitioner,
                 reservations,
@@ -93,11 +94,14 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             };
             for (partition_index, partition) in partitions.into_iter().enumerate() {
                 if let Some(partition) = partition {
-                    partition_inputs[partition_index]
-                        .push(SourceAdjacentPartitionInput { chunks: batch_chunks.clone(), partial: partition });
+                    partition_inputs[partition_index].push(SourceAdjacentPartitionInput {
+                        chunks: batch_chunks.clone(),
+                        partial: partition,
+                        source_row_group_count: raw.source_row_group_count,
+                    });
                 }
             }
-            committed_source_batches.push(batch_chunks);
+            committed_source_batch_row_groups.push(raw.source_row_group_count);
         }
         for (partition_index, inputs) in partition_inputs.iter_mut().enumerate() {
             if source_adjacent_partition_batch_ready(context, inputs) {
@@ -144,8 +148,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             },
         }
     }
-    for batch_chunks in committed_source_batches {
-        metrics.record_source_chunk_commit(batch_chunks.iter().map(|chunk| chunk.row_group_count() as u64).sum());
+    for row_group_count in committed_source_batch_row_groups {
+        metrics.record_source_chunk_commit(row_group_count);
     }
 
     execute_final_aggregate_merge(context, bounded, aggregate_outputs, reservations, metrics)
@@ -157,7 +161,7 @@ fn execute_source_adjacent_raw_source_batch(
     batch: SourceChunkBatch,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<Vec<(Vec<SourceChunk>, CommittedPartial)>> {
+) -> Result<Vec<(Vec<SourceChunk>, RawSourceInput)>> {
     context.check_cancellation("nexus_query_engine.exec.bounded.source_adjacent_raw_source_batch_retry")?;
     if batch.is_singleton() {
         let chunk = batch.chunks.into_iter().next().expect("singleton source batch has one child");
@@ -191,12 +195,12 @@ fn execute_source_adjacent_raw_source_batch(
 
 fn release_raw_source_inputs_reverse(
     reservations: &mut ReservationTracker,
-    mut inputs: Vec<(Vec<SourceChunk>, CommittedPartial)>,
+    mut inputs: Vec<(Vec<SourceChunk>, RawSourceInput)>,
     metrics: &mut QueryMetrics,
 ) {
-    while let Some((_chunks, partial)) = inputs.pop() {
-        drop(partial.frame);
-        reservations.release(partial.reservation, metrics);
+    while let Some((_chunks, raw)) = inputs.pop() {
+        drop(raw.partial.frame);
+        reservations.release(raw.partial.reservation, metrics);
     }
 }
 
@@ -244,6 +248,7 @@ fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<SourceChunkBatc
 
 fn source_adjacent_partitioned_aggregate_input_evidence(
     chunks: &[SourceChunk],
+    source_row_group_count: u64,
     partitioner: &SourceAdjacentAggregatePartitioner,
     partition_count: usize,
     non_empty_partition_count: usize,
@@ -252,7 +257,7 @@ fn source_adjacent_partitioned_aggregate_input_evidence(
     PartialAggregateInputEvidence {
         source_chunk_fingerprint: partial_aggregate_source_chunk_fingerprint(chunks),
         source_adjacent_partial: true,
-        source_chunk_row_group_count: chunks.iter().map(|chunk| chunk.row_group_count() as u64).sum(),
+        source_chunk_row_group_count: source_row_group_count,
         source_chunk_reads_all_row_groups: chunks.iter().all(|chunk| chunk.reads_all_row_groups),
         source_chunk_known_row_count: sum_optional_u64(chunks.iter().map(|chunk| chunk.known_row_count)),
         source_chunk_estimated_source_read_bytes: sum_optional_u64(
@@ -269,7 +274,7 @@ fn source_adjacent_partitioned_aggregate_input_evidence(
 
 fn source_adjacent_partition_batch_ready(context: &ExecutionContext, inputs: &[SourceAdjacentPartitionInput]) -> bool {
     inputs.len() >= SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_FAN_IN
-        || inputs.iter().flat_map(|input| input.chunks.iter()).map(|chunk| chunk.row_group_count() as u64).sum::<u64>()
+        || inputs.iter().map(|input| input.source_row_group_count).sum::<u64>()
             >= SOURCE_ADJACENT_PARTITIONED_AGGREGATE_MAX_BATCH_ROW_GROUPS
         || source_adjacent_partition_batch_reserved_bytes(inputs) >= source_adjacent_partition_batch_byte_limit(context)
 }
@@ -316,9 +321,11 @@ fn execute_source_adjacent_partition_aggregate_batch(
     let batch_inputs = std::mem::take(inputs);
     let non_empty_partition_count = usize::from(batch_inputs.iter().any(|input| input.partial.frame.num_rows() > 0));
     let max_partition_fan_in = batch_inputs.len();
+    let source_row_group_count = batch_inputs.iter().map(|input| input.source_row_group_count).sum::<u64>();
     let batch_chunks = batch_inputs.iter().flat_map(|input| input.chunks.iter().cloned()).collect::<Vec<_>>();
     let input_evidence = source_adjacent_partitioned_aggregate_input_evidence(
         &batch_chunks,
+        source_row_group_count,
         partitioner,
         partition_count,
         non_empty_partition_count,
