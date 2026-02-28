@@ -60,6 +60,7 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     let addr = config.bind_addr;
     log_server_config_snapshot(&config);
     warn_if_testing_profile_active(&config);
+    warn_if_cugraph_built_but_disabled(&config);
     let ctx = Arc::new(session::build_session_context(&config).await?);
     let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
     log_auth_mode_snapshot(&config.auth.mode);
@@ -222,6 +223,30 @@ fn cugraph_enabled(config: &ServerConfig) -> bool {
 fn cugraph_enabled(_config: &ServerConfig) -> bool {
     false
 }
+
+/// Emit a one-shot startup WARN when this binary was built with the `cugraph`
+/// feature but cuGraph SQL functions were not enabled at runtime
+/// (`DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED` is not `true`). Without it the
+/// `cugraph_*` table functions are never registered and queries fail with a
+/// not-found error, which is easy to misread as a build problem when the
+/// feature is actually compiled in. The cfg-gated definitions keep this a
+/// no-op on builds without the feature (where the rebuild hint applies instead).
+#[cfg(feature = "cugraph")]
+fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
+    if config.cugraph.is_some() {
+        return;
+    }
+    tracing::warn!(
+        cugraph_enabled = false,
+        "datafusion-nexus Flight SQL server was built with the `cugraph` feature \
+         but cuGraph SQL functions are disabled at runtime, so they will not be \
+         registered. Set DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED=true to register \
+         the cugraph_* table functions."
+    );
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn warn_if_cugraph_built_but_disabled(_config: &ServerConfig) {}
 
 #[cfg(feature = "cugraph")]
 fn cugraph_registry_algorithm_count() -> usize {

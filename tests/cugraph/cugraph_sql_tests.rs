@@ -66,9 +66,10 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
     let batches = ctx
         .sql(
             "SELECT function_name, enabled, requires_source_vertex, output_schema_json, \
-                    summary, supports_weight, options_schema_json \
+                    summary, supports_weight, weight_col_policy, output_schema_kind, \
+                    has_mode_schemas, options_schema_json \
              FROM cugraph_list_algorithms() \
-             WHERE function_name IN ('cugraph_pagerank', 'cugraph_bfs') \
+             WHERE function_name IN ('cugraph_pagerank', 'cugraph_bfs', 'cugraph_minimum_spanning_tree', 'cugraph_sssp') \
              ORDER BY function_name",
         )
         .await
@@ -83,11 +84,36 @@ async fn cugraph_metadata_list_algorithms_reports_allowlist_state() {
     assert!(bool_value(batch, 2, 0), "BFS must advertise its source_vertex requirement");
     assert!(string_value(batch, 4, 0).contains("breadth-first"));
     assert!(bool_value(batch, 5, 0), "BFS accepts a weight_col binding even though traversal ignores it");
-    assert!(string_value(batch, 6, 0).contains(r#""output_mode""#));
-    assert!(string_value(batch, 6, 0).contains(r#""allowed_values":["raw","normalized","path"]"#));
-    assert_eq!(string_value(batch, 0, 1), "cugraph_pagerank");
-    assert!(bool_value(batch, 1, 1));
-    assert!(string_value(batch, 3, 1).contains(r#""vertex""#));
+    assert_eq!(string_value(batch, 6, 0), "ignored");
+    assert_eq!(string_value(batch, 7, 0), "default_mode");
+    assert!(bool_value(batch, 8, 0));
+    let bfs_options = json_value(string_value(batch, 9, 0));
+    assert_eq!(bfs_options["algorithm_options"]["output_mode"]["type"], "Utf8");
+    assert_eq!(bfs_options["algorithm_options"]["output_mode"]["default"], "raw");
+    assert_eq!(
+        bfs_options["algorithm_options"]["output_mode"]["allowed_values"],
+        serde_json::json!(["raw", "normalized", "path"])
+    );
+
+    assert_eq!(string_value(batch, 0, 1), "cugraph_minimum_spanning_tree");
+    assert_eq!(string_value(batch, 6, 1), "required");
+    assert_eq!(string_value(batch, 7, 1), "fixed");
+    assert!(!bool_value(batch, 8, 1));
+
+    assert_eq!(string_value(batch, 0, 2), "cugraph_pagerank");
+    assert!(bool_value(batch, 1, 2));
+    assert!(string_value(batch, 3, 2).contains(r#""vertex""#));
+    assert_eq!(string_value(batch, 6, 2), "ignored");
+    assert_eq!(string_value(batch, 7, 2), "fixed");
+    assert!(!bool_value(batch, 8, 2));
+    let pagerank_options = json_value(string_value(batch, 9, 2));
+    assert_eq!(pagerank_options["graph_options"]["directed"]["type"], "Boolean");
+    assert_eq!(pagerank_options["graph_options"]["construction_policy"]["allowed_values"][0], "python_cugraph");
+    assert_eq!(pagerank_options["algorithm_options"]["alpha"]["scope"], "algorithm");
+    assert_eq!(pagerank_options["algorithm_options"]["alpha"]["type"], "Float64");
+
+    assert_eq!(string_value(batch, 0, 3), "cugraph_sssp");
+    assert_eq!(string_value(batch, 6, 3), "optional");
 }
 
 #[tokio::test]
@@ -133,8 +159,8 @@ async fn cugraph_metadata_describe_algorithm_returns_structured_rows() {
 
 #[tokio::test]
 async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
-    assert_eq!(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, 3);
-    assert_eq!(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, 3);
+    assert_eq!(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, 4);
+    assert_eq!(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION, 4);
     assert_eq!(CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION, 1);
 
     let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
@@ -156,8 +182,17 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "options_schema_json",
             "default_graph_options_json",
             "summary",
+            "weight_col_policy",
+            "output_schema_kind",
+            "has_mode_schemas",
+            "metadata_schema_version",
         ],
     );
+    let list_batches = list_df.collect().await.unwrap();
+    let list_batch = single_batch(&list_batches);
+    assert!(list_batch.num_rows() > 0);
+    let version_column = list_batch.schema().index_of("metadata_schema_version").unwrap();
+    assert_eq!(int64_value(list_batch, version_column, 0), i64::from(CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION));
 
     let describe_df = ctx.sql("SELECT * FROM cugraph_describe_algorithm('cugraph_bfs')").await.unwrap();
     assert_eq!(
@@ -185,8 +220,13 @@ async fn cugraph_metadata_schema_versions_and_column_order_are_pinned() {
             "purpose",
             "mode_schemas_json",
             "examples_json",
+            "metadata_schema_version",
         ],
     );
+    let describe_batches = describe_df.collect().await.unwrap();
+    let describe_batch = single_batch(&describe_batches);
+    let version_column = describe_batch.schema().index_of("metadata_schema_version").unwrap();
+    assert_eq!(int64_value(describe_batch, version_column, 0), i64::from(CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION));
 }
 
 #[tokio::test]
@@ -867,6 +907,28 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             lit("src"),
             lit("dst"),
             datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"depth_limit":null}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Bfs(datafusion_nexus::CugraphBfsParams {
+            source_vertex: CugraphBfsSourceVertex::Int64(42),
+            depth_limit: None,
+            ..Default::default()
+        })
+    );
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(42_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
             lit(r#"{"output_mode":"normalized"}"#),
         ],
         &config,
@@ -1226,6 +1288,23 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(
         spec.params,
         CugraphAlgorithmParams::Sssp(datafusion_nexus::CugraphSsspParams { source_vertex: 5, cutoff: Some(10.5) }),
+    );
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Sssp,
+        &[
+            lit("graph_edges"),
+            lit(5_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"cutoff":null}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    assert_eq!(
+        spec.params,
+        CugraphAlgorithmParams::Sssp(datafusion_nexus::CugraphSsspParams { source_vertex: 5, cutoff: None }),
     );
     // cutoff < 0 rejected.
     assert_error_contains(
@@ -2874,12 +2953,20 @@ fn schema_field_names(schema: &Schema) -> Vec<&str> {
     schema.fields().iter().map(|field| field.name().as_str()).collect()
 }
 
+fn json_value(value: &str) -> serde_json::Value {
+    serde_json::from_str(value).unwrap()
+}
+
 fn string_value(batch: &RecordBatch, column: usize, row: usize) -> &str {
     batch.column(column).as_any().downcast_ref::<StringArray>().unwrap().value(row)
 }
 
 fn bool_value(batch: &RecordBatch, column: usize, row: usize) -> bool {
     batch.column(column).as_any().downcast_ref::<BooleanArray>().unwrap().value(row)
+}
+
+fn int64_value(batch: &RecordBatch, column: usize, row: usize) -> i64 {
+    batch.column(column).as_any().downcast_ref::<Int64Array>().unwrap().value(row)
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

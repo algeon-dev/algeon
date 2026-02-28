@@ -31,8 +31,8 @@ pub const CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION: &str = "cugraph_balanced_cut
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
-pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 3;
-pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 3;
+pub const CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION: u32 = 4;
+pub const CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION: u32 = 4;
 pub const CUGRAPH_VALIDATE_CALL_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
