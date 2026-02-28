@@ -407,6 +407,12 @@ pub(super) fn analyze_keyless_conditional_join_aggregate_over_join_subplan_input
     if let Some(final_sort_id) = shape.final_sort_id {
         required.push(InvariantSelector::FinalBarrierOrder { sort_id: final_sort_id });
     }
+    if let Some(shared_producer) = shape.scalar_aggregate_shared_producer_id {
+        required.push(InvariantSelector::AggregateDerivesFromSharedProducer {
+            shared_producer,
+            aggregate_id: shape.scalar_aggregate_id,
+        });
+    }
 
     for kind in required {
         match solved_invariant_decision(invariants, kind) {

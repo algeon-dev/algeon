@@ -19,7 +19,7 @@ use super::{
     compiled::execute_compiled_pipeline_to_host,
 };
 use crate::{
-    capability::CapabilityAnalysis,
+    capability::{CapabilityAnalysis, CapabilityRejectionProjection, StrictBoundedEnvelope},
     error::{QueryError, QueryErrorCode, Result},
     exec::types::{GpuResidentInputMap, QueryOutput},
     metrics::QueryMetrics,
@@ -36,6 +36,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct StrictBoundedPipelineAdmission {
     analysis: CapabilityAnalysis,
+    envelope: StrictBoundedEnvelope,
     pipeline: CompiledPipeline,
 }
 
@@ -48,6 +49,11 @@ impl StrictBoundedPipelineAdmission {
     /// Compiled pipeline admitted for strict bounded execution.
     pub fn pipeline(&self) -> &CompiledPipeline {
         &self.pipeline
+    }
+
+    /// Strict bounded envelope selected by capability admission.
+    pub const fn envelope(&self) -> StrictBoundedEnvelope {
+        self.envelope
     }
 
     /// Native pipeline mode represented by this admission.
@@ -79,9 +85,30 @@ pub fn strict_bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<Stri
     }
 }
 
+/// Returns the shared strict bounded rejection projection for a join plan.
+///
+/// This mirrors the strict/adaptive capability-first admission path without
+/// converting compiled-runtime ownership failures into execution errors, so
+/// report surfaces can project the same rejection evidence.
+pub fn strict_bounded_pipeline_rejection_projection(plan: &QueryPlan) -> Result<Option<CapabilityRejectionProjection>> {
+    let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
+        return Ok(None);
+    };
+    Ok(admission.rejection_projection().cloned())
+}
+
 fn strict_admission_from_capability_first(
     admission: CapabilityFirstPipelineAdmission,
 ) -> Result<StrictBoundedPipelineAdmission> {
+    let envelope = admission.envelope().ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.bounded.strict_admission",
+            "admitted strict bounded candidate must include a selected envelope",
+        )
+        .with_fact("execution_mode", NativePipelineExecutionMode::StrictBounded.as_str())
+        .with_fact("candidate_status", "admitted")
+    })?;
     let (analysis, pipeline) = admission.into_parts();
     let pipeline = pipeline.ok_or_else(|| {
         QueryError::new(
@@ -92,7 +119,7 @@ fn strict_admission_from_capability_first(
         .with_fact("execution_mode", NativePipelineExecutionMode::StrictBounded.as_str())
         .with_fact("candidate_status", "admitted")
     })?;
-    Ok(StrictBoundedPipelineAdmission { analysis, pipeline })
+    Ok(StrictBoundedPipelineAdmission { analysis, envelope, pipeline })
 }
 
 pub(in crate::exec) fn try_execute_strict_bounded_pipeline(

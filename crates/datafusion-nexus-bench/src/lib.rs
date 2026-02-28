@@ -8,6 +8,9 @@
 pub mod tpch_benchmark;
 pub mod workload;
 
+#[cfg(feature = "iceberg")]
+pub mod iceberg_smoke;
+
 pub use clickbench::{
     CLICKBENCH_QUERIES, CLICKBENCH_QUERY_COUNT, CLICKBENCH_RAW_TABLE, CLICKBENCH_TABLE,
     CUDF_CLICKBENCH_CONTENT_FINGERPRINT_ENV, CUDF_CLICKBENCH_GENERATION_COMMAND_ENV,

@@ -12,12 +12,13 @@ use crate::{
 pub(crate) fn bounded_join_unsupported_shape_facts(
     plan: &QueryPlan,
     boundary_policy: ExecutionBoundaryPolicy,
+    rejection_projection: Option<&CapabilityRejectionProjection>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
     let analysis = plan.capability_analysis();
     insert_capability_reservation_facts(&mut facts, &analysis);
     insert_join_strategy_facts(&mut facts, plan);
-    insert_local_rejection_facts(&mut facts, &analysis);
+    insert_local_rejection_facts(&mut facts, &analysis, rejection_projection);
     facts
 }
 
@@ -108,12 +109,17 @@ fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str
     }
 }
 
-fn insert_local_rejection_facts(facts: &mut BTreeMap<&'static str, String>, analysis: &CapabilityAnalysis) {
-    if let Some(rejection) = analysis.first_rejection_projection() {
+fn insert_local_rejection_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    analysis: &CapabilityAnalysis,
+    rejection_projection: Option<&CapabilityRejectionProjection>,
+) {
+    let analysis_projection = analysis.first_rejection_projection();
+    if let Some(rejection) = rejection_projection.or(analysis_projection.as_ref()) {
         facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
         facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));
         facts.insert("bounded_join_rejection_boundary", rejection.memory_boundary.to_string());
-        facts.insert("bounded_join_rejection_category", rejection_category(&rejection).to_string());
+        facts.insert("bounded_join_rejection_category", rejection.category.as_str().to_string());
         facts.insert("bounded_join_rejection_reason", rejection.reason.to_string());
         facts.insert("bounded_join_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
         return;
@@ -133,27 +139,6 @@ fn rejection_owner_fact(owner: &CapabilityRejectionOwner) -> String {
         CapabilityRejectionOwner::Edge { producer, consumer } => format!("edge:{producer}->{consumer:?}"),
         CapabilityRejectionOwner::Invariant(invariant_id) => format!("invariant:i{}", invariant_id.index()),
         CapabilityRejectionOwner::Admission(admission) => format!("admission:{admission}"),
-    }
-}
-
-fn rejection_category(rejection: &CapabilityRejectionProjection) -> &'static str {
-    if rejection.reason == "blocked_lower_level_contract" || rejection.memory_boundary == "lower_level_contract" {
-        return "missing_lower_level_contract";
-    }
-    if rejection.facts.contains_key("expression_family") {
-        return "unsupported_expression_family";
-    }
-    if rejection.facts.contains_key("data_type")
-        || rejection.facts.contains_key("dtype")
-        || rejection.reason.contains("data_type")
-        || rejection.reason.contains("dtype")
-    {
-        return "unsupported_arrow_dtype";
-    }
-    match rejection.owner {
-        CapabilityRejectionOwner::Node(_) => "unsupported_node_operator",
-        CapabilityRejectionOwner::Edge { .. } => "missing_edge_contract",
-        CapabilityRejectionOwner::Invariant(_) | CapabilityRejectionOwner::Admission(_) => "missing_subgraph_invariant",
     }
 }
 

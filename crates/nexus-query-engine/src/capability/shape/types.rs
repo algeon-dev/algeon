@@ -43,11 +43,12 @@ pub(in crate::capability) struct HashJoinResidentGroupedAggregateInputPostJoinAg
 ///
 /// The stored ids pin the root join, aggregate-over-join branch and projection,
 /// and the projection/sort/limit stages that consume the joined resident result.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(in crate::capability) struct MultiJoinAggregateOverJoinSubplanTopKShape {
     pub(in crate::capability) root_join_id: NodeId,
     pub(in crate::capability) aggregate_id: NodeId,
     pub(in crate::capability) aggregate_projection_id: NodeId,
+    pub(in crate::capability) post_root_join_ids: Vec<NodeId>,
     pub(in crate::capability) post_root_projection_id: NodeId,
     pub(in crate::capability) final_sort_id: NodeId,
     pub(in crate::capability) final_limit_id: NodeId,
@@ -92,6 +93,7 @@ pub(in crate::capability) struct KeylessConditionalJoinAggregateOverJoinSubplanI
     pub(in crate::capability) grouped_aggregate_projection_id: NodeId,
     pub(in crate::capability) scalar_aggregate_id: NodeId,
     pub(in crate::capability) scalar_aggregate_projection_id: NodeId,
+    pub(in crate::capability) scalar_aggregate_shared_producer_id: Option<NodeId>,
     pub(in crate::capability) post_root_projection_id: Option<NodeId>,
     pub(in crate::capability) final_sort_id: Option<NodeId>,
 }

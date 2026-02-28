@@ -9,8 +9,9 @@ use std::fmt;
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistorySummary,
     capability::{
-        CapabilityAnalysis, CapabilityRejectionOwner, ContractQuality, ContractStatus, EdgeConsumer,
-        ReservationRequirement, ReservationRequirementScope, ResultSinkKind, lower_level_unresolved_preflight_gap,
+        CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
+        EdgeConsumer, ReservationRequirement, ReservationRequirementScope, ResultSinkKind,
+        lower_level_unresolved_preflight_gap,
     },
     error::{QueryError, QueryErrorCode, Result},
     exec::QueryOutputMode,
@@ -42,6 +43,7 @@ impl AdaptivePipelineReport {
         adaptive_strategy: AdaptiveStrategy,
         runtime_evidence: AdaptiveAdmissionRuntimeEvidence,
         rejection_reason: Option<&'static str>,
+        rejection_projection: Option<&CapabilityRejectionProjection>,
     ) -> Result<Self> {
         let execution_mode = match candidate_status {
             AdaptiveCandidateStatus::Admitted => AdaptiveExecutionMode::Adaptive,
@@ -53,6 +55,7 @@ impl AdaptivePipelineReport {
             missing_strict_contracts: missing_strict_contracts(
                 analysis,
                 candidate_status == AdaptiveCandidateStatus::Rejected,
+                rejection_projection,
             ),
             adaptive_strategy,
             runtime_actions_allowed: runtime_evidence.runtime_actions_allowed,
@@ -393,9 +396,8 @@ impl AdaptiveMissingStrictContract {
         })
     }
 
-    fn from_rejection_projection(analysis: &CapabilityAnalysis) -> Option<Self> {
-        let projection = analysis.first_rejection_projection()?;
-        Some(Self {
+    fn from_rejection_projection(projection: &CapabilityRejectionProjection) -> Self {
+        Self {
             contract_scope: projection.contract_scope,
             owner: capability_rejection_owner_label(&projection.owner),
             reservation_kind: ReservationKind::CapabilityContract,
@@ -404,7 +406,7 @@ impl AdaptiveMissingStrictContract {
             contract_status: ContractStatus::RejectedByCapability,
             contract_quality: ContractQuality::CapabilityProof,
             unresolved_preflight_gap: None,
-        })
+        }
     }
 
     fn to_stable_value(&self) -> String {
@@ -425,6 +427,7 @@ impl AdaptiveMissingStrictContract {
 fn missing_strict_contracts(
     analysis: &CapabilityAnalysis,
     include_rejection_projection: bool,
+    rejection_projection: Option<&CapabilityRejectionProjection>,
 ) -> Vec<AdaptiveMissingStrictContract> {
     let mut missing = Vec::new();
     for node in &analysis.nodes {
@@ -454,11 +457,18 @@ fn missing_strict_contracts(
             AdaptiveMissingStrictContract::from_requirement("analysis:flattened_requirement".to_string(), requirement)
         }));
     }
-    if include_rejection_projection
-        && missing.is_empty()
-        && let Some(rejection) = AdaptiveMissingStrictContract::from_rejection_projection(analysis)
-    {
-        missing.push(rejection);
+    if include_rejection_projection && missing.is_empty() {
+        let analysis_projection;
+        let projection = match rejection_projection {
+            Some(projection) => Some(projection),
+            None => {
+                analysis_projection = analysis.first_rejection_projection();
+                analysis_projection.as_ref()
+            },
+        };
+        if let Some(projection) = projection {
+            missing.push(AdaptiveMissingStrictContract::from_rejection_projection(projection));
+        }
     }
     missing
 }

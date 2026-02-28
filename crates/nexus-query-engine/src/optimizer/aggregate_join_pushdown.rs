@@ -5,11 +5,12 @@ use std::{
 
 use arrow::datatypes::{Field, Schema, SchemaRef};
 
+use super::rewrite;
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, CaseWhen, ColumnRef, Expr},
     plan::{
         AggregateNode, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode,
-        ProjectionNode, QueryNode, QueryPlan, ResultSink, SchemaBehavior,
+        ProjectionNode, QueryNode, QueryPlan, SchemaBehavior,
     },
 };
 
@@ -126,8 +127,8 @@ pub(crate) fn optimize_aggregate_join_pushdown(
         return AggregateJoinPushdownResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let (nodes, new_root) = compact_reachable_rewritten_nodes(rewriter.nodes, new_root);
-    let sink = rewrite_sink(plan.sink(), new_root);
+    let (nodes, new_root) = rewrite::compact_reachable_rewritten_nodes(rewriter.nodes, new_root);
+    let sink = rewrite::rewrite_sink(plan.sink(), new_root);
     AggregateJoinPushdownResult {
         plan: QueryPlan::from_rewritten_parts(nodes, new_root, sink),
         change: super::NativeOptimizerChange::Changed,
@@ -478,59 +479,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
     }
 
     fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = self.rewrite_subtree(filter.input);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = self.rewrite_subtree(projection.input);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = self.rewrite_subtree(aggregate.input);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = self.rewrite_subtree(window.input);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = self.rewrite_subtree(sort.input);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = self.rewrite_subtree(limit.input);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let mut union = union.clone();
-                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
-                PlanNode::Union(union)
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = self.rewrite_subtree(edge_normalize.input);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = self.rewrite_subtree(graph.input);
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
@@ -1117,68 +1066,6 @@ fn join_key_for_side(key: &JoinKey, side: JoinSide) -> &ColumnRef {
         JoinSide::Left => &key.left,
         JoinSide::Right => &key.right,
     }
-}
-
-fn rewrite_sink(sink: &ResultSink, root: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input: root },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input: root, schema: schema.clone() },
-    }
-}
-
-fn compact_reachable_rewritten_nodes(nodes: Vec<QueryNode>, root: NodeId) -> (Vec<QueryNode>, NodeId) {
-    let mut reachable = vec![false; nodes.len()];
-    let mut stack = vec![root];
-    while let Some(id) = stack.pop() {
-        let Some(node) = nodes.get(id.index()) else {
-            continue;
-        };
-        if reachable[id.index()] {
-            continue;
-        }
-        reachable[id.index()] = true;
-        stack.extend(node.input_ids().iter().copied());
-    }
-
-    let mut remap = BTreeMap::new();
-    for node in nodes.iter().filter(|node| reachable[node.id.index()]) {
-        remap.insert(node.id, NodeId::from_index_for_internal_use(remap.len()));
-    }
-    let new_root = *remap.get(&root).expect("rewritten root must be reachable");
-    let compacted = nodes
-        .into_iter()
-        .filter(|node| reachable[node.id.index()])
-        .map(|node| {
-            let id = *remap.get(&node.id).expect("reachable node must have a remapped id");
-            QueryNode { id, kind: remap_plan_node_inputs(node.kind, &remap), facts: node.facts }
-        })
-        .collect::<Vec<_>>();
-    (compacted, new_root)
-}
-
-fn remap_plan_node_inputs(mut kind: PlanNode, remap: &BTreeMap<NodeId, NodeId>) -> PlanNode {
-    match &mut kind {
-        PlanNode::Source(_) => {},
-        PlanNode::Filter(filter) => filter.input = remap_node_id(filter.input, remap),
-        PlanNode::Projection(projection) => projection.input = remap_node_id(projection.input, remap),
-        PlanNode::Aggregate(aggregate) => aggregate.input = remap_node_id(aggregate.input, remap),
-        PlanNode::Window(window) => window.input = remap_node_id(window.input, remap),
-        PlanNode::Sort(sort) => sort.input = remap_node_id(sort.input, remap),
-        PlanNode::Limit(limit) => limit.input = remap_node_id(limit.input, remap),
-        PlanNode::Join(join) => {
-            join.inputs = [remap_node_id(join.inputs[0], remap), remap_node_id(join.inputs[1], remap)];
-        },
-        PlanNode::Union(union) => {
-            union.inputs = union.inputs.iter().map(|input| remap_node_id(*input, remap)).collect();
-        },
-        PlanNode::EdgeNormalize(edge_normalize) => edge_normalize.input = remap_node_id(edge_normalize.input, remap),
-        PlanNode::GraphAlgorithm(graph) => graph.input = remap_node_id(graph.input, remap),
-    }
-    kind
-}
-
-fn remap_node_id(id: NodeId, remap: &BTreeMap<NodeId, NodeId>) -> NodeId {
-    *remap.get(&id).expect("reachable input node must have a remapped id")
 }
 
 const fn join_side_index(side: JoinSide) -> usize {

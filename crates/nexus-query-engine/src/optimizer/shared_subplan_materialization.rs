@@ -5,11 +5,12 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema};
 
+use super::rewrite;
 use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr},
     plan::{
         AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        ProjectionOutput, QueryNode, QueryPlan, ResultSink, SchemaBehavior, UnionNode,
+        ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
     source::{LocalParquetSource, ParquetSourceLocation, SourceNode},
 };
@@ -146,7 +147,7 @@ pub(crate) fn optimize_shared_subplan_materialization(
     let mut diagnostics = scalar_derivation.diagnostics;
     diagnostics.merge(rewriter.diagnostics);
     let changed = rewriter.changed;
-    let new_sink = sink_with_input(&sink, new_root);
+    let new_sink = rewrite::sink_with_input(&sink, new_root);
     let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
     let change = if changed || scalar_derivation.change.changed() {
         super::NativeOptimizerChange::Changed
@@ -178,7 +179,7 @@ fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> SharedSu
     let sink = plan.sink().clone();
     let mut rewriter = ScalarAggregateDerivationRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(root);
-    let new_sink = sink_with_input(&sink, new_root);
+    let new_sink = rewrite::sink_with_input(&sink, new_root);
     let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
     SharedSubplanMaterializationResult {
         plan: rewritten_plan,
@@ -193,7 +194,7 @@ struct ScalarAggregateDerivationDiscovery {
 }
 
 fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan) -> ScalarAggregateDerivationDiscovery {
-    let reachable = sink_reachable_nodes(plan);
+    let reachable = rewrite::sink_reachable_nodes(plan);
     let aggregates = plan
         .nodes()
         .iter()
@@ -482,60 +483,7 @@ impl<'a> ScalarAggregateDerivationRewriter<'a> {
     }
 
     fn clone_kind_with_rewritten_inputs(&mut self, kind: &PlanNode) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = self.rewrite_subtree(filter.input);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = self.rewrite_subtree(projection.input);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = self.rewrite_subtree(aggregate.input);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = self.rewrite_subtree(window.input);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = self.rewrite_subtree(sort.input);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = self.rewrite_subtree(limit.input);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let mut union = union.clone();
-                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
-                PlanNode::Union(union)
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = self.rewrite_subtree(edge_normalize.input);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = self.rewrite_subtree(graph.input);
-                graph.inputs = graph.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
@@ -871,7 +819,7 @@ fn shared_aggregate_family_rewrite_plan(
 
     // Reject disconnected candidates early so diagnostics do not claim an applied
     // rewrite that the sink-reachable clone cannot observe.
-    let reachable = sink_reachable_nodes(plan);
+    let reachable = rewrite::sink_reachable_nodes(plan);
     if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
         return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
     }
@@ -1014,7 +962,7 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         });
     }
 
-    let reachable = sink_reachable_nodes(plan);
+    let reachable = rewrite::sink_reachable_nodes(plan);
     if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
         return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
     }
@@ -1367,58 +1315,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         kind: &PlanNode,
         mut rewrite_input: impl FnMut(&mut Self, NodeId) -> NodeId,
     ) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = rewrite_input(self, filter.input);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = rewrite_input(self, projection.input);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = rewrite_input(self, aggregate.input);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = rewrite_input(self, window.input);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = rewrite_input(self, sort.input);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = rewrite_input(self, limit.input);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [rewrite_input(self, join.inputs[0]), rewrite_input(self, join.inputs[1])];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let inputs = union.inputs.iter().map(|input| rewrite_input(self, *input)).collect();
-                PlanNode::Union(UnionNode { inputs })
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = rewrite_input(self, edge_normalize.input);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = rewrite_input(self, graph.input);
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| rewrite_input(self, input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: PlanFacts) -> NodeId {
@@ -1426,27 +1323,6 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         self.nodes.push(QueryNode { id, kind, facts });
         id
     }
-}
-
-fn sink_with_input(sink: &ResultSink, input: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input, schema: schema.clone() },
-    }
-}
-
-fn sink_reachable_nodes(plan: &QueryPlan) -> BTreeSet<NodeId> {
-    let mut reachable = BTreeSet::new();
-    let mut stack = vec![plan.sink().input()];
-    while let Some(node_id) = stack.pop() {
-        if !reachable.insert(node_id) {
-            continue;
-        }
-        if let Some(node) = plan.node(node_id) {
-            stack.extend(node.input_ids().iter().copied());
-        }
-    }
-    reachable
 }
 
 fn scalar_count_aggregate_supported(spec: &AggregateSpec) -> bool {

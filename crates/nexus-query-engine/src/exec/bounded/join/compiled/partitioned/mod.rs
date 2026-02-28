@@ -1,9 +1,11 @@
 use super::*;
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
 
+mod driver;
 mod hash_equi;
 mod mixed_keyed;
 
+use driver::*;
 pub(super) use hash_equi::{
     execute_compiled_partitioned_hash_equi_join_materialize,
     execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream,
@@ -154,12 +156,22 @@ pub(super) fn hash_partition_join_side(
     let BoundedJoinSideFrame { frame, _reservation: input_reservation, rows: _, bytes } = input;
     let boundary =
         if side == JoinSide::Left { "join_hash_partitioned_left_side" } else { "join_hash_partitioned_right_side" };
-    let mut reservation = reservations.try_reserve(
+    let mut reservation = match reservations.try_reserve(
         bounded_join_request(ReservationKind::OperatorOutput, boundary, bytes, reservations.budget(), node_id),
         metrics,
-    )?;
-    reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics)?;
-    let partitioned = frame
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_partition_input(frame, input_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
+    if let Err(error) = reservations.reclaim_source_cache_for_external_working_set(reservations.budget(), metrics) {
+        reservations.release(reservation, metrics);
+        release_partition_input(frame, input_reservation, reservations, metrics);
+        return Err(error);
+    }
+    let partitioned = match frame
         .with_execution(overrides)
         .hash_partition_by(keys.iter().map(String::as_str), partition_count)
         .map_err(|error| {
@@ -171,24 +183,55 @@ pub(super) fn hash_partition_join_side(
             .with_fact("side", side)
             .with_fact("key_count", keys.len())
             .with_fact("partition_count", partition_count)
-        })?;
+        }) {
+        Ok(partitioned) => partitioned,
+        Err(error) => {
+            reservations.release(reservation, metrics);
+            release_partition_input(frame, input_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
     let (partitioned, offsets) = partitioned.into_parts();
     let partitioned_frame = GpuDataFrame::new(partitioned.clone());
-    let partitioned_bytes = observe_device_memory_bytes(&partitioned_frame, metrics)?;
+    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(partitioned_frame);
+            drop(partitioned);
+            reservations.release(reservation, metrics);
+            release_partition_input(frame, input_reservation, reservations, metrics);
+            return Err(error);
+        },
+    };
     if partitioned_bytes > reservation.bytes() {
         let delta = partitioned_bytes.saturating_sub(reservation.bytes());
-        reservations.try_grow(
+        if let Err(error) = reservations.try_grow(
             &mut reservation,
             bounded_join_request(ReservationKind::OperatorOutput, boundary, delta, reservations.budget(), node_id),
             metrics,
-        )?;
+        ) {
+            drop(partitioned_frame);
+            drop(partitioned);
+            reservations.release(reservation, metrics);
+            release_partition_input(frame, input_reservation, reservations, metrics);
+            return Err(error);
+        }
     } else {
         reservations.shrink_to_observed(&mut reservation, partitioned_bytes, metrics);
     }
-    drop(frame);
-    drop(input_reservation);
+    release_partition_input(frame, input_reservation, reservations, metrics);
     let _ = context;
     Ok(PartitionedJoinSide { frame: partitioned, reservation, offsets })
+}
+
+fn release_partition_input(
+    frame: DataFrame,
+    reservation: ActiveReservation,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) {
+    drop(frame);
+    reservations.release(reservation, metrics);
 }
 
 pub(super) fn release_partitioned_join_side(

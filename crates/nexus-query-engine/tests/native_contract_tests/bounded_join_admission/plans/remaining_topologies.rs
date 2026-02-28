@@ -14,6 +14,7 @@ pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
 pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     Admitted,
     MissingFetchLimit,
+    PostRootFilteringJoin,
     ScalarAggregateSubplan,
     ShallowMultiJoinSide,
     UnsupportedPostRootProjectionExpression,
@@ -34,6 +35,7 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     let left_tree = match variant {
         AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => ab,
         AggregateOverJoinSubplanTopKVariant::Admitted
+        | AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin
         | AggregateOverJoinSubplanTopKVariant::MissingFetchLimit
         | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan
         | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression => {
@@ -47,6 +49,7 @@ fn aggregate_over_join_subplan_topk_plan_inner(
             scalar_aggregate(&mut builder, aggregate_join_input)
         },
         AggregateOverJoinSubplanTopKVariant::Admitted
+        | AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin
         | AggregateOverJoinSubplanTopKVariant::MissingFetchLimit
         | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression
         | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide => {
@@ -55,6 +58,12 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     };
     let aggregate_projection = project_key_value(&mut builder, aggregate);
     let root = join(&mut builder, left_tree, aggregate_projection, "root");
+    let root = if matches!(variant, AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin) {
+        let post_root_filter = source(&mut builder, "aggregate-over-join-topk-post-root-filter");
+        join(&mut builder, root, post_root_filter, "post_root_filter")
+    } else {
+        root
+    };
     let projection = if matches!(variant, AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression)
     {
         builder.add_projection(
@@ -72,6 +81,7 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     match variant {
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit => builder.finish_with_host_sink(sort),
         AggregateOverJoinSubplanTopKVariant::Admitted
+        | AggregateOverJoinSubplanTopKVariant::PostRootFilteringJoin
         | AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan
         | AggregateOverJoinSubplanTopKVariant::ShallowMultiJoinSide
         | AggregateOverJoinSubplanTopKVariant::UnsupportedPostRootProjectionExpression => {

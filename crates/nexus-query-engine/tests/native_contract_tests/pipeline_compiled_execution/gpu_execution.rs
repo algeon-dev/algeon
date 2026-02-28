@@ -109,7 +109,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
 }
 
 #[test]
-fn execute_query_plan_routes_grouped_aggregate_join_build_input_through_compiled_pipeline() {
+fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_envelope() {
     let Ok(runtime) = cudf::Runtime::new() else {
         return;
     };
@@ -134,30 +134,17 @@ fn execute_query_plan_routes_grouped_aggregate_join_build_input_through_compiled
     );
     let context = bounded_context(Arc::new(runtime));
 
-    let result = execute_query_plan(&context, &plan)
-        .expect("D.3.3 grouped aggregate join-build input should execute through compiled path");
-    let batch = result.output().as_host_arrow().expect("compiled output should be host Arrow");
-    let metrics = result.metrics();
-
-    assert_eq!(batch.num_rows(), 2);
-    assert_eq!(int32_int64_pairs_sorted(batch, 0, 1), vec![(Some(1), Some(15)), (Some(2), Some(20))]);
-    assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    assert_eq!(metrics.compiled_pipeline_tasks_executed, pipeline.tasks().len() as u64);
-    assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert_eq!(metrics.dynamic_filter_produced_count, 1);
-    assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.hash_join_build_count, 1);
-    assert_eq!(metrics.one_shot_join_count, 0);
-    let join_strategies = metrics
-        .operators
-        .iter()
-        .filter_map(|operator| operator.join.as_ref())
-        .map(|join| join.execution_strategy.as_str())
-        .collect::<Vec<_>>();
-    assert!(
-        join_strategies.contains(&"bounded_reusable_hash_join_single_pass_probe"),
-        "join strategies: {join_strategies:?}"
+    let error = match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("D.3.3 grouped aggregate join-build input needs explicit strict envelope admission"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code(), nexus_query_engine::QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("bounded_join_rejection_boundary"), Some("admission_capability"));
+    assert_eq!(
+        error.fact_value("bounded_join_rejection_reason"),
+        Some("source_leaf_pipeline_requires_source_filter_projection")
     );
+    assert_eq!(error.fact_value("bounded_join_rejection_category"), Some("missing_subgraph_invariant"));
 }
 
 #[test]
@@ -467,6 +454,36 @@ fn execute_query_plan_rejects_admitted_join_when_compiled_runtime_cannot_own_sin
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_join());
+    let rejection_projection = nexus_query_engine::strict_bounded_pipeline_rejection_projection(&plan)
+        .expect("strict rejection projection should not fail")
+        .expect("GPU sink should be projected as a strict bounded rejection");
+    assert_eq!(rejection_projection.reason, "unsupported_sink_boundary");
+    assert_eq!(rejection_projection.memory_boundary, "result_sink");
+    assert_eq!(
+        rejection_projection.category,
+        nexus_query_engine::capability::CapabilityRejectionCategory::UnsupportedSinkBoundary
+    );
+    assert!(
+        plan.bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default()).is_none(),
+        "GPU sink plans rejected by strict admission must not emit modeled bounded-join facts"
+    );
+    let unsupported_facts = plan
+        .bounded_join_unsupported_shape_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
+        .expect("GPU sink rejection should emit unsupported bounded-join facts");
+    assert_eq!(
+        unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str),
+        Some("unsupported_sink_boundary")
+    );
+    assert_eq!(unsupported_facts.get("bounded_join_rejection_boundary").map(String::as_str), Some("result_sink"));
+    assert_eq!(
+        unsupported_facts.get("bounded_join_rejection_category").map(String::as_str),
+        Some("unsupported_sink_boundary")
+    );
+    assert!(
+        unsupported_facts
+            .get("bounded_join_rejection_facts")
+            .is_some_and(|facts| facts.contains("result_sink_kind=gpu_resident"))
+    );
     let context = bounded_context(Arc::new(runtime));
 
     let error = match execute_query_plan(&context, &plan) {

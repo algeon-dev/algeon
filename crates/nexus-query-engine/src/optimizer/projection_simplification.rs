@@ -1,10 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use arrow::datatypes::SchemaRef;
 
+use super::rewrite;
 use crate::{
     expr::{ColumnRef, Expr},
-    plan::{NodeId, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink},
+    plan::{NodeId, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan},
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -79,6 +80,8 @@ pub enum ProjectionSimplificationRejectedReason {
     SchemaMismatch,
     /// Projection contains a non-column expression or changes column mapping.
     NonIdentityExpression,
+    /// Projection is part of a strict bounded shape contract.
+    ShapeContract,
 }
 
 pub(crate) struct ProjectionSimplificationResult {
@@ -107,7 +110,7 @@ pub(crate) fn optimize_projection_simplification(
         return ProjectionSimplificationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let sink = rewrite_sink(plan.sink(), new_root);
+    let sink = rewrite::rewrite_sink(plan.sink(), new_root);
     ProjectionSimplificationResult {
         plan: QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, sink),
         change: super::NativeOptimizerChange::Changed,
@@ -119,6 +122,7 @@ struct ProjectionSimplificationRewriter<'a> {
     original: &'a QueryPlan,
     nodes: Vec<QueryNode>,
     memo: BTreeMap<NodeId, NodeId>,
+    protected_projection_ids: BTreeSet<NodeId>,
     diagnostics: ProjectionSimplificationDiagnostics,
     changed: bool,
 }
@@ -129,6 +133,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
             original,
             nodes: Vec::new(),
             memo: BTreeMap::new(),
+            protected_projection_ids: crate::capability::strict_bounded_shape_contract_projection_ids(original),
             diagnostics: ProjectionSimplificationDiagnostics::default(),
             changed: false,
         }
@@ -163,6 +168,12 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
         };
         self.diagnostics.considered_count += 1;
 
+        if self.protected_projection_ids.contains(&old_id) {
+            candidate.rejected_reason = Some(ProjectionSimplificationRejectedReason::ShapeContract);
+            self.diagnostics.candidates.push(candidate);
+            return None;
+        }
+
         let input_node = self.original.node(projection.input).expect("projection input must exist");
         if schemas_equal(input_node.output_schema(), projection.output_schema())
             && projection_is_identity(input_node.output_schema(), projection)
@@ -176,7 +187,9 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
             return Some(replacement);
         }
 
-        if let Some(fused_outputs) = compose_direct_projection_chain(input_node, projection) {
+        if !self.protected_projection_ids.contains(&input_node.id)
+            && let Some(fused_outputs) = compose_direct_projection_chain(input_node, projection)
+        {
             let PlanNode::Projection(input_projection) = &input_node.kind else {
                 unreachable!("compose_direct_projection_chain requires a projection input");
             };
@@ -202,59 +215,7 @@ impl<'a> ProjectionSimplificationRewriter<'a> {
     }
 
     fn rewrite_node_kind(&mut self, kind: &PlanNode) -> PlanNode {
-        match kind {
-            PlanNode::Source(source) => PlanNode::Source(source.clone()),
-            PlanNode::Filter(filter) => {
-                let mut filter = filter.clone();
-                filter.input = self.rewrite_subtree(filter.input);
-                PlanNode::Filter(filter)
-            },
-            PlanNode::Projection(projection) => {
-                let mut projection = projection.clone();
-                projection.input = self.rewrite_subtree(projection.input);
-                PlanNode::Projection(projection)
-            },
-            PlanNode::Aggregate(aggregate) => {
-                let mut aggregate = aggregate.clone();
-                aggregate.input = self.rewrite_subtree(aggregate.input);
-                PlanNode::Aggregate(aggregate)
-            },
-            PlanNode::Window(window) => {
-                let mut window = window.clone();
-                window.input = self.rewrite_subtree(window.input);
-                PlanNode::Window(window)
-            },
-            PlanNode::Sort(sort) => {
-                let mut sort = sort.clone();
-                sort.input = self.rewrite_subtree(sort.input);
-                PlanNode::Sort(sort)
-            },
-            PlanNode::Limit(limit) => {
-                let mut limit = limit.clone();
-                limit.input = self.rewrite_subtree(limit.input);
-                PlanNode::Limit(limit)
-            },
-            PlanNode::Join(join) => {
-                let mut join = join.clone();
-                join.inputs = [self.rewrite_subtree(join.inputs[0]), self.rewrite_subtree(join.inputs[1])];
-                PlanNode::Join(join)
-            },
-            PlanNode::Union(union) => {
-                let mut union = union.clone();
-                union.inputs = union.inputs.iter().map(|input| self.rewrite_subtree(*input)).collect();
-                PlanNode::Union(union)
-            },
-            PlanNode::EdgeNormalize(edge_normalize) => {
-                let mut edge_normalize = edge_normalize.clone();
-                edge_normalize.input = self.rewrite_subtree(edge_normalize.input);
-                PlanNode::EdgeNormalize(edge_normalize)
-            },
-            PlanNode::GraphAlgorithm(graph) => {
-                let mut graph = graph.clone();
-                graph.input = self.rewrite_subtree(graph.input);
-                PlanNode::GraphAlgorithm(graph)
-            },
-        }
+        rewrite::clone_plan_node_with_inputs(kind, |input| self.rewrite_subtree(input))
     }
 
     fn push_node(&mut self, kind: PlanNode, facts: crate::plan::PlanFacts) -> NodeId {
@@ -328,13 +289,6 @@ fn unqualified_column_name(column: &ColumnRef) -> Option<&str> {
 fn schemas_equal(left: &SchemaRef, right: &SchemaRef) -> bool {
     left.fields().len() == right.fields().len()
         && left.fields().iter().zip(right.fields().iter()).all(|(left, right)| left == right)
-}
-
-fn rewrite_sink(sink: &ResultSink, root: NodeId) -> ResultSink {
-    match sink {
-        ResultSink::GpuResident { .. } => ResultSink::GpuResident { input: root },
-        ResultSink::HostArrow { schema, .. } => ResultSink::HostArrow { input: root, schema: schema.clone() },
-    }
 }
 
 #[cfg(test)]

@@ -26,6 +26,12 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
         "q02 should be admitted by the capability proof:\n{native_plan}"
     );
+    let optimized_q2 = nexus_query_engine::optimize_query_plan(native_plan.clone(), &Default::default());
+    assert!(
+        optimized_q2.plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
+        "optimized q02 should remain admitted after post-root filtering joins are exposed:\n{}",
+        optimized_q2.plan
+    );
     let facts = native_plan
         .bounded_join_modeled_facts(nexus_query_engine::ExecutionBoundaryPolicy::default())
         .expect("q02 should expose modeled bounded join facts");
@@ -465,6 +471,14 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
     );
 
     let optimized = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    assert!(
+        optimized
+            .plan
+            .capability_analysis()
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+        "optimized q11 should remain admitted after grouped+scalar aggregate sharing:\n{}",
+        optimized.plan
+    );
     let materialization = &optimized.diagnostics.shared_subplan_materialization;
     assert_eq!(materialization.applied_count, 1, "optimizer diagnostics={materialization:?}");
     assert!(

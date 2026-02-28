@@ -469,18 +469,13 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
     let mut params = GraphBfsParams::new(0, None);
     params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
     params.return_target_info = true;
-    let output_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int64, false),
-        Field::new("distance", DataType::Int64, false),
-        Field::new("predecessor", DataType::Int64, true),
-        Field::new("target_found", DataType::Boolean, false),
-        Field::new("target_distance", DataType::Int64, true),
-    ]));
+    let params = GraphAlgorithmParams::Bfs(Box::new(params));
+    let output_schema = GraphAlgorithm::Bfs.definition().result_schema_for_params(&params);
     let spec = GraphAlgorithmSpec::new(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
-        GraphAlgorithmParams::Bfs(Box::new(params)),
+        params,
         Arc::clone(&output_schema),
     );
     let graph = builder.add_graph_algorithm(edges, spec);

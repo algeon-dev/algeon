@@ -497,8 +497,8 @@ fn replace_lowered_root_or_keep_plan(
         if adaptive_pipeline_was_rejected(&adaptive_pipeline) {
             return Ok(NativeOptimizationAttempt {
                 plan,
-                report: native_execution_rejection_report(
-                    &lowering.report,
+                report: native_execution_rejection_report_for_candidate(
+                    candidate.clone(),
                     FallbackReason::NativeAdaptivePipelineUnsupported,
                 ),
                 native_optimizer,
@@ -522,10 +522,10 @@ fn replace_lowered_root_or_keep_plan(
     }
 
     if native_execution_boundary_is_rejected(&native_plan, native_execution_config)? {
-        let report = native_execution_rejection_report(&lowering.report, FallbackReason::NativeBoundedJoinUnsupported);
-        let candidate = first_bounded_join_unsupported_candidate(&report)
-            .cloned()
-            .ok_or_else(|| native_candidate_error("strict bounded rejection has no bounded-join candidate"))?;
+        let report = native_execution_rejection_report_for_candidate(
+            candidate.clone(),
+            FallbackReason::NativeBoundedJoinUnsupported,
+        );
         return Ok(NativeOptimizationAttempt {
             plan,
             report,
@@ -888,6 +888,13 @@ fn native_execution_rejection_report(report: &PlanningReport, rejection_reason: 
     }))
 }
 
+fn native_execution_rejection_report_for_candidate(
+    candidate: GpuCandidate,
+    rejection_reason: FallbackReason,
+) -> PlanningReport {
+    PlanningReport::from_outcomes([CandidateOutcome::Rejected { candidate, reason: rejection_reason }])
+}
+
 fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> {
     let mut rewritten = report.outcomes().iter().filter_map(|outcome| match outcome {
         CandidateOutcome::Rewritten { candidate } => Some(candidate),
@@ -895,15 +902,6 @@ fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> 
     });
     let candidate = rewritten.next()?;
     rewritten.next().is_none().then_some(candidate)
-}
-
-fn first_bounded_join_unsupported_candidate(report: &PlanningReport) -> Option<&GpuCandidate> {
-    report.outcomes().iter().find_map(|outcome| match outcome {
-        CandidateOutcome::Rejected { candidate, reason } if *reason == FallbackReason::NativeBoundedJoinUnsupported => {
-            Some(candidate)
-        },
-        CandidateOutcome::Rejected { .. } | CandidateOutcome::Rewritten { .. } => None,
-    })
 }
 
 fn native_candidate_error(message: &'static str) -> DataFusionError {

@@ -13,45 +13,60 @@ async fn tpch_progression_contract_pairs_fallback_pressure_and_bounded_planning(
     );
 
     assert_eq!(fallback.rows.len(), TPCH_QUERY_COUNT);
-    assert_eq!(planning.rows.len(), TPCH_QUERY_COUNT);
+    assert_eq!(planning_query_count(&planning), TPCH_QUERY_COUNT);
     for query_id in tpch_query_ids() {
         let fallback_row = report_row(&fallback, query_id);
-        let planning_row = planning_row(&planning, query_id);
-        assert_eq!(
-            fallback_row.native_candidate_shape_family, planning_row.native_candidate_shape_family,
-            "{query_id} should preserve the same native candidate family across fallback-pressure and bounded planning"
-        );
+        let whole_plan_row = whole_plan_planning_row(&planning, query_id);
+        let replacement_row = planning_replacement_row(&planning, query_id);
+        if replacement_row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native {
+            assert_eq!(
+                fallback_row.native_candidate_shape_family, replacement_row.native_candidate_shape_family,
+                "{query_id} should preserve the same native candidate family across whole-plan bounded planning"
+            );
+        } else {
+            assert!(
+                replacement_row.native_candidate_shape_family.is_some(),
+                "{query_id} partial-native planning should still expose the selected candidate family"
+            );
+        }
 
         match fallback_row.outcome {
             NativeFallbackPressureOutcome::Rewritten if matches!(query_id, "q01" | "q06") => {
-                assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
-                assert_eq!(planning_row.reason_code, None);
-                assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+                assert_eq!(whole_plan_row.outcome, NativeDataFusionPlanningOutcome::AcceptedReplaced);
+                assert_eq!(whole_plan_row.reason_code, None);
+                assert_eq!(whole_plan_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             },
             NativeFallbackPressureOutcome::Rewritten if EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED.contains(&query_id) => {
                 assert_eq!(
-                    planning_row.outcome,
+                    replacement_row.outcome,
                     NativeDataFusionPlanningOutcome::AcceptedReplaced,
                     "{query_id} should be bounded-admitted: reason={:?} category={:?}",
-                    planning_row.reason_code,
-                    planning_row.unsupported_category
+                    replacement_row.reason_code,
+                    replacement_row.unsupported_category
                 );
-                assert_eq!(planning_row.reason_code, None);
-                assert_eq!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+                assert_eq!(replacement_row.reason_code, None);
+                assert!(
+                    matches!(
+                        replacement_row.post_native_execution_path,
+                        NativeDataFusionPostNativeExecutionPath::Native
+                            | NativeDataFusionPostNativeExecutionPath::PartialNative
+                    ),
+                    "{query_id} should be admitted by whole-plan or partial native execution"
+                );
             },
             NativeFallbackPressureOutcome::Rewritten => {
-                assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
-                assert_eq!(planning_row.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
-                assert_ne!(planning_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
+                assert_eq!(whole_plan_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+                assert_eq!(whole_plan_row.reason_code.as_deref(), Some("native_bounded_join_unsupported"));
+                assert_ne!(whole_plan_row.post_native_execution_path, NativeDataFusionPostNativeExecutionPath::Native);
             },
             NativeFallbackPressureOutcome::Rejected => {
-                assert_eq!(planning_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
+                assert_eq!(whole_plan_row.outcome, NativeDataFusionPlanningOutcome::RejectedBeforeExecution);
                 assert_eq!(
-                    planning_row.reason_code, fallback_row.reason_code,
+                    whole_plan_row.reason_code, fallback_row.reason_code,
                     "{query_id} should keep the same precise pre-execution rejection reason"
                 );
                 assert_eq!(
-                    planning_row.unsupported_category, fallback_row.unsupported_category,
+                    whole_plan_row.unsupported_category, fallback_row.unsupported_category,
                     "{query_id} should keep the same unsupported category"
                 );
             },

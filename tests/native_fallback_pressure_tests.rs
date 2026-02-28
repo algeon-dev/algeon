@@ -298,7 +298,7 @@ async fn native_datafusion_planning_report_does_not_blame_supported_topk_wrapper
         plan,
         diagnostics,
     )]);
-    let row = planning_row(&report, "topk_cross_join");
+    let row = planning_replacement_row(&report, "topk_cross_join");
 
     assert_eq!(row.reason_code.as_deref(), Some("unsupported_operator"));
     assert_eq!(row.unsupported_category.as_deref(), Some("operator_crossjoin"));

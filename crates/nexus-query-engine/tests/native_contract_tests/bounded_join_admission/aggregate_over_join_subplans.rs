@@ -84,6 +84,28 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_admission
 }
 
 #[test]
+fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_native_optimizer() {
+    let plan =
+        keyless_conditional_aggregate_over_join_subplan_inputs_plan(AggregateOverJoinSubplanInputsVariant::Admitted);
+    let optimized =
+        nexus_query_engine::optimize_query_plan(plan, &nexus_query_engine::NativeOptimizerOptions::default());
+
+    assert!(
+        optimized
+            .plan
+            .capability_analysis()
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+        "projection simplification must preserve strict bounded aggregate-over-join input wrappers"
+    );
+    assert!(
+        optimized.diagnostics.projection_simplification.candidates.iter().any(|candidate| {
+            candidate.rejected_reason == Some(nexus_query_engine::ProjectionSimplificationRejectedReason::ShapeContract)
+        }),
+        "protected projection wrappers should be reported as shape-contract rejections"
+    );
+}
+
+#[test]
 fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_rejects_bad_subplan_locally() {
     let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput,

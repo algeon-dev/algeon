@@ -1,8 +1,13 @@
 //! Capability-first bounded-pipeline admission shared by strict and adaptive facades.
 
+use std::collections::BTreeMap;
+
 use super::compiled::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support};
 use crate::{
-    capability::CapabilityAnalysis,
+    capability::{
+        CapabilityAnalysis, CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner,
+        CapabilityRejectionProjection, ReservationRequirementScope, StrictBoundedEnvelope,
+    },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, compile_pipeline},
     plan::{QueryPlan, ResultSink},
@@ -18,8 +23,9 @@ pub(in crate::exec::bounded) enum CapabilityFirstCandidateStatus {
 pub(in crate::exec::bounded) struct CapabilityFirstPipelineAdmission {
     analysis: CapabilityAnalysis,
     pipeline: Option<CompiledPipeline>,
+    envelope: Option<StrictBoundedEnvelope>,
+    rejection_projection: Option<CapabilityRejectionProjection>,
     candidate_status: CapabilityFirstCandidateStatus,
-    rejection_reason: Option<&'static str>,
 }
 
 impl CapabilityFirstPipelineAdmission {
@@ -31,37 +37,47 @@ impl CapabilityFirstPipelineAdmission {
         self.pipeline.as_ref()
     }
 
+    pub(in crate::exec::bounded) fn envelope(&self) -> Option<StrictBoundedEnvelope> {
+        self.envelope
+    }
+
     pub(in crate::exec::bounded) fn candidate_status(&self) -> CapabilityFirstCandidateStatus {
         self.candidate_status
     }
 
     pub(in crate::exec::bounded) fn rejection_reason(&self) -> Option<&'static str> {
-        self.rejection_reason
+        self.rejection_projection.as_ref().map(|projection| projection.reason)
+    }
+
+    pub(in crate::exec::bounded) fn rejection_projection(&self) -> Option<&CapabilityRejectionProjection> {
+        self.rejection_projection.as_ref()
     }
 
     pub(in crate::exec::bounded) fn into_parts(self) -> (CapabilityAnalysis, Option<CompiledPipeline>) {
         (self.analysis, self.pipeline)
     }
 
-    fn admitted(analysis: CapabilityAnalysis, pipeline: CompiledPipeline) -> Self {
+    fn admitted(analysis: CapabilityAnalysis, envelope: StrictBoundedEnvelope, pipeline: CompiledPipeline) -> Self {
         Self {
             analysis,
             pipeline: Some(pipeline),
+            envelope: Some(envelope),
+            rejection_projection: None,
             candidate_status: CapabilityFirstCandidateStatus::Admitted,
-            rejection_reason: None,
         }
     }
 
     fn rejected(
         analysis: CapabilityAnalysis,
         pipeline: Option<CompiledPipeline>,
-        rejection_reason: &'static str,
+        projection: CapabilityRejectionProjection,
     ) -> Self {
         Self {
             analysis,
             pipeline,
+            envelope: None,
+            rejection_projection: Some(projection),
             candidate_status: CapabilityFirstCandidateStatus::Rejected,
-            rejection_reason: Some(rejection_reason),
         }
     }
 }
@@ -74,33 +90,74 @@ pub(in crate::exec::bounded) fn capability_first_bounded_pipeline_admission(
     }
 
     let analysis = plan.capability_analysis();
-    if analysis.has_rejections() {
-        return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, "missing_strict_contracts")));
-    }
+    let envelope = match analysis.strict_bounded_envelope_admission() {
+        CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
+        CapabilityEnvelopeAdmission::Rejected { projection } => {
+            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
+        },
+    };
     if !matches!(plan.sink(), ResultSink::HostArrow { .. }) {
-        return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, "unsupported_sink_boundary")));
+        let projection = admission_projection(
+            CapabilityRejectionCategory::UnsupportedSinkBoundary,
+            "result_sink",
+            "unsupported_sink_boundary",
+            [("result_sink_kind", result_sink_kind(plan.sink()).to_string())],
+        );
+        return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
     }
 
     let pipeline = match compile_pipeline(plan, &analysis) {
         Ok(pipeline) => pipeline,
         Err(error) if compiled_pipeline_graph_is_unsupported_envelope(&error) => {
-            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(
-                analysis,
-                None,
+            let projection = admission_projection(
+                CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+                "compiled_pipeline",
                 "unsupported_compiled_pipeline_envelope",
-            )));
+                [("pipeline_compile_error", error.message().to_string())],
+            );
+            return Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, None, projection)));
         },
         Err(error) => return Err(error),
     };
     match compiled_bounded_query_plan_support(plan, &pipeline)? {
         CompiledBoundedPipelineSupport::Supported => {
-            Ok(Some(CapabilityFirstPipelineAdmission::admitted(analysis, pipeline)))
+            Ok(Some(CapabilityFirstPipelineAdmission::admitted(analysis, envelope, pipeline)))
         },
-        CompiledBoundedPipelineSupport::Unsupported => Ok(Some(CapabilityFirstPipelineAdmission::rejected(
-            analysis,
-            Some(pipeline),
-            "unsupported_compiled_pipeline_envelope",
-        ))),
+        CompiledBoundedPipelineSupport::Unsupported => {
+            let projection = admission_projection(
+                CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
+                "compiled_pipeline",
+                "unsupported_compiled_pipeline_envelope",
+                [
+                    ("compiled_task_count", pipeline.tasks().len().to_string()),
+                    ("compiled_edge_count", pipeline.edges().len().to_string()),
+                ],
+            );
+            Ok(Some(CapabilityFirstPipelineAdmission::rejected(analysis, Some(pipeline), projection)))
+        },
+    }
+}
+
+fn admission_projection(
+    category: CapabilityRejectionCategory,
+    memory_boundary: &'static str,
+    reason: &'static str,
+    facts: impl IntoIterator<Item = (&'static str, String)>,
+) -> CapabilityRejectionProjection {
+    CapabilityRejectionProjection {
+        owner: CapabilityRejectionOwner::Admission(reason),
+        category,
+        contract_scope: ReservationRequirementScope::Subgraph,
+        memory_boundary,
+        reason,
+        facts: BTreeMap::from_iter(facts),
+    }
+}
+
+fn result_sink_kind(sink: &ResultSink) -> &'static str {
+    match sink {
+        ResultSink::HostArrow { .. } => "host_arrow",
+        ResultSink::GpuResident { .. } => "gpu_resident",
     }
 }
 
@@ -142,6 +199,31 @@ mod tests {
         assert!(matches!(admission.candidate_status(), CapabilityFirstCandidateStatus::Rejected));
         assert_eq!(admission.rejection_reason(), Some("unsupported_compiled_pipeline_envelope"));
         assert!(admission.pipeline().is_none());
+
+        assert!(
+            plan.bounded_join_modeled_facts(crate::runtime::ExecutionBoundaryPolicy::default()).is_none(),
+            "unsupported compiled envelopes must not emit modeled bounded-join facts"
+        );
+        let unsupported_facts = plan
+            .bounded_join_unsupported_shape_facts(crate::runtime::ExecutionBoundaryPolicy::default())
+            .expect("unsupported compiled envelope should emit unsupported bounded-join facts");
+        assert_eq!(
+            unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str),
+            Some("unsupported_compiled_pipeline_envelope")
+        );
+        assert_eq!(
+            unsupported_facts.get("bounded_join_rejection_boundary").map(String::as_str),
+            Some("compiled_pipeline")
+        );
+        assert_eq!(
+            unsupported_facts.get("bounded_join_rejection_category").map(String::as_str),
+            Some("unsupported_compiled_pipeline_envelope")
+        );
+        assert!(
+            unsupported_facts
+                .get("bounded_join_rejection_facts")
+                .is_some_and(|facts| facts.contains("pipeline_compile_error="))
+        );
     }
 
     fn dynamic_filter_control_cycle_plan() -> QueryPlan {

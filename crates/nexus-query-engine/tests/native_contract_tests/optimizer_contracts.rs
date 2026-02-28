@@ -1,17 +1,23 @@
 use nexus_query_engine::{
-    AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownOptions,
+    AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
+    AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
-    DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedRowGroupPruningOptions,
-    DimensionDerivedRowGroupPruningRejectedReason, DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering,
-    DynamicFilterConsumerReductionStage, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRouteDiscoveryOptions,
-    DynamicFilterRouteRejectedReason, DynamicFilterSourceSnapshot, JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
-    JOIN_FILTER_REASSOCIATION_RULE_NAME, JoinBuildSideSelectionOptions, LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
-    LocalParquetSourceReuseOptions, NativeOptimizerChange, NativeOptimizerOptions, NodeId,
-    OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionRejectedReason, PROJECTION_SIMPLIFICATION_RULE_NAME,
-    ProjectionSimplificationOptions, SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
-    STREAM_FANOUT_REPLAY_RULE_NAME, SemijoinReductionAdmissionMode, SemijoinReductionCostSignal,
-    SemijoinReductionOptions, SemijoinReductionRejectedReason, SharedSubplanMaterializationOptions,
-    StreamFanoutReplayOptions, optimize_query_plan,
+    DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedRowGroupPruningDiagnostics,
+    DimensionDerivedRowGroupPruningOptions, DimensionDerivedRowGroupPruningRejectedReason, DynamicFilter,
+    DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage, DynamicFilterKind,
+    DynamicFilterProducer, DynamicFilterRouteDiscoveryDiagnostics, DynamicFilterRouteDiscoveryOptions,
+    DynamicFilterRouteRejectedReason, DynamicFilterSourceSnapshot, GraphAlgorithm, GraphAlgorithmParams,
+    GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions, GraphEdgeColumnBindings,
+    GraphPredicateInput, JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
+    JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions, JoinFilterReassociationDiagnostics,
+    LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseDiagnostics, LocalParquetSourceReuseOptions,
+    NativeOptimizerChange, NativeOptimizerDiagnostics, NativeOptimizerOptions, NodeId,
+    OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionDiagnostics, OuterJoinNullRejectionRejectedReason,
+    PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationDiagnostics, ProjectionSimplificationOptions,
+    SEMIJOIN_REDUCTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
+    SemijoinReductionAdmissionMode, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
+    SemijoinReductionOptions, SemijoinReductionRejectedReason, SharedSubplanMaterializationDiagnostics,
+    SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions, optimize_query_plan,
 };
 
 use super::*;
@@ -121,6 +127,95 @@ fn aggregate_join_pushdown_options_and_rule_name_are_stable() {
     assert_eq!(AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, "aggregate_join_pushdown");
     assert!(AggregateJoinPushdownOptions::default().enabled);
     assert!(!AggregateJoinPushdownOptions::disabled().enabled);
+}
+
+#[test]
+fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
+    let diagnostics = NativeOptimizerDiagnostics {
+        aggregate_join_pushdown: AggregateJoinPushdownDiagnostics { considered_count: 1, ..Default::default() },
+        projection_simplification: ProjectionSimplificationDiagnostics { considered_count: 1, ..Default::default() },
+        semijoin_reduction: SemijoinReductionDiagnostics { considered_count: 1, ..Default::default() },
+        outer_join_null_rejection: OuterJoinNullRejectionDiagnostics { considered_count: 1, ..Default::default() },
+        join_filter_reassociation: JoinFilterReassociationDiagnostics { considered_count: 1, ..Default::default() },
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningDiagnostics {
+            considered_count: 1,
+            ..Default::default()
+        },
+        join_build_side_selection: JoinBuildSideSelectionDiagnostics { considered_count: 1, ..Default::default() },
+        stream_fanout_replay: StreamFanoutReplayDiagnostics { considered_count: 1, ..Default::default() },
+        local_parquet_source_reuse: LocalParquetSourceReuseDiagnostics { considered_count: 1, ..Default::default() },
+        shared_subplan_materialization: SharedSubplanMaterializationDiagnostics {
+            considered_count: 1,
+            ..Default::default()
+        },
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryDiagnostics {
+            considered_count: 1,
+            ..Default::default()
+        },
+    };
+
+    let rows = diagnostics.stable_rule_rows();
+    assert_eq!(rows.len(), 11);
+    let rendered = rows.join(";");
+    for rule_name in [
+        PROJECTION_SIMPLIFICATION_RULE_NAME,
+        SEMIJOIN_REDUCTION_RULE_NAME,
+        JOIN_BUILD_SIDE_SELECTION_RULE_NAME,
+        OUTER_JOIN_NULL_REJECTION_RULE_NAME,
+        JOIN_FILTER_REASSOCIATION_RULE_NAME,
+        DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
+        STREAM_FANOUT_REPLAY_RULE_NAME,
+        LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
+        SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+        DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
+        AGGREGATE_JOIN_PUSHDOWN_RULE_NAME,
+    ] {
+        assert!(
+            rendered.contains(&format!("rule={rule_name},")),
+            "missing stable optimizer diagnostic row for {rule_name}: {rendered}"
+        );
+    }
+}
+
+#[test]
+fn native_optimizer_stable_rule_rows_project_aggregate_join_pushdown_candidates() {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(estimated_local_source("left", "left_key", 1_024, 10));
+    let right = builder.add_source(estimated_local_source("right", "right_key", 1_024, 10));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "left_key", "left_key"),
+                ColumnRef::input(1, "right_key", "right_key"),
+            )],
+        ),
+        schema(&["left_key", "right_key"]),
+    );
+
+    let diagnostics = NativeOptimizerDiagnostics {
+        aggregate_join_pushdown: AggregateJoinPushdownDiagnostics {
+            considered_count: 1,
+            applied_count: 0,
+            candidates: vec![AggregateJoinPushdownCandidateDiagnostics {
+                rule_name: AGGREGATE_JOIN_PUSHDOWN_RULE_NAME,
+                aggregate_node_id: join,
+                join_node_id: Some(join),
+                applied: false,
+                rejected_reason: Some(AggregateJoinPushdownRejectedReason::GroupingSetsRequired),
+            }],
+        },
+        ..Default::default()
+    };
+
+    assert_eq!(
+        diagnostics.stable_rule_rows(),
+        vec![
+            "rule=aggregate_join_pushdown,considered_count=1,applied_count=0,candidates=rule=aggregate_join_pushdown,aggregate_node_id=n2,join_node_id=n2,applied=false,rejected_reason=GroupingSetsRequired".to_string()
+        ]
+    );
 }
 
 #[test]
@@ -956,6 +1051,33 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
         result.plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Filter(_))),
         "reader predicate should be replayed as a branch-local native filter"
     );
+}
+
+#[test]
+fn native_optimizer_rewrites_graph_algorithm_bfs_side_input_references_with_source_reuse() {
+    let plan = graph_bfs_local_source_reuse_plan();
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 1);
+    assert_all_node_inputs_exist(&result.plan);
+
+    let PlanNode::GraphAlgorithm(graph) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain a graph algorithm");
+    };
+    let GraphAlgorithmParams::Bfs(params) = &graph.spec.params else {
+        panic!("expected BFS graph params");
+    };
+    let target_vertices = params.predicates.target_vertices.as_ref().expect("BFS target side input should exist");
+
+    assert_eq!(graph.inputs.first().copied(), Some(graph.input));
+    assert_eq!(graph.inputs.get(1).copied(), Some(target_vertices.input));
+    assert!(
+        result.plan.node(target_vertices.input).is_some(),
+        "BFS target side-input binding must be remapped to an existing rewritten node"
+    );
+    assert_eq!(result.plan.root_node().input_ids(), graph.inputs.as_slice());
 }
 
 #[test]
@@ -2659,6 +2781,45 @@ fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::
     builder.finish_gpu_resident(union)
 }
 
+fn graph_bfs_local_source_reuse_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(graph_reuse_source(&["src", "dst", "weight"], &[0, 1, 2]));
+    let target_vertices = builder.add_source(graph_reuse_source(&["vertex_id"], &[3]));
+    let params = GraphBfsParams {
+        source_vertex: 0,
+        source_vertices: None,
+        depth_limit: None,
+        predicates: GraphBfsPredicateInputs {
+            target_vertices: Some(GraphPredicateInput::new(target_vertices, "vertex_id")),
+            ..Default::default()
+        },
+        return_target_info: false,
+    };
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    builder.finish_gpu_resident(graph)
+}
+
+fn graph_reuse_source(columns: &[&str], file_indices: &[usize]) -> SourceNode {
+    let fields = columns.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    let file = LocalParquetFile::new("/tmp/graph_inputs.parquet")
+        .with_stable_id("graph_inputs")
+        .with_row_group_bytes(vec![1024 * 1024])
+        .with_row_group_rows(vec![4096]);
+    let read_columns = columns.iter().map(|column| (*column).to_string()).collect::<Vec<_>>();
+    SourceNode::LocalParquet(LocalParquetSource::from_files(vec![file], schema, read_columns).with_column_file_indices(
+        file_indices.to_vec(),
+        file_indices.to_vec(),
+        Vec::new(),
+    ))
+}
+
 fn large_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(estimated_local_source_with_stable_id(
@@ -2737,6 +2898,19 @@ fn max_direct_join_probe_consumer_count(plan: &nexus_query_engine::QueryPlan) ->
         *counts.entry(probe_input).or_default() += 1;
     }
     counts.into_values().max().unwrap_or(0)
+}
+
+fn assert_all_node_inputs_exist(plan: &nexus_query_engine::QueryPlan) {
+    for node in plan.nodes() {
+        for input in node.input_ids() {
+            assert!(
+                plan.node(*input).is_some(),
+                "node {} has dangling input reference {} after optimizer rewrite",
+                node.id,
+                input
+            );
+        }
+    }
 }
 
 fn local_parquet_source_count_for_stable_id(plan: &nexus_query_engine::QueryPlan, stable_id: &str) -> usize {

@@ -45,6 +45,7 @@ pub use bounded::strict::{
     CompiledPipelineState, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
     ResidentFrameStreamProducerTestHarness, StrictBoundedPipelineAdmission, YieldedFrameCounterTestHarness,
     compiled_bounded_pipeline_support, compiled_bounded_query_plan_support, strict_bounded_pipeline_admission,
+    strict_bounded_pipeline_rejection_projection,
 };
 pub use bounded::{
     AdaptivePipelineAdmission, JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES,
@@ -70,10 +71,14 @@ pub mod reservation_contract_testing {
 
     use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 
-    use super::{bounded::ReservationTracker, types::GpuLocalParquetSourceCacheKey};
+    use super::{
+        bounded::{JoinMaterializationTxn, ReservationTracker},
+        types::GpuLocalParquetSourceCacheKey,
+    };
     use crate::{
         error::{QueryError, Result},
         metrics::QueryMetrics,
+        pipeline::PipelineTaskKind,
         runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
         source::LocalParquetSource,
     };
@@ -92,6 +97,12 @@ pub mod reservation_contract_testing {
         pub metrics: QueryMetrics,
         pub error: QueryError,
         pub reserved_after_denial: u64,
+    }
+
+    #[derive(Debug)]
+    pub struct JoinMaterializationTxnRollbackProbe {
+        pub metrics: QueryMetrics,
+        pub reserved_after_rollback: u64,
     }
 
     #[derive(Debug)]
@@ -213,6 +224,31 @@ pub mod reservation_contract_testing {
         tracker.release(alias, &mut metrics);
         tracker.release(owned, &mut metrics);
         Ok(ReservationTrackerDenialProbe { metrics, error, reserved_after_denial })
+    }
+
+    pub fn probe_join_materialization_txn_rollback_contract() -> Result<JoinMaterializationTxnRollbackProbe> {
+        let mut metrics = QueryMetrics::default();
+        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let task_id = "t4";
+        let operator_kind = PipelineTaskKind::JoinMaterialize.as_str();
+        metrics.record_compiled_pipeline_task_execution(task_id, operator_kind);
+        tracker.set_diagnostic_context(Some(task_id), None::<String>);
+
+        let gather_map = tracker.try_reserve_work(
+            request(ReservationKind::GatherMap, "join_one_shot_indices", 30, tracker.budget()),
+            &mut metrics,
+        )?;
+        let output = tracker.try_reserve_owned_resident(
+            request(ReservationKind::JoinOutput, "join_output", 40, tracker.budget()),
+            &mut metrics,
+        )?;
+        let mut txn = JoinMaterializationTxn::new();
+        txn.set_gather_map_reservation(gather_map);
+        txn.set_output_reservation(output);
+        txn.rollback(&mut tracker, &mut metrics);
+        let reserved_after_rollback = tracker.reserved_bytes();
+
+        Ok(JoinMaterializationTxnRollbackProbe { metrics, reserved_after_rollback })
     }
 
     pub fn probe_source_cache_alias_relabel_contract() -> Result<SourceCacheAliasRelabelProbe> {

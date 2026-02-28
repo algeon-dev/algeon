@@ -468,11 +468,38 @@ pub(super) fn report_row<'a>(
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
 }
 
-pub(super) fn planning_row<'a>(
+pub(super) fn planning_rows<'a>(
+    report: &'a NativeDataFusionPlanningReport,
+    query_id: &str,
+) -> Vec<&'a datafusion_nexus::NativeDataFusionPlanningRow> {
+    report.rows.iter().filter(|row| row.query_id == query_id).collect()
+}
+
+pub(super) fn whole_plan_planning_row<'a>(
     report: &'a NativeDataFusionPlanningReport,
     query_id: &str,
 ) -> &'a datafusion_nexus::NativeDataFusionPlanningRow {
     report.rows.iter().find(|row| row.query_id == query_id).expect("report row should exist")
+}
+
+pub(super) fn planning_replacement_row<'a>(
+    report: &'a NativeDataFusionPlanningReport,
+    query_id: &str,
+) -> &'a datafusion_nexus::NativeDataFusionPlanningRow {
+    let rows = report.rows.iter().filter(|row| row.query_id == query_id);
+    // Replacement assertions use the last accepted fragment row when strict
+    // whole-plan admission fails closed and child native fragments still
+    // replace part of the DataFusion plan. Whole-plan assertions must use
+    // `whole_plan_planning_row` so those rejections remain visible.
+    rows.clone()
+        .rev()
+        .find(|row| row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced)
+        .or_else(|| rows.into_iter().next())
+        .expect("report row should exist")
+}
+
+pub(super) fn planning_query_count(report: &NativeDataFusionPlanningReport) -> usize {
+    report.rows.iter().map(|row| row.query_id.as_str()).collect::<std::collections::BTreeSet<_>>().len()
 }
 
 pub(super) async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql: &str) -> Arc<dyn ExecutionPlan> {

@@ -426,11 +426,11 @@ pub(super) fn append_aggregate_derivation_invariants(plan: &QueryPlan, invariant
         if !aggregate.spec.group_exprs.is_empty() {
             continue;
         }
-        let Some((shared_producer, projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input)
+        let Some((shared_producer, _projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input)
         else {
             continue;
         };
-        if projection_count == 0 || consumers.get(&shared_producer).map_or(0, Vec::len) <= 1 {
+        if consumers.get(&shared_producer).map_or(0, Vec::len) <= 1 {
             continue;
         }
         let invariant_id = InvariantId(invariants.len());
@@ -582,7 +582,12 @@ pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage
     invariants.push(SubgraphInvariant {
         invariant_id,
         kind: SubgraphInvariantKind::PostRootStageOrder { root_join_id: shape.root_join_id },
-        nodes: vec![shape.root_join_id, shape.post_root_projection_id, shape.final_sort_id, shape.final_limit_id],
+        nodes: {
+            let mut nodes = vec![shape.root_join_id];
+            nodes.extend(shape.post_root_join_ids);
+            nodes.extend([shape.post_root_projection_id, shape.final_sort_id, shape.final_limit_id]);
+            nodes
+        },
         required_schedule: ScheduleConstraint::Barrier,
         required_resources: vec![ResidentResource::NodeOutput(shape.root_join_id)],
         reservation_requirements: Vec::new(),
@@ -751,13 +756,13 @@ pub(super) fn solve_aggregate_derives_from_shared_producer_invariant(
         );
     }
 
-    let Some((peeled_input, projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input) else {
+    let Some((peeled_input, _projection_count)) = peel_projection_chain_for_capability(plan, aggregate.input) else {
         return CapabilityDecision::rejected(
             "aggregate_shared_producer_input_lineage_unresolved",
             [("shared_producer", shared_producer.to_string()), ("aggregate_id", aggregate_id.to_string())],
         );
     };
-    if peeled_input != shared_producer || projection_count == 0 {
+    if peeled_input != shared_producer {
         return CapabilityDecision::rejected(
             "aggregate_shared_producer_requires_dataflow_identity",
             [
