@@ -14,9 +14,10 @@ use datafusion::{
 };
 use futures::TryStreamExt;
 use nexus_query_engine::{
-    DimensionDerivedKeyRange as KeyRange, Expr, LocalParquetSource, NodeId, ParquetSourceLocation, PlanNode, QueryPlan,
-    SourceColumnRef, SourceNode, apply_dimension_derived_pruning_with_stats, dimension_key_range_from_batch,
-    discover_dimension_derived_pruning_requests, seed_dimension_derived_reader_predicates,
+    DimensionDerivedKeyRange as KeyRange, DimensionKeyAccumulator, DimensionKeyFilter, Expr, LocalParquetSource,
+    NodeId, ParquetSourceLocation, PlanNode, QueryPlan, SourceColumnRef, SourceNode,
+    apply_dimension_derived_pruning_with_stats, discover_dimension_derived_pruning_requests,
+    seed_dimension_derived_reader_predicates,
 };
 
 use crate::NativeCudfExec;
@@ -152,8 +153,8 @@ async fn prune_request(
         return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "missing_dimension_predicate" });
     };
 
-    let Some(range) =
-        derive_dimension_key_range(runtime_env, dimension_source, &request.dimension_key_column, predicate).await?
+    let Some(key_filter) =
+        derive_dimension_key_filter(runtime_env, dimension_source, &request.dimension_key_column, predicate).await?
     else {
         return Ok(RequestOutcome::Skipped { target_source_node_id, reason: "empty_or_unsupported_dimension_range" });
     };
@@ -178,8 +179,12 @@ async fn prune_request(
         ));
     }
 
-    let result =
-        apply_dimension_derived_pruning_with_stats(plan, target_source_node_id, &per_file_row_group_key_ranges, range);
+    let result = apply_dimension_derived_pruning_with_stats(
+        plan,
+        target_source_node_id,
+        &per_file_row_group_key_ranges,
+        &key_filter,
+    );
     if result.applied {
         Ok(RequestOutcome::Applied {
             plan: result.plan,
@@ -192,13 +197,15 @@ async fn prune_request(
     }
 }
 
-async fn derive_dimension_key_range(
+async fn derive_dimension_key_filter(
     runtime_env: &Arc<RuntimeEnv>,
     source: &LocalParquetSource,
     key_column: &str,
     predicate: &Expr,
-) -> std::result::Result<Option<KeyRange>, String> {
-    let mut range = None;
+) -> std::result::Result<Option<DimensionKeyFilter>, String> {
+    // Fold object-store dimension batches through the same accumulator the
+    // in-engine local pass uses, so both derive identical set-aware filters.
+    let mut accumulator = DimensionKeyAccumulator::default();
     let mut total_rows = 0usize;
     for file in &source.files {
         let object = object_store_file(&file.location)?;
@@ -222,11 +229,12 @@ async fn derive_dimension_key_range(
                     total_rows, MAX_DIMENSION_ROWS
                 ));
             }
-            range = dimension_key_range_from_batch(range, &batch, key_column, predicate)
+            accumulator
+                .observe_batch(&batch, key_column, predicate)
                 .ok_or_else(|| "unsupported_dimension_predicate_or_key".to_string())?;
         }
     }
-    Ok(range)
+    Ok(accumulator.finish())
 }
 
 async fn parquet_metadata(

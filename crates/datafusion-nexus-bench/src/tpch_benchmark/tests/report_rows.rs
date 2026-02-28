@@ -171,6 +171,30 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 stddev_samp_execution_mode: "".to_string(),
                 stddev_samp_ddof: "".to_string(),
                 aggregate_filter_count: 0,
+                filtered_input_materialization_strategy: "".to_string(),
+                filtered_input_materialization_estimated_bytes: 0,
+                filtered_input_materialization_budget_bytes: 0,
+                filtered_input_materialization_threshold_bytes: 0,
+                filtered_input_lower_level_unresolved_contracts: "".to_string(),
+                filtered_global_rows_per_chunk: 0,
+                filtered_global_inputs_per_segment: 0,
+                filtered_global_segment_target_temporary_bytes: 0,
+                filtered_global_actual_chunk_count: 0,
+                filtered_global_actual_segment_count: 0,
+                filtered_global_max_segment_rows: 0,
+                filtered_global_observed_temporary_peak_bytes: 0,
+                filtered_global_observed_retained_peak_bytes: 0,
+                filtered_global_state_rows_merged: 0,
+                filtered_grouped_rows_per_chunk: 0,
+                filtered_grouped_inputs_per_segment: 0,
+                filtered_grouped_segment_target_temporary_bytes: 0,
+                filtered_grouped_actual_chunk_count: 0,
+                filtered_grouped_actual_segment_count: 0,
+                filtered_grouped_max_segment_rows: 0,
+                filtered_grouped_observed_temporary_peak_bytes: 0,
+                filtered_grouped_observed_retained_peak_bytes: 0,
+                filtered_grouped_state_rows_merged: 0,
+                filtered_grouped_high_cardinality_admission: "".to_string(),
                 distinct_aggregate_count: 0,
                 input_rows: 6001215,
                 output_group_count: 4,
@@ -340,6 +364,13 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     assert!(
         fields[header_index(&header_fields, "aggregate_strategy_rows")]
             .contains("partitioned_merge_partition_count=unknown")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")].contains("filtered_grouped_rows_per_chunk=0")
+    );
+    assert!(
+        fields[header_index(&header_fields, "aggregate_strategy_rows")]
+            .contains("filtered_input_lower_level_unresolved_contracts=")
     );
     assert!(
         fields[header_index(&header_fields, "aggregate_strategy_rows")]

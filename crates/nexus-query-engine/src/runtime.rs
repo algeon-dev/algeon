@@ -49,7 +49,9 @@ pub use io_capability::{
 pub(crate) use object_store::{ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey};
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
 use object_store::{SourceObjectStoreRegistry, default_source_fetch_runtime};
-pub use policy::{DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind};
+pub use policy::{
+    DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
+};
 pub use query_service::{
     QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig, QueryServiceTenantConfig, TenantId,
     TenantQueryContext, TenantQueueDepth,
@@ -200,6 +202,8 @@ pub struct ExecutionContext {
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source scheduling policy for bounded local Parquet reads.
     source_scheduler_policy: SourceSchedulerPolicy,
+    /// Source chunk planning mode for bounded local Parquet reads.
+    source_chunk_planning_mode: SourceChunkPlanningMode,
     /// Service-level source IO substrate and gate configuration.
     source_fetch_config: SourceFetchConfig,
     /// Service-level pool used by bounded source-read workers.
@@ -267,6 +271,7 @@ impl ExecutionContext {
             memory_control_policy: MemoryControlPolicy::Unbounded,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             source_fetch_config,
             service_stream_pool,
             host_fetch_budget: HostFetchBudget::default(),
@@ -328,6 +333,7 @@ impl ExecutionContext {
             memory_control_policy: self.memory_control_policy,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
+            source_chunk_planning_mode: self.source_chunk_planning_mode,
             source_fetch_config: self.source_fetch_config.clone(),
             service_stream_pool: self.service_stream_pool.clone(),
             host_fetch_budget: self.host_fetch_budget.clone(),
@@ -383,6 +389,11 @@ impl ExecutionContext {
     /// Returns source scheduling controls for bounded source execution.
     pub fn source_scheduler_policy(&self) -> SourceSchedulerPolicy {
         self.source_scheduler_policy
+    }
+
+    /// Returns the source chunk planning mode.
+    pub fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
+        self.source_chunk_planning_mode
     }
 
     /// Returns the service-level source IO configuration.
@@ -577,6 +588,7 @@ pub struct ExecutionContextBuilder {
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source read scheduling contract.
     source_scheduler_policy: SourceSchedulerPolicy,
+    source_chunk_planning_mode: SourceChunkPlanningMode,
     /// Optional service-level source IO configuration.
     source_fetch_config: Option<SourceFetchConfig>,
     /// Source object-store profiles available to execution-time fetches.
@@ -667,6 +679,12 @@ impl ExecutionContextBuilder {
     /// Sets bounded source scheduling controls.
     pub fn with_source_scheduler_policy(mut self, source_scheduler_policy: SourceSchedulerPolicy) -> Self {
         self.source_scheduler_policy = source_scheduler_policy;
+        self
+    }
+
+    /// Set bounded source chunk planning mode.
+    pub fn with_source_chunk_planning_mode(mut self, mode: SourceChunkPlanningMode) -> Self {
+        self.source_chunk_planning_mode = mode;
         self
     }
 
@@ -820,6 +838,7 @@ impl ExecutionContextBuilder {
                 memory_control_policy: self.memory_control_policy,
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
+                source_chunk_planning_mode: self.source_chunk_planning_mode,
                 source_fetch_config,
                 service_stream_pool,
                 host_fetch_budget,
@@ -876,6 +895,7 @@ impl ExecutionContextBuilder {
             memory_control_policy: self.memory_control_policy,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
+            source_chunk_planning_mode: self.source_chunk_planning_mode,
             source_fetch_config,
             service_stream_pool,
             host_fetch_budget,
@@ -984,6 +1004,16 @@ mod tests {
     fn execution_context_records_host_fetch_concurrency_limit() {
         let context = ExecutionContext::builder().with_host_fetch_max_concurrent_ops(7).build().unwrap();
         assert_eq!(context.host_fetch_max_concurrent_ops(), 7);
+    }
+
+    #[test]
+    fn execution_context_records_source_chunk_planning_mode() {
+        let context = ExecutionContext::builder()
+            .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
+            .build()
+            .unwrap();
+
+        assert_eq!(context.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
     }
 
     #[test]

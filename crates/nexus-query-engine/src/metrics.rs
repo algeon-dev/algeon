@@ -1779,6 +1779,10 @@ pub struct SourceReadRuntimeMetrics {
     pub reader_dynamic_filter_count: u64,
     /// Stable diagnostic reason for the source chunk batching decision.
     pub source_batching_reason: String,
+    /// Source chunk planning mode requested for this source read.
+    pub source_chunk_planning_mode: String,
+    /// Stable diagnostic reason for the source chunk row-group and byte target.
+    pub source_chunk_planning_reason: String,
     /// Elapsed time spent in the source read.
     pub elapsed: Duration,
 }
@@ -1787,7 +1791,7 @@ impl SourceReadRuntimeMetrics {
     /// Serializes this row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},elapsed_ns={}",
+            "source_node_id={},read_kind={},read_strategy={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={}",
             self.source_node_id,
             self.read_kind,
             self.read_strategy,
@@ -1812,6 +1816,8 @@ impl SourceReadRuntimeMetrics {
             self.reader_predicate,
             self.reader_dynamic_filter_count,
             self.source_batching_reason,
+            self.source_chunk_planning_mode,
+            self.source_chunk_planning_reason,
             self.elapsed.as_nanos().min(u128::from(u64::MAX)),
         )
     }

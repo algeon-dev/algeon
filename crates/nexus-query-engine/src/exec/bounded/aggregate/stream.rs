@@ -1,11 +1,13 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     mut inputs: ResidentFrameStreamPayload,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -132,8 +134,8 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     inputs: Vec<ResidentGpuFrame>,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -248,8 +250,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggr
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,

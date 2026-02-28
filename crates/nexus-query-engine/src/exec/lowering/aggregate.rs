@@ -57,9 +57,9 @@ pub(in crate::exec) fn lower_partial_aggregate_spec(spec: &AggregateSpec) -> Res
 }
 
 pub(in crate::exec) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Result<LoweredAggregate> {
-    let partial = lower_partial_aggregate_spec(spec)?;
-    let mut aggregations = Vec::with_capacity(partial.aggregations.len());
-    let mut output_names = partial.output_key_names.clone();
+    let keys = lower_aggregate_spec_keys(spec)?;
+    let mut aggregations = Vec::with_capacity(spec.aggr_exprs.len().saturating_mul(2));
+    let mut output_names = keys.output_key_names.clone();
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
         match expr.function {
             AggregateFunction::Avg => {
@@ -79,8 +79,8 @@ pub(in crate::exec) fn lower_final_aggregate_spec(spec: &AggregateSpec) -> Resul
     }
 
     Ok(LoweredAggregate {
-        key_columns: partial.output_key_names.clone(),
-        output_key_names: partial.output_key_names,
+        key_columns: keys.output_key_names.clone(),
+        output_key_names: keys.output_key_names,
         aggregations,
         output_names,
     })

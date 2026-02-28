@@ -5,9 +5,11 @@ use crate::capability::aggregate_strategy_capability_decision;
 
 pub(super) const ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
 pub(super) const ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS: u64 = 100_000;
-pub(super) const EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 2;
+pub(super) const EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 5;
 pub(super) const EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
 pub(super) const EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
+pub(super) const EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
+pub(super) const EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
 pub(super) const PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
 pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS: u64 = 64;
 pub(super) const SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES: u64 = 384 * 1024 * 1024;
@@ -362,6 +364,7 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
     }
 
     let mut key_columns = Vec::with_capacity(spec.group_exprs.len());
+    let mut key_types = Vec::with_capacity(spec.group_exprs.len());
     for expr in &spec.group_exprs {
         let key_column = plain_group_key_column_name(expr)?;
         let field = input_schema.field_with_name(key_column).ok()?;
@@ -369,6 +372,10 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
             return None;
         }
         key_columns.push(key_column.to_string());
+        key_types.push(field.data_type());
+    }
+    if spec.group_exprs.len() > 2 && !extended_grouped_cardinality_probe_shape_supported(input_rows, &key_types) {
+        return None;
     }
     Some(key_columns)
 }
@@ -869,6 +876,30 @@ fn fixed_width_dtype_size(data_type: &ArrowDataType) -> Option<u64> {
 fn exact_grouped_key_cardinality_probe_dtype_supported(data_type: &ArrowDataType) -> bool {
     fixed_width_dtype_size(data_type).is_some()
         || matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn extended_grouped_cardinality_probe_shape_supported(input_rows: u64, key_types: &[&ArrowDataType]) -> bool {
+    let string_key_count = key_types
+        .iter()
+        .filter(|data_type| {
+            matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+        })
+        .count();
+    let fixed_width_key_count =
+        key_types.iter().filter(|data_type| fixed_width_dtype_size(data_type).is_some()).count();
+    match key_types.len() {
+        3 => {
+            input_rows <= EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS
+                && string_key_count == 1
+                && fixed_width_key_count == 2
+        },
+        5 => {
+            input_rows <= EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS
+                && string_key_count == 3
+                && fixed_width_key_count == 2
+        },
+        _ => false,
+    }
 }
 
 fn update_rejected_candidate_summary(decision: &mut AggregateStrategyCapabilityDecision) {

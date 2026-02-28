@@ -10,16 +10,25 @@ Usage: tpcds_cpu_gpu_compare.py --gpu-tsv gpu.tsv --cpu-tsv cpu.tsv [--slow-thre
 """
 from __future__ import annotations
 import argparse, statistics
+import sys
 from collections import defaultdict
 
 def load(path):
     hdr = None
+    metadata = {}
     by_q = defaultdict(lambda: {"measured": [], "rows": None, "outcome": None,
                                  "planning": None, "rsv": 0, "started": None,
                                  "failure": None, "rt_class": None})
-    for line in open(path):
+    with open(path) as handle:
+        lines = list(handle)
+    for line in lines:
         line = line.rstrip("\n")
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        if line.startswith("#"):
+            key, value = parse_metadata_comment(line)
+            if key:
+                metadata[key] = value
             continue
         cells = line.split("\t")
         if hdr is None:
@@ -49,7 +58,45 @@ def load(path):
             rec["rsv"] = max(rec["rsv"], int(g("reservation_live_peak_bytes")))
         except (TypeError, ValueError):
             pass
-    return by_q
+    return by_q, metadata
+
+def parse_metadata_comment(line):
+    text = line[1:].strip()
+    if "=" not in text:
+        return None, None
+    key, value = text.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None, None
+    return key, value.strip()
+
+def native_profile_summary(metadata):
+    name = metadata.get("tpcds_benchmark_native_profile_name", "unknown")
+    source = metadata.get("tpcds_benchmark_native_profile_source", "unknown")
+    device_budget = metadata.get("tpcds_benchmark_native_device_budget_bytes", "unknown")
+    chunk_bytes = metadata.get("tpcds_benchmark_native_max_source_chunk_bytes", "unknown")
+    row_groups = metadata.get("tpcds_benchmark_native_max_row_groups_per_chunk", "unknown")
+    source_chunk_planning_mode = metadata.get("tpcds_benchmark_native_source_chunk_planning_mode", "unknown")
+    return {
+        "name": name,
+        "source": source,
+        "device_budget": device_budget,
+        "chunk_bytes": chunk_bytes,
+        "row_groups": row_groups,
+        "source_chunk_planning_mode": source_chunk_planning_mode,
+        "known": name != "unknown",
+    }
+
+def print_profile_summary(label, metadata):
+    profile = native_profile_summary(metadata)
+    print(
+        f"{label} native profile: name={profile['name']} source={profile['source']} "
+        f"device_budget_bytes={profile['device_budget']} "
+        f"max_source_chunk_bytes={profile['chunk_bytes']} "
+        f"max_row_groups_per_chunk={profile['row_groups']} "
+        f"source_chunk_planning_mode={profile['source_chunk_planning_mode']}"
+    )
+    return profile
 
 def mean(xs):
     return statistics.mean(xs) if xs else None
@@ -60,9 +107,19 @@ def main():
     ap.add_argument("--cpu-tsv", required=True)
     ap.add_argument("--slow-threshold", type=float, default=1.0)
     args = ap.parse_args()
-    gpu = load(args.gpu_tsv)
-    cpu = load(args.cpu_tsv)
+    gpu, gpu_metadata = load(args.gpu_tsv)
+    cpu, cpu_metadata = load(args.cpu_tsv)
     queries = sorted(set(gpu) | set(cpu), key=lambda q: (len(q), q))
+
+    gpu_profile = print_profile_summary("GPU", gpu_metadata)
+    print_profile_summary("CPU TSV", cpu_metadata)
+    if not gpu_profile["known"]:
+        print(
+            "WARNING: GPU TSV does not include tpcds_benchmark_native_profile_name; "
+            "CPU-vs-GPU comparison profile is unknown.",
+            file=sys.stderr,
+        )
+    print()
 
     print(f"{'query':6} {'cpu_ms':>9} {'gpu_ms':>9} {'speedup':>7} {'gpu_started':>11} "
           f"{'gpu_outcome':>12} {'rows_match':>10} {'rt_class':>16} {'rsv_GiB':>8}")

@@ -161,7 +161,7 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
 }
 
 #[test]
-fn bounded_native_query_keeps_unpruned_hash_set_dynamic_filter_off_probe_source_post_decode() {
+fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_source() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-source-hash-set-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
@@ -226,7 +226,13 @@ fn bounded_native_query_keeps_unpruned_hash_set_dynamic_filter_off_probe_source_
     assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
     assert_eq!(metrics.dynamic_filter_produced_count, 1);
     assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 0);
+    // The build keyset is {1, 3, 4..=1026} — value 2 is absent. The probe's three
+    // row groups carry order_id stats [1,1], [2,2], [3,3]. Set-aware pruning
+    // coalesces the keyset into runs [1,1] and [3,1026] and drops the [2,2] row
+    // group, whose only value sits in the gap and matches no build key. A
+    // single-range filter ([1,1026]) would have retained all three. The output is
+    // unchanged because the pruned row group joins to nothing.
+    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "produced" && row.filter_kind == "hash_set_contains" && row.payload_value_count == Some(1025)
     }));
@@ -235,7 +241,7 @@ fn bounded_native_query_keeps_unpruned_hash_set_dynamic_filter_off_probe_source_
             && row.consumer_kind == "local_parquet_source"
             && row.filter_kind == "hash_set_contains"
             && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(3)
+            && row.selected_row_groups_after == Some(2)
     }));
     assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "applied_post_decode"
@@ -352,10 +358,16 @@ fn bounded_native_query_defers_large_small_in_list_reader_filter_when_sibling_re
         })
         .collect::<Vec<_>>();
     assert!(!deferred_rows.is_empty());
-    assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 4);
+    // The deferred order keyset {1, 100..=227} coalesces to runs [1,1] and
+    // [100,227]; the probe's [2,2] and [3,3] row groups are both in the gap and
+    // are pruned set-aware, leaving only the [1,1] row group. The deferred
+    // post-decode filter therefore sees 2 rows that already match and filters
+    // none — the deferral still fires (asserted above), but row-group pruning now
+    // removes the non-matching rows upstream instead of post-decode.
+    assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_before).sum::<u64>(), 2);
     assert_eq!(deferred_rows.iter().filter_map(|row| row.post_decode_rows_after).sum::<u64>(), 2);
-    assert_eq!(deferred_rows.iter().map(|row| row.post_decode_rows_filtered).sum::<u64>(), 2);
-    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 2);
+    assert_eq!(deferred_rows.iter().map(|row| row.post_decode_rows_filtered).sum::<u64>(), 0);
+    assert_eq!(metrics.dynamic_filter_source_post_decode_rows_filtered, 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -686,10 +698,15 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
     assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
     assert_eq!(metrics.dynamic_filter_produced_count, 1);
     assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 0);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 6);
+    // The build keyset {1, 3} coalesces to runs [1,1] and [3,3]; the probe's
+    // [2,2] row group sits in the gap and is pruned set-aware (a single [1,3]
+    // range would have kept it). Only the [1,1] and [3,3] row groups reach the
+    // reader predicate, so it evaluates 4 rows that all match and filters none —
+    // the row-group prune subsumes the per-row filtering the range path deferred.
+    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
     assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 2);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "produced" && row.filter_kind == "small_in_list" && row.payload_value_count == Some(2)
     }));
@@ -698,7 +715,7 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
             && row.consumer_kind == "local_parquet_source"
             && row.filter_kind == "small_in_list"
             && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(3)
+            && row.selected_row_groups_after == Some(2)
     }));
     assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "applied_post_decode"
@@ -716,9 +733,9 @@ fn bounded_native_query_does_not_duplicate_small_in_list_reader_predicate_after_
         })
         .collect::<Vec<_>>();
     assert!(!reader_rows.is_empty());
-    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 6);
+    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
     assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
-    assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 2);
+    assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -790,10 +807,14 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
     assert_eq!(int32_array(output, 1).values().as_ref(), &[10, 11, 30, 31]);
     assert_eq!(metrics.dynamic_filter_produced_count, 1);
     assert_eq!(metrics.dynamic_filter_applied_count, 1);
-    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 0);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 6);
+    // Build keyset {1, 3, 4..=401} coalesces to runs [1,1] and [3,401]; the probe's
+    // [2,2] row group is in the gap and is pruned set-aware. The reader predicate
+    // then sees only the 4 surviving rows (all matching) and filters none — pruning
+    // subsumes the per-row reader filtering the single-range path performed.
+    assert_eq!(metrics.dynamic_filter_row_groups_pruned, 1);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 4);
     assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 4);
-    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 2);
+    assert_eq!(metrics.dynamic_filter_reader_predicate_rows_filtered, 0);
     assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "produced"
             && row.filter_kind == "small_in_list"
@@ -806,7 +827,7 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
             && row.filter_kind == "small_in_list"
             && row.payload_value_count == Some(400)
             && row.selected_row_groups_before == Some(3)
-            && row.selected_row_groups_after == Some(3)
+            && row.selected_row_groups_after == Some(2)
     }));
     assert!(!metrics.dynamic_filter_runtime_rows.iter().any(|row| {
         row.event == "applied_post_decode"
@@ -825,9 +846,9 @@ fn bounded_native_query_does_not_duplicate_tpcds_sized_small_in_list_reader_pred
         })
         .collect::<Vec<_>>();
     assert!(!reader_rows.is_empty());
-    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 6);
+    assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_before).sum::<u64>(), 4);
     assert_eq!(reader_rows.iter().filter_map(|row| row.reader_predicate_rows_after).sum::<u64>(), 4);
-    assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 2);
+    assert_eq!(reader_rows.iter().map(|row| row.reader_predicate_rows_filtered).sum::<u64>(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

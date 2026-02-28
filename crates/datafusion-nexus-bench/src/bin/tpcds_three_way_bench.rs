@@ -30,8 +30,9 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
-    TPCDS_QUERIES, TpcdsQuery, register_tpcds_tables, tpcds_native_analytics_optimizer_config,
-    tpcds_native_report_session_config,
+    TPCDS_QUERIES, TpcdsNativeProfileSettings, TpcdsQuery, register_tpcds_tables,
+    tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
+    tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
 };
 
 const DEFAULT_QUERY_IDS: &[&str] =
@@ -73,16 +74,22 @@ const TSV_HEADER: &str = concat!(
 async fn main() -> Result<(), Box<dyn Error>> {
     let cfg = BenchConfig::from_env()?;
     eprintln!(
-        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={}",
+        "[tpcds_three_way_bench] engine={} root={} queries={} warmups={} iterations={} native_profile={} native_device_budget_bytes={} native_max_source_chunk_bytes={} native_max_row_groups_per_chunk={} native_source_chunk_planning_mode={}",
         cfg.engine.as_str(),
         cfg.root.display(),
         cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","),
         cfg.warmups,
         cfg.iterations,
+        cfg.native_profile.profile_name,
+        cfg.native_profile.device_budget_bytes,
+        cfg.native_profile.max_source_chunk_bytes,
+        cfg.native_profile.max_row_groups_per_chunk,
+        cfg.native_profile.source_chunk_planning_mode.as_str(),
     );
 
     let runtime = build_runtime(&cfg).await?;
 
+    print_metadata(&cfg);
     println!("{TSV_HEADER}");
     for query in &cfg.queries {
         for warmup_index in 0..cfg.warmups {
@@ -132,6 +139,7 @@ struct BenchConfig {
     queries: Vec<&'static TpcdsQuery>,
     warmups: usize,
     iterations: usize,
+    native_profile: TpcdsNativeProfileSettings,
 }
 
 impl BenchConfig {
@@ -157,8 +165,42 @@ impl BenchConfig {
         if iterations == 0 {
             return Err("CUDF_TPCDS_BENCH_ITERATIONS must be >= 1".into());
         }
-        Ok(Self { engine, root, queries, warmups, iterations })
+        let native_profile = match engine {
+            Engine::CpuDataFusion => tpcds_native_profile_settings_with_env(|_| None),
+            Engine::NativeGpu | Engine::HybridCpuPreferred => tpcds_native_profile_settings_from_env(),
+        };
+        Ok(Self { engine, root, queries, warmups, iterations, native_profile })
     }
+}
+
+fn print_metadata(cfg: &BenchConfig) {
+    println!("# tpcds_three_way_bench_tsv_schema_version=1");
+    println!("# tpcds_benchmark_engine={}", cfg.engine.as_str());
+    println!("# tpcds_benchmark_root={}", cfg.root.display());
+    println!("# tpcds_benchmark_query_ids={}", cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","));
+    println!("# tpcds_benchmark_warmups={}", cfg.warmups);
+    println!("# tpcds_benchmark_iterations={}", cfg.iterations);
+    println!("# tpcds_benchmark_wall_time_fields=per_measured_iteration");
+    println!("# tpcds_benchmark_native_profile_name={}", cfg.native_profile.profile_name);
+    println!("# tpcds_benchmark_native_profile_source={}", cfg.native_profile.profile_source);
+    println!("# tpcds_benchmark_native_device_budget_bytes={}", cfg.native_profile.device_budget_bytes);
+    println!("# tpcds_benchmark_native_max_source_chunk_bytes={}", cfg.native_profile.max_source_chunk_bytes);
+    println!("# tpcds_benchmark_native_max_row_groups_per_chunk={}", cfg.native_profile.max_row_groups_per_chunk);
+    println!("# tpcds_benchmark_native_max_retry_attempts={}", cfg.native_profile.max_retry_attempts);
+    println!("# tpcds_benchmark_native_min_retry_chunk_row_groups={}", cfg.native_profile.min_retry_chunk_row_groups);
+    println!(
+        "# tpcds_benchmark_native_source_chunk_planning_mode={}",
+        cfg.native_profile.source_chunk_planning_mode.as_str()
+    );
+    let statistical_aggregate_execution_mode = native_statistical_aggregate_execution_mode_from_env();
+    println!(
+        "# tpcds_benchmark_native_statistical_aggregate_execution_mode={}",
+        statistical_aggregate_execution_mode.as_str()
+    );
+    println!(
+        "# tpcds_benchmark_native_statistical_aggregate_tolerance_contract={}",
+        statistical_aggregate_execution_mode.tolerance_contract().as_str()
+    );
 }
 
 fn bench_queries_from_csv(queries_csv: &str) -> Result<Vec<&'static TpcdsQuery>, Box<dyn Error>> {
@@ -190,7 +232,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
             Ok(BenchRuntime { execution_ctx: ctx, optimizer: None, native_planning: None, skip_cpu_preferred: false })
         },
         Engine::NativeGpu => {
-            let optimizer_config = tpcds_native_analytics_optimizer_config();
+            let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(&cfg.native_profile);
             let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
             let state = SessionStateBuilder::new_with_default_features()
                 .with_config(tpcds_native_report_session_config())
@@ -208,7 +250,7 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
         Engine::HybridCpuPreferred => {
             let cpu_ctx = SessionContext::new_with_config(tuned_cpu_session_config());
             register_tpcds_tables(&cpu_ctx, &cfg.root).await?;
-            let (native_ctx, optimizer) = build_native_planning_context(&cfg.root).await?;
+            let (native_ctx, optimizer) = build_native_planning_context(&cfg.root, &cfg.native_profile).await?;
             Ok(BenchRuntime {
                 execution_ctx: cpu_ctx,
                 optimizer: None,
@@ -221,8 +263,9 @@ async fn build_runtime(cfg: &BenchConfig) -> Result<BenchRuntime, Box<dyn Error>
 
 async fn build_native_planning_context(
     root: &Path,
+    native_profile: &TpcdsNativeProfileSettings,
 ) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
-    let optimizer_config = tpcds_native_analytics_optimizer_config();
+    let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(native_profile);
     let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())

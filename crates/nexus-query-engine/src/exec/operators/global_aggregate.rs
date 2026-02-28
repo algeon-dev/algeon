@@ -1,3 +1,5 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 mod avg;
@@ -15,15 +17,16 @@ pub(in crate::exec) use casts::{
 };
 pub(in crate::exec) use count::{global_count_series, global_count_series_with_budget, global_count_star_expr};
 pub(in crate::exec) use state::{
-    final_global_aggregate_state_output_schema, global_valid_count_state_alias, partial_global_aggregate_output_schema,
-    partial_global_aggregate_spec,
+    final_global_aggregate_spec, final_global_aggregate_state_output_schema, global_valid_count_state_alias,
+    partial_global_aggregate_output_schema, partial_global_aggregate_spec,
+    validate_global_valid_count_state_alias_collisions,
 };
 
 pub(in crate::exec) fn execute_global_aggregate(
     context: &ExecutionContext,
     spec: &AggregateSpec,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     execute_global_aggregate_impl(context, spec, input, output_schema, None, metrics)
@@ -33,7 +36,7 @@ pub(in crate::exec) fn execute_global_aggregate_with_budget(
     context: &ExecutionContext,
     spec: &AggregateSpec,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -44,7 +47,7 @@ fn execute_global_aggregate_impl(
     context: &ExecutionContext,
     spec: &AggregateSpec,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
@@ -197,41 +200,54 @@ fn reduce_global_aggregate_column_impl(
             .with_fact("alias", expr.alias.as_str())
             .with_fact("data_type", format!("{output_type:?}"))
         })?;
-        let casted = match token {
-            Some(token) => budgeted_value(
-                frame.cast_column_with_budget(input_column.as_str(), target_type, token).map_err(|error| {
-                    QueryError::from_cudf_with_budget_details(
+        let input_type = series.dtype().map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.global_aggregate.input_type",
+                "failed to inspect native global aggregate input column type",
+                error,
+            )
+            .with_fact("column", input_column.as_str())
+            .with_fact("alias", expr.alias.as_str())
+        })?;
+        if input_type == target_type {
+            series
+        } else {
+            let casted = match token {
+                Some(token) => budgeted_value(
+                    frame.cast_column_with_budget(input_column.as_str(), target_type, token).map_err(|error| {
+                        QueryError::from_cudf_with_budget_details(
+                            "nexus_query_engine.global_aggregate.cast_input",
+                            "failed to cast bounded native global aggregate input column before reduction",
+                            error,
+                        )
+                        .with_fact("column", input_column.as_str())
+                        .with_fact("alias", expr.alias.as_str())
+                        .with_fact("data_type", format!("{output_type:?}"))
+                    })?,
+                    metrics,
+                    "nexus_query_engine.global_aggregate.cast_input",
+                ),
+                None => frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
+                    QueryError::from_cudf(
                         "nexus_query_engine.global_aggregate.cast_input",
-                        "failed to cast bounded native global aggregate input column before reduction",
+                        "failed to cast native global aggregate input column before reduction",
                         error,
                     )
                     .with_fact("column", input_column.as_str())
                     .with_fact("alias", expr.alias.as_str())
                     .with_fact("data_type", format!("{output_type:?}"))
                 })?,
-                metrics,
-                "nexus_query_engine.global_aggregate.cast_input",
-            ),
-            None => frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
+            };
+            casted.series(input_column.as_str()).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.global_aggregate.cast_input",
-                    "failed to cast native global aggregate input column before reduction",
+                    "failed to access casted native global aggregate input column",
                     error,
                 )
                 .with_fact("column", input_column.as_str())
                 .with_fact("alias", expr.alias.as_str())
-                .with_fact("data_type", format!("{output_type:?}"))
-            })?,
-        };
-        casted.series(input_column.as_str()).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.global_aggregate.cast_input",
-                "failed to access casted native global aggregate input column",
-                error,
-            )
-            .with_fact("column", input_column.as_str())
-            .with_fact("alias", expr.alias.as_str())
-        })?
+            })?
+        }
     } else {
         series
     };

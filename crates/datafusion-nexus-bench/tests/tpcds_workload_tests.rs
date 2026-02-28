@@ -1,12 +1,19 @@
 use std::{
-    fs,
+    collections::BTreeMap,
+    fs, panic,
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use datafusion_nexus::NativeCudfExecutionConfig;
 use datafusion_nexus_bench::{
-    TPCDS_QUERIES, TPCDS_QUERY_COUNT, TPCDS_TABLES, describe_tpcds_dataset, tiny_tpcds_dataset_metadata,
-    tpcds_native_optimizer_config, tpcds_native_report_session_config, tpcds_query_ids, tpcds_report_session_config,
-    write_tiny_tpcds_parquet_dataset,
+    CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, CUDF_TPCDS_NATIVE_PROFILE_ENV,
+    CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, TPCDS_NATIVE_PROFILE_CONSERVATIVE, TPCDS_NATIVE_PROFILE_CUSTOM,
+    TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT, TPCDS_QUERIES, TPCDS_QUERY_COUNT,
+    TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
+    TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, TPCDS_TABLES, describe_tpcds_dataset,
+    tiny_tpcds_dataset_metadata, tpcds_native_optimizer_config, tpcds_native_profile_settings_with_env,
+    tpcds_native_report_session_config, tpcds_query_ids, tpcds_report_session_config, write_tiny_tpcds_parquet_dataset,
 };
 
 #[test]
@@ -67,6 +74,70 @@ fn tpcds_native_optimizer_config_disables_cpu_preference_for_gpu_only_sql_surfac
         !config.native_plan_preference_options().enabled,
         "TPC-DS native surfaces must not emit cpu_preferred_not_run while SQL may contain GPU-only cugraph_* calls"
     );
+}
+
+#[test]
+fn tpcds_native_profile_defaults_to_conservative() {
+    let profile = tpcds_native_profile_settings_from([]);
+
+    assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CONSERVATIVE);
+    assert_eq!(profile.profile_source, "default");
+    assert_eq!(profile.max_source_chunk_bytes, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+}
+
+#[test]
+fn tpcds_native_profile_resolves_sf100_gpu_throughput() {
+    let profile = tpcds_native_profile_settings_from([(CUDF_TPCDS_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]);
+
+    assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
+    assert_eq!(profile.profile_source, "env_profile");
+    assert_eq!(profile.device_budget_bytes, TPCDS_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
+    assert_eq!(profile.max_source_chunk_bytes, TPCDS_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, TPCDS_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput);
+}
+
+#[test]
+fn tpcds_native_profile_numeric_overrides_become_custom() {
+    let profile = tpcds_native_profile_settings_from([
+        (CUDF_TPCDS_NATIVE_PROFILE_ENV, "conservative"),
+        (CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV, "123456789"),
+        (CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "268435456"),
+        (CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8"),
+    ]);
+
+    assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CUSTOM);
+    assert_eq!(profile.profile_source, "custom_overrides");
+    assert_eq!(profile.device_budget_bytes, 123456789);
+    assert_eq!(profile.max_source_chunk_bytes, 268435456);
+    assert_eq!(profile.max_row_groups_per_chunk, 8);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+}
+
+#[test]
+fn tpcds_native_profile_source_chunk_planning_mode_override_becomes_custom() {
+    let profile = tpcds_native_profile_settings_from([
+        (CUDF_TPCDS_NATIVE_PROFILE_ENV, "conservative"),
+        (CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+    ]);
+
+    assert_eq!(profile.profile_name, TPCDS_NATIVE_PROFILE_CUSTOM);
+    assert_eq!(profile.profile_source, "custom_overrides");
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput);
+}
+
+#[test]
+fn tpcds_native_profile_rejects_zero_numeric_values() {
+    let result = panic::catch_unwind(|| {
+        tpcds_native_profile_settings_from([
+            (CUDF_TPCDS_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
+            (CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "0"),
+        ]);
+    });
+
+    assert!(result.is_err(), "zero row-group caps must be rejected at profile resolution");
 }
 
 #[test]
@@ -134,4 +205,11 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+fn tpcds_native_profile_settings_from(
+    pairs: impl IntoIterator<Item = (&'static str, &'static str)>,
+) -> datafusion_nexus_bench::TpcdsNativeProfileSettings {
+    let env = pairs.into_iter().map(|(key, value)| (key, value.to_string())).collect::<BTreeMap<_, _>>();
+    tpcds_native_profile_settings_with_env(|name| env.get(name).cloned())
 }

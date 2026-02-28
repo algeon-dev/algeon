@@ -161,6 +161,8 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
         scan_limit_rows: None,
         size_estimate_based: true,
         source_batching_reason: parent.source_batching_reason.clone(),
+        source_chunk_planning_mode: parent.source_chunk_planning_mode,
+        source_chunk_planning_reason: parent.source_chunk_planning_reason.clone(),
     }
 }
 

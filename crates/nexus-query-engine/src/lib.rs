@@ -102,9 +102,10 @@ pub use optimizer::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
     AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
     DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER, DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME,
-    DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedApplyResult, DimensionDerivedPruningRequest,
-    DimensionDerivedRowGroupPruningCandidateDiagnostics, DimensionDerivedRowGroupPruningDiagnostics,
-    DimensionDerivedRowGroupPruningOptions, DimensionDerivedRowGroupPruningRejectedReason,
+    DIMENSION_KEY_FILTER_MAX_RUNS, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DimensionDerivedApplyResult,
+    DimensionDerivedPruningRequest, DimensionDerivedRowGroupPruningCandidateDiagnostics,
+    DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
+    DimensionDerivedRowGroupPruningRejectedReason, DimensionKeyAccumulator, DimensionKeyFilter,
     DynamicFilterRouteCandidateDiagnostics, DynamicFilterRouteDiscoveryDiagnostics, DynamicFilterRouteDiscoveryOptions,
     DynamicFilterRouteRejectedReason, JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
     JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionDiagnostics, JoinBuildSideSelectionOptions,
@@ -125,7 +126,7 @@ pub use optimizer::{
     SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions,
     SharedSubplanMaterializationRejectedReason, StreamFanoutReplayCandidateDiagnostics, StreamFanoutReplayDiagnostics,
     StreamFanoutReplayOptions, StreamFanoutReplayRejectedReason, apply_dimension_derived_pruning_with_stats,
-    dimension_key_range_from_batch, discover_dimension_derived_pruning_requests, optimize_query_plan,
+    dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests, optimize_query_plan,
     optimize_semijoin_reduction, seed_dimension_derived_reader_predicates, select_overlapping_row_groups,
 };
 pub use pipeline::{
@@ -160,10 +161,10 @@ pub use runtime::{
     MemoryResourcePolicy, MemorySpaceId, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
     ProbeExecutionBoundary, QueryHandle, QueryService, QueryServiceAdmissionSnapshot, QueryServiceConfig,
     QueryServiceTenantConfig, ReservationKind, ResultMaterializationBoundary, RetryFacts, S3SourceStorageCredential,
-    S3SourceStorageProfile, ServiceStreamPool, SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision,
-    SourceFetchStrategyReason, SourceFetchSubstrate, SourceGdsEligibility, SourceReadBoundary, SourceSchedulerPolicy,
-    SourceStorageProfile, StreamLease, TenantId, TenantQueryContext, TenantQueueDepth, source_gds_eligibility,
-    source_gds_eligibility_with_default_mounts,
+    S3SourceStorageProfile, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConfig, SourceFetchStrategy,
+    SourceFetchStrategyDecision, SourceFetchStrategyReason, SourceFetchSubstrate, SourceGdsEligibility,
+    SourceReadBoundary, SourceSchedulerPolicy, SourceStorageProfile, StreamLease, TenantId, TenantQueryContext,
+    TenantQueueDepth, source_gds_eligibility, source_gds_eligibility_with_default_mounts,
 };
 pub use source::{
     ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheStatus, LiteralBatchSource,

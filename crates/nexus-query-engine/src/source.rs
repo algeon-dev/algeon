@@ -1566,11 +1566,47 @@ impl LocalParquetFile {
 }
 
 fn parquet_source_location_for_original(location: &str) -> Result<ParquetSourceLocation, String> {
+    if let Some(path) = location.strip_prefix("file://localhost/") {
+        return Ok(ParquetSourceLocation::local_path(format!("/{path}")));
+    }
     if let Some(path) = location.strip_prefix("file://") {
+        return Ok(ParquetSourceLocation::local_path(path));
+    }
+    if let Some(path) = location.strip_prefix("file:") {
         return Ok(ParquetSourceLocation::local_path(path));
     }
     if location.contains("://") {
         return ParquetSourceLocation::object_store_uri(location);
     }
     Ok(ParquetSourceLocation::local_path(location))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolved_local_file_uri_uses_filesystem_path_for_location_and_reader_path() {
+        let source = ResolvedParquetSource::local_kvikio("/tmp/table.parquet");
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource {
+            original_location: "file:/tmp/table.parquet".to_string(),
+            ..source
+        })
+        .unwrap();
+
+        assert_eq!(file.location.as_local_path(), Some(Path::new("/tmp/table.parquet")));
+        assert_eq!(file.path, PathBuf::from("/tmp/table.parquet"));
+    }
+
+    #[test]
+    fn resolved_local_file_uri_with_localhost_authority_is_local_path() {
+        let source = ResolvedParquetSource::local_kvikio("/tmp/table.parquet");
+        let file = LocalParquetFile::from_resolved_parquet_source(ResolvedParquetSource {
+            original_location: "file://localhost/tmp/table.parquet".to_string(),
+            ..source
+        })
+        .unwrap();
+
+        assert_eq!(file.location.as_local_path(), Some(Path::new("/tmp/table.parquet")));
+    }
 }

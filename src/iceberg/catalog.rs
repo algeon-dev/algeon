@@ -6,12 +6,6 @@
 //! startup via [`build_catalog_provider_from_backend`] or
 //! [`build_scoped_catalog_provider_from_backend`]; individual tables are loaded
 //! lazily on first access.
-//!
-//! # Backend implementations
-//!
-//! - [`GlueIcebergCatalogBackend`] — AWS Glue via `iceberg-catalog-glue`
-//! - REST and Hive backends can be added as additional implementations of
-//!   [`IcebergCatalogBackend`] without changing the DataFusion-facing layer.
 
 use std::{
     any::Any,
@@ -51,10 +45,6 @@ use crate::{
 };
 
 const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
-
-// ---------------------------------------------------------------------------
-// Provider kind
-// ---------------------------------------------------------------------------
 
 /// Which DataFusion [`TableProvider`] implementation to wrap loaded Iceberg
 /// tables in.
@@ -143,10 +133,6 @@ async fn build_table_provider(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Backend trait
-// ---------------------------------------------------------------------------
-
 /// Backend-neutral Iceberg catalog listing and table-loading interface.
 ///
 /// All methods are `async` because catalog operations require network calls.
@@ -179,10 +165,6 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
         None
     }
 }
-
-// ---------------------------------------------------------------------------
-// DataFusion catalog provider
-// ---------------------------------------------------------------------------
 
 /// DataFusion [`CatalogProvider`] backed by a startup-cached Iceberg namespace
 /// list.
@@ -223,10 +205,6 @@ impl CatalogProvider for CudfIcebergCatalogProvider {
         self.schemas.get(name).map(|s| Arc::clone(s) as Arc<dyn SchemaProvider>)
     }
 }
-
-// ---------------------------------------------------------------------------
-// DataFusion schema provider
-// ---------------------------------------------------------------------------
 
 /// DataFusion [`SchemaProvider`] backed by a single Iceberg namespace with lazy
 /// table loading.
@@ -345,10 +323,6 @@ impl SchemaProvider for CudfIcebergSchemaProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Startup builder
-// ---------------------------------------------------------------------------
-
 /// Builds a [`CudfIcebergCatalogProvider`] by discovering all namespaces and
 /// their table names from `backend` at startup.
 ///
@@ -440,10 +414,6 @@ fn namespace_ident_from_flat_name(namespace: &str) -> Result<NamespaceIdent> {
             .with_source(error)
     })
 }
-
-// ---------------------------------------------------------------------------
-// Glue backend configuration
-// ---------------------------------------------------------------------------
 
 /// Catalog-level configuration for the AWS Glue Iceberg backend.
 ///
@@ -673,10 +643,6 @@ fn glue_catalog_props(
     props
 }
 
-// ---------------------------------------------------------------------------
-// Glue backend implementation
-// ---------------------------------------------------------------------------
-
 /// AWS Glue implementation of [`IcebergCatalogBackend`].
 ///
 /// Holds a connected `iceberg-catalog-glue` catalog handle.  Namespace and
@@ -799,10 +765,6 @@ impl IcebergCatalogBackend for GlueIcebergCatalogBackend {
         self.parquet_read_strategy_config.clone()
     }
 }
-
-// ---------------------------------------------------------------------------
-// REST backend configuration
-// ---------------------------------------------------------------------------
 
 /// Catalog-level configuration for the Iceberg REST catalog backend.
 ///
@@ -1032,10 +994,6 @@ fn rest_catalog_props(
 pub(crate) fn rest_storage_factory() -> Arc<OpenDalStorageFactory> {
     Arc::new(OpenDalStorageFactory::S3 { customized_credential_load: None })
 }
-
-// ---------------------------------------------------------------------------
-// REST backend implementation
-// ---------------------------------------------------------------------------
 
 /// Iceberg REST catalog implementation of [`IcebergCatalogBackend`].
 ///

@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 use crate::{
     SortExpr, SortSpec,
@@ -1056,8 +1058,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     mut partials: Vec<CommittedPartial>,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -1180,8 +1182,8 @@ fn execute_compiled_final_merge_level_attempt(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     partials: &[CommittedPartial],
     merge_fan_in: usize,
     attempt: usize,
@@ -1224,8 +1226,8 @@ fn execute_compiled_final_merge_group_attempt(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     partials: &[CommittedPartial],
     attempt: usize,
     max_attempts: usize,
@@ -1297,8 +1299,8 @@ fn merge_compiled_final_aggregate_partials(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     partials: &[CommittedPartial],
     token: &ExecutionBudgetToken,
     merge_reservation: &mut ActiveReservation,
@@ -1400,8 +1402,8 @@ fn execute_compiled_final_aggregate_projection(
     context: &ExecutionContext,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: CommittedPartial,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -1450,7 +1452,7 @@ fn execute_compiled_final_aggregate_projection(
 fn finalize_compiled_final_aggregate_output(
     context: &ExecutionContext,
     aggregate: &AggregateNode,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
@@ -1484,8 +1486,8 @@ fn finalize_compiled_final_aggregate_output(
 fn execute_compiled_final_aggregate(
     context: &ExecutionContext,
     aggregate: &AggregateNode,
-    input_schema: &arrow::datatypes::SchemaRef,
-    output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
@@ -1496,8 +1498,8 @@ fn execute_compiled_final_aggregate(
 
 struct CompiledAggregatePlan<'a> {
     aggregate: &'a AggregateNode,
-    input_schema: &'a arrow::datatypes::SchemaRef,
-    output_schema: &'a arrow::datatypes::SchemaRef,
+    input_schema: &'a ArrowSchemaRef,
+    output_schema: &'a ArrowSchemaRef,
 }
 
 fn execute_final_aggregate_for_plan(

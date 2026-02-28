@@ -1,3 +1,5 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
 pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
@@ -36,8 +38,8 @@ pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> Ag
 
 pub(in crate::exec) fn partial_global_aggregate_output_schema(
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
 ) -> Result<Arc<Schema>> {
     let mut fields = Vec::with_capacity(spec.aggr_exprs.len());
     for (index, expr) in spec.aggr_exprs.iter().enumerate() {
@@ -74,13 +76,57 @@ pub(in crate::exec) fn partial_global_aggregate_output_schema(
 
 pub(in crate::exec) fn final_global_aggregate_state_output_schema(
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
-    aggregate_output_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
+    aggregate_output_schema: &ArrowSchemaRef,
 ) -> Result<Arc<Schema>> {
     partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)
 }
 
-fn global_aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes::SchemaRef) -> Result<ArrowDataType> {
+pub(in crate::exec) fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
+    AggregateSpec::new(
+        Vec::new(),
+        spec.aggr_exprs
+            .iter()
+            .enumerate()
+            .flat_map(|(index, expr)| match expr.function {
+                AggregateFunction::Count => vec![AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column(expr.alias.clone()),
+                    expr.alias.clone(),
+                )],
+                AggregateFunction::NUnique => vec![AggregateExpr::new(
+                    AggregateFunction::Sum,
+                    Expr::column(expr.alias.clone()),
+                    expr.alias.clone(),
+                )],
+                AggregateFunction::Avg => {
+                    let state = AvgStateAliases::for_aggregate_index(index);
+                    vec![
+                        AggregateExpr::new(AggregateFunction::Sum, state.sum_expr(), state.sum().to_string()),
+                        AggregateExpr::new(AggregateFunction::Sum, state.count_expr(), state.count().to_string()),
+                    ]
+                },
+                AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
+                    let valid_count_alias = global_valid_count_state_alias(expr.alias.as_str());
+                    vec![
+                        AggregateExpr::new(expr.function, Expr::column(expr.alias.clone()), expr.alias.clone()),
+                        AggregateExpr::new(
+                            AggregateFunction::Sum,
+                            Expr::column(valid_count_alias.clone()),
+                            valid_count_alias,
+                        ),
+                    ]
+                },
+                AggregateFunction::StddevSamp
+                | AggregateFunction::StddevPop
+                | AggregateFunction::VarSamp
+                | AggregateFunction::VarPop => vec![expr.clone()],
+            })
+            .collect(),
+    )
+}
+
+fn global_aggregate_input_data_type(expr: &Expr, input_schema: &ArrowSchemaRef) -> Result<ArrowDataType> {
     let input_column = lower_column_expr(expr, "nexus_query_engine.global_aggregate.state_schema")?;
     let field = input_schema.field_with_name(input_column.as_str()).map_err(|error| {
         QueryError::new(
@@ -94,7 +140,7 @@ fn global_aggregate_input_data_type(expr: &Expr, input_schema: &arrow::datatypes
     Ok(field.data_type().clone())
 }
 
-fn global_aggregate_output_field(alias: &str, output_schema: &arrow::datatypes::SchemaRef) -> Result<Field> {
+fn global_aggregate_output_field(alias: &str, output_schema: &ArrowSchemaRef) -> Result<Field> {
     output_schema.field_with_name(alias).cloned().map_err(|error| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -111,3 +157,40 @@ pub(in crate::exec) fn global_valid_count_state_alias(alias: &str) -> String {
 }
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__cudf_global_valid_count_";
+
+pub(in crate::exec) fn validate_global_valid_count_state_alias_collisions(
+    spec: &AggregateSpec,
+    operation: &'static str,
+) -> Result<()> {
+    let reserved_aliases = spec
+        .aggr_exprs
+        .iter()
+        .filter(|expr| {
+            matches!(expr.function, AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max)
+        })
+        .map(|expr| global_valid_count_state_alias(expr.alias.as_str()))
+        .collect::<Vec<_>>();
+    if reserved_aliases.is_empty() {
+        return Ok(());
+    }
+
+    let visible_aliases = spec
+        .group_exprs
+        .iter()
+        .map(|expr| lower_named_column_expr(expr, operation).map(|(_, alias)| alias))
+        .chain(spec.aggr_exprs.iter().map(|expr| Ok(expr.alias.clone())))
+        .collect::<Result<Vec<_>>>()?;
+    for alias in visible_aliases {
+        if reserved_aliases.iter().any(|reserved| reserved == &alias) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "visible aggregate output alias conflicts with reserved internal global aggregate state column",
+            )
+            .with_fact("alias", alias)
+            .with_fact("reserved_aliases", reserved_aliases.join(",")));
+        }
+    }
+
+    Ok(())
+}

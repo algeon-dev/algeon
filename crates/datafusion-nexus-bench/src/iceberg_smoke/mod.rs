@@ -39,8 +39,8 @@ use datafusion_nexus::{
         catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
         iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
     },
-    resolve_table_format_parquet_source_with_metadata, sql_has_top_level_order_by,
-    sql_top_level_order_by_covers_output_columns,
+    register_source_unique_keys_for_path, resolve_table_format_parquet_source_with_metadata,
+    schema_with_source_unique_keys, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 use futures::future::BoxFuture;
 use iceberg::{

@@ -1308,6 +1308,7 @@ mod tests {
     use crate::{
         chunk::SourceChunkBatch,
         plan::QueryPlanBuilder,
+        runtime::SourceChunkPlanningMode,
         source::{
             CredentialMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn, ParquetSourceLocation,
             ResolvedParquetSource, SourceColumnRef, SourceNode,
@@ -1361,6 +1362,8 @@ mod tests {
             scan_limit_rows: None,
             size_estimate_based: false,
             source_batching_reason: None,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test_policy".to_string(),
         }
     }
 
@@ -1429,6 +1432,8 @@ mod tests {
             scan_limit_rows: None,
             size_estimate_based: false,
             source_batching_reason: None,
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test_policy".to_string(),
         }
     }
 

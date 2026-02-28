@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
 use super::rewrite;
 use crate::{
@@ -30,6 +30,13 @@ pub struct SemijoinReductionOptions {
     /// Maximum accepted `semi_side / target_side` cost multiplier.
     pub cost_threshold_multiplier: u64,
     /// Optional post-rewrite admission gate used to protect execution modes.
+    ///
+    /// The gate rejects a rewrite only when the original plan is already
+    /// admitted by the selected mode and the rewritten plan is not. If neither
+    /// shape is admitted yet, the rewrite is kept so later native optimizer
+    /// passes can still turn the semantically-reduced plan into an admitted
+    /// execution shape. Unknown admission errors remain conservative and reject
+    /// the tentative rewrite.
     pub admission_mode: SemijoinReductionAdmissionMode,
 }
 
@@ -65,9 +72,11 @@ impl Default for SemijoinReductionOptions {
 pub enum SemijoinReductionAdmissionMode {
     /// Do not run a post-rewrite admission gate.
     NotEvaluated,
-    /// Keep the rewrite only if strict bounded admission still succeeds.
+    /// Reject only when strict bounded admission would regress an already
+    /// admitted original plan.
     StrictBounded,
-    /// Keep the rewrite only if adaptive admission still succeeds.
+    /// Reject only when adaptive admission would regress an already admitted
+    /// original plan.
     Adaptive,
 }
 
@@ -206,11 +215,11 @@ pub enum SemijoinReductionCostSignal {
 pub enum SemijoinReductionAdmissionDecision {
     /// No admission gate was evaluated.
     NotEvaluated,
-    /// Strict bounded admission accepted the rewritten plan.
+    /// Strict bounded admission gate kept the rewritten plan.
     StrictBoundedKept,
     /// Strict bounded admission rejected the rewritten plan.
     StrictBoundedRejectedRewrite,
-    /// Adaptive admission accepted the rewritten plan.
+    /// Adaptive admission gate kept the rewritten plan.
     AdaptiveKept,
     /// Adaptive admission rejected the rewritten plan.
     AdaptiveRejectedRewrite,
@@ -754,10 +763,7 @@ fn simple_projection_column(expr: &Expr) -> Option<&ColumnRef> {
     }
 }
 
-fn resolve_output_slot(
-    schema: &arrow::datatypes::SchemaRef,
-    column: &ColumnRef,
-) -> Result<usize, SemijoinReductionRejectedReason> {
+fn resolve_output_slot(schema: &ArrowSchemaRef, column: &ColumnRef) -> Result<usize, SemijoinReductionRejectedReason> {
     let mut matches = schema
         .fields()
         .iter()
@@ -1004,7 +1010,7 @@ fn is_source_derived_keyset_input(plan: &QueryPlan, node_id: NodeId) -> bool {
     }
 }
 
-fn left_output_projection_for_schema(schema: &arrow::datatypes::SchemaRef) -> Vec<JoinOutputColumn> {
+fn left_output_projection_for_schema(schema: &ArrowSchemaRef) -> Vec<JoinOutputColumn> {
     schema
         .fields()
         .iter()
@@ -1017,7 +1023,7 @@ fn left_output_projection_for_schema(schema: &arrow::datatypes::SchemaRef) -> Ve
         .collect()
 }
 
-fn semijoin_projection_schema(plan: &QueryPlan, join: &JoinNode) -> arrow::datatypes::SchemaRef {
+fn semijoin_projection_schema(plan: &QueryPlan, join: &JoinNode) -> ArrowSchemaRef {
     let left_schema = plan.node(join.inputs[0]).expect("left-semi left input must exist").output_schema().clone();
     let fields = join
         .spec
@@ -1044,7 +1050,7 @@ fn semijoin_projection_is_identity(plan: &QueryPlan, join: &JoinNode) -> bool {
     })
 }
 
-fn schemas_equal(left: &arrow::datatypes::SchemaRef, right: &arrow::datatypes::SchemaRef) -> bool {
+fn schemas_equal(left: &ArrowSchemaRef, right: &ArrowSchemaRef) -> bool {
     left.as_ref() == right.as_ref()
 }
 
@@ -1093,7 +1099,7 @@ fn mode_admission_gate_decision(
     kept: SemijoinReductionAdmissionDecision,
     rejected: SemijoinReductionAdmissionDecision,
 ) -> AdmissionGateDecision {
-    let keep = matches!((original_admitted, rewritten_admitted), (Some(true), Some(true)) | (Some(false), Some(true)));
+    let keep = matches!((original_admitted, rewritten_admitted), (Some(_), Some(true)) | (Some(false), Some(false)));
     if keep {
         AdmissionGateDecision::Keep { decision: kept, original_admitted, rewritten_admitted }
     } else {
@@ -1162,6 +1168,49 @@ mod tests {
         plan::{JoinOutputColumn, JoinSpec, ProjectionOutput, QueryPlanBuilder},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
+
+    #[test]
+    fn admission_gate_keeps_not_yet_admitted_rewrite_but_protects_admitted_original() {
+        assert!(matches!(
+            mode_admission_gate_decision(
+                Some(false),
+                Some(false),
+                SemijoinReductionAdmissionDecision::StrictBoundedKept,
+                SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            ),
+            AdmissionGateDecision::Keep {
+                decision: SemijoinReductionAdmissionDecision::StrictBoundedKept,
+                original_admitted: Some(false),
+                rewritten_admitted: Some(false),
+            }
+        ));
+        assert!(matches!(
+            mode_admission_gate_decision(
+                Some(true),
+                Some(false),
+                SemijoinReductionAdmissionDecision::StrictBoundedKept,
+                SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            ),
+            AdmissionGateDecision::Reject {
+                decision: SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+                original_admitted: Some(true),
+                rewritten_admitted: Some(false),
+            }
+        ));
+        assert!(matches!(
+            mode_admission_gate_decision(
+                None,
+                Some(true),
+                SemijoinReductionAdmissionDecision::StrictBoundedKept,
+                SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+            ),
+            AdmissionGateDecision::Reject {
+                decision: SemijoinReductionAdmissionDecision::StrictBoundedRejectedRewrite,
+                original_admitted: None,
+                rewritten_admitted: Some(true),
+            }
+        ));
+    }
 
     #[test]
     fn lineage_accepts_source_passthrough_key() {

@@ -1,11 +1,13 @@
+use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+
 use super::*;
 
-pub(in crate::exec::bounded) type ProjectionStage<'a> = (&'a ProjectionNode, &'a arrow::datatypes::SchemaRef);
+pub(in crate::exec::bounded) type ProjectionStage<'a> = (&'a ProjectionNode, &'a ArrowSchemaRef);
 
 #[derive(Clone, Copy)]
 pub(in crate::exec::bounded) enum BoundedUnaryStage<'a> {
     Filter { node_id: NodeId, node: &'a FilterNode },
-    Projection { node_id: NodeId, node: &'a ProjectionNode, output_schema: &'a arrow::datatypes::SchemaRef },
+    Projection { node_id: NodeId, node: &'a ProjectionNode, output_schema: &'a ArrowSchemaRef },
 }
 
 #[derive(Clone)]
@@ -16,8 +18,8 @@ pub(in crate::exec::bounded) struct BoundedPlan<'a> {
     pub(in crate::exec::bounded) filter: Option<&'a FilterNode>,
     pub(in crate::exec::bounded) post_filter_projections: Vec<ProjectionStage<'a>>,
     pub(in crate::exec::bounded) aggregate_id: NodeId,
-    pub(in crate::exec::bounded) aggregate_input_schema: &'a arrow::datatypes::SchemaRef,
-    pub(in crate::exec::bounded) aggregate: (&'a AggregateNode, &'a arrow::datatypes::SchemaRef),
+    pub(in crate::exec::bounded) aggregate_input_schema: &'a ArrowSchemaRef,
+    pub(in crate::exec::bounded) aggregate: (&'a AggregateNode, &'a ArrowSchemaRef),
     pub(in crate::exec::bounded) post_aggregate_stages: Vec<BoundedUnaryStage<'a>>,
     pub(in crate::exec::bounded) sort: Option<&'a SortNode>,
     pub(in crate::exec::bounded) post_sort_projections: Vec<BoundedUnaryStage<'a>>,

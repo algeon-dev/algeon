@@ -14,5 +14,7 @@ mod global_avg;
 mod global_state;
 #[path = "aggregate_execution/grouped.rs"]
 mod grouped;
+#[path = "aggregate_execution/grouping_sets.rs"]
+mod grouping_sets;
 #[path = "aggregate_execution/stddev.rs"]
 mod stddev;

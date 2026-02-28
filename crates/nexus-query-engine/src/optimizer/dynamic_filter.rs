@@ -1,3 +1,5 @@
+use arrow::datatypes::DataType as ArrowDataType;
+
 use super::rewrite;
 use crate::{
     datatypes::is_supported_arrow_type,
@@ -5,7 +7,7 @@ use crate::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage, DynamicFilterId,
         DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     },
-    expr::{ColumnRef, Expr},
+    expr::{AggregateFunction, ColumnRef, Expr},
     plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
@@ -123,6 +125,10 @@ pub enum DynamicFilterRouteRejectedReason {
     /// Consumer source has multiple parents in the plan, so source-level
     /// filtering could affect aliases that are not constrained by the join key.
     ConsumerSourceReusedInPlan,
+    /// Post-decode join-probe filtering would feed a scalar global decimal
+    /// SUM, where the route is optional and can pessimize the aggregate
+    /// backend.
+    PostDecodeConsumerFeedsScalarDecimalSum,
 }
 
 pub(crate) struct DynamicFilterRouteDiscoveryResult {
@@ -236,67 +242,90 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     diagnostics.candidates.push(candidate);
                     continue;
                 }
-                if input_reference_count(&plan, consumer_lineage.source_node_id) > 1 {
-                    candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
-                    diagnostics.candidates.push(candidate);
-                    continue;
-                }
-                if consumer_lineage.has_shared_path {
-                    candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
-                    diagnostics.candidates.push(candidate);
-                    continue;
-                }
-
                 let consumer_source = local_parquet_source(&plan, consumer_lineage.source_node_id);
                 let (consumer, consumer_column, consumer_lowering) = if let Some(consumer_source) = consumer_source {
                     let stats = consumer_source.diagnostics.selected_row_group_stats.as_ref();
                     candidate.selected_source_bytes = stats.and_then(|stats| stats.selected_source_bytes());
                     candidate.total_source_bytes = stats.and_then(|stats| stats.total_source_bytes());
 
-                    if !consumer_reader_column_is_visible(consumer_source, &consumer_lineage.source_column) {
-                        candidate.rejected_reason =
-                            Some(DynamicFilterRouteRejectedReason::ConsumerColumnNotReaderVisible);
-                        diagnostics.candidates.push(candidate);
-                        continue;
-                    }
-                    if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column) {
-                        candidate.rejected_reason =
-                            Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
-                        diagnostics.candidates.push(candidate);
-                        continue;
-                    }
+                    if input_reference_count(&plan, consumer_lineage.source_node_id) > 1
+                        || consumer_lineage.has_shared_path
+                    {
+                        if multiple_consumer_lineages {
+                            candidate.rejected_reason =
+                                Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
+                            diagnostics.candidates.push(candidate);
+                            continue;
+                        }
+                        let Some((consumer, consumer_column)) =
+                            post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true)
+                        else {
+                            candidate.rejected_reason =
+                                Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
+                            diagnostics.candidates.push(candidate);
+                            continue;
+                        };
+                        if post_decode_consumer_feeds_scalar_decimal_sum(&plan, &parent_counts, &consumer) {
+                            populate_selected_consumer_diagnostics(
+                                &mut candidate,
+                                &consumer,
+                                &consumer_column,
+                                DynamicFilterConsumerLowering::PostDecodeOnly,
+                            );
+                            candidate.rejected_reason =
+                                Some(DynamicFilterRouteRejectedReason::PostDecodeConsumerFeedsScalarDecimalSum);
+                            diagnostics.candidates.push(candidate);
+                            continue;
+                        }
+                        candidate.consumer_key_column = Some(consumer_column.clone());
+                        (consumer, consumer_column, DynamicFilterConsumerLowering::PostDecodeOnly)
+                    } else {
+                        if !consumer_reader_column_is_visible(consumer_source, &consumer_lineage.source_column) {
+                            candidate.rejected_reason =
+                                Some(DynamicFilterRouteRejectedReason::ConsumerColumnNotReaderVisible);
+                            diagnostics.candidates.push(candidate);
+                            continue;
+                        }
+                        if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column) {
+                            candidate.rejected_reason =
+                                Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
+                            diagnostics.candidates.push(candidate);
+                            continue;
+                        }
 
-                    (
-                        DynamicFilterConsumer::LocalParquetSource { source_node_id: consumer_lineage.source_node_id },
-                        consumer_lineage.source_column.clone(),
-                        consumer_lowering(consumer_source),
-                    )
+                        (
+                            DynamicFilterConsumer::LocalParquetSource {
+                                source_node_id: consumer_lineage.source_node_id,
+                            },
+                            consumer_lineage.source_column.clone(),
+                            consumer_lowering(consumer_source),
+                        )
+                    }
                 } else if multiple_consumer_lineages {
                     candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ConsumerNotLocalParquet);
                     diagnostics.candidates.push(candidate);
                     continue;
                 } else {
-                    let consumer_key = orientation.consumer_key.name();
-                    if !plan
-                        .node(orientation.consumer_input)
-                        .and_then(|node| node.output_schema().field_with_name(consumer_key).ok())
-                        .is_some_and(|field| is_supported_arrow_type(field.data_type()))
-                    {
+                    let Some((consumer, consumer_column)) =
+                        post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, false)
+                    else {
                         candidate.rejected_reason =
                             Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
                         diagnostics.candidates.push(candidate);
                         continue;
-                    }
-                    let (consumer, consumer_column) =
-                        earliest_filter_consumer_for_column(&plan, orientation.consumer_input, consumer_key).unwrap_or(
-                            (
-                                DynamicFilterConsumer::HashJoinProbe {
-                                    join_node_id: node.id,
-                                    probe_side: orientation.consumer_side,
-                                },
-                                consumer_key.to_string(),
-                            ),
+                    };
+                    if post_decode_consumer_feeds_scalar_decimal_sum(&plan, &parent_counts, &consumer) {
+                        populate_selected_consumer_diagnostics(
+                            &mut candidate,
+                            &consumer,
+                            &consumer_column,
+                            DynamicFilterConsumerLowering::PostDecodeOnly,
                         );
+                        candidate.rejected_reason =
+                            Some(DynamicFilterRouteRejectedReason::PostDecodeConsumerFeedsScalarDecimalSum);
+                        diagnostics.candidates.push(candidate);
+                        continue;
+                    }
                     candidate.consumer_key_column = Some(consumer_column.clone());
                     (consumer, consumer_column, DynamicFilterConsumerLowering::PostDecodeOnly)
                 };
@@ -816,9 +845,14 @@ fn consumer_column_type_is_supported(source: &LocalParquetSource, column: &str) 
 
 fn earliest_filter_consumer_for_column(
     plan: &QueryPlan,
+    parent_counts: &[usize],
     node_id: NodeId,
     column: &str,
+    stop_at_shared_path: bool,
 ) -> Option<(DynamicFilterConsumer, String)> {
+    if stop_at_shared_path && parent_counts.get(node_id.index()).copied().unwrap_or_default() > 1 {
+        return None;
+    }
     let node = plan.node(node_id)?;
     match &node.kind {
         PlanNode::Filter(_) => node
@@ -832,8 +866,18 @@ fn earliest_filter_consumer_for_column(
             .iter()
             .find(|output| output.field.name() == column)
             .and_then(|output| direct_projection_column_name(&output.expr))
-            .and_then(|input_column| earliest_filter_consumer_for_column(plan, projection.input, input_column)),
-        PlanNode::Sort(sort) => earliest_filter_consumer_for_column(plan, sort.input, column),
+            .and_then(|input_column| {
+                earliest_filter_consumer_for_column(
+                    plan,
+                    parent_counts,
+                    projection.input,
+                    input_column,
+                    stop_at_shared_path,
+                )
+            }),
+        PlanNode::Sort(sort) => {
+            earliest_filter_consumer_for_column(plan, parent_counts, sort.input, column, stop_at_shared_path)
+        },
         PlanNode::Limit(_) => None,
         PlanNode::Source(_)
         | PlanNode::Join(_)
@@ -843,6 +887,107 @@ fn earliest_filter_consumer_for_column(
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => None,
     }
+}
+
+fn post_decode_consumer_for_orientation(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    join_node_id: NodeId,
+    orientation: &RouteOrientation<'_>,
+    stop_at_shared_path: bool,
+) -> Option<(DynamicFilterConsumer, String)> {
+    let consumer_key = orientation.consumer_key.name();
+    if !plan
+        .node(orientation.consumer_input)
+        .and_then(|node| node.output_schema().field_with_name(consumer_key).ok())
+        .is_some_and(|field| is_supported_arrow_type(field.data_type()))
+    {
+        return None;
+    }
+    Some(
+        earliest_filter_consumer_for_column(
+            plan,
+            parent_counts,
+            orientation.consumer_input,
+            consumer_key,
+            stop_at_shared_path,
+        )
+        .unwrap_or((
+            DynamicFilterConsumer::HashJoinProbe { join_node_id, probe_side: orientation.consumer_side },
+            consumer_key.to_string(),
+        )),
+    )
+}
+
+fn populate_selected_consumer_diagnostics(
+    candidate: &mut DynamicFilterRouteCandidateDiagnostics,
+    consumer: &DynamicFilterConsumer,
+    consumer_column: &str,
+    consumer_lowering: DynamicFilterConsumerLowering,
+) {
+    candidate.consumer_key_column = Some(consumer_column.to_string());
+    candidate.consumer_kind = Some(consumer.kind().to_string());
+    candidate.consumer_node_id = Some(consumer.node_id());
+    candidate.consumer_lowering = Some(consumer_lowering);
+    candidate.consumer_reduction_stage = Some(consumer_reduction_stage(consumer, consumer_lowering));
+}
+
+fn consumer_reduction_stage(
+    consumer: &DynamicFilterConsumer,
+    consumer_lowering: DynamicFilterConsumerLowering,
+) -> DynamicFilterConsumerReductionStage {
+    match (consumer, consumer_lowering) {
+        (
+            DynamicFilterConsumer::LocalParquetSource { .. },
+            DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate,
+        ) => DynamicFilterConsumerReductionStage::SourceReader,
+        (DynamicFilterConsumer::LocalParquetSource { .. }, _) => DynamicFilterConsumerReductionStage::SourcePostDecode,
+        (DynamicFilterConsumer::Filter { .. }, _) => DynamicFilterConsumerReductionStage::FilterPostDecode,
+        (DynamicFilterConsumer::HashJoinProbe { .. }, _) => DynamicFilterConsumerReductionStage::JoinProbePostDecode,
+    }
+}
+
+fn post_decode_consumer_feeds_scalar_decimal_sum(
+    plan: &QueryPlan,
+    parent_counts: &[usize],
+    consumer: &DynamicFilterConsumer,
+) -> bool {
+    let DynamicFilterConsumer::HashJoinProbe { join_node_id, .. } = consumer else {
+        return false;
+    };
+    let mut current = *join_node_id;
+    loop {
+        let Some(parent) = single_parent(plan, parent_counts, current) else {
+            return false;
+        };
+        let Some(parent_node) = plan.node(parent) else {
+            return false;
+        };
+        match &parent_node.kind {
+            PlanNode::Projection(projection) if projection.input == current => current = parent,
+            PlanNode::Filter(filter) if filter.input == current => current = parent,
+            PlanNode::Sort(sort) if sort.input == current => current = parent,
+            PlanNode::Aggregate(aggregate) if aggregate.input == current => {
+                return aggregate.spec.group_exprs.is_empty()
+                    && aggregate.spec.aggr_exprs.iter().any(|expr| {
+                        expr.function == AggregateFunction::Sum
+                            && parent_node
+                                .output_schema()
+                                .field_with_name(expr.alias.as_str())
+                                .ok()
+                                .is_some_and(|field| matches!(field.data_type(), ArrowDataType::Decimal128(_, _)))
+                    });
+            },
+            _ => return false,
+        }
+    }
+}
+
+fn single_parent(plan: &QueryPlan, parent_counts: &[usize], node_id: NodeId) -> Option<NodeId> {
+    if parent_counts.get(node_id.index()).copied().unwrap_or_default() != 1 {
+        return None;
+    }
+    plan.nodes().iter().find(|candidate| candidate.input_ids().contains(&node_id)).map(|candidate| candidate.id)
 }
 
 fn direct_projection_column_name(expr: &Expr) -> Option<&str> {

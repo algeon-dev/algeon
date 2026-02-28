@@ -3,9 +3,12 @@ use std::{
     sync::Arc,
 };
 
-use arrow::array::{
-    Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray,
-    StringViewArray, UInt64Array,
+use arrow::{
+    array::{
+        Array, ArrayRef, BooleanArray, Date32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
+        StringArray, StringViewArray, UInt64Array,
+    },
+    datatypes::SchemaRef as ArrowSchemaRef,
 };
 use cudf::hash::{FastHashMap, fast_hash_map_with_capacity};
 
@@ -180,16 +183,24 @@ pub(super) fn execute_datafusion_exact_host_aggregate(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
+    extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) -> Result<GpuDataFrame> {
     let timer = Instant::now();
     let (frame, schema) = prepare_datafusion_exact_host_aggregate_input_frame(context, input, input_schema, metrics)?;
     let batch = materialize_datafusion_exact_host_aggregate_input(context, frame, schema)?;
-    let output_batch =
-        execute_datafusion_exact_host_aggregate_batch(context, node_id, spec, &batch, output_schema, metrics)?;
+    let output_batch = execute_datafusion_exact_host_aggregate_batch(
+        context,
+        node_id,
+        spec,
+        &batch,
+        output_schema,
+        metrics,
+        extra_strategy_facts,
+    )?;
     let output = upload_datafusion_exact_host_aggregate_output(context, &output_batch)?;
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
@@ -198,9 +209,9 @@ pub(super) fn execute_datafusion_exact_host_aggregate(
 pub(in crate::exec) fn prepare_datafusion_exact_host_aggregate_input_frame(
     context: &ExecutionContext,
     input: GpuDataFrame,
-    input_schema: &arrow::datatypes::SchemaRef,
+    input_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
-) -> Result<(GpuDataFrame, arrow::datatypes::SchemaRef)> {
+) -> Result<(GpuDataFrame, ArrowSchemaRef)> {
     let frame = sort_by_datafusion_order_if_present(context, input.into_frame(), metrics)?;
     let schema = schema_with_datafusion_order_columns(&frame, input_schema);
     Ok((GpuDataFrame::new(frame), schema))
@@ -209,7 +220,7 @@ pub(in crate::exec) fn prepare_datafusion_exact_host_aggregate_input_frame(
 pub(in crate::exec) fn materialize_datafusion_exact_host_aggregate_input(
     context: &ExecutionContext,
     input: GpuDataFrame,
-    schema: arrow::datatypes::SchemaRef,
+    schema: ArrowSchemaRef,
 ) -> Result<RecordBatch> {
     let handle = GpuResultHandle::new(context, input, schema)?;
     handle.to_host_record_batch()
@@ -220,8 +231,9 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
     batch: &RecordBatch,
-    output_schema: &arrow::datatypes::SchemaRef,
+    output_schema: &ArrowSchemaRef,
     metrics: &mut QueryMetrics,
+    extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) -> Result<RecordBatch> {
     let key_columns = spec
         .group_exprs
@@ -306,6 +318,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
         batch.schema().as_ref(),
         row_count as u64,
         groups.len() as u64,
+        extra_strategy_facts,
     );
     let output = RecordBatch::try_new(Arc::clone(output_schema), arrays).map_err(|error| {
         QueryError::new(
@@ -339,6 +352,7 @@ fn record_datafusion_exact_stddev_strategy_decision(
     input_schema: &arrow::datatypes::Schema,
     input_rows: u64,
     output_rows: u64,
+    extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) {
     let mut facts = BTreeMap::from([
         ("selected_strategy", "datafusion_exact_host_welford".to_string()),
@@ -403,11 +417,70 @@ fn record_datafusion_exact_stddev_strategy_decision(
         spec,
         StddevSampExecutionMode::DataFusionExactHostWelford,
     );
+    if let Some(extra_strategy_facts) = extra_strategy_facts {
+        add_filtered_materialization_facts(&mut facts, extra_strategy_facts);
+    }
     add_partial_aggregate_input_evidence_facts(&mut facts, None);
     metrics.record_aggregate_strategy_decision(
         node_id.unwrap_or_else(|| "aggregate.datafusion_exact_stddev".to_string()),
         &facts,
     );
+}
+
+fn add_filtered_materialization_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    extra_strategy_facts: &BTreeMap<&'static str, String>,
+) {
+    for key in [
+        "aggregate_filter_count",
+        "filtered_aggregate_scope",
+        "filtered_input_materialization_strategy",
+        "filtered_input_materialization_estimated_bytes",
+        "filtered_input_materialization_budget_bytes",
+        "filtered_input_materialization_threshold_bytes",
+        "filtered_input_materialization_budget_fraction",
+        "filtered_input_value_bytes",
+        "filtered_input_validity_bytes",
+        "filtered_input_predicate_bytes",
+        "filtered_input_original_frame_retained_bytes",
+        "filtered_input_unsupported_stateful_merge",
+        "filtered_input_unique_predicate_count",
+        "filtered_global_strategy_input_rows",
+        "filtered_global_rows_per_chunk",
+        "filtered_global_inputs_per_segment",
+        "filtered_global_segment_target_temporary_bytes",
+    ] {
+        if let Some(value) = extra_strategy_facts.get(key) {
+            facts.insert(key, value.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filtered_materialization_facts_preserve_original_filter_count_for_exact_host_rows() {
+        let mut facts = BTreeMap::from([
+            ("aggregate_filter_count", "0".to_string()),
+            ("selected_strategy", "datafusion_exact_host_welford".to_string()),
+        ]);
+        let extra_strategy_facts = BTreeMap::from([
+            ("aggregate_filter_count", "1".to_string()),
+            ("filtered_input_materialization_strategy", "single_pass_with_columns".to_string()),
+            ("filtered_input_unsupported_stateful_merge", "true".to_string()),
+        ]);
+
+        add_filtered_materialization_facts(&mut facts, &extra_strategy_facts);
+
+        assert_eq!(facts.get("aggregate_filter_count").map(String::as_str), Some("1"));
+        assert_eq!(
+            facts.get("filtered_input_materialization_strategy").map(String::as_str),
+            Some("single_pass_with_columns")
+        );
+        assert_eq!(facts.get("filtered_input_unsupported_stateful_merge").map(String::as_str), Some("true"));
+    }
 }
 
 fn aggregate_group_key_exprs_for_metrics(spec: &AggregateSpec) -> String {

@@ -32,6 +32,13 @@ cugraph = { path = "../cugraph-rs/cugraph-rs" }
 cugraph-sys = { path = "../cugraph-rs/cugraph-sys" }
 parquet = { version = "58.3.0", features = ["async", "object_store"] }
 
+[patch."https://github.com/apache/iceberg-rust.git"]
+iceberg = { path = "../iceberg-rust/crates/iceberg" }
+iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue" }
+iceberg-catalog-rest = { path = "../iceberg-rust/crates/catalog/rest" }
+iceberg-datafusion = { path = "../iceberg-rust/crates/integrations/datafusion" }
+iceberg-storage-opendal = { path = "../iceberg-rust/crates/storage/opendal" }
+
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]

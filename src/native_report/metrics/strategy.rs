@@ -45,6 +45,54 @@ pub struct NativeAggregateStrategyMetricRow {
     pub stddev_samp_ddof: String,
     /// Count of aggregate filter predicates.
     pub aggregate_filter_count: usize,
+    /// Filtered aggregate input materialization strategy.
+    pub filtered_input_materialization_strategy: String,
+    /// Estimated bytes for single-pass filtered input materialization.
+    pub filtered_input_materialization_estimated_bytes: usize,
+    /// Budget bytes visible at the filtered-input strategy decision.
+    pub filtered_input_materialization_budget_bytes: usize,
+    /// Single-pass filtered-input safety threshold in bytes.
+    pub filtered_input_materialization_threshold_bytes: usize,
+    /// Lower-level unresolved memory contracts observed while executing filtered inputs.
+    pub filtered_input_lower_level_unresolved_contracts: String,
+    /// Row count targeted by the segmented filtered global strategy.
+    pub filtered_global_rows_per_chunk: usize,
+    /// Filtered input expressions materialized together by the segmented strategy.
+    pub filtered_global_inputs_per_segment: usize,
+    /// Target temporary bytes for each segmented filtered-global materialization.
+    pub filtered_global_segment_target_temporary_bytes: usize,
+    /// Actual row chunks processed by the segmented filtered global strategy.
+    pub filtered_global_actual_chunk_count: usize,
+    /// Actual expression segments processed by the segmented filtered global strategy.
+    pub filtered_global_actual_segment_count: usize,
+    /// Maximum input rows processed by one segmented filtered global row chunk.
+    pub filtered_global_max_segment_rows: usize,
+    /// Maximum lower-level temporary peak observed during segmented filtered-global execution.
+    pub filtered_global_observed_temporary_peak_bytes: usize,
+    /// Maximum lower-level retained bytes observed during segmented filtered-global execution.
+    pub filtered_global_observed_retained_peak_bytes: usize,
+    /// Partial state rows merged by the segmented filtered global strategy.
+    pub filtered_global_state_rows_merged: usize,
+    /// Row count targeted by the segmented filtered grouped strategy.
+    pub filtered_grouped_rows_per_chunk: usize,
+    /// Filtered input expressions materialized together by the segmented grouped strategy.
+    pub filtered_grouped_inputs_per_segment: usize,
+    /// Target temporary bytes for each segmented filtered-grouped materialization.
+    pub filtered_grouped_segment_target_temporary_bytes: usize,
+    /// Actual row chunks processed by the segmented filtered grouped strategy.
+    pub filtered_grouped_actual_chunk_count: usize,
+    /// Actual expression segments processed by the segmented filtered grouped strategy.
+    pub filtered_grouped_actual_segment_count: usize,
+    /// Maximum input rows processed by one segmented filtered grouped row chunk.
+    pub filtered_grouped_max_segment_rows: usize,
+    /// Maximum lower-level temporary peak observed during segmented filtered-grouped execution.
+    pub filtered_grouped_observed_temporary_peak_bytes: usize,
+    /// Maximum lower-level retained bytes observed during segmented filtered-grouped execution.
+    pub filtered_grouped_observed_retained_peak_bytes: usize,
+    /// Partial state rows merged by the segmented filtered grouped strategy.
+    pub filtered_grouped_state_rows_merged: usize,
+    /// Grouped filtered aggregate high-cardinality admission contract.
+    pub filtered_grouped_high_cardinality_admission: String,
     /// Count of distinct aggregate expressions.
     pub distinct_aggregate_count: usize,
     /// Input rows consumed by this aggregate stage.
@@ -169,7 +217,7 @@ impl NativeAggregateStrategyMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},floating_statistical_aggregate={},statistical_aggregate_execution_mode={},statistical_aggregate_tolerance_contract={},statistical_aggregate_functions={},statistical_aggregate_ddof={},stddev_samp_execution_mode={},stddev_samp_ddof={},aggregate_filter_count={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},aggregate_structural_key={},prior_cardinality_evidence_scope={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},exact_cardinality_probe_status={},exact_cardinality_probe_key={},exact_cardinality_probe_input_rows={},exact_cardinality_probe_non_null_distinct_count={},exact_cardinality_probe_null_count={},exact_cardinality_probe_num_groups={},exact_cardinality_probe_reduction_ratio_ppm={},exact_cardinality_probe_elapsed_ns={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
+            "node_id={},selected_strategy={},execution_stage={},memory_mode={},group_key_count={},group_key_exprs={},group_key_dtypes={},aggregate_functions={},floating_statistical_aggregate={},statistical_aggregate_execution_mode={},statistical_aggregate_tolerance_contract={},statistical_aggregate_functions={},statistical_aggregate_ddof={},stddev_samp_execution_mode={},stddev_samp_ddof={},aggregate_filter_count={},filtered_input_materialization_strategy={},filtered_input_materialization_estimated_bytes={},filtered_input_materialization_budget_bytes={},filtered_input_materialization_threshold_bytes={},filtered_input_lower_level_unresolved_contracts={},filtered_global_rows_per_chunk={},filtered_global_inputs_per_segment={},filtered_global_segment_target_temporary_bytes={},filtered_global_actual_chunk_count={},filtered_global_actual_segment_count={},filtered_global_max_segment_rows={},filtered_global_observed_temporary_peak_bytes={},filtered_global_observed_retained_peak_bytes={},filtered_global_state_rows_merged={},filtered_grouped_rows_per_chunk={},filtered_grouped_inputs_per_segment={},filtered_grouped_segment_target_temporary_bytes={},filtered_grouped_actual_chunk_count={},filtered_grouped_actual_segment_count={},filtered_grouped_max_segment_rows={},filtered_grouped_observed_temporary_peak_bytes={},filtered_grouped_observed_retained_peak_bytes={},filtered_grouped_state_rows_merged={},filtered_grouped_high_cardinality_admission={},distinct_aggregate_count={},input_rows={},output_group_count={},reduction_ratio_ppm={},chunk_row_count={},chunk_count={},partial_aggregate_count={},source_adjacent_partial={},source_chunk_row_group_count={},source_chunk_reads_all_row_groups={},source_chunk_known_row_count={},source_chunk_estimated_source_read_bytes={},source_chunk_size_estimate_based={},source_adjacent_partition_strategy={},source_adjacent_partition_count={},source_adjacent_non_empty_partition_count={},source_adjacent_partition_key_count={},source_adjacent_max_partition_fan_in={},partitioned_merge_partition_count={},partitioned_merge_non_empty_partition_count={},partitioned_merge_max_partition_fan_in={},selection_elapsed_ns={},encode_elapsed_ns={},groupby_elapsed_ns={},decode_elapsed_ns={},strategy_operator_elapsed_ns={},aggregate_structural_key={},prior_cardinality_evidence_scope={},encoded_key_partial_cost_model={},encoded_key_partial_cost_model_status={},encoded_key_partial_selection_reason={},encoded_key_partial_reduction_ratio_threshold_ppm={},encoded_key_partial_prior_reduction_ratio_ppm={},encoded_key_partial_prior_strategy={},exact_cardinality_probe_status={},exact_cardinality_probe_key={},exact_cardinality_probe_input_rows={},exact_cardinality_probe_non_null_distinct_count={},exact_cardinality_probe_null_count={},exact_cardinality_probe_num_groups={},exact_cardinality_probe_reduction_ratio_ppm={},exact_cardinality_probe_elapsed_ns={},prepared_sort_groupby_rejected_reason={},prepared_sort_groupby_contract_status={},prepared_sort_groupby_required_contract={},prepared_sort_groupby_cost_model={},prepared_sort_groupby_cost_model_status={},prepared_sort_groupby_selection_reason={},prepared_sort_groupby_num_groups={},prepared_sort_groupby_grouped_key_output_bytes={},prepared_sort_groupby_max_group_size={},rejected_candidate_strategies={}",
             self.node_id,
             self.selected_strategy,
             self.execution_stage,
@@ -186,6 +234,30 @@ impl NativeAggregateStrategyMetricRow {
             self.stddev_samp_execution_mode,
             self.stddev_samp_ddof,
             self.aggregate_filter_count,
+            self.filtered_input_materialization_strategy,
+            self.filtered_input_materialization_estimated_bytes,
+            self.filtered_input_materialization_budget_bytes,
+            self.filtered_input_materialization_threshold_bytes,
+            self.filtered_input_lower_level_unresolved_contracts,
+            self.filtered_global_rows_per_chunk,
+            self.filtered_global_inputs_per_segment,
+            self.filtered_global_segment_target_temporary_bytes,
+            self.filtered_global_actual_chunk_count,
+            self.filtered_global_actual_segment_count,
+            self.filtered_global_max_segment_rows,
+            self.filtered_global_observed_temporary_peak_bytes,
+            self.filtered_global_observed_retained_peak_bytes,
+            self.filtered_global_state_rows_merged,
+            self.filtered_grouped_rows_per_chunk,
+            self.filtered_grouped_inputs_per_segment,
+            self.filtered_grouped_segment_target_temporary_bytes,
+            self.filtered_grouped_actual_chunk_count,
+            self.filtered_grouped_actual_segment_count,
+            self.filtered_grouped_max_segment_rows,
+            self.filtered_grouped_observed_temporary_peak_bytes,
+            self.filtered_grouped_observed_retained_peak_bytes,
+            self.filtered_grouped_state_rows_merged,
+            self.filtered_grouped_high_cardinality_admission,
             self.distinct_aggregate_count,
             self.input_rows,
             self.output_group_count,
@@ -258,6 +330,23 @@ impl NativeAggregateStrategyMetricRow {
             && self.stddev_samp_execution_mode == other.stddev_samp_execution_mode
             && self.stddev_samp_ddof == other.stddev_samp_ddof
             && self.aggregate_filter_count == other.aggregate_filter_count
+            && self.filtered_input_materialization_strategy == other.filtered_input_materialization_strategy
+            && self.filtered_input_materialization_estimated_bytes
+                == other.filtered_input_materialization_estimated_bytes
+            && self.filtered_input_materialization_budget_bytes == other.filtered_input_materialization_budget_bytes
+            && self.filtered_input_materialization_threshold_bytes
+                == other.filtered_input_materialization_threshold_bytes
+            && self.filtered_input_lower_level_unresolved_contracts
+                == other.filtered_input_lower_level_unresolved_contracts
+            && self.filtered_global_rows_per_chunk == other.filtered_global_rows_per_chunk
+            && self.filtered_global_inputs_per_segment == other.filtered_global_inputs_per_segment
+            && self.filtered_global_segment_target_temporary_bytes
+                == other.filtered_global_segment_target_temporary_bytes
+            && self.filtered_grouped_rows_per_chunk == other.filtered_grouped_rows_per_chunk
+            && self.filtered_grouped_inputs_per_segment == other.filtered_grouped_inputs_per_segment
+            && self.filtered_grouped_segment_target_temporary_bytes
+                == other.filtered_grouped_segment_target_temporary_bytes
+            && self.filtered_grouped_high_cardinality_admission == other.filtered_grouped_high_cardinality_admission
             && self.distinct_aggregate_count == other.distinct_aggregate_count
             && self.source_adjacent_partial == other.source_adjacent_partial
             && self.source_chunk_row_group_count == other.source_chunk_row_group_count
@@ -304,6 +393,31 @@ impl NativeAggregateStrategyMetricRow {
         self.chunk_row_count = self.chunk_row_count.saturating_add(other.chunk_row_count);
         self.chunk_count = self.chunk_count.max(other.chunk_count);
         self.partial_aggregate_count = self.partial_aggregate_count.max(other.partial_aggregate_count);
+        self.filtered_global_state_rows_merged =
+            self.filtered_global_state_rows_merged.saturating_add(other.filtered_global_state_rows_merged);
+        self.filtered_global_actual_chunk_count =
+            self.filtered_global_actual_chunk_count.saturating_add(other.filtered_global_actual_chunk_count);
+        self.filtered_global_actual_segment_count =
+            self.filtered_global_actual_segment_count.saturating_add(other.filtered_global_actual_segment_count);
+        self.filtered_global_max_segment_rows =
+            self.filtered_global_max_segment_rows.max(other.filtered_global_max_segment_rows);
+        self.filtered_global_observed_temporary_peak_bytes =
+            self.filtered_global_observed_temporary_peak_bytes.max(other.filtered_global_observed_temporary_peak_bytes);
+        self.filtered_global_observed_retained_peak_bytes =
+            self.filtered_global_observed_retained_peak_bytes.max(other.filtered_global_observed_retained_peak_bytes);
+        self.filtered_grouped_state_rows_merged =
+            self.filtered_grouped_state_rows_merged.saturating_add(other.filtered_grouped_state_rows_merged);
+        self.filtered_grouped_actual_chunk_count =
+            self.filtered_grouped_actual_chunk_count.saturating_add(other.filtered_grouped_actual_chunk_count);
+        self.filtered_grouped_actual_segment_count =
+            self.filtered_grouped_actual_segment_count.saturating_add(other.filtered_grouped_actual_segment_count);
+        self.filtered_grouped_max_segment_rows =
+            self.filtered_grouped_max_segment_rows.max(other.filtered_grouped_max_segment_rows);
+        self.filtered_grouped_observed_temporary_peak_bytes = self
+            .filtered_grouped_observed_temporary_peak_bytes
+            .max(other.filtered_grouped_observed_temporary_peak_bytes);
+        self.filtered_grouped_observed_retained_peak_bytes =
+            self.filtered_grouped_observed_retained_peak_bytes.max(other.filtered_grouped_observed_retained_peak_bytes);
         self.selection_elapsed_ns = self.selection_elapsed_ns.saturating_add(other.selection_elapsed_ns);
         self.encode_elapsed_ns = self.encode_elapsed_ns.saturating_add(other.encode_elapsed_ns);
         self.groupby_elapsed_ns = self.groupby_elapsed_ns.saturating_add(other.groupby_elapsed_ns);
@@ -619,6 +733,63 @@ fn labels_to_aggregate_strategy_row(labels: BTreeMap<&str, &str>) -> NativeAggre
         stddev_samp_execution_mode: string_label(&labels, "stddev_samp_execution_mode"),
         stddev_samp_ddof: string_label(&labels, "stddev_samp_ddof"),
         aggregate_filter_count: usize_label(&labels, "aggregate_filter_count"),
+        filtered_input_materialization_strategy: string_label(&labels, "filtered_input_materialization_strategy"),
+        filtered_input_materialization_estimated_bytes: usize_label(
+            &labels,
+            "filtered_input_materialization_estimated_bytes",
+        ),
+        filtered_input_materialization_budget_bytes: usize_label(
+            &labels,
+            "filtered_input_materialization_budget_bytes",
+        ),
+        filtered_input_materialization_threshold_bytes: usize_label(
+            &labels,
+            "filtered_input_materialization_threshold_bytes",
+        ),
+        filtered_input_lower_level_unresolved_contracts: string_label(
+            &labels,
+            "filtered_input_lower_level_unresolved_contracts",
+        ),
+        filtered_global_rows_per_chunk: usize_label(&labels, "filtered_global_rows_per_chunk"),
+        filtered_global_inputs_per_segment: usize_label(&labels, "filtered_global_inputs_per_segment"),
+        filtered_global_segment_target_temporary_bytes: usize_label(
+            &labels,
+            "filtered_global_segment_target_temporary_bytes",
+        ),
+        filtered_global_actual_chunk_count: usize_label(&labels, "filtered_global_actual_chunk_count"),
+        filtered_global_actual_segment_count: usize_label(&labels, "filtered_global_actual_segment_count"),
+        filtered_global_max_segment_rows: usize_label(&labels, "filtered_global_max_segment_rows"),
+        filtered_global_observed_temporary_peak_bytes: usize_label(
+            &labels,
+            "filtered_global_observed_temporary_peak_bytes",
+        ),
+        filtered_global_observed_retained_peak_bytes: usize_label(
+            &labels,
+            "filtered_global_observed_retained_peak_bytes",
+        ),
+        filtered_global_state_rows_merged: usize_label(&labels, "filtered_global_state_rows_merged"),
+        filtered_grouped_rows_per_chunk: usize_label(&labels, "filtered_grouped_rows_per_chunk"),
+        filtered_grouped_inputs_per_segment: usize_label(&labels, "filtered_grouped_inputs_per_segment"),
+        filtered_grouped_segment_target_temporary_bytes: usize_label(
+            &labels,
+            "filtered_grouped_segment_target_temporary_bytes",
+        ),
+        filtered_grouped_actual_chunk_count: usize_label(&labels, "filtered_grouped_actual_chunk_count"),
+        filtered_grouped_actual_segment_count: usize_label(&labels, "filtered_grouped_actual_segment_count"),
+        filtered_grouped_max_segment_rows: usize_label(&labels, "filtered_grouped_max_segment_rows"),
+        filtered_grouped_observed_temporary_peak_bytes: usize_label(
+            &labels,
+            "filtered_grouped_observed_temporary_peak_bytes",
+        ),
+        filtered_grouped_observed_retained_peak_bytes: usize_label(
+            &labels,
+            "filtered_grouped_observed_retained_peak_bytes",
+        ),
+        filtered_grouped_state_rows_merged: usize_label(&labels, "filtered_grouped_state_rows_merged"),
+        filtered_grouped_high_cardinality_admission: string_label(
+            &labels,
+            "filtered_grouped_high_cardinality_admission",
+        ),
         distinct_aggregate_count: usize_label(&labels, "distinct_aggregate_count"),
         input_rows: usize_label(&labels, "input_rows"),
         output_group_count: usize_label(&labels, "output_group_count"),

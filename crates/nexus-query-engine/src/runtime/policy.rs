@@ -149,6 +149,38 @@ impl MemoryControlPolicy {
     }
 }
 
+/// Source chunk planning mode used by bounded local Parquet execution.
+///
+/// `Conservative` preserves the configured source byte and row-group targets.
+/// `LocalParquetThroughput` allows the planner to raise the row-group cap for
+/// eligible local KvikIO Parquet scans while still honoring the source byte
+/// target and bounded reservation budget.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceChunkPlanningMode {
+    /// Use configured chunk targets exactly.
+    #[default]
+    Conservative,
+    /// Prefer many-row-group local Parquet chunks when source metadata and
+    /// bounded memory policy make the larger chunk shape admissible.
+    LocalParquetThroughput,
+}
+
+impl SourceChunkPlanningMode {
+    /// Stable diagnostic string for the source chunk planning mode.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Conservative => "conservative",
+            Self::LocalParquetThroughput => "local_parquet_throughput",
+        }
+    }
+}
+
+impl std::fmt::Display for SourceChunkPlanningMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl std::fmt::Display for MemoryControlPolicy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())

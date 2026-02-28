@@ -13,9 +13,9 @@ use std::{
 use super::{
     DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation,
     ExecutionContext, GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy, MemoryResourcePolicy,
-    ServiceStreamPool, SourceFetchConcurrencyGate, SourceFetchConfig, SourceObjectStoreRegistry, SourceSchedulerPolicy,
-    SourceStorageProfile, StreamLease, default_host_fetch_budget_bytes, default_source_fetch_runtime,
-    validate_service_stream_pool_device,
+    ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
+    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, StreamLease,
+    default_host_fetch_budget_bytes, default_source_fetch_runtime, validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -112,6 +112,8 @@ pub struct QueryServiceConfig {
     pub boundary_policy: ExecutionBoundaryPolicy,
     /// Bounded source scheduling policy copied into tenant contexts.
     pub source_scheduler_policy: SourceSchedulerPolicy,
+    /// Source chunk planning mode copied into tenant contexts.
+    pub source_chunk_planning_mode: SourceChunkPlanningMode,
     /// Strict bounded or adaptive execution mode copied into tenant contexts.
     pub native_pipeline_execution_mode: NativePipelineExecutionMode,
     /// Floating statistical aggregate execution contract copied into tenant
@@ -189,6 +191,7 @@ impl Default for QueryServiceConfig {
             source_storage_profiles: Vec::new(),
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
+            source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
             stream_pool_size: None,
@@ -619,6 +622,11 @@ impl QueryHandle {
         self.service.config.source_scheduler_policy
     }
 
+    /// Source chunk planning mode copied into the tenant execution context.
+    pub fn source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
+        self.service.config.source_chunk_planning_mode
+    }
+
     /// Native bounded-pipeline mode copied into the tenant execution context.
     pub fn native_pipeline_execution_mode(&self) -> NativePipelineExecutionMode {
         self.service.config.native_pipeline_execution_mode
@@ -662,6 +670,7 @@ impl QueryHandle {
             memory_control_policy: self.memory_control_policy(),
             boundary_policy: self.service.config.boundary_policy,
             source_scheduler_policy: self.service.config.source_scheduler_policy,
+            source_chunk_planning_mode: self.service.config.source_chunk_planning_mode,
             source_fetch_config: self.service.config.source_fetch.clone(),
             service_stream_pool: resources.service_stream_pool.clone(),
             host_fetch_budget: resources.host_fetch_budget.clone(),
@@ -849,6 +858,7 @@ mod tests {
     fn query_service_handle_exposes_configured_execution_policies() {
         let config = QueryServiceConfig {
             source_scheduler_policy: SourceSchedulerPolicy::new(4),
+            source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
             native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
             stddev_samp_execution_mode: StddevSampExecutionMode::GpuNativeTolerant,
             ..QueryServiceConfig::default()
@@ -864,6 +874,7 @@ mod tests {
 
         assert_eq!(handle.boundary_policy(), ExecutionBoundaryPolicy::default());
         assert_eq!(handle.source_scheduler_policy(), SourceSchedulerPolicy::new(4));
+        assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
         assert_eq!(handle.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
         assert_eq!(handle.stddev_samp_execution_mode(), StddevSampExecutionMode::GpuNativeTolerant);
     }

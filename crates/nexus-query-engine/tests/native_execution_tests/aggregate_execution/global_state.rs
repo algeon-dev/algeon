@@ -186,3 +186,38 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn native_query_rejects_global_valid_count_reserved_state_alias_collision_before_source_read() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let input_schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
+    let reserved_alias = "__cudf_global_valid_count_sum_m00";
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("sum_m00", DataType::Int64, true),
+        Field::new(reserved_alias, DataType::Int64, false),
+    ]));
+    let aggregate = AggregateSpec::new(
+        Vec::new(),
+        vec![
+            AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00"),
+            AggregateExpr::new(AggregateFunction::Count, Expr::column("m00"), reserved_alias),
+        ],
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let source =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
+    let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+
+    match execute_query_plan(&context, &plan) {
+        Ok(_) => panic!("global valid-count reserved state alias collision should be rejected before source read"),
+        Err(error) => {
+            assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+            assert_eq!(error.operation(), "nexus_query_engine.global_aggregate.validate_valid_count_state_alias");
+            assert_eq!(error.fact_value("alias"), Some(reserved_alias));
+            assert_eq!(error.fact_value("reserved_aliases"), Some(reserved_alias));
+        },
+    }
+}
