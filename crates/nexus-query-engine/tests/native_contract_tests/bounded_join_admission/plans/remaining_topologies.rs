@@ -673,6 +673,8 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInNonUniqueRight
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
+        | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
+        | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild
         | RootTopKJoinAggregateVariant::Window => {
             let limit = builder.add_limit(sort, LimitSpec::fetch(100), topk_schema);
             builder.finish_with_host_sink(limit)
@@ -731,6 +733,8 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse,
     SortFetchNullFilteredLeftAggregateFanInNonUniqueRight,
     SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction,
+    SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
+    SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild,
     Window,
 }
 
@@ -745,29 +749,66 @@ impl RootTopKJoinAggregateVariant {
                 | Self::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse
                 | Self::SortFetchNullFilteredLeftAggregateFanInNonUniqueRight
                 | Self::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
+                | Self::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
+                | Self::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild
         )
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NullFilteredReturnBuildShape {
+    Reduced,
+    FullBounded,
+    FullLarge,
 }
 
 fn root_topk_null_filtered_aggregate_fan_in_plan(
     variant: RootTopKJoinAggregateVariant,
 ) -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
+    let store_return_shape = if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
+    ) {
+        NullFilteredReturnBuildShape::FullBounded
+    } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild) {
+        NullFilteredReturnBuildShape::FullLarge
+    } else {
+        NullFilteredReturnBuildShape::Reduced
+    };
+    let other_return_shape = if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
+    ) {
+        NullFilteredReturnBuildShape::FullBounded
+    } else {
+        NullFilteredReturnBuildShape::Reduced
+    };
     let store = null_filtered_aggregate_branch(
         &mut builder,
         "root-topk-null-filtered-store",
         !matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction),
+        store_return_shape,
         matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingFilter),
         matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInWrongBuildSide),
         matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerEscapes),
         matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse),
     );
-    let web =
-        null_filtered_aggregate_branch(&mut builder, "root-topk-null-filtered-web", true, false, false, false, false);
+    let web = null_filtered_aggregate_branch(
+        &mut builder,
+        "root-topk-null-filtered-web",
+        true,
+        other_return_shape,
+        false,
+        false,
+        false,
+        false,
+    );
     let catalog = null_filtered_aggregate_branch(
         &mut builder,
         "root-topk-null-filtered-catalog",
         true,
+        other_return_shape,
         false,
         false,
         false,
@@ -800,6 +841,7 @@ fn null_filtered_aggregate_branch(
     builder: &mut QueryPlanBuilder,
     label: &str,
     reduced_fact: bool,
+    return_build_shape: NullFilteredReturnBuildShape,
     missing_filter: bool,
     wrong_build_side: bool,
     marker_escapes: bool,
@@ -810,7 +852,15 @@ fn null_filtered_aggregate_branch(
     } else {
         source(builder, &format!("{label}-fact"))
     };
-    let returns = source_with_reduction(builder, &format!("{label}-returns"), true);
+    let returns = match return_build_shape {
+        NullFilteredReturnBuildShape::Reduced => source_with_reduction(builder, &format!("{label}-returns"), true),
+        NullFilteredReturnBuildShape::FullBounded => {
+            source_with_known_size(builder, &format!("{label}-returns"), 460_691_082)
+        },
+        NullFilteredReturnBuildShape::FullLarge => {
+            source_with_known_size(builder, &format!("{label}-returns"), 600 << 20)
+        },
+    };
     let marker_name = format!("{label}_return_marker");
     let joined = builder.add_join(
         fact,

@@ -371,6 +371,15 @@ impl IcebergNativeSmokeFixture {
         }
     }
 
+    /// S3 warehouse URL for object-store-backed fixtures (used to register a
+    /// DataFusion object store so footer-only pruning can read Parquet footers).
+    pub(crate) fn warehouse(&self) -> Option<&str> {
+        match self {
+            Self::GlueS3 { warehouse, .. } | Self::RestS3 { warehouse, .. } => Some(warehouse.as_str()),
+            Self::LocalMetadata { .. } => None,
+        }
+    }
+
     pub(crate) fn default_table_alias(&self) -> String {
         match self {
             Self::LocalMetadata { table_ident, .. } => {

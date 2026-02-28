@@ -10,7 +10,6 @@ enum RootTopKJoinSubcontract {
     KeyedHash,
     KeyedResidualMixed,
     KeyedFilteredSemi,
-    NullFilteredLeft,
     KeylessConditional,
     KeylessOuterCrossWindow,
     ProjectedCross,
@@ -88,12 +87,11 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
     let root_join_id = post_root_root_join_id(plan, post_root_candidate_id, &join_ids)?;
     let mut keyless_or_cross_join_ids = Vec::new();
     let mut keyed_filtered_semi_join_ids = Vec::new();
-    let mut null_filtered_left_join_ids = Vec::new();
+    let mut left_output_bounded_join_ids = Vec::new();
     let mut window_full_outer_join_ids = Vec::new();
     let mut keyless_outer_cross_window_join_ids = Vec::new();
     let mut sort_fetch_hash_join_input_subcontract = false;
     let sort_fetch_hash_join_aggregate_subcontract = direct_sort_fetch_aggregate_candidate;
-    let consumers = consumer_nodes_for_reachable(plan, &root_reachable);
     for join_id in &join_ids {
         let join = join_node_with_missing_reason(
             plan,
@@ -106,12 +104,17 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         let allow_window_keyed_full_outer = root_topk_join_has_window_full_outer_context(plan, join, &window_ids)?;
         let allow_keyless_outer_cross_window =
             root_topk_keyless_outer_cross_feeds_ordered_window(plan, *join_id, &window_ids, &window_input_sort_ids)?;
-        let allow_null_filtered_left = root_topk_join_has_null_filtered_left_context(plan, *join_id, join, &consumers)?;
         let allow_aggregate_fan_in_left =
             root_topk_join_has_aggregate_fan_in_left_context(plan, join, &root_reachable)?;
+        let allow_left_anti_grouped_aggregate_input = join.spec.join_type == JoinType::LeftAnti
+            && root_topk_join_feeds_grouped_aggregate(plan, *join_id, &root_reachable)?;
         let allow_sort_fetch_aggregate_keyed_left = direct_sort_fetch_aggregate_candidate
             && join.spec.join_type == JoinType::Left
             && join.spec.build_side == JoinSide::Right;
+        let allow_left_output_bounded_join = (allow_aggregate_fan_in_left || allow_left_anti_grouped_aggregate_input)
+            && !allow_distinct_dedup_keyed_outer
+            && !allow_window_keyed_full_outer
+            && !allow_sort_fetch_aggregate_keyed_left;
         match require_supported_root_topk_join(
             *join_id,
             join,
@@ -119,10 +122,7 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             allow_window_keyed_full_outer,
             allow_keyless_outer_cross_window,
             allow_sort_fetch_aggregate_keyed_left,
-            (allow_null_filtered_left || allow_aggregate_fan_in_left)
-                && !allow_distinct_dedup_keyed_outer
-                && !allow_window_keyed_full_outer
-                && !allow_sort_fetch_aggregate_keyed_left,
+            allow_left_output_bounded_join,
         )? {
             RootTopKJoinSubcontract::KeylessConditional | RootTopKJoinSubcontract::ProjectedCross => {
                 keyless_or_cross_join_ids.push(*join_id);
@@ -132,11 +132,14 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             },
             RootTopKJoinSubcontract::KeyedFilteredSemi => {
                 keyed_filtered_semi_join_ids.push(*join_id);
-            },
-            RootTopKJoinSubcontract::NullFilteredLeft => {
-                null_filtered_left_join_ids.push(*join_id);
+                if join.spec.join_type == JoinType::LeftAnti {
+                    left_output_bounded_join_ids.push(*join_id);
+                }
             },
             RootTopKJoinSubcontract::KeyedHash | RootTopKJoinSubcontract::KeyedResidualMixed => {
+                if allow_left_output_bounded_join && join.spec.join_type == JoinType::Left {
+                    left_output_bounded_join_ids.push(*join_id);
+                }
                 if direct_sort_fetch_join_input_candidate && *join_id == post_root_candidate_id {
                     sort_fetch_hash_join_input_subcontract = true;
                 }
@@ -150,8 +153,8 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
     keyless_or_cross_join_ids.dedup();
     keyed_filtered_semi_join_ids.sort_unstable();
     keyed_filtered_semi_join_ids.dedup();
-    null_filtered_left_join_ids.sort_unstable();
-    null_filtered_left_join_ids.dedup();
+    left_output_bounded_join_ids.sort_unstable();
+    left_output_bounded_join_ids.dedup();
     window_full_outer_join_ids.sort_unstable();
     window_full_outer_join_ids.dedup();
     keyless_outer_cross_window_join_ids.sort_unstable();
@@ -191,8 +194,12 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             direct_sort_fetch_aggregate_candidate,
         )?;
     }
-    if !null_filtered_left_join_ids.is_empty() {
-        require_root_topk_all_joined_grouped_aggregates_source_reduction(plan, &root_reachable)?;
+    if !left_output_bounded_join_ids.is_empty() {
+        require_root_topk_all_joined_grouped_aggregates_source_reduction(
+            plan,
+            &root_reachable,
+            &left_output_bounded_join_ids.iter().copied().collect(),
+        )?;
     }
 
     Ok(RootTopKJoinAggregateShape {
@@ -201,7 +208,7 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         distinct_aggregate_ids,
         keyless_or_cross_join_ids,
         keyed_filtered_semi_join_ids,
-        null_filtered_left_join_ids,
+        null_filtered_left_join_ids: Vec::new(),
         window_ids,
         window_input_sort_ids,
         window_full_outer_join_ids,
@@ -362,126 +369,6 @@ fn root_topk_join_has_window_full_outer_context(
         && root_topk_join_input_peels_to_window(plan, join.inputs[1], window_ids)?)
 }
 
-fn root_topk_join_has_null_filtered_left_context(
-    plan: &QueryPlan,
-    join_id: NodeId,
-    join: &JoinNode,
-    consumers: &BTreeMap<NodeId, Vec<NodeId>>,
-) -> Result<bool, CapabilityDecision> {
-    if join.spec.join_type != JoinType::Left
-        || join.spec.build_side != JoinSide::Right
-        || join.spec.keys.is_empty()
-        || join.spec.residual_predicate.is_some()
-    {
-        return Ok(false);
-    }
-    let right_marker_columns =
-        join.spec.output_projection.iter().filter(|column| column.side == JoinSide::Right).collect::<Vec<_>>();
-    if right_marker_columns.is_empty() {
-        return Ok(false);
-    }
-    let right_marker_names = right_marker_columns.iter().map(|column| column.output_name.as_str()).collect::<Vec<_>>();
-    if right_marker_names.len() != 1
-        || !join.spec.keys.iter().any(|key| {
-            right_marker_columns.iter().any(|marker| {
-                marker.column.name() == key.right.name()
-                    || marker.column.display_name() == key.right.display_name()
-                    || marker.column.name() == key.right.display_name()
-                    || marker.column.display_name() == key.right.name()
-            })
-        })
-    {
-        return Ok(false);
-    }
-    let Some(filter_id) = single_consumer_id(consumers, join_id) else {
-        return Ok(false);
-    };
-    let Some(PlanNode::Filter(filter)) = plan.node(filter_id).map(|node| &node.kind) else {
-        return Ok(false);
-    };
-    if filter.input != join_id || !expr_is_null_conjunction_on_column(&filter.predicate, &right_marker_names) {
-        return Ok(false);
-    }
-    let Some(projection_id) = single_consumer_id(consumers, filter_id) else {
-        return Ok(false);
-    };
-    let Some(PlanNode::Projection(projection)) = plan.node(projection_id).map(|node| &node.kind) else {
-        return Ok(false);
-    };
-    if projection.input != filter_id {
-        return Ok(false);
-    }
-    Ok(projection.outputs.iter().all(|output| {
-        !right_marker_names.contains(&output.field.name().as_str())
-            && !expr_references_any_column_name(&output.expr, &right_marker_names)
-    }))
-}
-
-fn single_consumer_id(consumers: &BTreeMap<NodeId, Vec<NodeId>>, producer: NodeId) -> Option<NodeId> {
-    let values = consumers.get(&producer)?;
-    match values.as_slice() {
-        [consumer] => Some(*consumer),
-        _ => None,
-    }
-}
-
-fn expr_is_null_conjunction_on_column(expr: &Expr, column_names: &[&str]) -> bool {
-    match expr {
-        Expr::IsNull(inner) => expr_is_any_column_name(inner, column_names),
-        Expr::Binary { left, op: BinaryOp::And, right, .. } => {
-            expr_is_null_conjunction_on_column(left, column_names)
-                && expr_is_null_conjunction_on_column(right, column_names)
-        },
-        Expr::Alias { expr, .. } => expr_is_null_conjunction_on_column(expr, column_names),
-        _ => false,
-    }
-}
-
-fn expr_is_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
-    matches!(expr, Expr::Column(column) if column_names.contains(&column.name()) || column_names.contains(&column.display_name()))
-}
-
-fn expr_references_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
-    match expr {
-        Expr::Column(column) => column_names.contains(&column.name()) || column_names.contains(&column.display_name()),
-        Expr::Not(expr)
-        | Expr::IsNull(expr)
-        | Expr::IsNotNull(expr)
-        | Expr::Cast { expr, .. }
-        | Expr::TryCast { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. }
-        | Expr::Alias { expr, .. } => expr_references_any_column_name(expr, column_names),
-        Expr::Binary { left, right, .. } => {
-            expr_references_any_column_name(left, column_names) || expr_references_any_column_name(right, column_names)
-        },
-        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
-            expr_references_any_column_name(left, column_names) || expr_references_any_column_name(right, column_names)
-        },
-        Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. } => expr_references_any_column_name(expr, column_names),
-        Expr::Concat(exprs) => exprs.iter().any(|expr| expr_references_any_column_name(expr, column_names)),
-        Expr::Case { branches, else_expr } => {
-            branches.iter().any(|branch| {
-                expr_references_any_column_name(&branch.when, column_names)
-                    || expr_references_any_column_name(&branch.then, column_names)
-            }) || expr_references_any_column_name(else_expr, column_names)
-        },
-        Expr::InList { expr, list, .. } => {
-            expr_references_any_column_name(expr, column_names)
-                || list.iter().any(|expr| expr_references_any_column_name(expr, column_names))
-        },
-        Expr::Literal(_) => false,
-    }
-}
-
 fn root_topk_join_has_aggregate_fan_in_left_context(
     plan: &QueryPlan,
     join: &JoinNode,
@@ -513,6 +400,25 @@ fn root_topk_join_has_aggregate_fan_in_left_context(
     Ok(join.spec.keys.iter().all(|key| {
         right_unique_keys.contains(key.right.name()) || right_unique_keys.contains(key.right.display_name())
     }))
+}
+
+fn root_topk_join_feeds_grouped_aggregate(
+    plan: &QueryPlan,
+    join_id: NodeId,
+    root_reachable: &BTreeSet<NodeId>,
+) -> Result<bool, CapabilityDecision> {
+    for node_id in root_reachable {
+        let Some(PlanNode::Aggregate(aggregate)) = plan.node(*node_id).map(|node| &node.kind) else {
+            continue;
+        };
+        if aggregate.spec.group_exprs.is_empty() {
+            continue;
+        }
+        if collect_reachable_node_ids_from(plan, aggregate.input)?.contains(&join_id) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn grouped_aggregate_key_output_names_for_input(
@@ -793,7 +699,7 @@ fn require_supported_root_topk_join(
     allow_window_keyed_full_outer: bool,
     allow_keyless_outer_cross_window: bool,
     allow_sort_fetch_aggregate_keyed_left: bool,
-    allow_null_filtered_or_aggregate_fan_in_left: bool,
+    allow_left_output_bounded_join: bool,
 ) -> Result<RootTopKJoinSubcontract, CapabilityDecision> {
     if join.spec.build_artifact_id.is_some() || join.spec.output_projection.is_empty() {
         return Err(CapabilityDecision::rejected(
@@ -819,16 +725,12 @@ fn require_supported_root_topk_join(
                     || (allow_sort_fetch_aggregate_keyed_left
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
-                    || (allow_null_filtered_or_aggregate_fan_in_left
+                    || (allow_left_output_bounded_join
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
                     || (allow_window_keyed_full_outer && join.spec.join_type == JoinType::Full)) =>
         {
-            if allow_null_filtered_or_aggregate_fan_in_left && join.spec.join_type == JoinType::Left {
-                Ok(RootTopKJoinSubcontract::NullFilteredLeft)
-            } else {
-                Ok(RootTopKJoinSubcontract::KeyedHash)
-            }
+            Ok(RootTopKJoinSubcontract::KeyedHash)
         },
         Some(JoinExecutionCapability::KeyedResidualMixed)
             if !join.spec.keys.is_empty()
@@ -839,19 +741,16 @@ fn require_supported_root_topk_join(
                     || (allow_sort_fetch_aggregate_keyed_left
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
-                    || (allow_null_filtered_or_aggregate_fan_in_left
+                    || (allow_left_output_bounded_join
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
                     || (allow_window_keyed_full_outer && join.spec.join_type == JoinType::Full)) =>
         {
-            if allow_null_filtered_or_aggregate_fan_in_left && join.spec.join_type == JoinType::Left {
-                Ok(RootTopKJoinSubcontract::NullFilteredLeft)
-            } else {
-                Ok(RootTopKJoinSubcontract::KeyedResidualMixed)
-            }
+            Ok(RootTopKJoinSubcontract::KeyedResidualMixed)
         },
         Some(JoinExecutionCapability::KeyedFilteredSemiAnti)
-            if join.spec.join_type == JoinType::LeftSemi
+            if (join.spec.join_type == JoinType::LeftSemi
+                || (allow_left_output_bounded_join && join.spec.join_type == JoinType::LeftAnti))
                 && join.spec.build_side == JoinSide::Right
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
         {
@@ -1149,7 +1048,7 @@ fn require_root_topk_source_reduction_proof(
             .iter()
             .any(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
     {
-        if root_topk_joined_aggregate_input_has_branch_local_source_reduction(plan, aggregate_id)? {
+        if root_topk_joined_aggregate_input_has_branch_local_source_reduction(plan, aggregate_id, &BTreeSet::new())? {
             return Ok(());
         }
         return Err(root_topk_source_reduction_rejection(plan, aggregate_input_reachable, aggregate_id));
@@ -1190,6 +1089,7 @@ fn require_root_topk_source_reduction_proof(
 fn require_root_topk_all_joined_grouped_aggregates_source_reduction(
     plan: &QueryPlan,
     root_reachable: &BTreeSet<NodeId>,
+    left_output_bounded_join_ids: &BTreeSet<NodeId>,
 ) -> Result<(), CapabilityDecision> {
     for node_id in root_reachable {
         let Some(PlanNode::Aggregate(aggregate)) = plan.node(*node_id).map(|node| &node.kind) else {
@@ -1205,7 +1105,14 @@ fn require_root_topk_all_joined_grouped_aggregates_source_reduction(
         {
             continue;
         }
-        require_root_topk_source_reduction_proof(plan, &aggregate_input_reachable, *node_id, true)?;
+        if root_topk_joined_aggregate_input_has_branch_local_source_reduction(
+            plan,
+            *node_id,
+            left_output_bounded_join_ids,
+        )? {
+            continue;
+        }
+        return Err(root_topk_source_reduction_rejection(plan, &aggregate_input_reachable, *node_id));
     }
     Ok(())
 }
@@ -1241,6 +1148,7 @@ fn root_topk_direct_local_parquet_aggregate_input_has_source_reduction(
 fn root_topk_joined_aggregate_input_has_branch_local_source_reduction(
     plan: &QueryPlan,
     aggregate_id: NodeId,
+    left_output_bounded_join_ids: &BTreeSet<NodeId>,
 ) -> Result<bool, CapabilityDecision> {
     let Some(PlanNode::Aggregate(aggregate)) = plan.node(aggregate_id).map(|node| &node.kind) else {
         return Err(CapabilityDecision::rejected(
@@ -1248,13 +1156,20 @@ fn root_topk_joined_aggregate_input_has_branch_local_source_reduction(
             [("aggregate_id", aggregate_id.to_string())],
         ));
     };
-    root_topk_joined_pipeline_has_branch_local_source_reduction(plan, aggregate.input, false, &mut BTreeSet::new())
+    root_topk_joined_pipeline_has_branch_local_source_reduction(
+        plan,
+        aggregate.input,
+        false,
+        left_output_bounded_join_ids,
+        &mut BTreeSet::new(),
+    )
 }
 
 fn root_topk_joined_pipeline_has_branch_local_source_reduction(
     plan: &QueryPlan,
     node_id: NodeId,
     has_source_adjacent_filter: bool,
+    left_output_bounded_join_ids: &BTreeSet<NodeId>,
     visited: &mut BTreeSet<(NodeId, bool)>,
 ) -> Result<bool, CapabilityDecision> {
     if !visited.insert((node_id, has_source_adjacent_filter)) {
@@ -1268,19 +1183,42 @@ fn root_topk_joined_pipeline_has_branch_local_source_reduction(
             plan,
             projection.input,
             has_source_adjacent_filter,
+            left_output_bounded_join_ids,
             visited,
         ),
-        Some(PlanNode::Filter(filter)) => {
-            root_topk_joined_pipeline_has_branch_local_source_reduction(plan, filter.input, true, visited)
-        },
-        Some(PlanNode::Aggregate(aggregate)) => {
-            root_topk_joined_pipeline_has_branch_local_source_reduction(plan, aggregate.input, false, visited)
-        },
+        Some(PlanNode::Filter(filter)) => root_topk_joined_pipeline_has_branch_local_source_reduction(
+            plan,
+            filter.input,
+            true,
+            left_output_bounded_join_ids,
+            visited,
+        ),
+        Some(PlanNode::Aggregate(aggregate)) => root_topk_joined_pipeline_has_branch_local_source_reduction(
+            plan,
+            aggregate.input,
+            false,
+            left_output_bounded_join_ids,
+            visited,
+        ),
         Some(PlanNode::Join(join)) => {
             let [left, right] = join.inputs;
-            let left_reduced = root_topk_joined_pipeline_has_branch_local_source_reduction(plan, left, false, visited)?;
-            let right_reduced =
-                root_topk_joined_pipeline_has_branch_local_source_reduction(plan, right, false, visited)?;
+            let left_reduced = root_topk_joined_pipeline_has_branch_local_source_reduction(
+                plan,
+                left,
+                false,
+                left_output_bounded_join_ids,
+                visited,
+            )?;
+            if left_output_bounded_join_ids.contains(&node_id) {
+                return Ok(left_reduced);
+            }
+            let right_reduced = root_topk_joined_pipeline_has_branch_local_source_reduction(
+                plan,
+                right,
+                false,
+                left_output_bounded_join_ids,
+                visited,
+            )?;
             Ok(left_reduced && right_reduced)
         },
         Some(PlanNode::Source(source)) => {

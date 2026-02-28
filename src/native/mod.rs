@@ -3,6 +3,7 @@
 //! Lowering is planning-only: it returns native query plans plus structured
 //! planning/source diagnostics, but does not execute or allocate GPU memory.
 
+pub mod lakehouse_pruning;
 mod literal;
 mod lowering;
 mod normalize;

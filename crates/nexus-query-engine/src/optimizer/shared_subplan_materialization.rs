@@ -12,7 +12,7 @@ use crate::{
         AggregateNode, FilterNode, JoinOutputColumn, JoinSide, NodeId, PlanFacts, PlanNode, ProjectionNode,
         ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
-    source::{LocalParquetSource, ParquetSourceLocation, SourceNode},
+    source::{LocalParquetSource, ParquetSourceLocation, SourceColumnRef, SourceNode},
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -513,7 +513,7 @@ fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> Share
         if aggregate.spec.grouping_sets.is_some() {
             continue;
         }
-        if aggregate.spec.group_exprs.is_empty() && !scalar_count_aggregate_supported(&aggregate.spec) {
+        if aggregate.spec.group_exprs.is_empty() && !scalar_filtered_aggregate_supported(&aggregate.spec) {
             continue;
         }
         let Some(signature) = aggregate_materialization_signature(plan, node.id, aggregate.input, &aggregate.spec)
@@ -549,7 +549,7 @@ fn discover_shared_subplan_materialization_candidates(plan: &QueryPlan) -> Share
             aggregate_node_ids: family.iter().map(|signature| signature.aggregate_node_id).collect(),
             reuse_count: family.len(),
             group_exprs: representative.group_exprs.clone(),
-            aggregate_exprs: representative.aggregate_exprs.clone(),
+            aggregate_exprs: materialization_family_aggregate_exprs(&family),
             source_fingerprints: representative.source_fingerprints.clone(),
             exact_source_variant_count,
             repeated_selected_source_bytes,
@@ -574,7 +574,9 @@ struct AggregateMaterializationSignature {
     group_exprs: Vec<String>,
     aggregate_exprs: Vec<String>,
     source_fingerprints: Vec<String>,
+    source_occurrences_unique: bool,
     source_predicates: Vec<SourcePredicateSignature>,
+    source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
     exact_source_signature: String,
     source_bytes: Option<u64>,
 }
@@ -592,9 +594,26 @@ fn aggregate_materialization_signature(
     }
     sources.sort_by(|left, right| left.abstract_fingerprint.cmp(&right.abstract_fingerprint));
 
-    let source_fingerprints = sources.iter().map(|source| source.abstract_fingerprint.clone()).collect::<Vec<_>>();
-    let exact_source_signature =
-        sources.iter().map(|source| source.exact_fingerprint.as_str()).collect::<Vec<_>>().join("|");
+    let scalar_filtered_family = spec.group_exprs.is_empty() && scalar_filtered_aggregate_supported(spec);
+    let source_occurrences_unique =
+        if scalar_filtered_family { scalar_source_occurrences_are_unique(plan, input)? } else { true };
+    let source_fingerprints = sources
+        .iter()
+        .map(|source| {
+            if scalar_filtered_family { source.rowset_fingerprint.clone() } else { source.abstract_fingerprint.clone() }
+        })
+        .collect::<Vec<_>>();
+    let exact_source_signature = sources
+        .iter()
+        .map(|source| {
+            if scalar_filtered_family {
+                source.exact_rowset_fingerprint.as_str()
+            } else {
+                source.exact_fingerprint.as_str()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|");
     let source_bytes = sum_optional_u64(sources.iter().map(|source| source.selected_source_bytes));
     let group_exprs = spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>();
     let aggregate_exprs = spec.aggr_exprs.iter().map(aggregate_expr_signature).collect::<Vec<_>>();
@@ -608,16 +627,39 @@ fn aggregate_materialization_signature(
     let source_predicates = sources
         .iter()
         .map(|source| SourcePredicateSignature {
-            abstract_fingerprint: source.abstract_fingerprint.clone(),
+            abstract_fingerprint: if scalar_filtered_family {
+                source.rowset_fingerprint.clone()
+            } else {
+                source.abstract_fingerprint.clone()
+            },
             predicate: source.predicate.clone(),
         })
         .collect::<Vec<_>>();
-    let family_signature = format!(
-        "groups={};aggr={};sources={}",
-        group_exprs.join(","),
-        aggregate_exprs.join(","),
-        source_fingerprints.join("|")
-    );
+    let mut source_columns = BTreeMap::<String, BTreeMap<String, SourceColumnMaterialization>>::new();
+    for source in &sources {
+        let fingerprint = if scalar_filtered_family {
+            source.rowset_fingerprint.clone()
+        } else {
+            source.abstract_fingerprint.clone()
+        };
+        source_columns.entry(fingerprint).or_default().extend(source.columns.clone());
+    }
+    let scalar_input_shape =
+        if scalar_filtered_family { Some(scalar_materialization_input_shape(plan, input)?) } else { None };
+    let family_signature = if scalar_filtered_family {
+        format!(
+            "scalar_filtered;input_shape={};sources={}",
+            scalar_input_shape.as_deref().unwrap_or(""),
+            source_fingerprints.join("|")
+        )
+    } else {
+        format!(
+            "groups={};aggr={};sources={}",
+            group_exprs.join(","),
+            aggregate_exprs.join(","),
+            source_fingerprints.join("|")
+        )
+    };
     let family_key = format!("shared-subplan-v1-fnv64-{:016x}", stable_fnv1a64(family_signature.as_bytes()));
 
     Some(AggregateMaterializationSignature {
@@ -627,7 +669,9 @@ fn aggregate_materialization_signature(
         group_exprs,
         aggregate_exprs,
         source_fingerprints,
+        source_occurrences_unique,
         source_predicates,
+        source_columns,
         exact_source_signature,
         source_bytes,
     })
@@ -635,16 +679,27 @@ fn aggregate_materialization_signature(
 
 #[derive(Debug, Clone)]
 struct LocalSourceMaterializationSignature {
+    rowset_fingerprint: String,
+    exact_rowset_fingerprint: String,
     abstract_fingerprint: String,
     exact_fingerprint: String,
     predicate: Option<Expr>,
     selected_source_bytes: Option<u64>,
+    columns: BTreeMap<String, SourceColumnMaterialization>,
 }
 
 #[derive(Debug, Clone)]
 struct SourcePredicateSignature {
     abstract_fingerprint: String,
     predicate: Option<Expr>,
+}
+
+#[derive(Debug, Clone)]
+struct SourceColumnMaterialization {
+    name: String,
+    file_index: usize,
+    source_ref: SourceColumnRef,
+    field: Field,
 }
 
 fn collect_local_parquet_sources(
@@ -692,21 +747,115 @@ fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalS
         .map(|column| format!("{}:{:?}:nullable={}", column.name, column.data_type, column.nullable))
         .collect::<Vec<_>>()
         .join(",");
-    let common = format!(
-        "files={files};read={read_columns};projected={projected_output_columns};pure_filter={pure_filter_columns};partition={partition_columns};missing={missing_columns};scan_limit={};max_rows={}",
+    let rowset_common = format!(
+        "files={files};partition={partition_columns};missing={missing_columns};scan_limit={};max_rows={}",
         source.scan_limit.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
         source.max_rows.map_or_else(|| "none".to_string(), |rows| rows.to_string())
+    );
+    let common = format!(
+        "{rowset_common};read={read_columns};projected={projected_output_columns};pure_filter={pure_filter_columns}"
     );
     let predicate = source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let selected_source_bytes =
         source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes());
+    let columns = source
+        .read_columns
+        .iter()
+        .zip(source.read_column_file_indices.iter())
+        .filter_map(|(column, file_index)| {
+            let field = source.schema.field_with_name(column).ok()?.as_ref().clone();
+            let source_ref = source.source_column_ref(column)?;
+            Some((
+                column.clone(),
+                SourceColumnMaterialization { name: column.clone(), file_index: *file_index, source_ref, field },
+            ))
+        })
+        .collect();
 
     LocalSourceMaterializationSignature {
+        rowset_fingerprint: format!("{rowset_common};predicate=*"),
+        exact_rowset_fingerprint: format!("{rowset_common};predicate={predicate}"),
         abstract_fingerprint: format!("{common};predicate=*"),
         exact_fingerprint: format!("{common};predicate={predicate}"),
         predicate: source.reader_predicate.clone(),
         selected_source_bytes,
+        columns,
     }
+}
+
+fn scalar_materialization_input_shape(plan: &QueryPlan, node_id: NodeId) -> Option<String> {
+    scalar_materialization_input_shape_inner(plan, node_id, true)
+}
+
+fn scalar_materialization_input_shape_inner(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    allow_count_star_projection_elision: bool,
+) -> Option<String> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                let signature = local_source_materialization_signature(source);
+                Some(format!("local_parquet({})", signature.rowset_fingerprint))
+            },
+            _ => None,
+        },
+        PlanNode::Filter(filter) => Some(format!(
+            "filter(predicate={};input={})",
+            filter.predicate,
+            scalar_materialization_input_shape_inner(plan, filter.input, false)?
+        )),
+        PlanNode::Projection(projection)
+            if allow_count_star_projection_elision && count_star_projection_is_elidable(projection) =>
+        {
+            scalar_materialization_input_shape_inner(plan, projection.input, true)
+        },
+        PlanNode::Projection(projection) => {
+            let outputs = projection
+                .outputs
+                .iter()
+                .map(|output| {
+                    format!(
+                        "{}:{:?}:nullable={}={}",
+                        output.field.name(),
+                        output.field.data_type(),
+                        output.field.is_nullable(),
+                        output.expr
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            Some(format!(
+                "projection(outputs=[{outputs}];input={})",
+                scalar_materialization_input_shape_inner(plan, projection.input, false)?
+            ))
+        },
+        PlanNode::Join(join) => Some(format!(
+            "join(spec={:?};input0={};input1={})",
+            join.spec,
+            scalar_materialization_input_shape_inner(plan, join.inputs[0], false)?,
+            scalar_materialization_input_shape_inner(plan, join.inputs[1], false)?
+        )),
+        PlanNode::Sort(sort) => Some(format!(
+            "sort(spec={:?};input={})",
+            sort.spec,
+            scalar_materialization_input_shape_inner(plan, sort.input, false)?
+        )),
+        PlanNode::Limit(_) => None,
+        PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn count_star_projection_is_elidable(projection: &ProjectionNode) -> bool {
+    projection.outputs.is_empty()
+        || projection.outputs.iter().all(|output| {
+            scalar_count_star_expr(&output.expr) || projection_output_preserves_column(output, output.field.name())
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -714,6 +863,7 @@ struct SharedAggregateFamilyRewrite {
     family_key: String,
     representative_aggregate_node_id: NodeId,
     widened_source_predicates: BTreeMap<String, Expr>,
+    widened_source_columns: BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
     kind: SharedAggregateFamilyRewriteKind,
 }
 
@@ -726,6 +876,11 @@ enum SharedAggregateFamilyRewriteKind {
 #[derive(Debug, Clone)]
 struct ScalarFilteredAggregateBranch {
     aggregate_node_id: NodeId,
+    outputs: Vec<ScalarFilteredAggregateOutput>,
+}
+
+#[derive(Debug, Clone)]
+struct ScalarFilteredAggregateOutput {
     original_output_field: Field,
     materialized_alias: String,
     aggregate_expr: AggregateExpr,
@@ -758,6 +913,7 @@ fn shared_aggregate_family_rewrite_plan(
             family_key: representative.family_key.clone(),
             representative_aggregate_node_id: representative.aggregate_node_id,
             widened_source_predicates: BTreeMap::new(),
+            widened_source_columns: BTreeMap::new(),
             kind: SharedAggregateFamilyRewriteKind::Grouped {
                 branch_filters: family.iter().map(|signature| (signature.aggregate_node_id, None)).collect(),
             },
@@ -830,6 +986,7 @@ fn shared_aggregate_family_rewrite_plan(
         family_key: representative.family_key.clone(),
         representative_aggregate_node_id: representative.aggregate_node_id,
         widened_source_predicates,
+        widened_source_columns: BTreeMap::new(),
         kind: SharedAggregateFamilyRewriteKind::Grouped { branch_filters },
     })
 }
@@ -846,8 +1003,11 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     let PlanNode::Aggregate(representative_aggregate) = &representative_node.kind else {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
     };
-    if !scalar_count_aggregate_supported(&representative_aggregate.spec) {
+    if !scalar_filtered_aggregate_supported(&representative_aggregate.spec) {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+    }
+    if family.iter().any(|signature| !source_materialization_sources_are_unique(signature)) {
+        return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
     }
 
     let mut predicates_by_source = BTreeMap::<String, BTreeSet<String>>::new();
@@ -858,8 +1018,33 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         let PlanNode::Aggregate(aggregate) = &node.kind else {
             return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
         };
-        if !scalar_count_aggregate_supported(&aggregate.spec) {
+        if !scalar_filtered_aggregate_supported(&aggregate.spec) {
             return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+        }
+        for aggregate_expr in &aggregate.spec.aggr_exprs {
+            if scalar_count_star_aggregate_expr(plan, aggregate.input, &aggregate_expr.expr) {
+                continue;
+            }
+            let Some(branch_signature) =
+                scalar_input_expr_lineage_signature(plan, aggregate.input, &aggregate_expr.expr)
+            else {
+                return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
+            };
+            match scalar_input_expr_lineage_signature(plan, representative_aggregate.input, &aggregate_expr.expr) {
+                Some(representative_signature) if branch_signature != representative_signature => {
+                    return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
+                },
+                Some(_) => {},
+                None => {
+                    if scalar_input_expr_name_collides_with_unresolved_output(
+                        plan,
+                        representative_aggregate.input,
+                        &aggregate_expr.expr,
+                    ) {
+                        return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
+                    }
+                },
+            }
         }
         for source in &signature.source_predicates {
             predicates_by_source
@@ -879,11 +1064,15 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
 
     let mut widened_source_predicates = BTreeMap::new();
     let mut required_source_columns = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut widened_source_columns = BTreeMap::<String, BTreeMap<String, SourceColumnMaterialization>>::new();
     for fingerprint in &widened_source_fingerprints {
         let mut predicates = Vec::new();
         let mut seen = BTreeSet::new();
         let mut required_columns = BTreeSet::new();
         for signature in family {
+            if let Some(columns) = signature.source_columns.get(fingerprint) {
+                merge_source_columns(widened_source_columns.entry(fingerprint.clone()).or_default(), columns)?;
+            }
             let source = signature
                 .source_predicates
                 .iter()
@@ -909,17 +1098,49 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
     let mut required_aggregate_input_columns = BTreeSet::new();
     for columns in required_source_columns.values() {
         for column in columns {
-            if !subtree_can_propagate_column(plan, representative_aggregate.input, column) {
+            if !subtree_can_propagate_materialized_column(
+                plan,
+                representative_aggregate.input,
+                column,
+                &widened_source_columns,
+            ) {
                 return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
             }
             required_aggregate_input_columns.insert(column.clone());
         }
     }
-    for aggregate_expr in &representative_aggregate.spec.aggr_exprs {
-        collect_expr_column_names(&aggregate_expr.expr, &mut required_aggregate_input_columns);
+    for signature in family {
+        let node = plan
+            .node(signature.aggregate_node_id)
+            .ok_or(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)?;
+        let PlanNode::Aggregate(aggregate) = &node.kind else {
+            return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+        };
+        for aggregate_expr in &aggregate.spec.aggr_exprs {
+            if scalar_count_star_aggregate_expr(plan, aggregate.input, &aggregate_expr.expr) {
+                continue;
+            }
+            collect_expr_column_names(&aggregate_expr.expr, &mut required_aggregate_input_columns);
+        }
+        for source in &signature.source_predicates {
+            if let Some(columns) = signature.source_columns.get(&source.abstract_fingerprint) {
+                merge_source_columns(
+                    widened_source_columns.entry(source.abstract_fingerprint.clone()).or_default(),
+                    columns,
+                )?;
+            }
+        }
+    }
+    if !source_column_names_are_unique_across_sources(&widened_source_columns) {
+        return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
     }
     for column in &required_aggregate_input_columns {
-        if !subtree_can_propagate_column(plan, representative_aggregate.input, column) {
+        if !subtree_can_propagate_materialized_column(
+            plan,
+            representative_aggregate.input,
+            column,
+            &widened_source_columns,
+        ) {
             return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
         }
     }
@@ -932,13 +1153,9 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         let PlanNode::Aggregate(aggregate) = &node.kind else {
             return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
         };
-        let original_output_field = node
-            .output_schema()
-            .fields()
-            .first()
-            .ok_or(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape)?
-            .as_ref()
-            .clone();
+        if aggregate.spec.aggr_exprs.len() != node.output_schema().fields().len() {
+            return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
+        }
         let mut predicates = Vec::new();
         for source in &signature.source_predicates {
             if !widened_source_fingerprints.contains(&source.abstract_fingerprint) {
@@ -953,15 +1170,29 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         }
         let filter = conjunction(predicates)
             .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-        let mut aggregate_expr = aggregate.spec.aggr_exprs[0].clone();
-        aggregate_expr.alias = format!("__cudf_shared_scalar_count_{}", signature.aggregate_node_id.index());
-        aggregate_expr.filter = Some(filter.clone());
-        branches.push(ScalarFilteredAggregateBranch {
-            aggregate_node_id: signature.aggregate_node_id,
-            original_output_field,
-            materialized_alias: aggregate_expr.alias.clone(),
-            aggregate_expr,
-        });
+        let outputs = aggregate
+            .spec
+            .aggr_exprs
+            .iter()
+            .zip(node.output_schema().fields())
+            .enumerate()
+            .map(|(index, (aggregate_expr, field))| {
+                let count_star = scalar_count_star_aggregate_expr(plan, aggregate.input, &aggregate_expr.expr);
+                let mut aggregate_expr = aggregate_expr.clone();
+                aggregate_expr.alias =
+                    format!("__cudf_shared_scalar_{}_{}", signature.aggregate_node_id.index(), index);
+                aggregate_expr.filter = Some(filter.clone());
+                if count_star {
+                    aggregate_expr.expr = Expr::literal(crate::expr::LiteralValue::Int64(1));
+                }
+                ScalarFilteredAggregateOutput {
+                    original_output_field: field.as_ref().clone(),
+                    materialized_alias: aggregate_expr.alias.clone(),
+                    aggregate_expr,
+                }
+            })
+            .collect();
+        branches.push(ScalarFilteredAggregateBranch { aggregate_node_id: signature.aggregate_node_id, outputs });
     }
 
     let reachable = rewrite::sink_reachable_nodes(plan);
@@ -973,6 +1204,7 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         family_key: representative.family_key.clone(),
         representative_aggregate_node_id: representative.aggregate_node_id,
         widened_source_predicates,
+        widened_source_columns,
         kind: SharedAggregateFamilyRewriteKind::ScalarFiltered { required_aggregate_input_columns, branches },
     })
 }
@@ -1065,11 +1297,18 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                     .iter()
                     .find(|branch| branch.aggregate_node_id == old_aggregate_id)
                     .expect("scalar filtered branch must exist");
-                let output = ProjectionOutput::new(
-                    Expr::column(branch.materialized_alias.clone()).alias(branch.original_output_field.name().clone()),
-                    branch.original_output_field.clone(),
-                );
-                let projection = ProjectionNode::new(materialized_id, vec![output]);
+                let outputs = branch
+                    .outputs
+                    .iter()
+                    .map(|output| {
+                        ProjectionOutput::new(
+                            Expr::column(output.materialized_alias.clone())
+                                .alias(output.original_output_field.name().clone()),
+                            output.original_output_field.clone(),
+                        )
+                    })
+                    .collect();
+                let projection = ProjectionNode::new(materialized_id, outputs);
                 let facts = PlanFacts::device(Arc::clone(projection.output_schema()), SchemaBehavior::Projection);
                 self.push_node(PlanNode::Projection(projection), facts)
             },
@@ -1103,17 +1342,24 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 family,
                 required_aggregate_input_columns,
             );
-            let spec =
-                AggregateSpec::new(Vec::new(), branches.iter().map(|branch| branch.aggregate_expr.clone()).collect());
+            let spec = AggregateSpec::new(
+                Vec::new(),
+                branches
+                    .iter()
+                    .flat_map(|branch| branch.outputs.iter().map(|output| output.aggregate_expr.clone()))
+                    .collect(),
+            );
             let output_schema = Arc::new(Schema::new(
                 branches
                     .iter()
-                    .map(|branch| {
-                        Field::new(
-                            branch.materialized_alias.clone(),
-                            branch.original_output_field.data_type().clone(),
-                            branch.original_output_field.is_nullable(),
-                        )
+                    .flat_map(|branch| {
+                        branch.outputs.iter().map(|output| {
+                            Field::new(
+                                output.materialized_alias.clone(),
+                                output.original_output_field.data_type().clone(),
+                                output.original_output_field.is_nullable(),
+                            )
+                        })
                     })
                     .collect::<Vec<_>>(),
             ));
@@ -1122,16 +1368,25 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 PlanFacts::device(output_schema, SchemaBehavior::Aggregate),
             );
         }
+        let new_facts = old_node.facts.clone();
         let new_kind = match &old_node.kind {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source) => {
                     let mut source = source.clone();
                     let signature = local_source_materialization_signature(&source);
-                    if let Some(predicate) = family.widened_source_predicates.get(&signature.abstract_fingerprint) {
+                    let mut source_facts = None;
+                    if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature) {
+                        if widen_local_parquet_source(&mut source, columns) {
+                            source_facts =
+                                Some(PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput));
+                        }
+                    }
+                    if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
                         source.reader_predicate = Some(predicate.clone());
                         source.refresh_diagnostics();
                     }
-                    PlanNode::Source(Box::new(SourceNode::LocalParquet(source)))
+                    let new_kind = PlanNode::Source(Box::new(SourceNode::LocalParquet(source)));
+                    return self.push_node(new_kind, source_facts.unwrap_or_else(|| old_node.facts.clone()));
                 },
                 _ => PlanNode::Source(source.clone()),
             },
@@ -1139,7 +1394,7 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                 this.clone_materialized_subtree(input, family)
             }),
         };
-        self.push_node(new_kind, old_node.facts.clone())
+        self.push_node(new_kind, new_facts)
     }
 
     fn clone_materialized_subtree_with_required_columns(
@@ -1151,19 +1406,25 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
         let old_node = self.original.node(old_id).expect("optimizer input node must exist");
         match &old_node.kind {
             PlanNode::Source(source) => {
-                let new_kind = match source.as_ref() {
+                let (new_kind, facts) = match source.as_ref() {
                     SourceNode::LocalParquet(source) => {
                         let mut source = source.clone();
                         let signature = local_source_materialization_signature(&source);
-                        if let Some(predicate) = family.widened_source_predicates.get(&signature.abstract_fingerprint) {
+                        let mut facts = old_node.facts.clone();
+                        if let Some(columns) = matching_source_entry(&family.widened_source_columns, &signature) {
+                            if widen_local_parquet_source(&mut source, columns) {
+                                facts = PlanFacts::device(Arc::clone(&source.schema), SchemaBehavior::SourceOutput);
+                            }
+                        }
+                        if let Some(predicate) = matching_source_entry(&family.widened_source_predicates, &signature) {
                             source.reader_predicate = Some(predicate.clone());
                             source.refresh_diagnostics();
                         }
-                        PlanNode::Source(Box::new(SourceNode::LocalParquet(source)))
+                        (PlanNode::Source(Box::new(SourceNode::LocalParquet(source))), facts)
                     },
-                    _ => PlanNode::Source(source.clone()),
+                    _ => (PlanNode::Source(source.clone()), old_node.facts.clone()),
                 };
-                self.push_node(new_kind, old_node.facts.clone())
+                self.push_node(new_kind, facts)
             },
             PlanNode::Filter(filter) => {
                 let mut input_required = required_output_columns.clone();
@@ -1189,7 +1450,14 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                             column,
                         )
                         .cloned()
-                        .or_else(|| propagatable_field(self.original, projection.input, column))
+                        .or_else(|| {
+                            propagatable_materialized_field(
+                                self.original,
+                                projection.input,
+                                column,
+                                &family.widened_source_columns,
+                            )
+                        })
                         .expect("required projection column must exist on input");
                         outputs.push(ProjectionOutput::new(Expr::column(column.clone()), input_field));
                     }
@@ -1244,6 +1512,15 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
                         join.inputs[1],
                         column,
                     )
+                    .or_else(|| {
+                        unique_join_input_that_can_propagate_materialized_column(
+                            self.original,
+                            join.inputs[0],
+                            join.inputs[1],
+                            column,
+                            &family.widened_source_columns,
+                        )
+                    })
                     .expect("required join column must have one input owner");
                     match side {
                         JoinSide::Left => {
@@ -1327,14 +1604,209 @@ impl<'a> SharedSubplanMaterializationRewriter<'a> {
     }
 }
 
-fn scalar_count_aggregate_supported(spec: &AggregateSpec) -> bool {
+fn matching_source_entry<'a, T>(
+    entries: &'a BTreeMap<String, T>,
+    signature: &LocalSourceMaterializationSignature,
+) -> Option<&'a T> {
+    entries.get(&signature.abstract_fingerprint).or_else(|| entries.get(&signature.rowset_fingerprint))
+}
+
+fn merge_source_columns(
+    target: &mut BTreeMap<String, SourceColumnMaterialization>,
+    source: &BTreeMap<String, SourceColumnMaterialization>,
+) -> Result<(), SharedSubplanMaterializationRejectedReason> {
+    for (name, column) in source {
+        if let Some(existing) = target.get(name) {
+            if existing.file_index != column.file_index
+                || existing.source_ref != column.source_ref
+                || existing.field.name() != column.field.name()
+                || existing.field.data_type() != column.field.data_type()
+                || existing.field.is_nullable() != column.field.is_nullable()
+            {
+                return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
+            }
+        } else {
+            target.insert(name.clone(), column.clone());
+        }
+    }
+    Ok(())
+}
+
+fn source_column_names_are_unique_across_sources(
+    sources: &BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
+) -> bool {
+    let mut owners = BTreeMap::<&str, &str>::new();
+    for (source, columns) in sources {
+        for name in columns.keys() {
+            if let Some(existing) = owners.insert(name.as_str(), source.as_str())
+                && existing != source
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn source_materialization_sources_are_unique(signature: &AggregateMaterializationSignature) -> bool {
+    signature.source_occurrences_unique && source_fingerprints_are_unique(signature)
+}
+
+fn source_fingerprints_are_unique(signature: &AggregateMaterializationSignature) -> bool {
+    let mut seen = BTreeSet::new();
+    signature.source_fingerprints.iter().all(|fingerprint| seen.insert(fingerprint))
+}
+
+fn scalar_source_occurrences_are_unique(plan: &QueryPlan, node_id: NodeId) -> Option<bool> {
+    let mut source_nodes = BTreeSet::new();
+    let mut rowsets = BTreeSet::new();
+    let mut active = BTreeSet::new();
+    scalar_source_occurrences_are_unique_inner(plan, node_id, &mut active, &mut source_nodes, &mut rowsets)
+}
+
+fn scalar_source_occurrences_are_unique_inner(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    active: &mut BTreeSet<NodeId>,
+    source_nodes: &mut BTreeSet<NodeId>,
+    rowsets: &mut BTreeSet<String>,
+) -> Option<bool> {
+    if !active.insert(node_id) {
+        return Some(false);
+    }
+    let node = plan.node(node_id)?;
+    let unique = match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                source_nodes.insert(node_id)
+                    && rowsets.insert(local_source_materialization_signature(source).rowset_fingerprint)
+            },
+            _ => false,
+        },
+        _ => {
+            let mut unique = true;
+            for input in node.input_ids() {
+                unique &= scalar_source_occurrences_are_unique_inner(plan, *input, active, source_nodes, rowsets)?;
+            }
+            unique
+        },
+    };
+    active.remove(&node_id);
+    Some(unique)
+}
+
+fn widen_local_parquet_source(
+    source: &mut LocalParquetSource,
+    columns: &BTreeMap<String, SourceColumnMaterialization>,
+) -> bool {
+    let mut changed = false;
+    for column in columns.values() {
+        if source.read_columns.iter().any(|existing| existing == &column.name) {
+            continue;
+        }
+        source.read_columns.push(column.name.clone());
+        source.read_column_file_indices.push(column.file_index);
+        changed = true;
+    }
+    if !changed {
+        return false;
+    }
+
+    let mut fields = source.schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
+    let mut field_names = fields.iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
+    for column in columns.values() {
+        if field_names.insert(column.name.clone()) {
+            fields.push(column.field.clone());
+        }
+    }
+    source.schema = Arc::new(Schema::new(fields));
+    source.projected_output_columns = source.read_columns.clone();
+    source.projected_output_column_source_refs =
+        source.read_column_file_indices.iter().copied().map(crate::source::SourceColumnRef::File).collect();
+    source.pure_filter_columns.clear();
+    source.pure_filter_column_source_refs.clear();
+    source.refresh_diagnostics();
+    true
+}
+
+fn scalar_filtered_aggregate_supported(spec: &AggregateSpec) -> bool {
     spec.group_exprs.is_empty()
         && spec.grouping_sets.is_none()
-        && spec.aggr_exprs.len() == 1
-        && spec
-            .aggr_exprs
+        && !spec.aggr_exprs.is_empty()
+        && spec.aggr_exprs.iter().all(scalar_filtered_aggregate_expr_supported)
+}
+
+fn scalar_filtered_aggregate_expr_supported(expr: &AggregateExpr) -> bool {
+    if expr.filter.is_some() {
+        return false;
+    }
+    if expr.distinct && expr.function != AggregateFunction::Count {
+        return false;
+    }
+    match expr.function {
+        AggregateFunction::Count if !expr.distinct && scalar_count_star_expr(&expr.expr) => true,
+        AggregateFunction::Count
+        | AggregateFunction::NUnique
+        | AggregateFunction::Sum
+        | AggregateFunction::Min
+        | AggregateFunction::Max
+        | AggregateFunction::Avg => scalar_aggregate_value_expr_supported(&expr.expr),
+        AggregateFunction::StddevSamp
+        | AggregateFunction::StddevPop
+        | AggregateFunction::VarSamp
+        | AggregateFunction::VarPop => false,
+    }
+}
+
+fn scalar_count_star_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(value) if !matches!(value, crate::expr::LiteralValue::Null(_)))
+        || matches!(expr, Expr::Alias { expr, .. } if scalar_count_star_expr(expr))
+}
+
+fn scalar_count_star_aggregate_expr(plan: &QueryPlan, input: NodeId, expr: &Expr) -> bool {
+    if scalar_count_star_expr(expr) {
+        return true;
+    }
+    match expr {
+        Expr::Column(column) => projected_non_null_literal_column(plan, input, column.name()),
+        Expr::Alias { expr, .. } => scalar_count_star_aggregate_expr(plan, input, expr),
+        _ => false,
+    }
+}
+
+fn projected_non_null_literal_column(plan: &QueryPlan, node_id: NodeId, column: &str) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
+    match &node.kind {
+        PlanNode::Projection(projection) => projection
+            .outputs
             .iter()
-            .all(|expr| expr.function == AggregateFunction::Count && !expr.distinct && expr.filter.is_none())
+            .find(|output| output.field.name() == column)
+            .is_some_and(|output| scalar_count_star_expr(&output.expr)),
+        _ => false,
+    }
+}
+
+fn scalar_aggregate_value_expr_supported(expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(_) => true,
+        Expr::Alias { expr, .. } => scalar_aggregate_value_expr_supported(expr),
+        _ => false,
+    }
+}
+
+fn materialization_family_aggregate_exprs(family: &[AggregateMaterializationSignature]) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut aggregate_exprs = Vec::new();
+    for signature in family {
+        for aggregate_expr in &signature.aggregate_exprs {
+            if seen.insert(aggregate_expr.clone()) {
+                aggregate_exprs.push(aggregate_expr.clone());
+            }
+        }
+    }
+    aggregate_exprs
 }
 
 fn conjunction(mut predicates: Vec<Expr>) -> Option<Expr> {
@@ -1480,6 +1952,23 @@ fn unique_join_input_that_can_propagate_column(
     }
 }
 
+fn unique_join_input_that_can_propagate_materialized_column(
+    plan: &QueryPlan,
+    left: NodeId,
+    right: NodeId,
+    column: &str,
+    widened_source_columns: &BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
+) -> Option<JoinSide> {
+    match (
+        subtree_can_propagate_materialized_column(plan, left, column, widened_source_columns),
+        subtree_can_propagate_materialized_column(plan, right, column, widened_source_columns),
+    ) {
+        (true, false) => Some(JoinSide::Left),
+        (false, true) => Some(JoinSide::Right),
+        _ => None,
+    }
+}
+
 fn subtree_can_propagate_column(plan: &QueryPlan, node_id: NodeId, column: &str) -> bool {
     let Some(node) = plan.node(node_id) else {
         return false;
@@ -1504,28 +1993,181 @@ fn subtree_can_propagate_column(plan: &QueryPlan, node_id: NodeId, column: &str)
     }
 }
 
-fn propagatable_field(plan: &QueryPlan, node_id: NodeId, column: &str) -> Option<Field> {
-    let node = plan.node(node_id)?;
-    if let Some(field) = field_with_name(node.output_schema(), column) {
-        return Some(field.clone());
-    }
+fn subtree_can_propagate_materialized_column(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    column: &str,
+    widened_source_columns: &BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
+) -> bool {
+    let Some(node) = plan.node(node_id) else {
+        return false;
+    };
     match &node.kind {
-        PlanNode::Source(_) => None,
-        PlanNode::Filter(filter) => propagatable_field(plan, filter.input, column),
-        PlanNode::Projection(projection) => propagatable_field(plan, projection.input, column),
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                if field_with_name(&source.schema, column).is_some() {
+                    return true;
+                }
+                let signature = local_source_materialization_signature(source);
+                matching_source_entry(widened_source_columns, &signature)
+                    .is_some_and(|columns| columns.contains_key(column))
+            },
+            _ => false,
+        },
+        PlanNode::Filter(filter) => {
+            subtree_can_propagate_materialized_column(plan, filter.input, column, widened_source_columns)
+        },
+        PlanNode::Projection(projection) => {
+            if let Some(output) = projection.outputs.iter().find(|output| output.field.name() == column) {
+                return projection_output_preserves_column(output, column);
+            }
+            subtree_can_propagate_materialized_column(plan, projection.input, column, widened_source_columns)
+        },
+        PlanNode::Join(join) => unique_join_input_that_can_propagate_materialized_column(
+            plan,
+            join.inputs[0],
+            join.inputs[1],
+            column,
+            widened_source_columns,
+        )
+        .is_some(),
+        PlanNode::Sort(sort) => {
+            subtree_can_propagate_materialized_column(plan, sort.input, column, widened_source_columns)
+        },
+        PlanNode::Limit(limit) => {
+            subtree_can_propagate_materialized_column(plan, limit.input, column, widened_source_columns)
+        },
+        PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => false,
+    }
+}
+
+fn scalar_input_expr_lineage_signature(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Column(column) => scalar_input_column_lineage_signature(plan, node_id, column.name()),
+        Expr::Alias { expr, .. } => scalar_input_expr_lineage_signature(plan, node_id, expr),
+        _ => None,
+    }
+}
+
+fn scalar_input_expr_name_collides_with_unresolved_output(plan: &QueryPlan, node_id: NodeId, expr: &Expr) -> bool {
+    match expr {
+        Expr::Column(column) => {
+            let Some(node) = plan.node(node_id) else {
+                return true;
+            };
+            field_with_name(node.output_schema(), column.name()).is_some()
+                && scalar_input_column_lineage_signature(plan, node_id, column.name()).is_none()
+        },
+        Expr::Alias { expr, .. } => scalar_input_expr_name_collides_with_unresolved_output(plan, node_id, expr),
+        _ => false,
+    }
+}
+
+fn scalar_input_column_lineage_signature(plan: &QueryPlan, node_id: NodeId, column: &str) -> Option<String> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                field_with_name(&source.schema, column)?;
+                let signature = local_source_materialization_signature(source);
+                let source_ref = source.source_column_ref(column)?;
+                Some(format!(
+                    "{};column={column};source_ref={}",
+                    signature.rowset_fingerprint,
+                    source_column_ref_signature(source_ref)
+                ))
+            },
+            _ => None,
+        },
+        PlanNode::Filter(filter) => scalar_input_column_lineage_signature(plan, filter.input, column),
+        PlanNode::Projection(projection) => {
+            if let Some(output) = projection.outputs.iter().find(|output| output.field.name() == column) {
+                return scalar_input_expr_lineage_signature(plan, projection.input, &output.expr);
+            }
+            scalar_input_column_lineage_signature(plan, projection.input, column)
+        },
+        PlanNode::Sort(sort) => scalar_input_column_lineage_signature(plan, sort.input, column),
+        PlanNode::Limit(limit) => scalar_input_column_lineage_signature(plan, limit.input, column),
+        PlanNode::Join(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Union(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn propagatable_materialized_field(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    column: &str,
+    widened_source_columns: &BTreeMap<String, BTreeMap<String, SourceColumnMaterialization>>,
+) -> Option<Field> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => {
+                if let Some(field) = field_with_name(&source.schema, column) {
+                    return Some(field.clone());
+                }
+                let signature = local_source_materialization_signature(source);
+                matching_source_entry(widened_source_columns, &signature)
+                    .and_then(|columns| columns.get(column))
+                    .map(|column| column.field.clone())
+            },
+            _ => None,
+        },
+        PlanNode::Filter(filter) => propagatable_materialized_field(plan, filter.input, column, widened_source_columns),
+        PlanNode::Projection(projection) => {
+            if let Some(output) = projection.outputs.iter().find(|output| output.field.name() == column) {
+                return projection_output_preserves_column(output, column).then(|| output.field.clone());
+            }
+            propagatable_materialized_field(plan, projection.input, column, widened_source_columns)
+        },
         PlanNode::Join(join) => {
-            match unique_join_input_that_can_propagate_column(plan, join.inputs[0], join.inputs[1], column)? {
-                JoinSide::Left => propagatable_field(plan, join.inputs[0], column),
-                JoinSide::Right => propagatable_field(plan, join.inputs[1], column),
+            if let Some(output) = join.spec.output_projection.iter().find(|output| output.output_name == column) {
+                let input = match output.side {
+                    JoinSide::Left => join.inputs[0],
+                    JoinSide::Right => join.inputs[1],
+                };
+                return propagatable_materialized_field(plan, input, output.column.name(), widened_source_columns);
+            }
+            match unique_join_input_that_can_propagate_materialized_column(
+                plan,
+                join.inputs[0],
+                join.inputs[1],
+                column,
+                widened_source_columns,
+            )? {
+                JoinSide::Left => propagatable_materialized_field(plan, join.inputs[0], column, widened_source_columns),
+                JoinSide::Right => {
+                    propagatable_materialized_field(plan, join.inputs[1], column, widened_source_columns)
+                },
             }
         },
-        PlanNode::Sort(sort) => propagatable_field(plan, sort.input, column),
-        PlanNode::Limit(limit) => propagatable_field(plan, limit.input, column),
+        PlanNode::Sort(sort) => propagatable_materialized_field(plan, sort.input, column, widened_source_columns),
+        PlanNode::Limit(limit) => propagatable_materialized_field(plan, limit.input, column, widened_source_columns),
         PlanNode::Aggregate(_)
         | PlanNode::Window(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)
         | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn projection_output_preserves_column(output: &ProjectionOutput, column: &str) -> bool {
+    output.field.name() == column && expr_is_identity_column(&output.expr, column)
+}
+
+fn expr_is_identity_column(expr: &Expr, column: &str) -> bool {
+    match expr {
+        Expr::Column(expr_column) => expr_column.name() == column,
+        Expr::Alias { expr, alias } => alias == column && expr_is_identity_column(expr, column),
+        _ => false,
     }
 }
 
@@ -1548,6 +2190,14 @@ fn join_output_schema(
             })
             .collect::<Vec<_>>(),
     ))
+}
+
+fn source_column_ref_signature(source_ref: SourceColumnRef) -> String {
+    match source_ref {
+        SourceColumnRef::File(index) => format!("file:{index}"),
+        SourceColumnRef::Partition(index) => format!("partition:{index}"),
+        SourceColumnRef::MissingNull(index) => format!("missing_null:{index}"),
+    }
 }
 
 fn file_signature(file: &crate::source::LocalParquetFile) -> String {
