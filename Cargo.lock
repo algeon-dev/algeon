@@ -2172,6 +2172,7 @@ name = "datafusion-nexus-bench"
 version = "0.1.0"
 dependencies = [
  "arrow",
+ "async-trait",
  "aws-config",
  "aws-credential-types",
  "cudf",
@@ -3804,6 +3805,7 @@ dependencies = [
  "cudf",
  "cugraph",
  "cugraph-sys",
+ "futures",
  "nvml-wrapper",
  "object_store",
  "parquet",

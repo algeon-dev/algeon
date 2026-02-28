@@ -1,7 +1,7 @@
 [package]
 name = "datafusion-nexus-bench"
 description = "Benchmark, report, triage, and stress binaries for datafusion-nexus."
-version = "0.1.0"
+version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
 build = "build.rs"
@@ -28,26 +28,27 @@ cugraph = [
 ]
 
 [dependencies]
-datafusion-nexus = { path = "../..", default-features = false }
-nexus-query-engine = { path = "../nexus-query-engine", default-features = false }
-datafusion = "53.1"
+datafusion-nexus = { workspace = true }
+nexus-query-engine = { workspace = true }
+datafusion = { workspace = true }
 arrow = { workspace = true }
+async-trait = "0.1"
 parquet = { workspace = true }
 cudf = { workspace = true }
 # Direct (non-transitive) dep on cudf-sys so THIS crate's build.rs receives
 # DEP_CUDF_RUST_RUNTIME_LIB_DIR from cudf-sys's `links = "cudf_rust"` metadata,
 # mirroring the root crate's rpath bake.
-cudf-sys = { path = "../../../cudf-rs/cudf-sys" }
+cudf-sys = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
-futures = "0.3"
-serde_json = "1.0"
-tokio = { version = "1.52", features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
-aws-config = { version = "1.8", optional = true }
-aws-credential-types = { version = "1.2", optional = true }
-iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "d32c234", optional = true }
-object_store = { version = "0.13", default-features = false, features = ["aws"], optional = true }
-tempfile = { version = "3.27", optional = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal", "sync", "time"] }
+aws-config = { workspace = true, optional = true }
+aws-credential-types = { workspace = true, optional = true }
+iceberg = { workspace = true, optional = true }
+object_store = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [lib]
 name = "datafusion_nexus_bench"
