@@ -12,6 +12,7 @@ use super::tsv::{metric_count, metric_duration_nanos, optional_observed_metric_c
 mod dynamic_filter;
 mod graph;
 mod labels;
+mod lakehouse_cache;
 mod source_read;
 mod strategy;
 mod task;
@@ -24,6 +25,8 @@ pub use dynamic_filter::{
 pub use graph::NativeGraphRuntimeMetricRow;
 use graph::graph_runtime_rows;
 use labels::max_optional_usize;
+pub use lakehouse_cache::NativeLakehouseCacheFillEventMetricRow;
+use lakehouse_cache::lakehouse_cache_fill_event_snapshot_rows;
 pub use source_read::NativeSourceReadRuntimeMetricRow;
 use source_read::source_read_runtime_rows;
 pub use strategy::{NativeAggregateStrategyMetricRow, NativeJoinStrategyMetricRow};
@@ -197,6 +200,8 @@ pub struct NativeDataFusionExecutionMetrics {
     pub dynamic_filter_runtime_rows: Vec<NativeDynamicFilterRuntimeMetricRow>,
     /// Stable nested source-read runtime rows.
     pub source_read_runtime_rows: Vec<NativeSourceReadRuntimeMetricRow>,
+    /// Stable nested background lakehouse cache-fill events observed before metrics collection.
+    pub lakehouse_cache_fill_event_snapshot_rows: Vec<NativeLakehouseCacheFillEventMetricRow>,
     /// Count of reusable cuDF hash-join artifacts built.
     pub hash_join_build_count: usize,
     /// Count of reusable cuDF filtered-join artifacts built.
@@ -341,6 +346,7 @@ impl NativeDataFusionExecutionMetrics {
             ),
             dynamic_filter_runtime_rows: dynamic_filter_runtime_rows(metrics),
             source_read_runtime_rows: source_read_runtime_rows(metrics),
+            lakehouse_cache_fill_event_snapshot_rows: lakehouse_cache_fill_event_snapshot_rows(metrics),
             hash_join_build_count: metric_count(metrics, "hash_join_build_count"),
             filtered_join_build_count: metric_count(metrics, "filtered_join_build_count"),
             one_shot_join_count: metric_count(metrics, "one_shot_join_count"),
@@ -630,5 +636,14 @@ impl NativeDataFusionExecutionMetrics {
     pub fn merge_source_read_runtime_rows(&mut self, rows: Vec<NativeSourceReadRuntimeMetricRow>) {
         self.source_read_runtime_rows.extend(rows);
         self.source_read_runtime_rows.sort_by_key(|row| row.to_stable_kv_row());
+    }
+
+    /// Appends lakehouse cache-fill event snapshot rows and restores stable sort order.
+    pub fn merge_lakehouse_cache_fill_event_snapshot_rows(
+        &mut self,
+        rows: Vec<NativeLakehouseCacheFillEventMetricRow>,
+    ) {
+        self.lakehouse_cache_fill_event_snapshot_rows.extend(rows);
+        self.lakehouse_cache_fill_event_snapshot_rows.sort_by_key(|row| row.to_stable_kv_row());
     }
 }

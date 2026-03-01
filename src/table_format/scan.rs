@@ -1,8 +1,16 @@
-use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use futures::future::BoxFuture;
-use nexus_query_engine::{CredentialMode, LakehouseCacheStatus, ResolvedParquetSource};
+use nexus_query_engine::{
+    CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, RemoteParquetReadMode,
+    ResolvedParquetSource, SourceStorageProfile,
+};
 
 use crate::{Result, policy::FallbackReason};
 
@@ -14,6 +22,14 @@ pub const DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_forma
 pub const CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV: &str = "CUDF_ICEBERG_PARQUET_READ_STRATEGY";
 /// Env var enabling the experimental remote KvikIO source strategy.
 pub const CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV: &str = "CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL";
+/// Env var enabling foreground remote-direct object-store Parquet reads.
+pub const CUDF_ICEBERG_REMOTE_DIRECT_ENV: &str = "CUDF_ICEBERG_REMOTE_DIRECT";
+/// Env var selecting the lower-layer fallback policy for remote-direct Parquet reads.
+pub const CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV: &str = "CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE";
+/// Env var enabling ranged mini-Parquet fallback for remote host-buffer reads.
+pub const CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV: &str = "CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED";
+/// Env var selecting whether complete local lakehouse cache hits may be used for foreground reads.
+pub const CUDF_LAKEHOUSE_CACHE_READ_ENV: &str = "CUDF_LAKEHOUSE_CACHE_READ";
 /// Env var pointing at the local lakehouse byte-cache root.
 pub const CUDF_LAKEHOUSE_CACHE_ROOT_ENV: &str = "CUDF_LAKEHOUSE_CACHE_ROOT";
 /// Env var selecting lakehouse byte-cache miss behavior.
@@ -45,7 +61,7 @@ pub enum TableFormat {
 /// inexact parent filter. The filtering flags describe planner intent only;
 /// unsupported row-group pruning or row selection must be reported as stable
 /// unsupported features instead of executing data reads.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TableFormatScanRequest {
     /// Logical projected column names. `None` means all columns; `Some([])` means zero columns.
     pub projected_column_names: Option<Vec<String>>,
@@ -61,6 +77,8 @@ pub struct TableFormatScanRequest {
     pub row_group_filtering_enabled: bool,
     /// Planner intent for row selection/page-index pruning. Unsupported semantics become scan facts.
     pub row_selection_enabled: bool,
+    /// Format-neutral predicate converted from frontend filters for metadata planning.
+    pub predicate: Option<TableFormatPredicate>,
 }
 
 impl TableFormatScanRequest {
@@ -110,6 +128,12 @@ impl TableFormatScanRequest {
         self.row_selection_enabled = row_selection_enabled;
         self
     }
+
+    /// Sets a format-neutral metadata predicate converted from frontend filters.
+    pub fn with_predicate(mut self, predicate: Option<TableFormatPredicate>) -> Self {
+        self.predicate = predicate;
+        self
+    }
 }
 
 impl Default for TableFormatScanRequest {
@@ -122,8 +146,62 @@ impl Default for TableFormatScanRequest {
             case_sensitive: true,
             row_group_filtering_enabled: true,
             row_selection_enabled: false,
+            predicate: None,
         }
     }
+}
+
+/// Adapter-owned predicate tree for table-format metadata planning.
+///
+/// This intentionally avoids DataFusion, Iceberg, and native-engine expression
+/// types. Format-specific planners translate this tree into their own metadata
+/// predicate APIs when supported.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TableFormatPredicate {
+    /// Boolean conjunction. A planner may use both sides together.
+    And(Box<TableFormatPredicate>, Box<TableFormatPredicate>),
+    /// Boolean disjunction. A planner should use this only when both sides are supported.
+    Or(Box<TableFormatPredicate>, Box<TableFormatPredicate>),
+    /// Boolean negation.
+    Not(Box<TableFormatPredicate>),
+    /// Column equals true.
+    BooleanColumn(String),
+    /// Null predicate on a column.
+    IsNull(String),
+    /// Non-null predicate on a column.
+    IsNotNull(String),
+    /// Binary comparison between a column and a literal.
+    Comparison {
+        /// Logical column name.
+        column: String,
+        /// Comparison operator.
+        op: TableFormatPredicateOp,
+        /// Literal value.
+        literal: TableFormatLiteral,
+    },
+}
+
+/// Format-neutral comparison operators for table-format metadata predicates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TableFormatPredicateOp {
+    Eq,
+    NotEq,
+    Lt,
+    LtEq,
+    Gt,
+    GtEq,
+}
+
+/// Literal values supported by format-neutral table-format metadata predicates.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TableFormatLiteral {
+    Boolean(bool),
+    Int32(i32),
+    Int64(i64),
+    Float32(f32),
+    Float64(f64),
+    Utf8(String),
+    Date32(i32),
 }
 
 /// Adapter-owned table-format metadata planning boundary.
@@ -221,7 +299,7 @@ pub enum TableFormatLakehouseCachePolicy {
     /// Do not fill missing local cache entries.
     #[default]
     Disabled,
-    /// Fill missing entries from the backing object store before the path-based cuDF read.
+    /// Read the foreground source now and fill missing complete-object entries in the background.
     ReadThrough,
     /// Require a completed local cache file before the path-based cuDF read starts.
     FillBeforeRead,
@@ -239,7 +317,32 @@ impl TableFormatLakehouseCachePolicy {
 
     /// Whether a cache miss should be materialized before execution opens the cache path.
     pub const fn fills_before_read(self) -> bool {
-        matches!(self, Self::ReadThrough | Self::FillBeforeRead)
+        matches!(self, Self::FillBeforeRead)
+    }
+}
+
+/// Foreground lakehouse cache read behavior for complete local cache entries.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TableFormatLakehouseCacheReadPolicy {
+    /// Use complete local cache hits for foreground reads.
+    #[default]
+    Enabled,
+    /// Ignore complete local cache hits for benchmark isolation.
+    Disabled,
+}
+
+impl TableFormatLakehouseCacheReadPolicy {
+    /// Stable config/report string.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+
+    /// Whether cache hits should be considered for foreground reads.
+    pub const fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
     }
 }
 
@@ -250,8 +353,16 @@ pub struct TableFormatParquetReadStrategyConfig {
     pub preference: TableFormatParquetReadStrategyPreference,
     /// Whether experimental remote KvikIO is allowed.
     pub remote_kvikio_experimental: bool,
+    /// Whether remote-direct object-store reads are available to the foreground query policy.
+    pub remote_direct_enabled: bool,
+    /// Lower-layer fallback policy requested for remote-direct object-store reads.
+    pub remote_direct_read_mode: RemoteParquetReadMode,
+    /// Whether remote host-buffer fallback may use ranged mini-Parquet reads.
+    pub remote_host_buffer_ranged_enabled: bool,
     /// Optional lakehouse byte-cache root.
     pub lakehouse_cache_root: Option<PathBuf>,
+    /// Whether complete cache hits may be used for foreground reads.
+    pub lakehouse_cache_read_policy: TableFormatLakehouseCacheReadPolicy,
     /// Cache-miss policy for local lakehouse byte-cache entries.
     pub lakehouse_cache_policy: TableFormatLakehouseCachePolicy,
     /// Best-effort retained byte target for the lakehouse byte-cache root.
@@ -269,6 +380,8 @@ pub struct TableFormatParquetReadStrategyConfig {
     pub storage_profile_id: Option<String>,
     /// Credential mode used for remote object-store reads.
     pub credential_mode: CredentialMode,
+    /// Stable reason when the configured remote-direct profile is unsupported.
+    pub remote_direct_profile_unsupported_reason: Option<&'static str>,
 }
 
 impl Default for TableFormatParquetReadStrategyConfig {
@@ -276,12 +389,17 @@ impl Default for TableFormatParquetReadStrategyConfig {
         Self {
             preference: TableFormatParquetReadStrategyPreference::Auto,
             remote_kvikio_experimental: false,
+            remote_direct_enabled: true,
+            remote_direct_read_mode: RemoteParquetReadMode::PreferDirect,
+            remote_host_buffer_ranged_enabled: false,
             lakehouse_cache_root: None,
+            lakehouse_cache_read_policy: TableFormatLakehouseCacheReadPolicy::Enabled,
             lakehouse_cache_policy: TableFormatLakehouseCachePolicy::Disabled,
             lakehouse_cache_max_bytes: None,
             storage_endpoint: None,
             storage_profile_id: None,
             credential_mode: CredentialMode::SharedProcessEnv,
+            remote_direct_profile_unsupported_reason: None,
         }
     }
 }
@@ -290,6 +408,19 @@ impl TableFormatParquetReadStrategyConfig {
     /// Builds a resolver config from the Iceberg-scoped v1 environment knobs.
     pub fn from_env() -> Self {
         table_format_parquet_read_strategy_config_from_env(|name| std::env::var(name).ok())
+    }
+
+    /// Applies the non-secret remote-direct credential capability implied by a
+    /// registered execution-time source storage profile.
+    pub fn with_source_storage_profile_remote_direct_capability(mut self, profile: &SourceStorageProfile) -> Self {
+        if self.storage_profile_id.is_none() {
+            self.storage_profile_id = Some(profile.id().to_string());
+        }
+        if profile.requires_scoped_remote_direct_profile() {
+            self.credential_mode = CredentialMode::FutureTenantScoped;
+        }
+        self.remote_direct_profile_unsupported_reason = profile.remote_direct_profile_unsupported_reason();
+        self
     }
 }
 
@@ -311,7 +442,21 @@ fn table_format_parquet_read_strategy_config_from_env(
     };
     let remote_kvikio_experimental = get(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV)
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+    let remote_direct_enabled = get(CUDF_ICEBERG_REMOTE_DIRECT_ENV)
+        .is_none_or(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "no" | "NO"));
+    let remote_direct_read_mode = get(CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
+        .as_deref()
+        .map(parse_remote_parquet_read_mode_lossy)
+        .unwrap_or_default();
+    let remote_host_buffer_ranged_enabled = get(CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV)
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
     let lakehouse_cache_root = env_nonempty(&mut get, CUDF_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
+    let lakehouse_cache_read_policy =
+        match get(CUDF_LAKEHOUSE_CACHE_READ_ENV).unwrap_or_else(|| "enabled".to_string()).to_ascii_lowercase().as_str()
+        {
+            "disabled" | "bypass" | "bypassed" => TableFormatLakehouseCacheReadPolicy::Disabled,
+            _ => TableFormatLakehouseCacheReadPolicy::Enabled,
+        };
     let lakehouse_cache_policy = match get(CUDF_LAKEHOUSE_CACHE_POLICY_ENV)
         .unwrap_or_else(|| "disabled".to_string())
         .to_ascii_lowercase()
@@ -327,12 +472,16 @@ fn table_format_parquet_read_strategy_config_from_env(
         .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_S3_ENV))
         .or_else(|| env_nonempty(&mut get, AWS_ENDPOINT_URL_ENV))
         .map(|endpoint| credential_free_endpoint_identity(&endpoint));
-    let storage_profile_id = if storage_endpoint.is_some()
-        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_REGION").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID").is_some()
+    let has_storage_region = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_REGION").is_some();
+    let has_explicit_s3_credentials = env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID").is_some()
         || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
-        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN").is_some()
-    {
+        || env_nonempty(&mut get, "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN").is_some();
+    let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
+        CredentialMode::FutureTenantScoped
+    } else {
+        CredentialMode::SharedProcessEnv
+    };
+    let storage_profile_id = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
         Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string())
     } else {
         None
@@ -340,12 +489,26 @@ fn table_format_parquet_read_strategy_config_from_env(
     TableFormatParquetReadStrategyConfig {
         preference,
         remote_kvikio_experimental,
+        remote_direct_enabled,
+        remote_direct_read_mode,
+        remote_host_buffer_ranged_enabled,
         lakehouse_cache_root,
+        lakehouse_cache_read_policy,
         lakehouse_cache_policy,
         lakehouse_cache_max_bytes,
         storage_endpoint,
         storage_profile_id,
-        ..Default::default()
+        credential_mode,
+        remote_direct_profile_unsupported_reason: None,
+    }
+}
+
+fn parse_remote_parquet_read_mode_lossy(raw: &str) -> RemoteParquetReadMode {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "require" | "require_direct" => RemoteParquetReadMode::RequireDirect,
+        "allow_host_fallback" | "host_fallback" => RemoteParquetReadMode::AllowHostFallback,
+        "prefer" | "prefer_direct" => RemoteParquetReadMode::PreferDirect,
+        _ => RemoteParquetReadMode::PreferDirect,
     }
 }
 
@@ -439,8 +602,8 @@ impl TableFormatReadCapability {
 
     /// Whether this capability can be represented by native Parquet source reads.
     ///
-    /// Object-store S3 reads use the `SourceFetch + SourceDecode` host-buffer
-    /// pipeline, not direct path-based device reads.
+    /// Object-store S3 reads may use either the remote-direct path-based reader
+    /// or the legacy object-store host-buffer fallback.
     pub fn is_native_parquet_capable(&self) -> bool {
         match self {
             Self::LocalFileSystem => true,
@@ -449,10 +612,10 @@ impl TableFormatReadCapability {
         }
     }
 
-    /// Whether this capability can be represented by direct native Parquet reads.
+    /// Whether this capability can be represented by local direct-device Parquet reads.
     ///
-    /// Object-store paths require credentialed staging or a host-buffer fetch
-    /// pipeline before bounded native execution can safely read them.
+    /// Remote S3 direct/range-aware reads are tracked as a separate source
+    /// strategy and must not be confused with local GDS/NVMe eligibility.
     pub fn is_direct_native_parquet_capable(&self) -> bool {
         matches!(self, Self::LocalFileSystem)
     }
@@ -507,27 +670,92 @@ fn resolve_s3_table_format_parquet_source(
     metadata: &TableFormatParquetSourceMetadata,
 ) -> Result<ResolvedParquetSource> {
     let resolved = match config.preference {
-        TableFormatParquetReadStrategyPreference::Auto | TableFormatParquetReadStrategyPreference::HostBuffer => {
-            Ok(ResolvedParquetSource::remote_host_buffer(
-                location,
-                object_store_reader_path(location),
-                config.credential_mode,
-            ))
+        TableFormatParquetReadStrategyPreference::Auto => {
+            resolve_auto_s3_table_format_parquet_source(location, config, metadata)
+        },
+        TableFormatParquetReadStrategyPreference::HostBuffer => {
+            remote_host_buffer_fallback_source(location, config, "explicit_remote_host_buffer_full", false)
         },
         TableFormatParquetReadStrategyPreference::RemoteKvikio if config.remote_kvikio_experimental => {
-            Ok(ResolvedParquetSource::remote_kvikio_experimental(location, config.credential_mode))
+            if config.remote_direct_enabled {
+                remote_direct_or_capability_fallback_source(location, config, Some("remote_kvikio_compat_alias"))
+            } else {
+                remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)
+            }
         },
-        TableFormatParquetReadStrategyPreference::RemoteKvikio => Ok(ResolvedParquetSource::remote_host_buffer(
-            location,
-            object_store_reader_path(location),
-            config.credential_mode,
-        )
-        .with_fallback_reason("remote_kvikio_experimental_disabled")),
+        TableFormatParquetReadStrategyPreference::RemoteKvikio => {
+            if config.remote_direct_enabled {
+                remote_direct_or_capability_fallback_source(location, config, Some("remote_kvikio_compat_alias"))
+            } else {
+                remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)
+            }
+        },
         TableFormatParquetReadStrategyPreference::LocalCache => {
             resolve_local_cache_table_format_parquet_source(location, config, metadata)
         },
     }?;
     Ok(attach_remote_source_identity(resolved, location, config, metadata))
+}
+
+fn resolve_auto_s3_table_format_parquet_source(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    metadata: &TableFormatParquetSourceMetadata,
+) -> Result<ResolvedParquetSource> {
+    if let Some(cache_root) = config.lakehouse_cache_root.as_ref() {
+        let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
+        if !config.lakehouse_cache_read_policy.is_enabled() {
+            let resolved = remote_foreground_source(location, config)?
+                .with_cache_status(LakehouseCacheStatus::Bypassed)
+                .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
+                .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+                .with_lakehouse_cache_path(cache_path.display().to_string())
+                .with_lakehouse_cache_fill_mode(background_fill_mode(config));
+            return Ok(resolved);
+        }
+        if complete_cache_hit_matches_metadata(&cache_path, metadata) {
+            return Ok(ResolvedParquetSource::local_cache_kvikio(
+                location,
+                cache_path.display().to_string(),
+                config.credential_mode,
+                LakehouseCacheStatus::Hit,
+            )
+            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+            .with_lakehouse_cache_path(cache_path.display().to_string()));
+        }
+        if config.lakehouse_cache_policy.fills_before_read() {
+            reject_if_remote_direct_required(config, "lakehouse_cache_fill_before_read")?;
+            return Ok(ResolvedParquetSource::local_cache_kvikio(
+                location,
+                cache_path.display().to_string(),
+                config.credential_mode,
+                LakehouseCacheStatus::FillBeforeRead,
+            )
+            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+            .with_lakehouse_cache_path(cache_path.display().to_string())
+            .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Blocking));
+        }
+        let fill_mode = background_fill_mode(config);
+        return Ok(remote_foreground_source(location, config)?
+            .with_cache_status(LakehouseCacheStatus::Miss)
+            .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
+            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+            .with_lakehouse_cache_path(cache_path.display().to_string())
+            .with_lakehouse_cache_fill_mode(fill_mode));
+    }
+
+    remote_foreground_source(location, config)
+}
+
+fn remote_foreground_source(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+) -> Result<ResolvedParquetSource> {
+    if config.remote_direct_enabled {
+        remote_direct_or_capability_fallback_source(location, config, None)
+    } else {
+        remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)
+    }
 }
 
 fn resolve_local_cache_table_format_parquet_source(
@@ -536,36 +764,138 @@ fn resolve_local_cache_table_format_parquet_source(
     metadata: &TableFormatParquetSourceMetadata,
 ) -> Result<ResolvedParquetSource> {
     let Some(cache_root) = config.lakehouse_cache_root.as_ref() else {
-        return Ok(ResolvedParquetSource::remote_host_buffer(
-            location,
-            object_store_reader_path(location),
-            config.credential_mode,
-        )
-        .with_cache_status(LakehouseCacheStatus::Skipped)
-        .with_fallback_reason("lakehouse_cache_root_unset"));
+        let resolved = if config.remote_direct_enabled {
+            remote_direct_or_capability_fallback_source(location, config, None)?
+        } else {
+            remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)?
+        };
+        return Ok(resolved
+            .with_cache_status(LakehouseCacheStatus::Skipped)
+            .with_fallback_reason("lakehouse_cache_root_unset"));
     };
     let cache_path = cache_root.join(cache_relative_path(location, config, metadata));
-    if cache_path.is_file() {
+    if !config.lakehouse_cache_read_policy.is_enabled() {
+        let resolved = if config.remote_direct_enabled {
+            remote_direct_or_capability_fallback_source(location, config, None)?
+        } else {
+            remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)?
+        };
+        return Ok(resolved
+            .with_cache_status(LakehouseCacheStatus::Bypassed)
+            .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
+            .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+            .with_lakehouse_cache_path(cache_path.display().to_string())
+            .with_lakehouse_cache_fill_mode(background_fill_mode(config)));
+    }
+    if complete_cache_hit_matches_metadata(&cache_path, metadata) {
         return Ok(ResolvedParquetSource::local_cache_kvikio(
             location,
             cache_path.display().to_string(),
             config.credential_mode,
             LakehouseCacheStatus::Hit,
         )
-        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes));
+        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+        .with_lakehouse_cache_path(cache_path.display().to_string()));
     }
     if config.lakehouse_cache_policy.fills_before_read() {
+        reject_if_remote_direct_required(config, "lakehouse_cache_fill_before_read")?;
         return Ok(ResolvedParquetSource::local_cache_kvikio(
             location,
             cache_path.display().to_string(),
             config.credential_mode,
             LakehouseCacheStatus::FillBeforeRead,
         )
-        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes));
+        .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+        .with_lakehouse_cache_path(cache_path.display().to_string())
+        .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Blocking));
     }
+    let fill_mode = background_fill_mode(config);
+    let mut resolved = if config.remote_direct_enabled {
+        remote_direct_or_capability_fallback_source(location, config, None)?
+    } else {
+        remote_host_buffer_fallback_source(location, config, "remote_direct_disabled", true)?
+    }
+    .with_cache_status(LakehouseCacheStatus::Miss)
+    .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
+    .with_lakehouse_cache_config(cache_root.display().to_string(), config.lakehouse_cache_max_bytes)
+    .with_lakehouse_cache_path(cache_path.display().to_string())
+    .with_lakehouse_cache_fill_mode(fill_mode);
+    if fill_mode == LakehouseCacheFillMode::Disabled {
+        resolved = resolved.with_fallback_reason("lakehouse_cache_miss_fill_disabled");
+    }
+    Ok(resolved)
+}
+
+fn remote_direct_source(location: &str, config: &TableFormatParquetReadStrategyConfig) -> ResolvedParquetSource {
+    ResolvedParquetSource::remote_direct(location, config.credential_mode)
+        .with_remote_read_mode(config.remote_direct_read_mode)
+}
+
+fn remote_direct_or_capability_fallback_source(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    compatibility_reason: Option<&'static str>,
+) -> Result<ResolvedParquetSource> {
+    if let Some(reason) = config.remote_direct_profile_unsupported_reason {
+        return remote_host_buffer_fallback_source(location, config, reason, true);
+    }
+    match cudf::io::parquet::remote_parquet_backend_build_status() {
+        cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoEnabled => {},
+        cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled => {
+            return remote_host_buffer_fallback_source(location, config, "remote_direct_backend_disabled", true);
+        },
+        cudf::io::parquet::RemoteParquetBackendBuildStatus::Unknown => {
+            return remote_host_buffer_fallback_source(location, config, "remote_direct_backend_unknown", true);
+        },
+    }
+    let resolved = remote_direct_source(location, config);
+    Ok(match compatibility_reason {
+        Some(reason) => resolved.with_fallback_reason(reason),
+        None => resolved,
+    })
+}
+
+#[cfg(test)]
+fn remote_direct_backend_disabled() -> bool {
+    cudf::io::parquet::remote_parquet_backend_build_status()
+        == cudf::io::parquet::RemoteParquetBackendBuildStatus::KvikioRemoteIoDisabled
+}
+
+fn remote_host_buffer_fallback_source(
+    location: &str,
+    config: &TableFormatParquetReadStrategyConfig,
+    fallback_reason: &'static str,
+    ranged_enabled: bool,
+) -> Result<ResolvedParquetSource> {
+    reject_if_remote_direct_required(config, fallback_reason)?;
     Ok(ResolvedParquetSource::remote_host_buffer(location, object_store_reader_path(location), config.credential_mode)
-        .with_cache_status(LakehouseCacheStatus::Miss)
-        .with_fallback_reason("lakehouse_cache_miss_fill_disabled"))
+        .with_remote_host_buffer_ranged_enabled(ranged_enabled && config.remote_host_buffer_ranged_enabled)
+        .with_fallback_reason(fallback_reason))
+}
+
+fn reject_if_remote_direct_required(
+    config: &TableFormatParquetReadStrategyConfig,
+    fallback_reason: &'static str,
+) -> Result<()> {
+    if config.remote_direct_read_mode != RemoteParquetReadMode::RequireDirect {
+        return Ok(());
+    }
+    Err(crate::Error::new(
+        crate::ErrorCode::InvalidExecutionPlan,
+        "datafusion_nexus.table_format.resolve_parquet_source",
+        "remote direct read mode is required, but source resolution selected a fallback path",
+    )
+    .with_fact("remote_read_mode", config.remote_direct_read_mode.as_str())
+    .with_fact("fallback_reason", fallback_reason))
+}
+
+fn background_fill_mode(config: &TableFormatParquetReadStrategyConfig) -> LakehouseCacheFillMode {
+    match config.lakehouse_cache_policy {
+        TableFormatLakehouseCachePolicy::ReadThrough => LakehouseCacheFillMode::Background,
+        TableFormatLakehouseCachePolicy::Disabled | TableFormatLakehouseCachePolicy::FillBeforeRead => {
+            LakehouseCacheFillMode::Disabled
+        },
+    }
 }
 
 fn table_format_local_path_text(location: &str) -> String {
@@ -651,16 +981,39 @@ fn content_identity(metadata: &TableFormatParquetSourceMetadata) -> String {
         return content_identity.clone();
     }
     match (metadata.size_bytes, metadata.row_count) {
-        (Some(size_bytes), Some(row_count)) => format!("size_{size_bytes}_rows_{row_count}"),
-        (Some(size_bytes), None) => format!("size_{size_bytes}"),
-        (None, Some(row_count)) => format!("rows_{row_count}"),
-        (None, None) => "content_unknown".to_string(),
+        (Some(size_bytes), Some(row_count)) => format!("weak_size_{size_bytes}_rows_{row_count}"),
+        (Some(size_bytes), None) => format!("weak_size_{size_bytes}"),
+        (None, Some(row_count)) => format!("weak_rows_{row_count}"),
+        (None, None) => "weak_content_unknown".to_string(),
     }
 }
 
+fn complete_cache_hit_matches_metadata(cache_path: &Path, metadata: &TableFormatParquetSourceMetadata) -> bool {
+    let Ok(file_metadata) = cache_path.metadata() else {
+        return false;
+    };
+    if !file_metadata.is_file() {
+        return false;
+    }
+    let Some(expected_size) = metadata.size_bytes else {
+        return false;
+    };
+    file_metadata.len() == expected_size
+}
+
 fn location_fingerprint(location: &str) -> String {
-    let basename = location.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("object");
-    format!("{}__h{:016x}", sanitize_cache_component(basename), fnv1a64(location.as_bytes()))
+    let safe_location = credential_free_endpoint_identity(location);
+    let basename = safe_location.rsplit('/').next().filter(|value| !value.is_empty()).unwrap_or("object");
+    format!("{}__h{:016x}", sanitize_cache_component(basename), fnv1a64(safe_location.as_bytes()))
+}
+
+fn redacted_scan_location_debug_value(location: &str) -> String {
+    let safe_location = credential_free_endpoint_identity(location);
+    redacted_scan_debug_value("location", &safe_location)
+}
+
+fn redacted_scan_debug_value(kind: &str, value: &str) -> String {
+    format!("{kind}:fnv64:{:016x}:len:{}", fnv1a64(value.as_bytes()), value.len())
 }
 
 fn sanitize_cache_component(value: &str) -> String {
@@ -682,7 +1035,7 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, fs};
 
     use super::*;
 
@@ -697,6 +1050,149 @@ mod tests {
 
         assert_eq!(config.storage_endpoint.as_deref(), Some("http://rustfs.local:9000/minio"));
         assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(config.credential_mode, CredentialMode::FutureTenantScoped);
+    }
+
+    #[test]
+    fn table_format_parquet_read_strategy_config_marks_explicit_s3_credentials_as_scoped() {
+        let env = BTreeMap::from([
+            ("DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID", "access"),
+            ("DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY", "secret"),
+        ]);
+        let config =
+            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+
+        assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(config.credential_mode, CredentialMode::FutureTenantScoped);
+    }
+
+    #[test]
+    fn table_format_parquet_read_strategy_config_marks_s3_region_as_scoped() {
+        let env = BTreeMap::from([("DATAFUSION_NEXUS_ICEBERG_S3_REGION", "us-west-2")]);
+        let config =
+            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+
+        assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
+        assert_eq!(config.credential_mode, CredentialMode::FutureTenantScoped);
+
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+        assert_expected_remote_foreground_source(&source);
+    }
+
+    #[test]
+    fn table_format_parquet_read_strategy_config_uses_storage_profile_capability() {
+        let default_profile = SourceStorageProfile::s3(
+            DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
+            nexus_query_engine::S3SourceStorageProfile::default_chain(),
+        );
+        let default_config = TableFormatParquetReadStrategyConfig::default()
+            .with_source_storage_profile_remote_direct_capability(&default_profile);
+        assert_eq!(default_config.credential_mode, CredentialMode::SharedProcessEnv);
+
+        let region_profile = SourceStorageProfile::s3(
+            DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
+            nexus_query_engine::S3SourceStorageProfile::default_chain().with_region("us-west-2"),
+        );
+        let region_config = TableFormatParquetReadStrategyConfig::default()
+            .with_source_storage_profile_remote_direct_capability(&region_profile);
+        assert_eq!(region_config.credential_mode, CredentialMode::FutureTenantScoped);
+
+        let scoped_profile = SourceStorageProfile::s3(
+            DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
+            nexus_query_engine::S3SourceStorageProfile::default_chain()
+                .with_endpoint("http://localhost:9000")
+                .with_static_credentials("access", "secret", None),
+        );
+        let scoped_config = TableFormatParquetReadStrategyConfig::default()
+            .with_source_storage_profile_remote_direct_capability(&scoped_profile);
+        assert_eq!(scoped_config.credential_mode, CredentialMode::FutureTenantScoped);
+    }
+
+    #[test]
+    fn table_format_parquet_read_strategy_config_from_env_requires_opt_in_for_ranged_host_buffer() {
+        let empty = BTreeMap::<&str, &str>::new();
+        let default_config = table_format_parquet_read_strategy_config_from_env(|name| {
+            empty.get(name).map(|value| (*value).to_string())
+        });
+        assert!(!default_config.remote_host_buffer_ranged_enabled);
+
+        let env = BTreeMap::from([(CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, "1")]);
+        let enabled_config =
+            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+        assert!(enabled_config.remote_host_buffer_ranged_enabled);
+    }
+
+    #[test]
+    fn table_format_parquet_read_strategy_config_from_env_parses_remote_direct_read_mode() {
+        let env = BTreeMap::from([(CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, "require_direct")]);
+        let config =
+            table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
+
+        assert_eq!(config.remote_direct_read_mode, RemoteParquetReadMode::RequireDirect);
+    }
+
+    #[test]
+    fn fallback_content_identity_is_marked_weak() {
+        assert_eq!(
+            content_identity(&TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10))),
+            "weak_size_4096_rows_10",
+        );
+        assert_eq!(
+            content_identity(&TableFormatParquetSourceMetadata::default().with_size_bytes(4096)),
+            "weak_size_4096",
+        );
+        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default().with_row_count(10)), "weak_rows_10",);
+        assert_eq!(content_identity(&TableFormatParquetSourceMetadata::default()), "weak_content_unknown");
+        assert_eq!(
+            content_identity(&TableFormatParquetSourceMetadata::default().with_content_identity("etag:abc123")),
+            "etag:abc123",
+        );
+    }
+
+    #[test]
+    fn location_fingerprint_uses_credential_free_identity() {
+        let fingerprint = location_fingerprint(
+            "s3://secret-bucket/table/data.parquet?X-Amz-Signature=do-not-leak&X-Amz-Credential=also-secret",
+        );
+
+        assert!(fingerprint.starts_with("data.parquet__h"));
+        assert!(!fingerprint.contains("secret-bucket"));
+        assert!(!fingerprint.contains("X-Amz-Signature"));
+        assert!(!fingerprint.contains("X-Amz-Credential"));
+        assert!(!fingerprint.contains("do-not-leak"));
+        assert!(!fingerprint.contains("also-secret"));
+    }
+
+    #[test]
+    fn table_format_scan_debug_redacts_credential_bearing_file_locations() {
+        let data_location =
+            "s3://secret-bucket/table/data.parquet?X-Amz-Signature=do-not-leak&X-Amz-Credential=also-secret";
+        let delete_location = "s3://secret-bucket/table/delete.parquet?token=delete-secret";
+        let plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_data_file(TableFormatDataFile::new(
+                data_location,
+                data_location,
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            ))
+            .with_delete_file(TableFormatDeleteFile::new(
+                delete_location,
+                delete_location,
+                TableFormatDataFileFormat::Parquet,
+                TableFormatDeleteFileContent::PositionDeletes,
+            ));
+
+        let rendered = format!("{plan:?}");
+        for sensitive in
+            ["secret-bucket", "X-Amz-Signature", "X-Amz-Credential", "do-not-leak", "also-secret", "delete-secret"]
+        {
+            assert!(!rendered.contains(sensitive), "debug output leaked {sensitive}: {rendered}");
+        }
     }
 
     #[test]
@@ -705,6 +1201,415 @@ mod tests {
         assert_eq!(table_format_local_path_text("file:/tmp/table.parquet"), "/tmp/table.parquet");
         assert_eq!(table_format_local_path_text("file:///tmp/table.parquet"), "/tmp/table.parquet");
         assert_eq!(table_format_local_path_text("file://localhost/tmp/table.parquet"), "/tmp/table.parquet");
+    }
+
+    fn assert_expected_remote_foreground_source(source: &ResolvedParquetSource) {
+        if remote_direct_backend_disabled() {
+            assert_eq!(source.read_strategy.as_str(), "remote_host_buffer");
+            assert_eq!(source.decode_input.as_str(), "host_buffer");
+            assert_eq!(source.fallback_reason.as_deref(), Some("remote_direct_backend_disabled"));
+        } else {
+            assert_eq!(source.read_strategy.as_str(), "remote_direct");
+            assert_eq!(source.decode_input.as_str(), "filepath");
+            assert_eq!(source.remote_read_mode, RemoteParquetReadMode::PreferDirect);
+        }
+    }
+
+    #[test]
+    fn s3_auto_uses_remote_direct_on_cache_miss() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10)),
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
+        assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Disabled);
+        assert!(source.lakehouse_cache_path.is_some());
+    }
+
+    #[test]
+    fn s3_auto_require_direct_uses_remote_direct_when_backend_available() {
+        let config = TableFormatParquetReadStrategyConfig {
+            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
+            ..Default::default()
+        };
+
+        let result = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        );
+
+        if remote_direct_backend_disabled() {
+            let error = result.unwrap_err();
+            assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+            assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
+            assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
+        } else {
+            let source = result.unwrap();
+            assert_eq!(source.read_strategy.as_str(), "remote_direct");
+            assert_eq!(source.decode_input.as_str(), "filepath");
+            assert_eq!(source.remote_read_mode, RemoteParquetReadMode::RequireDirect);
+        }
+    }
+
+    #[test]
+    fn require_direct_rejects_remote_direct_disabled_host_buffer_fallback() {
+        let config = TableFormatParquetReadStrategyConfig {
+            remote_direct_enabled: false,
+            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
+            ..Default::default()
+        };
+
+        let error = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
+        assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_disabled"));
+    }
+
+    #[test]
+    fn require_direct_rejects_explicit_host_buffer_fallback() {
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::HostBuffer,
+            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
+            ..Default::default()
+        };
+
+        let error = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+        assert_eq!(error.fact_value("fallback_reason"), Some("explicit_remote_host_buffer_full"));
+    }
+
+    #[test]
+    fn scoped_profile_remote_direct_reaches_direct_path_when_backend_available() {
+        let config = TableFormatParquetReadStrategyConfig {
+            credential_mode: CredentialMode::FutureTenantScoped,
+            remote_host_buffer_ranged_enabled: true,
+            ..Default::default()
+        };
+
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+
+        if remote_direct_backend_disabled() {
+            assert_eq!(source.read_strategy.as_str(), "remote_host_buffer");
+            assert_eq!(source.decode_input.as_str(), "host_buffer");
+            assert_eq!(source.fallback_reason.as_deref(), Some("remote_direct_backend_disabled"));
+            assert!(source.remote_host_buffer_ranged_enabled);
+        } else {
+            assert_eq!(source.read_strategy.as_str(), "remote_direct");
+            assert_eq!(source.decode_input.as_str(), "filepath");
+            assert_eq!(source.credential_mode, CredentialMode::FutureTenantScoped);
+        }
+    }
+
+    #[test]
+    fn require_direct_scoped_profile_reaches_direct_path_when_backend_available() {
+        let config = TableFormatParquetReadStrategyConfig {
+            credential_mode: CredentialMode::FutureTenantScoped,
+            remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
+            ..Default::default()
+        };
+
+        let result = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        );
+
+        if remote_direct_backend_disabled() {
+            let error = result.unwrap_err();
+            assert_eq!(error.code(), crate::ErrorCode::InvalidExecutionPlan);
+            assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
+            assert_eq!(error.fact_value("fallback_reason"), Some("remote_direct_backend_disabled"));
+        } else {
+            let source = result.unwrap();
+            assert_eq!(source.read_strategy.as_str(), "remote_direct");
+            assert_eq!(source.remote_read_mode, RemoteParquetReadMode::RequireDirect);
+            assert_eq!(source.credential_mode, CredentialMode::FutureTenantScoped);
+        }
+    }
+
+    #[test]
+    fn s3_auto_prefers_complete_local_cache_hit() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_eq!(source.read_strategy.as_str(), "local_cache_kvikio");
+        assert_eq!(source.decode_input.as_str(), "filepath");
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Hit);
+        assert_eq!(source.reader_location, cache_path.display().to_string());
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+        assert_eq!(table_format_source_read_contract(&source), "local_cache_hit");
+    }
+
+    #[test]
+    fn s3_auto_ignores_complete_local_cache_file_with_wrong_size() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, b"incomplete").unwrap();
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn s3_auto_ignores_local_cache_file_when_size_metadata_is_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(None, Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn s3_auto_cache_read_bypass_skips_existing_local_cache_hit() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            lakehouse_cache_read_policy: TableFormatLakehouseCacheReadPolicy::Disabled,
+            lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Bypassed);
+        assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
+        assert_eq!(source.reader_location, "s3://bucket/table/part-0.parquet");
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn read_through_cache_miss_selects_background_fill_without_blocking_foreground_read() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::LocalCache,
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            lakehouse_cache_policy: TableFormatLakehouseCachePolicy::ReadThrough,
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+
+        let source = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+
+        assert_expected_remote_foreground_source(&source);
+        assert_eq!(source.cache_status, LakehouseCacheStatus::Miss);
+        assert_eq!(source.lakehouse_cache_fill_mode, LakehouseCacheFillMode::Background);
+        assert_eq!(source.lakehouse_cache_path.as_deref(), Some(cache_path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn explicit_host_buffer_remains_legacy_full_object_fallback() {
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::HostBuffer,
+            ..Default::default()
+        };
+
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+
+        assert_eq!(source.read_strategy.as_str(), "remote_host_buffer");
+        assert_eq!(source.decode_input.as_str(), "host_buffer");
+        assert_eq!(source.fallback_reason.as_deref(), Some("explicit_remote_host_buffer_full"));
+        assert_eq!(table_format_source_read_contract(&source), "remote_host_buffer_full");
+    }
+
+    #[test]
+    fn remote_direct_gate_falls_back_after_complete_cache_hit_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let config = TableFormatParquetReadStrategyConfig {
+            lakehouse_cache_root: Some(root.path().to_path_buf()),
+            remote_direct_enabled: false,
+            ..Default::default()
+        };
+        let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(10));
+        let cache_path = root.path().join(cache_relative_path("s3://bucket/table/part-0.parquet", &config, &metadata));
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, vec![0_u8; 4096]).unwrap();
+
+        let hit = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+        assert_eq!(hit.read_strategy.as_str(), "local_cache_kvikio");
+
+        fs::remove_file(&cache_path).unwrap();
+        let miss = resolve_table_format_parquet_source_with_metadata(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+            &metadata,
+        )
+        .unwrap();
+        assert_eq!(miss.read_strategy.as_str(), "remote_host_buffer");
+        assert_eq!(miss.decode_input.as_str(), "host_buffer");
+        assert_eq!(miss.fallback_reason.as_deref(), Some("remote_direct_disabled"));
+    }
+
+    #[test]
+    fn remote_host_buffer_ranged_gate_is_carried_on_remote_direct_fallback() {
+        let config = TableFormatParquetReadStrategyConfig {
+            remote_direct_enabled: false,
+            remote_host_buffer_ranged_enabled: false,
+            ..Default::default()
+        };
+
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+
+        assert_eq!(source.read_strategy.as_str(), "remote_host_buffer");
+        assert_eq!(source.fallback_reason.as_deref(), Some("remote_direct_disabled"));
+        assert!(!source.remote_host_buffer_ranged_enabled);
+        assert_eq!(table_format_source_read_contract(&source), "remote_host_buffer_full");
+    }
+
+    #[test]
+    fn remote_host_buffer_ranged_contract_is_visible_in_scan_diagnostics() {
+        let config = TableFormatParquetReadStrategyConfig {
+            remote_direct_enabled: false,
+            remote_host_buffer_ranged_enabled: true,
+            ..Default::default()
+        };
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+        let plan = TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(
+            TableFormatDataFile::new(
+                "part-0",
+                "s3://bucket/table/part-0.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::object_store("s3"),
+            )
+            .with_resolved_parquet_source(source),
+        );
+
+        let diagnostics = plan.diagnostics();
+
+        assert_eq!(diagnostics.source_read_strategy, "remote_host_buffer_ranged");
+    }
+
+    #[test]
+    fn explicit_host_buffer_disables_ranged_fallback() {
+        let config = TableFormatParquetReadStrategyConfig {
+            preference: TableFormatParquetReadStrategyPreference::HostBuffer,
+            remote_host_buffer_ranged_enabled: true,
+            ..Default::default()
+        };
+
+        let source = resolve_table_format_parquet_source(
+            "s3://bucket/table/part-0.parquet",
+            &TableFormatReadCapability::object_store("s3"),
+            &config,
+        )
+        .unwrap();
+
+        assert_eq!(source.fallback_reason.as_deref(), Some("explicit_remote_host_buffer_full"));
+        assert!(!source.remote_host_buffer_ranged_enabled);
     }
 }
 
@@ -910,7 +1815,7 @@ impl TableFormatColumnMapping {
 }
 
 /// Resolved data file from a table-format scan task.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct TableFormatDataFile {
     /// Stable file id within the resolved scan plan.
     pub id: String,
@@ -930,6 +1835,22 @@ pub struct TableFormatDataFile {
     pub resolved_parquet_source: Option<ResolvedParquetSource>,
     /// Partition values attached to this data file.
     pub partition_values: Vec<TableFormatPartitionValue>,
+}
+
+impl fmt::Debug for TableFormatDataFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TableFormatDataFile")
+            .field("id", &redacted_scan_debug_value("data_file_id", &self.id))
+            .field("location", &redacted_scan_location_debug_value(&self.location))
+            .field("format", &self.format)
+            .field("size_bytes", &self.size_bytes)
+            .field("row_count", &self.row_count)
+            .field("row_groups", &self.row_groups)
+            .field("read_capability", &self.read_capability)
+            .field("resolved_parquet_source", &self.resolved_parquet_source)
+            .field("partition_values", &self.partition_values)
+            .finish()
+    }
 }
 
 impl TableFormatDataFile {
@@ -1025,7 +1946,7 @@ impl TableFormatDeleteFileContent {
 }
 
 /// Delete file fact preserved by table-format planning.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct TableFormatDeleteFile {
     /// Stable delete-file id within the resolved scan plan.
     pub id: String,
@@ -1039,6 +1960,19 @@ pub struct TableFormatDeleteFile {
     pub size_bytes: Option<u64>,
     /// Optional delete row count from metadata.
     pub row_count: Option<u64>,
+}
+
+impl fmt::Debug for TableFormatDeleteFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TableFormatDeleteFile")
+            .field("id", &redacted_scan_debug_value("delete_file_id", &self.id))
+            .field("location", &redacted_scan_location_debug_value(&self.location))
+            .field("format", &self.format)
+            .field("content", &self.content)
+            .field("size_bytes", &self.size_bytes)
+            .field("row_count", &self.row_count)
+            .finish()
+    }
 }
 
 impl TableFormatDeleteFile {
@@ -1208,6 +2142,12 @@ pub struct TableFormatScanDiagnostics {
     pub credential_mode: String,
     /// Comma-separated local byte-cache statuses.
     pub lakehouse_cache_status: String,
+    /// Comma-separated foreground lakehouse cache-read modes.
+    pub lakehouse_cache_read_mode: String,
+    /// Comma-separated complete-object lakehouse cache fill modes.
+    pub lakehouse_cache_fill_mode: String,
+    /// Comma-separated stable source fallback reasons.
+    pub source_fallback_reason: String,
     /// Direct device-read eligibility.
     pub direct_device_read_disposition: TableFormatDirectDeviceReadDisposition,
 }
@@ -1229,6 +2169,9 @@ impl TableFormatScanDiagnostics {
             ("source_decode_input", self.source_decode_input.clone()),
             ("credential_mode", self.credential_mode.clone()),
             ("lakehouse_cache_status", self.lakehouse_cache_status.clone()),
+            ("lakehouse_cache_read_mode", self.lakehouse_cache_read_mode.clone()),
+            ("lakehouse_cache_fill_mode", self.lakehouse_cache_fill_mode.clone()),
+            ("source_fallback_reason", self.source_fallback_reason.clone()),
             ("direct_device_read_disposition", self.direct_device_read_disposition.code().to_string()),
         ])
     }
@@ -1255,7 +2198,7 @@ impl fmt::Display for TableFormatScanDiagnostics {
 /// is an optional source-level upper bound, not a final SQL `LIMIT`; when a
 /// parent inexact filter remains, final row limiting is still represented by a
 /// separate native or DataFusion limit operator.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct TableFormatScanPlan {
     /// Table format that produced these scan facts.
     pub format: TableFormat,
@@ -1279,6 +2222,24 @@ pub struct TableFormatScanPlan {
     pub pure_filter_columns: Vec<TableFormatColumnMapping>,
     /// Unsupported features retained for structured fallback.
     pub unsupported_features: Vec<TableFormatUnsupportedFeature>,
+}
+
+impl fmt::Debug for TableFormatScanPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TableFormatScanPlan")
+            .field("format", &self.format)
+            .field("snapshot_id", &self.snapshot_id)
+            .field("catalog_type", &self.catalog_type)
+            .field("scan_limit", &self.scan_limit)
+            .field("logical_schema", &self.logical_schema)
+            .field("native_source_schema", &self.native_source_schema)
+            .field("data_files", &self.data_files)
+            .field("delete_files", &self.delete_files)
+            .field("projected_columns", &self.projected_columns)
+            .field("pure_filter_columns", &self.pure_filter_columns)
+            .field("unsupported_features", &self.unsupported_features)
+            .finish()
+    }
 }
 
 impl TableFormatScanPlan {
@@ -1436,7 +2397,7 @@ impl TableFormatScanPlan {
         summarize_resolved_source_value(
             self.data_files
                 .iter()
-                .filter_map(|file| file.resolved_parquet_source.as_ref().map(|source| source.read_strategy.as_str())),
+                .filter_map(|file| file.resolved_parquet_source.as_ref().map(table_format_source_read_contract)),
         )
     }
 
@@ -1467,6 +2428,27 @@ impl TableFormatScanPlan {
         )
     }
 
+    /// Comma-separated foreground lakehouse cache-read modes across data files.
+    pub fn lakehouse_cache_read_mode_summary(&self) -> String {
+        summarize_resolved_source_value(self.data_files.iter().filter_map(|file| {
+            file.resolved_parquet_source.as_ref().map(|source| source.lakehouse_cache_read_mode.as_str())
+        }))
+    }
+
+    /// Comma-separated lakehouse complete-object cache fill modes across data files.
+    pub fn lakehouse_cache_fill_mode_summary(&self) -> String {
+        summarize_resolved_source_value(self.data_files.iter().filter_map(|file| {
+            file.resolved_parquet_source.as_ref().map(|source| source.lakehouse_cache_fill_mode.as_str())
+        }))
+    }
+
+    /// Comma-separated stable source fallback reasons across data files.
+    pub fn source_fallback_reason_summary(&self) -> String {
+        summarize_resolved_source_value(self.data_files.iter().filter_map(|file| {
+            file.resolved_parquet_source.as_ref().map(|source| source.fallback_reason.as_deref().unwrap_or("none"))
+        }))
+    }
+
     /// Builds credential-free scan diagnostics for tests and report rows.
     pub fn diagnostics(&self) -> TableFormatScanDiagnostics {
         TableFormatScanDiagnostics {
@@ -1483,6 +2465,9 @@ impl TableFormatScanPlan {
             source_decode_input: self.source_decode_input_summary(),
             credential_mode: self.credential_mode_summary(),
             lakehouse_cache_status: self.lakehouse_cache_status_summary(),
+            lakehouse_cache_read_mode: self.lakehouse_cache_read_mode_summary(),
+            lakehouse_cache_fill_mode: self.lakehouse_cache_fill_mode_summary(),
+            source_fallback_reason: self.source_fallback_reason_summary(),
             direct_device_read_disposition: self.direct_device_read_disposition(),
         }
     }
@@ -1493,4 +2478,19 @@ fn summarize_resolved_source_value<'a>(values: impl IntoIterator<Item = &'a str>
     values.sort_unstable();
     values.dedup();
     if values.is_empty() { "unknown".to_string() } else { values.join(",") }
+}
+
+fn table_format_source_read_contract(source: &ResolvedParquetSource) -> &'static str {
+    match source.read_strategy {
+        nexus_query_engine::ParquetReadStrategy::LocalCacheKvikio
+            if source.cache_status == LakehouseCacheStatus::Hit =>
+        {
+            "local_cache_hit"
+        },
+        nexus_query_engine::ParquetReadStrategy::RemoteHostBuffer if source.remote_host_buffer_ranged_enabled => {
+            "remote_host_buffer_ranged"
+        },
+        nexus_query_engine::ParquetReadStrategy::RemoteHostBuffer => "remote_host_buffer_full",
+        _ => source.read_strategy.as_str(),
+    }
 }

@@ -13,9 +13,11 @@ use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_I
 #[cfg(feature = "iceberg")]
 use crate::{
     AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-    CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
-    CUDF_LAKEHOUSE_CACHE_ROOT_ENV, TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
-    TableFormatParquetReadStrategyPreference,
+    CUDF_ICEBERG_REMOTE_DIRECT_ENV, CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+    CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
+    CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV, CUDF_LAKEHOUSE_CACHE_READ_ENV,
+    CUDF_LAKEHOUSE_CACHE_ROOT_ENV, TableFormatLakehouseCachePolicy, TableFormatLakehouseCacheReadPolicy,
+    TableFormatParquetReadStrategyConfig, TableFormatParquetReadStrategyPreference,
 };
 use crate::{CudfOptimizerConfig, GpuFallbackPolicy, NativeCudfExecutionConfig};
 #[cfg(feature = "cugraph")]
@@ -317,10 +319,15 @@ impl ServerConfig {
         let mut native_optimizer_config = native_optimizer_config;
 
         #[cfg(feature = "iceberg")]
-        let iceberg = iceberg_config(&mut values)?;
+        let mut iceberg = iceberg_config(&mut values)?;
 
         #[cfg(feature = "iceberg")]
-        if let Some(profile) = iceberg.as_ref().map(|config| iceberg_source_storage_profile(config, &mut values)) {
+        if let Some(config) = iceberg.as_mut() {
+            let profile = iceberg_source_storage_profile(config, &mut values);
+            config.parquet_read_strategy_config = config
+                .parquet_read_strategy_config
+                .clone()
+                .with_source_storage_profile_remote_direct_capability(&profile);
             let execution_config =
                 native_optimizer_config.native_execution_config().clone().with_source_storage_profile(profile);
             native_optimizer_config = native_optimizer_config.with_native_execution_config(execution_config);
@@ -531,8 +538,12 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
         DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
         CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+        CUDF_ICEBERG_REMOTE_DIRECT_ENV,
+        CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+        CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
         CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
         CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+        CUDF_LAKEHOUSE_CACHE_READ_ENV,
         CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
         CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
     ]);
@@ -605,6 +616,9 @@ fn iceberg_parquet_read_strategy_config(
     if let Some(endpoint) = iceberg_backend_s3_endpoint(backend).filter(|endpoint| !endpoint.trim().is_empty()) {
         config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
     }
+    if iceberg_backend_requires_scoped_remote_direct_profile(backend) {
+        config.credential_mode = nexus_query_engine::CredentialMode::FutureTenantScoped;
+    }
     Ok(config)
 }
 
@@ -613,6 +627,23 @@ fn iceberg_backend_s3_endpoint(backend: &IcebergCatalogBackendConfig) -> Option<
     match backend {
         IcebergCatalogBackendConfig::Glue(glue) => glue.s3_endpoint.as_deref(),
         IcebergCatalogBackendConfig::Rest(rest) => rest.s3_endpoint.as_deref(),
+    }
+}
+
+#[cfg(feature = "iceberg")]
+fn iceberg_backend_requires_scoped_remote_direct_profile(backend: &IcebergCatalogBackendConfig) -> bool {
+    match backend {
+        IcebergCatalogBackendConfig::Glue(glue) => {
+            !glue.region.trim().is_empty()
+                || glue.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
+                || glue.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+                || glue.s3_path_style_access.is_some()
+        },
+        IcebergCatalogBackendConfig::Rest(rest) => {
+            rest.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
+                || rest.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
+                || rest.s3_path_style_access.is_some()
+        },
     }
 }
 
@@ -627,7 +658,26 @@ fn table_format_parquet_read_strategy_config(
         .unwrap_or_default();
     let remote_kvikio_experimental =
         values.optional_bool(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV)?.unwrap_or(false);
+    let remote_direct_enabled = values.optional_bool(CUDF_ICEBERG_REMOTE_DIRECT_ENV)?.unwrap_or(true);
+    let remote_direct_read_mode = values
+        .string(CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV)
+        .map(|raw| parse_remote_parquet_read_mode(&raw))
+        .transpose()?
+        .unwrap_or_default();
+    if !remote_direct_enabled && remote_direct_read_mode == nexus_query_engine::RemoteParquetReadMode::RequireDirect {
+        return Err(ServerError::invalid_config(
+            CUDF_ICEBERG_REMOTE_DIRECT_ENV,
+            format!("cannot be disabled when {CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV} is `require_direct`"),
+        ));
+    }
+    let remote_host_buffer_ranged_enabled =
+        values.optional_bool(CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV)?.unwrap_or(false);
     let lakehouse_cache_root = values.string(CUDF_LAKEHOUSE_CACHE_ROOT_ENV).map(PathBuf::from);
+    let lakehouse_cache_read_policy = values
+        .string(CUDF_LAKEHOUSE_CACHE_READ_ENV)
+        .map(|raw| parse_lakehouse_cache_read_policy(&raw))
+        .transpose()?
+        .unwrap_or_default();
     let lakehouse_cache_policy = values
         .string(CUDF_LAKEHOUSE_CACHE_POLICY_ENV)
         .map(|raw| parse_lakehouse_cache_policy(&raw))
@@ -645,14 +695,28 @@ fn table_format_parquet_read_strategy_config(
         .or_else(|| values.string(AWS_ENDPOINT_URL_S3_ENV))
         .or_else(|| values.string(AWS_ENDPOINT_URL_ENV))
         .map(|endpoint| credential_free_endpoint_identity(&endpoint));
+    let has_explicit_s3_credentials = values.string(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV).is_some()
+        || values.string(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV).is_some()
+        || values.string(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV).is_some();
+    let has_storage_region = values.string(DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV).is_some();
+    let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
+        nexus_query_engine::CredentialMode::FutureTenantScoped
+    } else {
+        nexus_query_engine::CredentialMode::SharedProcessEnv
+    };
 
     Ok(TableFormatParquetReadStrategyConfig {
         preference,
         remote_kvikio_experimental,
+        remote_direct_enabled,
+        remote_direct_read_mode,
+        remote_host_buffer_ranged_enabled,
         lakehouse_cache_root,
+        lakehouse_cache_read_policy,
         lakehouse_cache_policy,
         lakehouse_cache_max_bytes,
         storage_endpoint,
+        credential_mode,
         ..Default::default()
     })
 }
@@ -667,6 +731,31 @@ fn parse_table_format_parquet_read_strategy(raw: &str) -> Result<TableFormatParq
         other => Err(ServerError::invalid_config(
             CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
             format!("must be `auto`, `host_buffer`, `local_cache`, or `remote_kvikio`, got `{other}`"),
+        )),
+    }
+}
+
+#[cfg(feature = "iceberg")]
+fn parse_remote_parquet_read_mode(raw: &str) -> Result<nexus_query_engine::RemoteParquetReadMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "prefer" | "prefer_direct" => Ok(nexus_query_engine::RemoteParquetReadMode::PreferDirect),
+        "require" | "require_direct" => Ok(nexus_query_engine::RemoteParquetReadMode::RequireDirect),
+        "allow_host_fallback" | "host_fallback" => Ok(nexus_query_engine::RemoteParquetReadMode::AllowHostFallback),
+        other => Err(ServerError::invalid_config(
+            CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+            format!("must be `prefer_direct`, `require_direct`, or `allow_host_fallback`, got `{other}`"),
+        )),
+    }
+}
+
+#[cfg(feature = "iceberg")]
+fn parse_lakehouse_cache_read_policy(raw: &str) -> Result<TableFormatLakehouseCacheReadPolicy> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "enabled" => Ok(TableFormatLakehouseCacheReadPolicy::Enabled),
+        "disabled" | "bypass" | "bypassed" => Ok(TableFormatLakehouseCacheReadPolicy::Disabled),
+        other => Err(ServerError::invalid_config(
+            CUDF_LAKEHOUSE_CACHE_READ_ENV,
+            format!("must be `enabled`, `disabled`, or `bypass`, got `{other}`"),
         )),
     }
 }
@@ -850,8 +939,12 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
         DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
         crate::CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+        crate::CUDF_ICEBERG_REMOTE_DIRECT_ENV,
+        crate::CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+        crate::CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV,
         crate::CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
         crate::CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+        crate::CUDF_LAKEHOUSE_CACHE_READ_ENV,
         crate::CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
         crate::CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
     ]) {

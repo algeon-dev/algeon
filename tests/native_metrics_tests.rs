@@ -88,6 +88,16 @@ fn query_metrics_count_retries_attempts_and_commits_separately() {
 }
 
 #[test]
+fn query_metrics_counts_multi_chunk_batch_commits() {
+    let mut metrics = QueryMetrics::default();
+
+    metrics.record_source_chunk_commit_count(3, 9);
+
+    assert_eq!(metrics.source_chunks_committed, 3);
+    assert_eq!(metrics.row_groups_committed, 9);
+}
+
+#[test]
 fn query_metrics_reservation_events_record_memory_space() {
     let mut metrics = QueryMetrics::default();
     let memory_space = MemorySpaceId::Device { device_ordinal: 1 };
@@ -284,6 +294,8 @@ fn local_parquet_source_cache_key_tracks_bounded_chunk_contract() {
         source_file_pure_filter_compressed_bytes: Some(vec![0, 0]),
         source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0]),
         source_file_row_group_rows: Some(vec![10, 20]),
+        reader_decimal_types: Vec::new(),
+        reader_decimal_types_footer_verified: false,
         read_columns: vec!["payload".to_string()],
         partition_values: vec![],
         zero_column_count: false,
@@ -344,6 +356,8 @@ fn local_parquet_source_cache_key_ignores_bounded_planner_identity() {
         source_file_pure_filter_compressed_bytes: Some(vec![0, 0]),
         source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0]),
         source_file_row_group_rows: Some(vec![10, 20]),
+        reader_decimal_types: Vec::new(),
+        reader_decimal_types_footer_verified: false,
         read_columns: vec!["payload".to_string()],
         partition_values: vec![],
         zero_column_count: false,
@@ -436,6 +450,7 @@ fn native_datafusion_metric_names_cover_bounded_runtime_contract() {
         "native_task_runtime_rows",
         "native_dynamic_filter_runtime_rows",
         "native_source_read_runtime_rows",
+        "native_lakehouse_cache_fill_event_snapshot_rows",
         "compiled_pipeline_attempts",
         "compiled_pipeline_tasks_executed",
         "compiled_pipeline_host_arrow_sinks",

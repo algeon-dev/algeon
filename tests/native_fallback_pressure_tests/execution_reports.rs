@@ -192,6 +192,9 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(row.metrics.aggregate_exact_cardinality_probe_input_rows(), 0);
     assert_eq!(row.metrics.aggregate_prepared_sort_groupby_elapsed_ns(), 0);
     assert_eq!(row.metrics.aggregate_encoded_key_partial_elapsed_ns(), 0);
+    assert_eq!(row.metrics.lakehouse_cache_fill_event_snapshot_rows.len(), 1);
+    assert_eq!(row.metrics.lakehouse_cache_fill_event_snapshot_rows[0].outcome, "completed");
+    assert_eq!(row.metrics.lakehouse_cache_fill_event_snapshot_rows[0].bytes, Some(4096));
     assert_eq!(row.metrics.join_strategy_rows.len(), 1);
     assert_eq!(row.metrics.join_strategy_rows[0].node_id, "n2");
     assert_eq!(row.metrics.join_strategy_rows[0].join_strategy, "one_shot_equi");
@@ -201,8 +204,8 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     );
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 40);
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 129);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 42);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 130);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"
     ));
@@ -234,6 +237,10 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\t"
     ));
+    assert!(
+        NATIVE_DATAFUSION_EXECUTION_TSV_HEADER
+            .ends_with("\tsource_diagnostics\tlakehouse_cache_fill_event_snapshot_rows")
+    );
     assert!(text.contains("selected_strategy=libcudf_groupby,execution_stage=partial"));
     assert!(text.contains("algorithm=pagerank,runtime_outcome=succeeded"));
     assert!(
@@ -262,6 +269,9 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(data_fields[header_index(&header_fields, "aggregate_exact_cardinality_probe_input_rows")], "0");
     assert_eq!(data_fields[header_index(&header_fields, "aggregate_prepared_sort_groupby_elapsed_ns")], "0");
     assert_eq!(data_fields[header_index(&header_fields, "aggregate_encoded_key_partial_elapsed_ns")], "0");
+    let fill_rows = data_fields[header_index(&header_fields, "lakehouse_cache_fill_event_snapshot_rows")];
+    assert!(fill_rows.contains("outcome=completed,bytes=4096,elapsed_ns=9000000"));
+    assert!(fill_rows.contains("cache_path_hash=cache123,stable_id_hash=stable456"));
     assert!(text.contains("operator_kind=source_read,task_count=3,elapsed_ns=0,reservation_requested_bytes=120,reservation_granted_bytes=96,reservation_released_bytes=32,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
     assert!(text.contains("\tcompiled_task_id=t7,operator_kind=source_read,elapsed_ns=0,reservation_requested_bytes=80,reservation_granted_bytes=64,reservation_released_bytes=48,reservation_live_peak_bytes=64,max_observed_peak_bytes=72,max_retained_bytes=48\t"));
     assert!(text.contains("execution_mode=strict_bounded"));

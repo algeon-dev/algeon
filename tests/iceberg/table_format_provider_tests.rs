@@ -159,6 +159,11 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
 
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].scan_limit, None);
+    let request_predicate = format!("{:?}", planner.requests()[0].predicate);
+    assert!(request_predicate.contains("Comparison"), "{request_predicate}");
+    assert!(request_predicate.contains("column: \"id\""), "{request_predicate}");
+    assert!(request_predicate.contains("op: Eq"), "{request_predicate}");
+    assert!(request_predicate.contains("Int64(1)"), "{request_predicate}");
     assert!(
         planner.requests()[0]
             .projected_column_names
@@ -175,7 +180,7 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
 }
 
 #[tokio::test]
-async fn iceberg_provider_keeps_temporal_filter_out_of_reader_pushdown() {
+async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicate() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("ship_date", DataType::Date32, false),
         Field::new("value", DataType::Utf8, true),
@@ -229,7 +234,7 @@ async fn iceberg_provider_keeps_temporal_filter_out_of_reader_pushdown() {
     assert_eq!(source.diagnostics.predicate_disposition.as_str(), "absent");
     assert!(
         native_plan_filter_count(&result.plans[0]) >= 1,
-        "inexact table-format filters must remain represented as native filters"
+        "temporal table-format predicates must remain represented as native filters"
     );
 }
 
@@ -374,10 +379,10 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() 
     assert_eq!(source.files[0].location.read_capability(), "object_store:s3");
     assert_eq!(source.files[0].stable_id, "table-format:iceberg:s3-data-0001");
     assert_eq!(source.files[0].path.to_string_lossy(), "s3://bucket/table/data-0001.parquet");
-    assert_eq!(source.files[0].resolved_source.read_strategy, ParquetReadStrategy::RemoteHostBuffer);
-    assert_eq!(source.files[0].resolved_source.decode_input, SourceDecodeInput::HostBuffer);
-    assert_eq!(source.diagnostics.source_read_strategy, "remote_host_buffer");
-    assert_eq!(source.diagnostics.source_decode_input, "host_buffer");
+    assert_eq!(source.files[0].resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect);
+    assert_eq!(source.files[0].resolved_source.decode_input, SourceDecodeInput::Filepath);
+    assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
+    assert_eq!(source.diagnostics.source_decode_input, "filepath");
 }
 
 #[test]
@@ -400,8 +405,8 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &config,
     )
     .unwrap();
-    assert_eq!(remote.read_strategy, ParquetReadStrategy::RemoteHostBuffer);
-    assert_eq!(remote.decode_input, SourceDecodeInput::HostBuffer);
+    assert_eq!(remote.read_strategy, ParquetReadStrategy::RemoteDirect);
+    assert_eq!(remote.decode_input, SourceDecodeInput::Filepath);
     assert_eq!(remote.credential_mode, CredentialMode::SharedProcessEnv);
 
     let cache_dir = tempfile::tempdir().unwrap();
@@ -417,7 +422,7 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         &cache_miss_config,
     )
     .unwrap();
-    assert_eq!(cache_miss.read_strategy, ParquetReadStrategy::RemoteHostBuffer);
+    assert_eq!(cache_miss.read_strategy, ParquetReadStrategy::RemoteDirect);
     assert_eq!(cache_miss.cache_status, LakehouseCacheStatus::Miss);
     assert_eq!(cache_miss.fallback_reason.as_deref(), Some("lakehouse_cache_miss_fill_disabled"));
 
@@ -440,7 +445,7 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
     .unwrap();
     let cache_file = PathBuf::from(cache_path_probe.reader_location);
     std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
-    std::fs::write(&cache_file, b"cached parquet placeholder").unwrap();
+    std::fs::write(&cache_file, vec![0u8; 4096]).unwrap();
     let cached = resolve_table_format_parquet_source_with_metadata(
         "s3://bucket/table/data.parquet",
         &TableFormatReadCapability::object_store("s3"),
@@ -479,7 +484,7 @@ fn table_format_parquet_resolver_selects_fill_before_read_for_local_cache_miss_p
     assert_eq!(resolved.original_location, "s3://bucket/table/data.parquet");
     assert_eq!(resolved.lakehouse_cache_root.as_deref(), Some(cache_dir.path().to_str().unwrap()));
     assert_eq!(resolved.lakehouse_cache_max_bytes, Some(16 * 1024 * 1024));
-    assert!(resolved.reader_location.contains("/v1/s3/bucket/content_unknown/"));
+    assert!(resolved.reader_location.contains("/v1/s3/bucket/weak_content_unknown/"));
     assert!(resolved.reader_location.contains("data.parquet__h"));
 }
 
@@ -507,7 +512,7 @@ fn table_format_parquet_resolver_scopes_local_cache_by_storage_domain_and_conten
     assert!(resolved.reader_location.contains("/v1/s3/rustfs_bucket-a/etag_abc123/"));
 
     std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
-    std::fs::write(&cache_path, b"cached parquet placeholder").unwrap();
+    std::fs::write(&cache_path, vec![0u8; 4096]).unwrap();
     let cached = resolve_table_format_parquet_source_with_metadata(
         "s3://bucket-a/table/data.parquet",
         &TableFormatReadCapability::object_store("s3"),

@@ -118,6 +118,7 @@ pub(super) fn lower_source_input(
         column_requirements.projected_output_column_source_refs.clone(),
         column_requirements.pure_filter_column_source_refs.clone(),
     )
+    .with_file_column_count(file_scan.file_schema().fields().len())
     .with_partition_columns(column_requirements.partition_columns.clone())
     .with_missing_columns(column_requirements.missing_columns.clone())
     .with_scan_limit(if filter.is_none() {
@@ -294,6 +295,7 @@ fn lower_table_format_source_input(
         requirements.projected_output_column_source_refs.clone(),
         requirements.pure_filter_column_source_refs.clone(),
     )
+    .with_file_column_count(file_schema.fields().len())
     .with_partition_columns(requirements.partition_columns.clone())
     .with_missing_columns(requirements.missing_columns.clone())
     .with_scan_limit(source_scan_limit);
@@ -415,10 +417,9 @@ fn table_format_reader_pushdown_predicate(
             Ok(predicate) => predicate,
             Err(_) => return Ok(None),
         };
-    if table_format_reader_predicate_references_stats_filter_risky_type(&predicate, source_output_schema) {
-        return Ok(None);
-    }
-    if native_source.reader_predicate_is_supported(&predicate) {
+    if native_source.reader_predicate_is_supported(&predicate)
+        && !table_format_reader_predicate_references_stats_filter_risky_type(&predicate, source_output_schema)
+    {
         Ok(Some(SourceReaderPushdownPredicate {
             expr: predicate,
             covers_filter: table_format_reader_pushdown_can_elide_native_filter(native_source),
