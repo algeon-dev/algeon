@@ -106,11 +106,7 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
                     parent_row_group_count,
                 )
             });
-    let known_file_bytes = if parent.known_row_group_bytes.is_some() {
-        parent.known_file_bytes
-    } else {
-        proportional_bytes(parent.known_file_bytes, row_group_indexes.len(), parent_row_group_count)
-    };
+    let known_file_bytes = parent.known_file_bytes;
     let estimated_chunk_bytes = proportional_bytes(
         parent.estimated_chunk_bytes.or(parent.known_row_group_bytes).or(parent.known_file_bytes),
         row_group_indexes.len(),
@@ -154,6 +150,8 @@ pub(in crate::exec::bounded) fn retry_child_chunk(parent: &SourceChunk, row_grou
         source_file_pure_filter_compressed_bytes: parent.source_file_pure_filter_compressed_bytes.clone(),
         source_file_pure_filter_uncompressed_bytes: parent.source_file_pure_filter_uncompressed_bytes.clone(),
         source_file_row_group_rows: parent.source_file_row_group_rows.clone(),
+        reader_decimal_types: parent.reader_decimal_types.clone(),
+        reader_decimal_types_footer_verified: parent.reader_decimal_types_footer_verified,
         read_columns: parent.read_columns.clone(),
         partition_values: parent.partition_values.clone(),
         zero_column_count: parent.zero_column_count,
@@ -197,4 +195,91 @@ pub(in crate::exec::bounded) fn chunk_retry_facts(chunk: &SourceChunk, metrics: 
         .with_resume_boundary("source_chunk")
         .with_committed_chunks(metrics.source_chunks_committed as usize)
         .with_committed_partials(metrics.partial_aggregate_count as usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::{
+        plan::NodeId,
+        runtime::SourceChunkPlanningMode,
+        source::{ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource},
+    };
+
+    fn retry_parent_chunk() -> SourceChunk {
+        SourceChunk {
+            source_node_id: NodeId::from_index_for_internal_use(1),
+            chunk_index: 0,
+            file_index: 0,
+            location: ParquetSourceLocation::LocalPath(PathBuf::from("part-0.parquet")),
+            path: PathBuf::from("part-0.parquet"),
+            resolved_source: ResolvedParquetSource::local_kvikio("part-0.parquet"),
+            stable_id: "file-0".to_string(),
+            row_group_indexes: vec![0, 1, 2, 3],
+            reads_all_row_groups: false,
+            known_file_bytes: Some(400),
+            known_row_group_bytes: Some(400),
+            known_projected_compressed_bytes: Some(200),
+            known_projected_uncompressed_bytes: Some(400),
+            known_pure_filter_compressed_bytes: Some(0),
+            known_pure_filter_uncompressed_bytes: Some(0),
+            estimated_chunk_bytes: Some(400),
+            estimated_source_read_bytes: Some(400),
+            exact_source_read_preflight_bytes: Some(400),
+            source_file_row_groups: Some(vec![0, 1, 2, 3]),
+            source_file_row_group_bytes: Some(vec![100, 100, 100, 100]),
+            source_file_projected_compressed_bytes: Some(vec![50, 50, 50, 50]),
+            source_file_projected_uncompressed_bytes: Some(vec![100, 100, 100, 100]),
+            source_file_pure_filter_compressed_bytes: Some(vec![0, 0, 0, 0]),
+            source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0, 0, 0]),
+            source_file_row_group_rows: Some(vec![10, 10, 10, 10]),
+            reader_decimal_types: vec![ParquetReaderDecimalType::new(
+                "price",
+                ParquetReaderDecimalTypeId::Decimal64,
+                -2,
+            )],
+            reader_decimal_types_footer_verified: true,
+            read_columns: vec!["price".to_string()],
+            partition_values: vec![],
+            zero_column_count: false,
+            known_row_count: Some(40),
+            scan_limit_rows: None,
+            size_estimate_based: false,
+            source_batching_reason: Some("batched".to_string()),
+            source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+            source_chunk_planning_reason: "test_policy".to_string(),
+        }
+    }
+
+    #[test]
+    fn split_retryable_chunk_preserves_verified_decimal_reader_types() {
+        let parent = retry_parent_chunk();
+
+        let (left, right) = split_retryable_chunk(&parent, 1).expect("chunk should split");
+
+        assert_eq!(left.row_group_indexes, vec![0, 1]);
+        assert_eq!(right.row_group_indexes, vec![2, 3]);
+        assert_eq!(left.reader_decimal_types, parent.reader_decimal_types);
+        assert_eq!(right.reader_decimal_types, parent.reader_decimal_types);
+        assert!(left.reader_decimal_types_footer_verified);
+        assert!(right.reader_decimal_types_footer_verified);
+    }
+
+    #[test]
+    fn split_retryable_chunk_preserves_full_file_size_hint_without_row_group_bytes() {
+        let mut parent = retry_parent_chunk();
+        parent.known_row_group_bytes = None;
+        parent.source_file_row_group_bytes = None;
+
+        let (left, right) = split_retryable_chunk(&parent, 1).expect("chunk should split");
+
+        assert_eq!(left.known_file_bytes, Some(400));
+        assert_eq!(right.known_file_bytes, Some(400));
+        assert_eq!(left.estimated_chunk_bytes, Some(200));
+        assert_eq!(right.estimated_chunk_bytes, Some(200));
+        assert_eq!(left.estimated_source_read_bytes, Some(200));
+        assert_eq!(right.estimated_source_read_bytes, Some(200));
+    }
 }

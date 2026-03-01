@@ -359,9 +359,22 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
     assert_eq!(aggregates.len(), 1);
     assert_eq!(aggregates[0].spec.aggr_exprs.len(), 2);
     assert!(aggregates[0].spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
-    let plan_text = result.plan.to_string();
-    assert!(plan_text.contains("t_hour = 8"));
-    assert!(plan_text.contains("t_hour = 9"));
+    assert!(
+        aggregates[0]
+            .spec
+            .aggr_exprs
+            .iter()
+            .filter_map(|expr| expr.filter.as_ref())
+            .any(|filter| { expr_contains_int32_equality(filter, "t_hour", 8) })
+    );
+    assert!(
+        aggregates[0]
+            .spec
+            .aggr_exprs
+            .iter()
+            .filter_map(|expr| expr.filter.as_ref())
+            .any(|filter| { expr_contains_int32_equality(filter, "t_hour", 9) })
+    );
     let source_predicates = result
         .plan
         .nodes()
@@ -375,7 +388,37 @@ fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggreg
         })
         .collect::<Vec<_>>();
     assert!(source_predicates.iter().any(|predicate| predicate.contains(" OR ")));
-    assert!(result.plan.to_string().contains("__cudf_shared_scalar_"));
+    assert!(plan_has_output_name_prefix(&result.plan, "__cudf_shared_scalar_"));
+}
+
+#[test]
+fn native_optimizer_keeps_shared_subplan_materialization_contract_isolated() {
+    let plan = repeated_scalar_count_materialization_with_mismatched_source_contracts_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.shared_subplan_materialization.applied_count, 0);
+}
+
+#[test]
+fn native_optimizer_keeps_shared_subplan_materialization_decimal_contract_isolated() {
+    let plan = repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan();
+    let options = NativeOptimizerOptions {
+        shared_subplan_materialization: SharedSubplanMaterializationOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.shared_subplan_materialization.applied_count, 0);
 }
 
 #[test]
@@ -475,7 +518,7 @@ fn native_optimizer_rejects_repeated_scalar_mixed_distinct_branches_without_stre
         })
         .collect::<Vec<_>>();
     assert_eq!(aggregates.len(), 3);
-    assert!(!result.plan.to_string().contains("__cudf_shared_scalar_"));
+    assert!(!plan_has_output_name_prefix(&result.plan, "__cudf_shared_scalar_"));
 }
 
 #[test]
@@ -602,7 +645,7 @@ fn native_optimizer_combines_projected_literal_count_star_scalar_branches() {
     assert_eq!(aggregates.len(), 1);
     assert_eq!(aggregates[0].spec.aggr_exprs.len(), 2);
     assert!(aggregates[0].spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
-    assert!(result.plan.to_string().contains("__cudf_shared_scalar_"));
+    assert!(plan_has_output_name_prefix(&result.plan, "__cudf_shared_scalar_"));
 }
 
 #[test]
@@ -930,7 +973,6 @@ fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_r
     assert_eq!(routes[0].consumer_columns, vec!["left_key".to_string()]);
     assert!(matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }));
     assert!(matches!(routes[0].consumer, DynamicFilterConsumer::LocalParquetSource { .. }));
-    assert!(result.plan.to_string().contains("DynamicFilterRoute"));
 }
 
 #[test]
@@ -995,7 +1037,7 @@ fn native_optimizer_discovers_source_dynamic_filter_for_independent_repeated_con
 }
 
 #[test]
-fn native_optimizer_uses_probe_dynamic_filter_when_consumer_lineage_crosses_shared_subplan() {
+fn native_optimizer_rejects_probe_dynamic_filter_when_consumer_lineage_crosses_shared_local_source() {
     let (plan, first_branch_join, second_branch_join) = shared_prefix_branch_local_dynamic_filter_plan();
     let options = NativeOptimizerOptions {
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions::default(),
@@ -1008,25 +1050,16 @@ fn native_optimizer_uses_probe_dynamic_filter_when_consumer_lineage_crosses_shar
     for branch_join in [first_branch_join, second_branch_join] {
         assert!(diagnostics.candidates.iter().any(|candidate| {
             candidate.candidate_node_id == branch_join
-                && candidate.routed
-                && candidate.consumer_kind.as_deref() == Some("hash_join_probe")
-                && candidate.consumer_node_id == Some(branch_join)
-                && candidate.consumer_lowering == Some(DynamicFilterConsumerLowering::PostDecodeOnly)
-                && candidate.consumer_reduction_stage == Some(DynamicFilterConsumerReductionStage::JoinProbePostDecode)
+                && !candidate.routed
+                && candidate.rejected_reason == Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan)
         }));
-        assert!(result.plan.dynamic_filter_routes().iter().any(|route| {
-            matches!(
+        assert!(result.plan.dynamic_filter_routes().iter().all(|route| {
+            !matches!(
                 route.producer,
                 DynamicFilterProducer::HashJoinBuild {
                     join_node_id,
                     build_side: JoinSide::Right,
                     ..
-                } if join_node_id == branch_join
-            ) && matches!(
-                route.consumer,
-                DynamicFilterConsumer::HashJoinProbe {
-                    join_node_id,
-                    probe_side: JoinSide::Left,
                 } if join_node_id == branch_join
             )
         }));
@@ -1052,11 +1085,8 @@ fn native_optimizer_does_not_attach_branch_dynamic_filter_to_pre_split_shared_fi
     for branch_join in [first_branch_join, second_branch_join] {
         assert!(diagnostics.candidates.iter().any(|candidate| {
             candidate.candidate_node_id == branch_join
-                && candidate.routed
-                && candidate.consumer_kind.as_deref() == Some("hash_join_probe")
-                && candidate.consumer_node_id == Some(branch_join)
-                && candidate.consumer_lowering == Some(DynamicFilterConsumerLowering::PostDecodeOnly)
-                && candidate.consumer_reduction_stage == Some(DynamicFilterConsumerReductionStage::JoinProbePostDecode)
+                && !candidate.routed
+                && candidate.rejected_reason == Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan)
         }));
     }
     assert!(result.plan.dynamic_filter_routes().iter().all(|route| {
@@ -1414,7 +1444,7 @@ fn native_optimizer_discovers_hash_join_build_to_filter_dynamic_filter_route_for
 }
 
 #[test]
-fn native_optimizer_falls_back_to_join_probe_dynamic_filter_for_reused_local_source() {
+fn native_optimizer_rejects_join_probe_dynamic_filter_for_reused_local_source() {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["fact_key"]);
     let fact = builder.add_source(estimated_local_source("fact", "fact_key", 256 * 1024 * 1024, 10_000_000));
@@ -1443,25 +1473,22 @@ fn native_optimizer_falls_back_to_join_probe_dynamic_filter_for_reused_local_sou
 
     let result = optimize_query_plan(plan, &options);
 
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
-    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
-    assert!(candidate.routed);
+    assert!(!candidate.routed);
     assert_eq!(candidate.consumer_source_node_id, Some(fact));
     assert_eq!(candidate.consumer_key_column.as_deref(), Some("fact_key"));
-    assert_eq!(candidate.consumer_kind.as_deref(), Some("hash_join_probe"));
-    assert_eq!(candidate.consumer_node_id, Some(join));
-    assert_eq!(candidate.consumer_lowering, Some(DynamicFilterConsumerLowering::PostDecodeOnly));
-    assert_eq!(candidate.consumer_reduction_stage, Some(DynamicFilterConsumerReductionStage::JoinProbePostDecode));
+    assert_eq!(candidate.consumer_kind, None);
+    assert_eq!(candidate.consumer_node_id, None);
+    assert_eq!(candidate.consumer_lowering, None);
+    assert_eq!(candidate.consumer_reduction_stage, None);
     assert_eq!(candidate.selected_source_bytes, Some(256 * 1024 * 1024));
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
 
     let routes = result.plan.dynamic_filter_routes();
-    assert_eq!(routes.len(), 1);
-    assert_eq!(routes[0].producer_columns, vec!["dim_key".to_string()]);
-    assert_eq!(routes[0].consumer_columns, vec!["fact_key".to_string()]);
-    assert!(matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }));
-    assert!(matches!(routes[0].consumer, DynamicFilterConsumer::HashJoinProbe { probe_side: JoinSide::Left, .. }));
+    assert!(routes.is_empty());
 }
 
 #[test]
@@ -1523,14 +1550,11 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_it_feeds_scalar_decimal
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
     assert!(!candidate.routed);
-    assert_eq!(candidate.consumer_kind.as_deref(), Some("hash_join_probe"));
-    assert_eq!(candidate.consumer_node_id, Some(join));
-    assert_eq!(candidate.consumer_lowering, Some(DynamicFilterConsumerLowering::PostDecodeOnly));
-    assert_eq!(candidate.consumer_reduction_stage, Some(DynamicFilterConsumerReductionStage::JoinProbePostDecode));
-    assert_eq!(
-        candidate.rejected_reason,
-        Some(DynamicFilterRouteRejectedReason::PostDecodeConsumerFeedsScalarDecimalSum)
-    );
+    assert_eq!(candidate.consumer_kind, None);
+    assert_eq!(candidate.consumer_node_id, None);
+    assert_eq!(candidate.consumer_lowering, None);
+    assert_eq!(candidate.consumer_reduction_stage, None);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
     assert!(result.plan.dynamic_filter_routes().is_empty());
 }
 
@@ -1642,16 +1666,17 @@ fn native_optimizer_keeps_join_probe_dynamic_filter_when_scalar_sum_is_not_decim
 
     let result = optimize_query_plan(plan, &options);
 
-    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
-    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
-    assert!(candidate.routed);
-    assert_eq!(candidate.consumer_kind.as_deref(), Some("hash_join_probe"));
-    assert_eq!(candidate.consumer_node_id, Some(join));
-    assert_eq!(candidate.consumer_lowering, Some(DynamicFilterConsumerLowering::PostDecodeOnly));
-    assert_eq!(candidate.consumer_reduction_stage, Some(DynamicFilterConsumerReductionStage::JoinProbePostDecode));
-    assert_eq!(result.plan.dynamic_filter_routes().len(), 1);
+    assert!(!candidate.routed);
+    assert_eq!(candidate.consumer_kind, None);
+    assert_eq!(candidate.consumer_node_id, None);
+    assert_eq!(candidate.consumer_lowering, None);
+    assert_eq!(candidate.consumer_reduction_stage, None);
+    assert_eq!(candidate.rejected_reason, Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan));
+    assert!(result.plan.dynamic_filter_routes().is_empty());
 }
 
 #[test]
@@ -2160,6 +2185,157 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
 }
 
 #[test]
+fn gpu_local_parquet_source_cache_key_isolates_resolved_source_contracts() {
+    let direct_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract());
+    let host_buffer_source = contract_sensitive_customer_address_source(host_buffer_customer_address_contract());
+    let decimal_source = contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
+        .with_reader_decimal_contract("id", ParquetReaderDecimalTypeId::Decimal64, -2);
+
+    let direct_source_key = GpuLocalParquetSourceCacheKey::from_source(&direct_source);
+    let host_buffer_source_key = GpuLocalParquetSourceCacheKey::from_source(&host_buffer_source);
+    let decimal_source_key = GpuLocalParquetSourceCacheKey::from_source(&decimal_source);
+    assert_ne!(
+        direct_source_key, host_buffer_source_key,
+        "whole-source GPU cache keys must include resolved read/cache/credential contract fields"
+    );
+    assert_ne!(
+        direct_source_key, decimal_source_key,
+        "whole-source GPU cache keys must include per-file Parquet reader decimal contracts"
+    );
+    assert!(direct_source_key.as_str().contains("file.0.resolved.read_strategy=remote_direct"));
+    assert!(direct_source_key.as_str().contains("file.0.resolved.remote_read_mode=require_direct"));
+    assert!(direct_source_key.as_str().contains("file.0.resolved.credential_mode=shared_process_env"));
+    assert!(direct_source_key.as_str().contains("file.0.resolved.storage_profile_id=remote-profile-a"));
+    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.read_strategy=remote_host_buffer"));
+    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.decode_input=host_buffer"));
+    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.lakehouse_cache_status=miss"));
+    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.lakehouse_cache_read_mode=enabled"));
+    assert!(host_buffer_source_key.as_str().contains("file.0.resolved.lakehouse_cache_fill_mode=background"));
+    assert!(decimal_source_key.as_str().contains("file.0.reader_decimal_types.0.type_id=decimal64"));
+    assert!(!direct_source_key.as_str().contains("query_variant=a"));
+    assert!(!host_buffer_source_key.as_str().contains("/tmp/nexus-lakehouse-cache"));
+
+    let mut builder = QueryPlanBuilder::new();
+    let direct_source_id = builder.add_source(SourceNode::LocalParquet(direct_source.clone()));
+    let host_buffer_source_id = builder.add_source(SourceNode::LocalParquet(host_buffer_source.clone()));
+    let decimal_source_id = builder.add_source(SourceNode::LocalParquet(decimal_source.clone()));
+    let direct_chunk_plan =
+        plan_local_parquet_source_chunks(direct_source_id, &direct_source, SourceChunkPlanningPolicy::new(None, 1))
+            .unwrap();
+    let host_buffer_chunk_plan = plan_local_parquet_source_chunks(
+        host_buffer_source_id,
+        &host_buffer_source,
+        SourceChunkPlanningPolicy::new(None, 1),
+    )
+    .unwrap();
+    let decimal_chunk_plan =
+        plan_local_parquet_source_chunks(decimal_source_id, &decimal_source, SourceChunkPlanningPolicy::new(None, 1))
+            .unwrap();
+    let direct_chunk_key =
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&direct_source, &direct_chunk_plan.chunks[0]);
+    let host_buffer_chunk_key =
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&host_buffer_source, &host_buffer_chunk_plan.chunks[0]);
+    let decimal_chunk_key =
+        GpuLocalParquetSourceCacheKey::from_source_chunk(&decimal_source, &decimal_chunk_plan.chunks[0]);
+
+    assert_ne!(
+        direct_chunk_key, host_buffer_chunk_key,
+        "bounded chunk GPU cache keys must include resolved read/cache/credential contract fields"
+    );
+    assert_ne!(
+        direct_chunk_key, decimal_chunk_key,
+        "bounded chunk GPU cache keys must include per-chunk Parquet reader decimal contracts"
+    );
+    assert!(direct_chunk_key.as_str().contains("chunk.resolved.read_strategy=remote_direct"));
+    assert!(host_buffer_chunk_key.as_str().contains("chunk.resolved.read_strategy=remote_host_buffer"));
+    assert!(decimal_chunk_key.as_str().contains("chunk.reader_decimal_types.0.type_id=decimal64"));
+    assert!(decimal_chunk_key.as_str().contains("chunk.reader_decimal_types_footer_verified=false"));
+}
+
+#[test]
+fn native_optimizer_keeps_local_parquet_source_reuse_contract_isolated() {
+    let plan = contract_mismatched_local_parquet_source_variants_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(
+        result.diagnostics.local_parquet_source_reuse.considered_count, 0,
+        "sources with different resolved read/cache/credential contracts must not enter the same reuse group"
+    );
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 0);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address"), 2);
+}
+
+#[test]
+fn native_optimizer_local_parquet_source_reuse_diagnostics_redact_stable_file_ids() {
+    let plan = compatible_sensitive_stable_id_local_parquet_source_variants_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 1);
+    let stable_file_ids = &result.diagnostics.local_parquet_source_reuse.candidates[0].stable_file_ids;
+    assert_eq!(stable_file_ids.len(), 1);
+    assert!(stable_file_ids[0].starts_with("object_store:s3:fnv64:"));
+    for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
+        assert!(
+            !stable_file_ids[0].contains(sensitive),
+            "{sensitive} leaked in source reuse diagnostic: {:?}",
+            stable_file_ids
+        );
+    }
+}
+
+#[test]
+fn native_optimizer_keeps_decimal_contract_source_reuse_isolated() {
+    let plan = decimal_contract_mismatched_local_parquet_source_variants_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(
+        result.diagnostics.local_parquet_source_reuse.considered_count, 0,
+        "sources with different per-file decimal reader contracts must not enter the same reuse group"
+    );
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 0);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address"), 2);
+}
+
+#[test]
+fn native_optimizer_rejects_local_parquet_source_reuse_with_different_file_order() {
+    let plan = compatible_local_parquet_source_variants_with_different_file_order_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.considered_count, 1);
+    assert_eq!(result.diagnostics.local_parquet_source_reuse.applied_count, 0);
+    assert_eq!(
+        result.diagnostics.local_parquet_source_reuse.candidates[0].rejected_reason,
+        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+    );
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "customer_address_a"), 2);
+}
+
+#[test]
 fn native_optimizer_rejects_source_reuse_with_conflicting_file_index_column_names() {
     let plan = conflicting_file_index_local_parquet_source_variants_plan();
     let options = NativeOptimizerOptions {
@@ -2260,6 +2436,42 @@ fn native_optimizer_keeps_large_local_parquet_source_variants_independent() {
         diagnostics.candidates[0].rejected_reason,
         Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
     );
+}
+
+#[test]
+fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_source_variant() {
+    let plan = large_superset_with_smaller_local_parquet_source_variant_plan();
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert!(candidate.applied);
+    assert_eq!(candidate.superset_read_columns, vec!["inv_item_sk", "inv_date_sk"]);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
+}
+
+#[test]
+fn native_optimizer_rejects_large_filtered_existing_superset_for_local_parquet_source_reuse() {
+    let plan = large_filtered_superset_with_smaller_local_parquet_source_variant_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
+    );
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
 }
 
 #[test]
@@ -3533,6 +3745,115 @@ fn repeated_scalar_count_materialization_plan() -> nexus_query_engine::QueryPlan
     builder.finish_gpu_resident(union)
 }
 
+fn repeated_scalar_count_materialization_with_mismatched_source_contracts_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let fact_schema = schema(&["ss_sold_time_sk"]);
+    let count_schema = schema(&["count"]);
+    let mut counts = Vec::new();
+    for (hour, fact_contract) in
+        [8, 9].into_iter().zip([remote_direct_customer_address_contract(), host_buffer_customer_address_contract()])
+    {
+        let fact = builder.add_source(estimated_source_with_resolved_contract(
+            fact_contract,
+            "store_sales",
+            &["ss_sold_time_sk"],
+            512 * 1024 * 1024,
+            10_000_000,
+        ));
+        let time = builder.add_source(estimated_time_source_with_hour_predicate(hour));
+        let time_key = builder.add_projection(
+            time,
+            vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
+        );
+        let joined = builder.add_join(
+            fact,
+            time_key,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ss_sold_time_sk", "ss_sold_time_sk"),
+                    ColumnRef::input(1, "t_time_sk", "t_time_sk"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "ss_sold_time_sk", "ss_sold_time_sk"),
+                "ss_sold_time_sk",
+            )])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&fact_schema),
+        );
+        let count = builder.add_aggregate(
+            joined,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
+            ),
+            Arc::clone(&count_schema),
+        );
+        counts.push(count);
+    }
+    let union = builder.add_union(counts, count_schema);
+    builder.finish_gpu_resident(union)
+}
+
+fn repeated_scalar_count_materialization_with_mismatched_decimal_contracts_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let fact_schema = schema(&["ss_sold_time_sk"]);
+    let count_schema = schema(&["count"]);
+    let mut counts = Vec::new();
+    for (hour, decimal_contract) in [8, 9].into_iter().zip([false, true]) {
+        let mut fact_source = estimated_source_with_resolved_contract(
+            remote_direct_customer_address_contract(),
+            "store_sales",
+            &["ss_sold_time_sk"],
+            512 * 1024 * 1024,
+            10_000_000,
+        );
+        if decimal_contract {
+            let SourceNode::LocalParquet(source) = &mut fact_source else {
+                unreachable!("estimated source helper always builds local Parquet")
+            };
+            source.files[0].reader_decimal_types =
+                vec![ParquetReaderDecimalType::new("ss_sold_time_sk", ParquetReaderDecimalTypeId::Decimal64, -2)];
+            source.refresh_diagnostics();
+        }
+        let fact = builder.add_source(fact_source);
+        let time = builder.add_source(estimated_time_source_with_hour_predicate(hour));
+        let time_key = builder.add_projection(
+            time,
+            vec![ProjectionOutput::new(Expr::column("t_time_sk"), Field::new("t_time_sk", DataType::Int32, false))],
+        );
+        let joined = builder.add_join(
+            fact,
+            time_key,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "ss_sold_time_sk", "ss_sold_time_sk"),
+                    ColumnRef::input(1, "t_time_sk", "t_time_sk"),
+                )],
+            )
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "ss_sold_time_sk", "ss_sold_time_sk"),
+                "ss_sold_time_sk",
+            )])
+            .with_build_side(JoinSide::Right),
+            Arc::clone(&fact_schema),
+        );
+        let count = builder.add_aggregate(
+            joined,
+            AggregateSpec::new(
+                Vec::new(),
+                vec![AggregateExpr::new(AggregateFunction::Count, Expr::literal(LiteralValue::Int64(1)), "count")],
+            ),
+            Arc::clone(&count_schema),
+        );
+        counts.push(count);
+    }
+    let union = builder.add_union(counts, count_schema);
+    builder.finish_gpu_resident(union)
+}
+
 fn repeated_scalar_count_materialization_with_redundant_projection_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let fact_schema = schema(&["ss_sold_time_sk"]);
@@ -4678,16 +4999,63 @@ fn estimated_local_source_with_stable_id(
     bytes: u64,
     rows: u64,
 ) -> SourceNode {
+    let file_indices = (0..field_names.len()).collect::<Vec<_>>();
+    estimated_local_source_with_stable_id_and_file_indices(name, stable_id, field_names, &file_indices, bytes, rows)
+}
+
+fn estimated_local_source_with_stable_id_and_file_indices(
+    name: &str,
+    stable_id: &str,
+    field_names: &[&str],
+    file_indices: &[usize],
+    bytes: u64,
+    rows: u64,
+) -> SourceNode {
     let source_schema = schema(field_names);
     let file = LocalParquetFile::new(format!("/tmp/{name}.parquet"))
         .with_stable_id(stable_id)
         .with_projected_row_group_bytes(vec![bytes], vec![bytes])
         .with_row_group_rows(vec![rows]);
-    SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![file],
-        source_schema,
-        field_names.iter().map(|name| (*name).to_string()).collect(),
-    ))
+    let read_columns = field_names.iter().map(|name| (*name).to_string()).collect::<Vec<_>>();
+    let source = LocalParquetSource::from_files(vec![file], source_schema, read_columns).with_column_file_indices(
+        file_indices.to_vec(),
+        file_indices.to_vec(),
+        Vec::new(),
+    );
+    SourceNode::LocalParquet(source)
+}
+
+fn estimated_source_with_resolved_contract(
+    resolved_source: ResolvedParquetSource,
+    stable_id: &str,
+    field_names: &[&str],
+    bytes: u64,
+    rows: u64,
+) -> SourceNode {
+    let source_schema = schema(field_names);
+    let file = LocalParquetFile::from_resolved_parquet_source(resolved_source)
+        .unwrap()
+        .with_stable_id(stable_id)
+        .with_projected_row_group_bytes(vec![bytes], vec![bytes])
+        .with_row_group_rows(vec![rows]);
+    let read_columns = field_names.iter().map(|name| (*name).to_string()).collect::<Vec<_>>();
+    SourceNode::LocalParquet(LocalParquetSource::from_files(vec![file], source_schema, read_columns))
+}
+
+fn estimated_local_source_with_stable_id_and_predicate(
+    name: &str,
+    stable_id: &str,
+    field_names: &[&str],
+    bytes: u64,
+    rows: u64,
+    predicate: Expr,
+) -> SourceNode {
+    let SourceNode::LocalParquet(source) =
+        estimated_local_source_with_stable_id(name, stable_id, field_names, bytes, rows)
+    else {
+        unreachable!("estimated source helper always builds local Parquet")
+    };
+    SourceNode::LocalParquet(source.with_reader_predicate(predicate))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5398,6 +5766,83 @@ fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::
     builder.finish_gpu_resident(union)
 }
 
+fn contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let direct = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
+        remote_direct_customer_address_contract(),
+    )));
+    let host_buffer = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
+        host_buffer_customer_address_contract(),
+    )));
+    let direct_id = builder.add_projection(
+        direct,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let host_buffer_id = builder.add_projection(
+        host_buffer,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![direct_id, host_buffer_id], schema(&["id"]));
+    builder.finish_gpu_resident(union)
+}
+
+fn compatible_sensitive_stable_id_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let full = builder.add_source(sensitive_stable_id_customer_address_source(&["id", "state"], &[0, 1], None));
+    let filtered = builder.add_source(sensitive_stable_id_customer_address_source(
+        &["id", "zip"],
+        &[0, 2],
+        Some(Expr::binary(Expr::column("zip"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(30301)))),
+    ));
+    let full_id = builder.add_projection(
+        full,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let filtered_id = builder.add_projection(
+        filtered,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![full_id, filtered_id], schema(&["id"]));
+    builder.finish_gpu_resident(union)
+}
+
+fn decimal_contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let plain = builder.add_source(SourceNode::LocalParquet(contract_sensitive_customer_address_source(
+        remote_direct_customer_address_contract(),
+    )));
+    let decimal = builder.add_source(SourceNode::LocalParquet(
+        contract_sensitive_customer_address_source(remote_direct_customer_address_contract())
+            .with_reader_decimal_contract("id", ParquetReaderDecimalTypeId::Decimal64, -2),
+    ));
+    let plain_id = builder.add_projection(
+        plain,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let decimal_id = builder.add_projection(
+        decimal,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![plain_id, decimal_id], schema(&["id"]));
+    builder.finish_gpu_resident(union)
+}
+
+fn compatible_local_parquet_source_variants_with_different_file_order_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let first = builder.add_source(customer_address_two_file_source(&["id", "state"], &[0, 1], false));
+    let second = builder.add_source(customer_address_two_file_source(&["id", "zip"], &[0, 2], true));
+    let first_id = builder.add_projection(
+        first,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let second_id = builder.add_projection(
+        second,
+        vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![first_id, second_id], schema(&["id"]));
+    builder.finish_gpu_resident(union)
+}
+
 fn compatible_small_local_parquet_source_variants_with_max_rows_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let full = builder.add_source(customer_address_source(&["id", "state"], &[0, 1], None));
@@ -5499,10 +5944,11 @@ fn large_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
         512 * 1024 * 1024,
         10_000_000,
     ));
-    let right = builder.add_source(estimated_local_source_with_stable_id(
+    let right = builder.add_source(estimated_local_source_with_stable_id_and_file_indices(
         "inventory",
         "inventory",
-        &["inv_item_sk", "inv_warehouse_sk"],
+        &["inv_item_sk", "inv_store_sk"],
+        &[0, 2],
         512 * 1024 * 1024,
         10_000_000,
     ));
@@ -5518,8 +5964,163 @@ fn large_local_parquet_source_variants_plan() -> nexus_query_engine::QueryPlan {
     builder.finish_gpu_resident(union)
 }
 
+fn large_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let superset = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk", "inv_date_sk"],
+        600 * 1024 * 1024,
+        10_000_000,
+    ));
+    let subset = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk"],
+        64 * 1024 * 1024,
+        1_000_000,
+    ));
+    let superset_item = builder.add_projection(
+        superset,
+        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+    );
+    let subset_item = builder.add_projection(
+        subset,
+        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"]));
+    builder.finish_gpu_resident(union)
+}
+
+fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let superset = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
+        "inventory",
+        "inventory",
+        &["inv_item_sk", "inv_date_sk"],
+        600 * 1024 * 1024,
+        10_000_000,
+        Expr::binary(Expr::column("inv_date_sk"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2_452_001))),
+    ));
+    let subset = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk"],
+        64 * 1024 * 1024,
+        1_000_000,
+    ));
+    let superset_item = builder.add_projection(
+        superset,
+        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+    );
+    let subset_item = builder.add_projection(
+        subset,
+        vec![ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false))],
+    );
+    let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"]));
+    builder.finish_gpu_resident(union)
+}
+
 fn customer_address_source(columns: &[&str], file_indices: &[usize], predicate: Option<Expr>) -> SourceNode {
     customer_address_source_with_max_rows(columns, file_indices, predicate, None)
+}
+
+fn sensitive_stable_id_customer_address_source(
+    columns: &[&str],
+    file_indices: &[usize],
+    predicate: Option<Expr>,
+) -> SourceNode {
+    let SourceNode::LocalParquet(mut source) = customer_address_source(columns, file_indices, predicate) else {
+        unreachable!("customer address source helper always builds local Parquet")
+    };
+    source.files[0].stable_id = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc".to_string();
+    source.refresh_diagnostics();
+    SourceNode::LocalParquet(source)
+}
+
+fn contract_sensitive_customer_address_source(resolved_source: ResolvedParquetSource) -> LocalParquetSource {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let file = LocalParquetFile::from_resolved_parquet_source(resolved_source)
+        .unwrap()
+        .with_stable_id("customer_address")
+        .with_row_group_bytes(vec![2 * 1024 * 1024])
+        .with_row_group_rows(vec![100_000]);
+    LocalParquetSource::from_files(vec![file], schema, vec!["id".to_string()])
+}
+
+trait LocalParquetSourceTestExt {
+    fn with_reader_decimal_contract(
+        self,
+        column_name: &str,
+        type_id: ParquetReaderDecimalTypeId,
+        cudf_scale: i32,
+    ) -> Self;
+}
+
+impl LocalParquetSourceTestExt for LocalParquetSource {
+    fn with_reader_decimal_contract(
+        mut self,
+        column_name: &str,
+        type_id: ParquetReaderDecimalTypeId,
+        cudf_scale: i32,
+    ) -> Self {
+        self.files[0].reader_decimal_types =
+            vec![ParquetReaderDecimalType::new(column_name.to_string(), type_id, cudf_scale)];
+        self.refresh_diagnostics();
+        self
+    }
+}
+
+fn remote_direct_customer_address_contract() -> ResolvedParquetSource {
+    ResolvedParquetSource::remote_direct(
+        "s3://warehouse/customer_address.parquet?query_variant=a",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_remote_read_mode(RemoteParquetReadMode::RequireDirect)
+    .with_storage_profile_id("remote-profile-a")
+    .with_storage_domain("warehouse@s3")
+    .with_content_identity("snapshot=42,file=customer_address,etag=abc")
+}
+
+fn host_buffer_customer_address_contract() -> ResolvedParquetSource {
+    ResolvedParquetSource::remote_host_buffer(
+        "s3://warehouse/customer_address.parquet?query_variant=a",
+        "/tmp/nexus-lakehouse-cache/customer_address.parquet",
+        CredentialMode::SharedProcessEnv,
+    )
+    .with_storage_profile_id("remote-profile-a")
+    .with_storage_domain("warehouse@s3")
+    .with_content_identity("snapshot=42,file=customer_address,etag=abc")
+    .with_lakehouse_cache_config("/tmp/nexus-lakehouse-cache", Some(128 * 1024 * 1024))
+    .with_lakehouse_cache_path("/tmp/nexus-lakehouse-cache/customer_address.parquet")
+    .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Enabled)
+    .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background)
+    .with_cache_status(LakehouseCacheStatus::Miss)
+}
+
+fn customer_address_two_file_source(columns: &[&str], file_indices: &[usize], reversed: bool) -> SourceNode {
+    let fields = columns.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>();
+    let schema = Arc::new(Schema::new(fields));
+    let mut files = vec![
+        LocalParquetFile::new("/tmp/customer_address_a.parquet")
+            .with_stable_id("customer_address_a")
+            .with_row_group_bytes(vec![2 * 1024 * 1024])
+            .with_row_group_rows(vec![100_000]),
+        LocalParquetFile::new("/tmp/customer_address_b.parquet")
+            .with_stable_id("customer_address_b")
+            .with_row_group_bytes(vec![2 * 1024 * 1024])
+            .with_row_group_rows(vec![100_000]),
+    ];
+    if reversed {
+        files.reverse();
+    }
+    let read_columns = columns.iter().map(|column| (*column).to_string()).collect::<Vec<_>>();
+    let source = LocalParquetSource::from_files(files, schema, read_columns).with_column_file_indices(
+        file_indices.to_vec(),
+        file_indices.to_vec(),
+        Vec::new(),
+    );
+    SourceNode::LocalParquet(source)
 }
 
 fn customer_address_source_with_max_rows(
@@ -5559,6 +6160,44 @@ fn aggregate_keyset_source(builder: &mut QueryPlanBuilder, name: &str, key_name:
 
 fn schema(fields: &[&str]) -> Arc<Schema> {
     Arc::new(Schema::new(fields.iter().map(|name| Field::new(*name, DataType::Int32, false)).collect::<Vec<_>>()))
+}
+
+fn plan_has_output_name_prefix(plan: &nexus_query_engine::QueryPlan, prefix: &str) -> bool {
+    plan.nodes().iter().any(|node| match &node.kind {
+        PlanNode::Aggregate(aggregate) => aggregate.spec.aggr_exprs.iter().any(|expr| expr.alias.starts_with(prefix)),
+        PlanNode::Projection(projection) => {
+            projection.outputs.iter().any(|output| output.field.name().starts_with(prefix))
+        },
+        _ => false,
+    })
+}
+
+fn expr_contains_int32_equality(expr: &Expr, column: &str, value: i32) -> bool {
+    match expr {
+        Expr::Binary { left, op: BinaryOp::Eq, right, .. } => {
+            (expr_is_column(left, column) && expr_is_int32_literal(right, value))
+                || (expr_is_column(right, column) && expr_is_int32_literal(left, value))
+                || expr_contains_int32_equality(left, column, value)
+                || expr_contains_int32_equality(right, column, value)
+        },
+        Expr::Binary { left, right, .. } => {
+            expr_contains_int32_equality(left, column, value) || expr_contains_int32_equality(right, column, value)
+        },
+        Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) => {
+            expr_contains_int32_equality(inner, column, value)
+        },
+        Expr::Cast { expr, .. } | Expr::TryCast { expr, .. } => expr_contains_int32_equality(expr, column, value),
+        Expr::Alias { expr, .. } => expr_contains_int32_equality(expr, column, value),
+        _ => false,
+    }
+}
+
+fn expr_is_column(expr: &Expr, column: &str) -> bool {
+    matches!(expr, Expr::Column(expr_column) if expr_column.name() == column)
+}
+
+fn expr_is_int32_literal(expr: &Expr, value: i32) -> bool {
+    matches!(expr, Expr::Literal(LiteralValue::Int32(candidate)) if *candidate == value)
 }
 
 fn left_projection(fields: &[&str]) -> Vec<JoinOutputColumn> {

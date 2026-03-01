@@ -104,6 +104,8 @@ pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     left_keys: Vec<String>,
     left_columns: Vec<String>,
     build: BoundedJoinSideFrame,
+    input_build_rows: u64,
+    input_build_bytes: u64,
     filtered_join: GpuFilteredJoinBuildHandle,
     hash_table_reservation: ActiveReservation,
     hash_table_bytes: u64,

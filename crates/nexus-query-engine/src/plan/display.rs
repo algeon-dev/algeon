@@ -83,7 +83,10 @@ impl QueryNode {
                         "{padding}{} LocalParquetSource files={} path={} format={:?} direct_device_read={} known_bytes={} selected_row_groups={} row_group_stats={} read_columns={} projected_output_columns={} pure_filter_columns={} predicate={} byte_range={} partition_columns={} zero_column_count={} scan_limit={} max_rows={} schema_mapping={} rejected_features={} placement={} schema_behavior={}",
                         self.id,
                         source.diagnostics.file_count,
-                        source.files.first().map_or_else(|| "none".to_string(), |file| file.location.reader_path()),
+                        source
+                            .files
+                            .first()
+                            .map_or_else(|| "none".to_string(), |file| file.location.diagnostic_location()),
                         source.diagnostics.format,
                         source.diagnostics.direct_device_read,
                         source.diagnostics.known_bytes.map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string()),

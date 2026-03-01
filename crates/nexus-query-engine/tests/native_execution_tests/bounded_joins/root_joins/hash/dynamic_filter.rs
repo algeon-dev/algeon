@@ -131,7 +131,7 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
     assert_eq!(int32_array(output, 1).values().as_ref(), &[20, 21, 22]);
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.source_chunks_attempted, 3);
-    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.source_chunks_committed, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.dynamic_filter_reader_predicate_rows_before, 6);
     assert_eq!(metrics.dynamic_filter_reader_predicate_rows_after, 3);

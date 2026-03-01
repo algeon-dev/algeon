@@ -56,7 +56,8 @@ pub use bounded::{
 };
 use edge_normalize::execute_edge_normalize;
 pub use source::{
-    read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,
+    ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
+    read_literal_batch_source, read_local_parquet_source, validate_local_parquet_source,
 };
 pub use types::{
     GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildCache, GpuHashJoinBuildHandle,
@@ -509,7 +510,7 @@ fn execute_node(
 
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
-            crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, source, metrics),
+            crate::source::SourceNode::LocalParquet(source) => read_local_parquet_source(context, id, source, metrics),
             crate::source::SourceNode::GpuResident(source) => {
                 read_gpu_resident_source(context, source, gpu_inputs, metrics)
             },

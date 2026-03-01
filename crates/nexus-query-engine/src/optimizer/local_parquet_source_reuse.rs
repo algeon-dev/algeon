@@ -11,13 +11,16 @@ use crate::{
     plan::{
         FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
-    source::{LocalParquetFile, LocalParquetSource, SourceColumnRef, SourceNode},
+    source::{
+        LocalParquetFile, LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef,
+        SourceNode,
+    },
 };
 
 /// Stable rule name used in optimizer diagnostics.
 pub const LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME: &str = "local_parquet_source_reuse";
 
-const DEFAULT_MAX_VARIANT_SELECTED_BYTES: u64 = 64 * 1024 * 1024;
+const DEFAULT_MAX_VARIANT_SELECTED_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Configuration for sharing compatible repeated local Parquet sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,12 +185,20 @@ fn discover_source_reuse_candidates(
             variants.iter().filter(|variant| variant.reader_predicate.is_some()).count()
         };
 
-        let rejected_reason = if variants.iter().any(|variant| !variant.supported_contract) {
-            Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
-        } else if variants
-            .iter()
-            .any(|variant| variant.selected_source_bytes.is_none_or(|bytes| bytes > options.max_variant_selected_bytes))
+        let superset_read_columns = superset_read_columns(&variants);
+        let has_unknown_variant_size = variants.iter().any(|variant| variant.selected_source_bytes.is_none());
+        let any_variant_too_large = variants.iter().any(|variant| {
+            variant.selected_source_bytes.is_some_and(|bytes| bytes > options.max_variant_selected_bytes)
+        });
+        let has_existing_unfiltered_superset_variant = variants.iter().any(|variant| {
+            variant.reader_predicate.is_none() && variant_read_columns_match_superset(variant, &superset_read_columns)
+        });
+
+        let rejected_reason = if variants.iter().any(|variant| !variant.supported_contract)
+            || source_group_has_conflicting_file_order(&variants)
         {
+            Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        } else if (has_unknown_variant_size || any_variant_too_large) && !has_existing_unfiltered_superset_variant {
             Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
         } else if source_group_has_conflicting_file_columns(&variants) {
             Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
@@ -195,7 +206,6 @@ fn discover_source_reuse_candidates(
             None
         };
 
-        let superset_read_columns = superset_read_columns(&variants);
         let applied = rejected_reason.is_none();
         diagnostics.candidates.push(LocalParquetSourceReuseCandidateDiagnostics {
             rule_name: LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
@@ -225,6 +235,8 @@ struct SourceGroupKey {
 struct FileGroupKey {
     location: String,
     stable_id: String,
+    resolved_contract: String,
+    reader_decimal_contract: String,
     file_size_bytes: Option<u64>,
     row_groups: Option<Vec<usize>>,
 }
@@ -236,6 +248,7 @@ struct SourceVariant {
     group_key: SourceGroupKey,
     exact_key: String,
     stable_file_ids: Vec<String>,
+    ordered_file_keys: Vec<FileGroupKey>,
     selected_source_bytes: Option<u64>,
     reader_predicate: Option<Expr>,
     supported_contract: bool,
@@ -245,19 +258,23 @@ fn source_variant(source_node_id: NodeId, source: &LocalParquetSource) -> Option
     if source.files.is_empty() {
         return None;
     }
-    let group_key = SourceGroupKey {
-        file_keys: source
-            .files
-            .iter()
-            .map(|file| FileGroupKey {
-                location: file.location.reader_path(),
-                stable_id: file.stable_id.clone(),
-                file_size_bytes: file.file_size_bytes,
-                row_groups: file.row_groups.clone(),
-            })
-            .collect(),
-    };
-    let stable_file_ids = source.files.iter().map(|file| file.stable_id.clone()).collect();
+    let ordered_file_keys = source
+        .files
+        .iter()
+        .map(|file| FileGroupKey {
+            location: file.location.reader_path(),
+            stable_id: file.stable_id.clone(),
+            resolved_contract: resolved_source_contract_key(&file.resolved_source),
+            reader_decimal_contract: reader_decimal_contract_key(&file.reader_decimal_types),
+            file_size_bytes: file.file_size_bytes,
+            row_groups: file.row_groups.clone(),
+        })
+        .collect::<Vec<_>>();
+    let mut file_keys = ordered_file_keys.clone();
+    file_keys.sort();
+    let group_key = SourceGroupKey { file_keys };
+    let stable_file_ids =
+        source.files.iter().map(|file| file.location.diagnostic_stable_id(file.stable_id.as_str())).collect();
     let selected_source_bytes =
         source.diagnostics.selected_row_group_stats.as_ref().and_then(|stats| stats.selected_source_bytes());
     Some(SourceVariant {
@@ -266,6 +283,7 @@ fn source_variant(source_node_id: NodeId, source: &LocalParquetSource) -> Option
         group_key,
         exact_key: exact_source_key(source),
         stable_file_ids,
+        ordered_file_keys,
         selected_source_bytes,
         reader_predicate: source.reader_predicate.clone(),
         supported_contract: source_contract_supported(source),
@@ -316,8 +334,97 @@ fn source_group_has_conflicting_file_columns(variants: &[SourceVariant]) -> bool
     false
 }
 
+fn source_group_has_conflicting_file_order(variants: &[SourceVariant]) -> bool {
+    let Some(first) = variants.first() else { return false };
+    variants.iter().any(|variant| variant.ordered_file_keys != first.ordered_file_keys)
+}
+
 fn file_contract_supported(file: &LocalParquetFile) -> bool {
     file.partition_values.is_empty()
+}
+
+fn resolved_source_contract_key(resolved_source: &ResolvedParquetSource) -> String {
+    let mut key = String::new();
+    push_contract_value(&mut key, "original_location", resolved_source.original_location.as_str());
+    push_contract_value(&mut key, "reader_location", resolved_source.reader_location.as_str());
+    push_optional_contract_value(&mut key, "storage_domain", resolved_source.storage_domain.as_deref());
+    push_optional_contract_value(&mut key, "content_identity", resolved_source.content_identity.as_deref());
+    push_contract_value(
+        &mut key,
+        "storage_profile_id",
+        resolved_source.storage_profile_id.as_deref().unwrap_or("none"),
+    );
+    push_contract_value(&mut key, "read_strategy", resolved_source.read_strategy.as_str());
+    push_contract_value(&mut key, "decode_input", resolved_source.decode_input.as_str());
+    push_contract_value(&mut key, "remote_read_mode", resolved_source.remote_read_mode.as_str());
+    push_contract_value(&mut key, "credential_mode", resolved_source.credential_mode.as_str());
+    push_contract_value(&mut key, "lakehouse_cache_status", resolved_source.cache_status.as_str());
+    push_contract_value(&mut key, "lakehouse_cache_read_mode", resolved_source.lakehouse_cache_read_mode.as_str());
+    push_optional_contract_value(&mut key, "lakehouse_cache_root", resolved_source.lakehouse_cache_root.as_deref());
+    push_optional_contract_value(&mut key, "lakehouse_cache_path", resolved_source.lakehouse_cache_path.as_deref());
+    push_contract_value(
+        &mut key,
+        "lakehouse_cache_max_bytes",
+        resolved_source
+            .lakehouse_cache_max_bytes
+            .map_or_else(|| "none".to_string(), |bytes| bytes.to_string())
+            .as_str(),
+    );
+    push_contract_value(&mut key, "lakehouse_cache_fill_mode", resolved_source.lakehouse_cache_fill_mode.as_str());
+    push_contract_value(
+        &mut key,
+        "remote_host_buffer_ranged_enabled",
+        if resolved_source.remote_host_buffer_ranged_enabled { "true" } else { "false" },
+    );
+    push_contract_value(&mut key, "fallback_reason", resolved_source.fallback_reason.as_deref().unwrap_or("none"));
+    key
+}
+
+fn reader_decimal_contract_key(reader_decimal_types: &[ParquetReaderDecimalType]) -> String {
+    let mut key = String::new();
+    push_contract_value(&mut key, "reader_decimal_types.len", reader_decimal_types.len().to_string().as_str());
+    for (index, decimal_type) in reader_decimal_types.iter().enumerate() {
+        push_contract_value(
+            &mut key,
+            format!("reader_decimal_types.{index}.column_name").as_str(),
+            decimal_type.column_name.as_str(),
+        );
+        push_contract_value(
+            &mut key,
+            format!("reader_decimal_types.{index}.type_id").as_str(),
+            decimal_type.type_id.as_str(),
+        );
+        push_contract_value(
+            &mut key,
+            format!("reader_decimal_types.{index}.cudf_scale").as_str(),
+            decimal_type.cudf_scale.to_string().as_str(),
+        );
+    }
+    key
+}
+
+fn push_optional_contract_value(output: &mut String, key: &str, value: Option<&str>) {
+    push_contract_value(output, key, value.unwrap_or("none"));
+}
+
+fn push_contract_value(output: &mut String, key: &str, value: &str) {
+    output.push_str(escape_contract_value(key).as_str());
+    output.push('=');
+    output.push_str(escape_contract_value(value).as_str());
+    output.push(';');
+}
+
+fn escape_contract_value(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '=' => escaped.push_str("\\="),
+            ';' => escaped.push_str("\\;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 fn exact_source_key(source: &LocalParquetSource) -> String {
@@ -360,6 +467,15 @@ fn superset_read_columns(variants: &[SourceVariant]) -> Vec<SupersetColumn> {
         }
     }
     columns.into_values().collect()
+}
+
+fn variant_read_columns_match_superset(variant: &SourceVariant, superset_read_columns: &[SupersetColumn]) -> bool {
+    if variant.source.read_columns.len() != superset_read_columns.len() {
+        return false;
+    }
+    let variant_columns = variant.source.read_columns.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let superset_columns = superset_read_columns.iter().map(|column| column.name.as_str()).collect::<BTreeSet<_>>();
+    variant_columns == superset_columns
 }
 
 #[derive(Debug, Clone)]

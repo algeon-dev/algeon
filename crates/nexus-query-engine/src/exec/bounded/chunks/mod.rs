@@ -9,12 +9,16 @@ use super::{
     },
     *,
 };
-use crate::exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey};
+use crate::{
+    exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
+    source::{ParquetReadStrategy, RemoteParquetReadMode},
+};
 
 const SOURCE_ADJACENT_WORK_RESERVATION_HEADROOM_BYTES: u64 = 1;
 const SOURCE_READ_BUDGET_CORRECTION_SLACK_BYTES: u64 = 8 * 1024 * 1024;
-pub(in crate::exec::bounded) const SOURCE_BATCH_READ_MAX_PLANNED_BYTES: u64 = 512 * 1024 * 1024;
+pub(in crate::exec::bounded) const SOURCE_BATCH_READ_MAX_PLANNED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 64 * 1024 * 1024;
+const REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 
 mod retry;
 mod scheduling;
@@ -151,17 +155,39 @@ fn bounded_source_adjacent_chunk_batching_enabled(
             .reader_predicate
             .as_ref()
             .is_none_or(|predicate| bounded.source.reader_predicate_is_supported(predicate))
-        && bounded_source_adjacent_chunk_batches(context, chunks).iter().any(|batch| batch.chunk_count() > 1)
+        && bounded_source_adjacent_chunk_batches(context, bounded.source, chunks)
+            .iter()
+            .any(|batch| batch.chunk_count() > 1)
 }
 
-fn bounded_source_adjacent_chunk_batches(context: &ExecutionContext, chunks: &[SourceChunk]) -> Vec<SourceChunkBatch> {
+fn bounded_source_adjacent_chunk_batches(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    chunks: &[SourceChunk],
+) -> Vec<SourceChunkBatch> {
     let max_batch_source_read_bytes = match context.memory_control_policy() {
         MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => {
-            Some(max_source_chunk_bytes.min(SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES))
+            Some(max_source_chunk_bytes.min(source_adjacent_raw_source_batch_max_bytes(source, chunks)))
         },
-        MemoryControlPolicy::Unbounded => Some(SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES),
+        MemoryControlPolicy::Unbounded => Some(source_adjacent_raw_source_batch_max_bytes(source, chunks)),
     };
     plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
+}
+
+fn source_adjacent_raw_source_batch_max_bytes(source: &LocalParquetSource, chunks: &[SourceChunk]) -> u64 {
+    if source.scan_limit.is_none()
+        && source.partition_columns.is_empty()
+        && chunks.iter().all(source_chunk_requires_remote_direct_read)
+    {
+        REMOTE_DIRECT_SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
+    } else {
+        SOURCE_ADJACENT_RAW_SOURCE_BATCH_MAX_BYTES
+    }
+}
+
+fn source_chunk_requires_remote_direct_read(chunk: &SourceChunk) -> bool {
+    matches!(chunk.resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect)
+        && chunk.resolved_source.remote_read_mode == RemoteParquetReadMode::RequireDirect
 }
 
 fn execute_bounded_source_adjacent_chunk_batches_serial(
@@ -171,7 +197,7 @@ fn execute_bounded_source_adjacent_chunk_batches_serial(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<Vec<CommittedPartial>> {
-    let batches = bounded_source_adjacent_chunk_batches(context, chunks);
+    let batches = bounded_source_adjacent_chunk_batches(context, bounded.source, chunks);
     let mut partials = Vec::with_capacity(batches.len());
     for batch in batches {
         context.check_cancellation("nexus_query_engine.exec.bounded.source_adjacent_chunk_batch")?;
@@ -237,7 +263,7 @@ fn execute_bounded_source_adjacent_chunk_batch_attempt(
         reservations,
         metrics,
         "source_chunk_read",
-        false,
+        true,
     )?;
     execute_bounded_chunk_batch_operator_from_source(context, bounded, batch, output, reservations, metrics)
 }
@@ -348,7 +374,7 @@ fn execute_bounded_chunk_batch_operator_from_source(
         1,
     );
     let partial_reservation = reservations.try_reserve(partial_request, metrics)?;
-    metrics.record_source_chunk_commit(batch.row_group_count() as u64);
+    metrics.record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
     metrics.record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_reservation.bytes());
 
     Ok(CommittedPartial { frame, reservation: partial_reservation })
@@ -418,7 +444,7 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
         "source_chunk_read",
         !bounded.has_source_adjacent_stages(),
     )
-    .map_err(|error| attach_chunk_resource_facts(error, first_chunk, "source_chunk_read", 1, 1, metrics))?;
+    .map_err(|error| attach_source_batch_resource_facts(error, batch, "source_chunk_read", 1, 1, metrics))?;
     let source_row_group_count = reported_source_chunk_batch_read_row_groups(batch, source.observed_row_group_count);
     let input = CommittedPartial { frame: source.frame, reservation: source.reservation };
     let partial =
@@ -952,6 +978,52 @@ fn grow_source_reservation_to_observed(
     reservations.try_grow(source_reservation, grow_request, metrics)?;
     Ok(source_observed_bytes)
 }
+
+fn grow_source_batch_reservation_to_observed(
+    frame: &GpuDataFrame,
+    source_reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    batch: &SourceChunkBatch,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<u64> {
+    let source_observed_bytes = match observe_device_memory_bytes(frame, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return Err(attach_source_batch_resource_facts(
+                error,
+                batch,
+                memory_boundary,
+                attempt,
+                max_attempts,
+                metrics,
+            ));
+        },
+    };
+    let observed_request = observed_source_read_batch_reservation_request(
+        memory_boundary,
+        reservations.budget(),
+        batch,
+        attempt,
+        max_attempts,
+    );
+    if source_observed_bytes <= source_reservation.bytes() {
+        reservations.shrink_to_observed_with_request(
+            source_reservation,
+            source_observed_bytes,
+            observed_request,
+            metrics,
+        );
+        return Ok(source_observed_bytes);
+    }
+
+    let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
+    reservations.try_grow(source_reservation, observed_request.with_requested_bytes(source_delta), metrics)?;
+    Ok(source_observed_bytes)
+}
+
 fn shrink_source_reservation_to_observed_without_grow(
     frame: &GpuDataFrame,
     source_reservation: &mut ActiveReservation,
@@ -981,8 +1053,79 @@ fn shrink_source_reservation_to_observed_without_grow(
     Ok(source_observed_bytes)
 }
 
+fn shrink_source_batch_reservation_to_observed_without_grow(
+    frame: &GpuDataFrame,
+    source_reservation: &mut ActiveReservation,
+    reservations: &mut ReservationTracker,
+    batch: &SourceChunkBatch,
+    metrics: &mut QueryMetrics,
+    memory_boundary: &'static str,
+    attempt: usize,
+    max_attempts: usize,
+) -> Result<u64> {
+    let source_observed_bytes = observe_device_memory_bytes(frame, metrics).map_err(|error| {
+        attach_source_batch_resource_facts(error, batch, memory_boundary, attempt, max_attempts, metrics)
+    })?;
+    if source_observed_bytes <= source_reservation.bytes() {
+        reservations.shrink_to_observed_with_request(
+            source_reservation,
+            source_observed_bytes,
+            observed_source_read_batch_reservation_request(
+                memory_boundary,
+                reservations.budget(),
+                batch,
+                attempt,
+                max_attempts,
+            ),
+            metrics,
+        );
+    }
+    Ok(source_observed_bytes)
+}
+
 pub(super) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
     source_read_reservation_contract(policy, chunk).requested_bytes
+}
+
+pub(in crate::exec) fn source_read_batch_reservation_contract(
+    policy: MemoryControlPolicy,
+    batch: &SourceChunkBatch,
+) -> SourceReadReservationContract {
+    let mut requested_bytes = 0_u64;
+    let mut planning_bytes = Some(0_u64);
+    let mut estimated_bytes = Some(0_u64);
+    let mut all_exact = true;
+    let mut all_exact_or_projected = true;
+
+    for chunk in &batch.chunks {
+        let contract = source_read_reservation_contract(policy, chunk);
+        requested_bytes = requested_bytes.saturating_add(contract.requested_bytes);
+        planning_bytes = add_optional_contract_bytes(planning_bytes, contract.planning_bytes);
+        estimated_bytes = add_optional_contract_bytes(estimated_bytes, contract.estimated_bytes);
+        all_exact &= contract.quality == SourceReadReservationContractQuality::ExactLowerLevelContract;
+        all_exact_or_projected &= matches!(
+            contract.quality,
+            SourceReadReservationContractQuality::ExactLowerLevelContract
+                | SourceReadReservationContractQuality::ProjectedUncompressedEstimate
+        );
+    }
+
+    SourceReadReservationContract {
+        requested_bytes,
+        planning_bytes,
+        estimated_bytes: estimated_bytes.or(batch.estimated_source_read_bytes),
+        quality: if all_exact {
+            SourceReadReservationContractQuality::ExactLowerLevelContract
+        } else if all_exact_or_projected {
+            SourceReadReservationContractQuality::ProjectedUncompressedEstimate
+        } else {
+            SourceReadReservationContractQuality::ConservativeEstimate
+        },
+    }
+}
+
+fn add_optional_contract_bytes(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    Some(left?.saturating_add(right?))
 }
 
 pub(super) fn prefetch_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
@@ -1174,11 +1317,11 @@ fn try_read_local_parquet_chunk_with_corrected_budget_after_error(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SourceReadReservationContract {
-    pub(super) requested_bytes: u64,
-    pub(super) planning_bytes: Option<u64>,
-    pub(super) estimated_bytes: Option<u64>,
-    pub(super) quality: SourceReadReservationContractQuality,
+pub(in crate::exec) struct SourceReadReservationContract {
+    pub(in crate::exec) requested_bytes: u64,
+    pub(in crate::exec) planning_bytes: Option<u64>,
+    pub(in crate::exec) estimated_bytes: Option<u64>,
+    pub(in crate::exec) quality: SourceReadReservationContractQuality,
 }
 
 pub(super) fn source_read_reservation_contract(
@@ -1245,7 +1388,7 @@ pub(super) fn chunk_reservation_request(
         .with_stage(memory_boundary)
         .with_chunk_index(chunk.chunk_index)
         .with_file_index(chunk.file_index)
-        .with_path(chunk.path.display())
+        .with_path(chunk_path_fact(chunk))
         .with_attempt(attempt, max_attempts);
     if !chunk.reads_all_row_groups {
         request = request.with_row_groups(chunk.row_group_indexes.clone());
@@ -1255,6 +1398,56 @@ pub(super) fn chunk_reservation_request(
             request.with_compiled_task_id(legacy_bounded_chunk_task_id(operator_kind, memory_boundary, chunk, attempt));
     }
     request
+}
+
+pub(in crate::exec) fn source_chunk_batch_reservation_request(
+    kind: ReservationKind,
+    memory_boundary: &'static str,
+    requested_bytes: u64,
+    budget_bytes: u64,
+    batch: &SourceChunkBatch,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    if batch.is_singleton() {
+        return chunk_reservation_request(
+            kind,
+            memory_boundary,
+            requested_bytes,
+            budget_bytes,
+            first_chunk,
+            attempt,
+            max_attempts,
+        );
+    }
+
+    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
+        .with_memory_boundary(memory_boundary)
+        .with_node_id(first_chunk.source_node_id)
+        .with_stage(memory_boundary)
+        .with_attempt(attempt, max_attempts);
+    let same_file =
+        batch.chunks.iter().all(|chunk| chunk.file_index == first_chunk.file_index && chunk.path == first_chunk.path);
+    if same_file {
+        request = request.with_file_index(first_chunk.file_index).with_path(chunk_path_fact(first_chunk));
+        if batch.chunks.iter().all(|chunk| !chunk.reads_all_row_groups) {
+            let mut row_groups =
+                batch.chunks.iter().flat_map(|chunk| chunk.row_group_indexes.iter().copied()).collect::<Vec<_>>();
+            row_groups.sort_unstable();
+            row_groups.dedup();
+            request = request.with_row_groups(row_groups);
+        }
+    }
+    request
+}
+
+fn chunk_path_fact(chunk: &SourceChunk) -> String {
+    if chunk.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&chunk.path)
+    } else {
+        chunk.location.diagnostic_location()
+    }
 }
 
 fn legacy_bounded_chunk_operator_kind(kind: ReservationKind, memory_boundary: &str) -> Option<&'static str> {
@@ -1312,6 +1505,28 @@ pub(super) fn source_read_reservation_request(
     .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes)
 }
 
+pub(in crate::exec) fn source_read_batch_reservation_request(
+    policy: MemoryControlPolicy,
+    kind: ReservationKind,
+    memory_boundary: &'static str,
+    budget_bytes: u64,
+    batch: &SourceChunkBatch,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let contract = source_read_batch_reservation_contract(policy, batch);
+    source_chunk_batch_reservation_request(
+        kind,
+        memory_boundary,
+        contract.requested_bytes,
+        budget_bytes,
+        batch,
+        attempt,
+        max_attempts,
+    )
+    .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes)
+}
+
 pub(super) fn observed_source_read_reservation_request(
     memory_boundary: &'static str,
     budget_bytes: u64,
@@ -1332,5 +1547,39 @@ pub(super) fn observed_source_read_reservation_request(
         SourceReadReservationContractQuality::ObservedGrowShrink.as_str(),
         chunk.estimated_chunk_bytes,
         chunk.estimated_source_read_bytes,
+    )
+}
+
+pub(in crate::exec) fn observed_source_read_batch_reservation_request(
+    memory_boundary: &'static str,
+    budget_bytes: u64,
+    batch: &SourceChunkBatch,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    if batch.is_singleton() {
+        return observed_source_read_reservation_request(
+            memory_boundary,
+            budget_bytes,
+            first_chunk,
+            attempt,
+            max_attempts,
+        );
+    }
+    let contract = source_read_batch_reservation_contract(MemoryControlPolicy::Unbounded, batch);
+    source_chunk_batch_reservation_request(
+        ReservationKind::SourceRead,
+        memory_boundary,
+        0,
+        budget_bytes,
+        batch,
+        attempt,
+        max_attempts,
+    )
+    .with_source_read_contract(
+        SourceReadReservationContractQuality::ObservedGrowShrink.as_str(),
+        contract.planning_bytes,
+        contract.estimated_bytes,
     )
 }

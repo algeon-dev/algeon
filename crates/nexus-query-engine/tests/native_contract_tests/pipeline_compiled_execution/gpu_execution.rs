@@ -102,7 +102,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     );
     assert!(state.is_resource_released(shared_resource));
     assert_eq!(state.live_resource_count(), 0);
-    assert_eq!(metrics.source_chunks_committed, 1);
+    assert_eq!(metrics.source_chunks_committed, 2);
     assert_eq!(compiled_batch.num_rows(), 3);
     assert_eq!(int32_values(&compiled_batch, 0), vec![Some(1), Some(2), Some(4)]);
     assert_eq!(int32_values(&compiled_batch, 1), vec![Some(10), Some(20), Some(40)]);

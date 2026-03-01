@@ -546,6 +546,7 @@ fn apply_dynamic_filter_to_source(
             DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate
         )
         && let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter)
+        && source_reader_predicate_merge_is_supported(source, &predicate)
     {
         merge_source_reader_predicate(source, predicate);
     }
@@ -685,7 +686,10 @@ pub(crate) fn dynamic_filter_reader_predicate_should_merge(
     column: &str,
     filter: &DynamicFilter,
 ) -> Result<bool> {
-    if dynamic_filter_reader_predicate(source, column, filter).is_none() {
+    let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter) else {
+        return Ok(false);
+    };
+    if !source_reader_predicate_merge_is_supported(source, &predicate) {
         return Ok(false);
     }
     let DynamicFilter::RangeI64 { min, max } = filter else {
@@ -804,6 +808,14 @@ fn merge_source_reader_predicate(source: &mut LocalParquetSource, predicate: Exp
     };
     source.reader_predicate = Some(predicate);
     source.refresh_diagnostics();
+}
+
+fn source_reader_predicate_merge_is_supported(source: &LocalParquetSource, predicate: &Expr) -> bool {
+    let predicate = match &source.reader_predicate {
+        Some(existing) => Expr::binary(existing.clone(), BinaryOp::And, predicate.clone()),
+        None => predicate.clone(),
+    };
+    source.reader_predicate_is_supported(&predicate)
 }
 
 fn i64_literal_for_type(value: i64, data_type: &DataType) -> Option<LiteralValue> {

@@ -20,7 +20,34 @@ pub(super) fn read_join_leaf_source_chunks_serial(
         reader_dynamic_filters,
         source_chunk_batch_target_bytes(context.memory_control_policy()),
     );
-    let mut chunks = Vec::with_capacity(source_chunks.len());
+    read_join_leaf_source_batches_serial(
+        context,
+        source,
+        node_id,
+        batches,
+        reader_dynamic_filters,
+        reservations,
+        metrics,
+        max_attempts,
+        min_retry_chunk_row_groups,
+        grow_source_to_observed,
+    )
+}
+
+pub(super) fn read_join_leaf_source_batches_serial(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    node_id: NodeId,
+    batches: Vec<SourceChunkBatch>,
+    reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    max_attempts: usize,
+    min_retry_chunk_row_groups: usize,
+    grow_source_to_observed: bool,
+) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
+    let source_chunk_count = batches.iter().map(SourceChunkBatch::chunk_count).sum();
+    let mut chunks = Vec::with_capacity(source_chunk_count);
     for batch in batches {
         if batch.is_singleton() {
             let chunk = batch.chunks.into_iter().next().expect("singleton source batch has one chunk");
@@ -161,22 +188,18 @@ pub(super) fn read_join_leaf_source_batch_attempt(
     grow_source_to_observed: bool,
 ) -> Result<(GpuDataFrame, ActiveReservation)> {
     context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_chunk_batch")?;
-    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     for _chunk in &batch.chunks {
         metrics.record_source_chunk_attempt();
     }
-    let requested_bytes = source_chunk_batch_requested_bytes(context.memory_control_policy(), batch);
     let mut reservation = reservations.try_reserve(
-        join_source_read_reservation_request(
+        join_source_read_batch_reservation_request(
             context.memory_control_policy(),
-            requested_bytes,
             reservations.budget(),
             node_id,
-            first_chunk,
+            batch,
             1,
             1,
         )
-        .with_requested_bytes(requested_bytes)
         .with_stage("join_source_read_batch"),
         metrics,
     )?;
@@ -197,12 +220,12 @@ pub(super) fn read_join_leaf_source_batch_attempt(
         },
     };
     if grow_source_to_observed {
-        if let Err(error) = grow_join_source_reservation_to_observed_frame(
+        if let Err(error) = grow_join_source_batch_reservation_to_observed_frame(
             &frame,
             &mut reservation,
             reservations,
             node_id,
-            first_chunk,
+            batch,
             metrics,
             1,
             1,
@@ -217,7 +240,7 @@ pub(super) fn read_join_leaf_source_batch_attempt(
         return Err(error);
     }
     record_dynamic_filter_reader_predicate_batch_rows(reader_dynamic_filters, batch, &frame, metrics);
-    metrics.record_source_chunk_commit(batch.row_group_count() as u64);
+    metrics.record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
     Ok((frame, reservation))
 }
 

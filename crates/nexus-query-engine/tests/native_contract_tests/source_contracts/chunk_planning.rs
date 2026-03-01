@@ -695,6 +695,43 @@ fn dynamic_filter_range_merges_with_static_reader_predicate() {
 }
 
 #[test]
+fn dynamic_filter_range_does_not_create_unsupported_merged_reader_predicate() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("amount", DataType::Decimal128(15, 2), false),
+    ]));
+    let static_predicate = Expr::binary(
+        Expr::column("amount"),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Decimal128 { raw: 100, precision: 15, scale: 2 }),
+    );
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::object_store_uri("s3://test-bucket/input.parquet").unwrap()],
+        schema,
+        vec!["key".to_string(), "amount".to_string()],
+    )
+    .with_reader_predicate(static_predicate);
+    let mut builder = QueryPlanBuilder::new();
+    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
+    let route = dynamic_filter_source_route(
+        source_id,
+        nexus_query_engine::DynamicFilterConsumerLowering::MergedReaderPredicate,
+    );
+    let mut filters = nexus_query_engine::DynamicFilterSet::new();
+    filters.insert(
+        nexus_query_engine::DynamicFilterId::new(0),
+        nexus_query_engine::DynamicFilter::RangeI64 { min: 2, max: 3 },
+    );
+
+    let rewritten =
+        nexus_query_engine::dynamic_filter::apply_dynamic_filters_to_local_parquet_source(&source, &[&route], &filters)
+            .unwrap();
+
+    let predicate = rewritten.reader_predicate.as_ref().expect("static reader predicate should remain");
+    assert!(rewritten.reader_predicate_is_supported(predicate));
+}
+
+#[test]
 fn dynamic_filter_hash_set_prunes_row_groups_without_reader_predicate_lowering() {
     let dir = unique_temp_dir("nexus-query-engine-dynamic-filter-hash-set");
     let path = dir.join("input.parquet");

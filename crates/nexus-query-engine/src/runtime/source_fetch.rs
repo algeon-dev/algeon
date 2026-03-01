@@ -17,6 +17,8 @@ pub const DEFAULT_HOST_FETCH_BUDGET_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 /// Default service-wide concurrent object-store SourceFetch operation cap.
 pub const DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS: usize = 64;
+/// Default service-wide concurrent background lakehouse cache-fill operation cap.
+pub const DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS: usize = 4;
 /// Default service-wide concurrent GDS DMA operation cap.
 pub const DEFAULT_GDS_MAX_CONCURRENT_OPS: usize = 32;
 /// Default per-chunk size threshold for selecting future GDS direct-device reads.
@@ -177,6 +179,10 @@ pub struct SourceFetchConfig {
     pub host_fetch_budget_bytes: Option<u64>,
     /// Max concurrent object-store host-fetch operations across queries.
     pub host_fetch_max_concurrent_ops: usize,
+    /// Max in-flight background complete-object cache-fill bytes across queries. `None` auto-sizes from host RAM.
+    pub lakehouse_cache_fill_budget_bytes: Option<u64>,
+    /// Max concurrent background complete-object cache-fill operations across queries.
+    pub lakehouse_cache_fill_max_concurrent_ops: usize,
     /// Max concurrent future GDS DMA operations across queries.
     pub gds_max_concurrent_ops: usize,
     /// Per-chunk size below which GDS-eligible sources fall back to host-buffer IO.
@@ -189,7 +195,11 @@ impl SourceFetchConfig {
         if let Some(host_fetch_budget_bytes) = self.host_fetch_budget_bytes {
             validate_host_fetch_budget_bytes(host_fetch_budget_bytes)?;
         }
+        if let Some(lakehouse_cache_fill_budget_bytes) = self.lakehouse_cache_fill_budget_bytes {
+            validate_lakehouse_cache_fill_budget_bytes(lakehouse_cache_fill_budget_bytes)?;
+        }
         validate_host_fetch_max_concurrent_ops(self.host_fetch_max_concurrent_ops)?;
+        validate_lakehouse_cache_fill_max_concurrent_ops(self.lakehouse_cache_fill_max_concurrent_ops)?;
         validate_gds_max_concurrent_ops(self.gds_max_concurrent_ops)?;
         validate_gds_min_chunk_bytes(self.gds_min_chunk_bytes)?;
         if matches!(self.substrate, SourceFetchSubstrate::DirectDevice) && !deployment.gds_available {
@@ -248,6 +258,8 @@ impl Default for SourceFetchConfig {
             substrate: SourceFetchSubstrate::Auto,
             host_fetch_budget_bytes: None,
             host_fetch_max_concurrent_ops: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+            lakehouse_cache_fill_budget_bytes: None,
+            lakehouse_cache_fill_max_concurrent_ops: DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
             gds_max_concurrent_ops: DEFAULT_GDS_MAX_CONCURRENT_OPS,
             gds_min_chunk_bytes: DEFAULT_GDS_MIN_CHUNK_BYTES,
         }
@@ -332,6 +344,38 @@ impl HostFetchBudget {
         }
         state.in_flight_bytes = state.in_flight_bytes.saturating_add(bytes);
         Ok(HostFetchPermit { budget: self.clone(), bytes })
+    }
+
+    /// Acquires a host-buffer permit with a bounded wait.
+    pub fn acquire_with_timeout(
+        &self,
+        cancellation: &ExecutionCancellation,
+        bytes: u64,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<Option<HostFetchPermit>> {
+        validate_host_fetch_request_bytes(bytes, self.budget_bytes())?;
+        let start = Instant::now();
+        let mut state = self.lock_state(operation)?;
+        loop {
+            cancellation.check(operation)?;
+            if host_fetch_bytes_fit(state.in_flight_bytes, bytes, self.budget_bytes()) {
+                state.in_flight_bytes = state.in_flight_bytes.saturating_add(bytes);
+                return Ok(Some(HostFetchPermit { budget: self.clone(), bytes }));
+            }
+            let Some(remaining) = timeout.checked_sub(start.elapsed()) else {
+                return Ok(None);
+            };
+            let wait = remaining.min(Duration::from_millis(100));
+            let (next_state, _wait_result) = self.inner.available.wait_timeout(state, wait).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::Internal,
+                    operation,
+                    "host fetch budget mutex was poisoned while waiting for capacity",
+                )
+            })?;
+            state = next_state;
+        }
     }
 
     fn grow_permit(&self, permit: &mut HostFetchPermit, new_bytes: u64) -> Result<()> {
@@ -568,6 +612,32 @@ fn validate_host_fetch_max_concurrent_ops(max_concurrent_ops: usize) -> Result<(
             "host fetch max concurrent operations must be greater than zero",
         )
         .with_fact("field", "host_fetch_max_concurrent_ops")
+        .with_fact("reason", "zero"));
+    }
+    Ok(())
+}
+
+fn validate_lakehouse_cache_fill_budget_bytes(budget_bytes: u64) -> Result<()> {
+    if budget_bytes == 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.lakehouse_cache.background_fill_budget.validate",
+            "lakehouse cache fill budget bytes must be greater than zero",
+        )
+        .with_fact("field", "lakehouse_cache_fill_budget_bytes")
+        .with_fact("reason", "zero"));
+    }
+    Ok(())
+}
+
+fn validate_lakehouse_cache_fill_max_concurrent_ops(max_concurrent_ops: usize) -> Result<()> {
+    if max_concurrent_ops == 0 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.lakehouse_cache.background_fill_concurrency.validate",
+            "lakehouse cache fill max concurrent operations must be greater than zero",
+        )
+        .with_fact("field", "lakehouse_cache_fill_max_concurrent_ops")
         .with_fact("reason", "zero"));
     }
     Ok(())

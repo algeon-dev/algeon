@@ -4,50 +4,37 @@ use super::*;
 
 pub(super) fn read_local_parquet_file(
     context: &ExecutionContext,
+    source: &LocalParquetSource,
+    source_node_id: NodeId,
     file: &LocalParquetFile,
+    file_index: usize,
+    cudf_source: &cudf::io::source::LocalParquetSource,
+    cudf_chunk: &cudf::io::source::SourceChunk,
     columns: &[&str],
-    predicate: Option<Arc<cudf::ops::ast::AstExpression>>,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_source.read")?;
-    let row_groups = cudf_row_groups(file)?;
     let read_timer = Instant::now();
-    let options = match (&row_groups, predicate) {
-        (Some(row_groups), Some(predicate)) => ParquetReadOptions::builder()
-            .filepath(&file.path)
-            .columns(columns)
-            .row_groups(row_groups)
-            .predicate(predicate)
-            .with_runtime(context.runtime())
-            .build(),
-        (Some(row_groups), None) => ParquetReadOptions::builder()
-            .filepath(&file.path)
-            .columns(columns)
-            .row_groups(row_groups)
-            .with_runtime(context.runtime())
-            .build(),
-        (None, Some(predicate)) => ParquetReadOptions::builder()
-            .filepath(&file.path)
-            .columns(columns)
-            .predicate(predicate)
-            .with_runtime(context.runtime())
-            .build(),
-        (None, None) => {
-            ParquetReadOptions::builder().filepath(&file.path).columns(columns).with_runtime(context.runtime()).build()
-        },
-    };
-
-    let frame = DataFrame::read_parquet_with_options(options).map_err(|error| {
-        QueryError::from_cudf(
+    let output = DataFrame::read_parquet_source_chunk_with_evidence(
+        context.runtime(),
+        cudf_source,
+        cudf_chunk,
+        SourceReadMode::ExecutionFrame,
+    )
+    .map_err(|error| {
+        read_cudf_error_for_file(
             "nexus_query_engine.local_parquet_source.read",
             "failed to read native local parquet source with cudf",
             error,
+            file,
         )
-        .with_fact("path", file.path.display())
+        .with_fact("path", file_path_fact(file))
         .with_fact("read_columns", columns.len())
         .with_fact("row_groups_selected", file.selected_row_group_count())
     })?;
+    let read_evidence = output.read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
+    let frame = output.into_frame();
     metrics.parquet_read_time += read_elapsed;
     metrics.source_read_time += read_elapsed;
     metrics.parquet_files += 1;
@@ -55,7 +42,41 @@ pub(super) fn read_local_parquet_file(
     metrics.row_groups_selected += local_file_selected_row_group_count(file);
     metrics.read_columns += columns.len() as u64;
     metrics.record_input_batch(frame.num_rows() as u64);
+    record_source_file_read_runtime(
+        source,
+        source_node_id,
+        file,
+        file_index,
+        file_index,
+        local_file_selected_row_group_count(file),
+        frame.num_rows() as u64,
+        read_elapsed,
+        &HostBufferFetchRuntimeMetrics::default(),
+        read_evidence.as_ref(),
+        metrics,
+    );
     Ok(frame)
+}
+
+fn read_cudf_error_for_file(
+    operation: &'static str,
+    message: &'static str,
+    error: cudf::Error,
+    file: &LocalParquetFile,
+) -> QueryError {
+    if file.location.is_local_path() {
+        QueryError::from_cudf_with_budget_details(operation, message, error)
+    } else {
+        QueryError::from_cudf_without_source_with_budget_details(operation, message, &error)
+    }
+}
+
+fn file_path_fact(file: &LocalParquetFile) -> String {
+    if file.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&file.path)
+    } else {
+        file.location.diagnostic_location()
+    }
 }
 
 fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
@@ -82,29 +103,39 @@ fn represented_file_row_group_count(file: &LocalParquetFile) -> Option<usize> {
         .map(Vec::len)
 }
 
-pub(super) fn cudf_row_groups(file: &LocalParquetFile) -> Result<Option<Vec<i32>>> {
-    let Some(row_groups) = &file.row_groups else {
-        return Ok(None);
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    if row_groups.is_empty() {
-        return Ok(None);
+    #[test]
+    fn remote_direct_read_errors_redact_object_store_locations() {
+        let sensitive_uri = "s3://secret-bucket/private/key.parquet?X-Amz-Signature=abc";
+        let file = LocalParquetFile::from_resolved_parquet_source(crate::source::ResolvedParquetSource::remote_direct(
+            sensitive_uri,
+            crate::source::CredentialMode::SharedProcessEnv,
+        ))
+        .expect("valid remote direct source");
+        let cudf_error = cudf::testing::error::new_with_for_test(
+            cudf::ErrorCode::IoFailure,
+            "io::parquet::read_parquet_table",
+            format!("failed to open {sensitive_uri}"),
+        );
+
+        let error = read_cudf_error_for_file(
+            "nexus_query_engine.local_parquet_source.read",
+            "failed to read native local parquet source with cudf",
+            cudf_error,
+            &file,
+        )
+        .with_fact("path", file_path_fact(&file));
+        let rendered = format!("{error}");
+        let debug = format!("{error:?}");
+
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
+        assert!(error.source_error().is_none());
+        for sensitive in ["secret-bucket", "private/key", "X-Amz-Signature", "abc"] {
+            assert!(!rendered.contains(sensitive), "{sensitive} leaked in display error: {rendered}");
+            assert!(!debug.contains(sensitive), "{sensitive} leaked in debug error: {debug}");
+        }
     }
-
-    row_groups
-        .iter()
-        .map(|row_group| {
-            i32::try_from(*row_group).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.local_parquet_source.row_groups",
-                    "local parquet row group index exceeds the cudf reader range",
-                )
-                .with_fact("path", file.path.display())
-                .with_fact("row_group", row_group)
-                .with_fact("max_row_group", i32::MAX)
-            })
-        })
-        .collect::<Result<Vec<_>>>()
-        .map(Some)
 }

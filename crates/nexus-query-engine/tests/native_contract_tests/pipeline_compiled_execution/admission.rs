@@ -1965,7 +1965,7 @@ fn strict_admission_selects_q70_class_left_semi_rollup_rank_topk_envelope_after_
             edges: 12,
             barriers: 10,
             resources: 10,
-            gates: 16,
+            gates: 17,
             sink: SinkBoundaryKind::HostArrowMaterialization,
             capability_contract: None,
         },
@@ -2575,7 +2575,7 @@ fn d5_contract_gate_rows_are_inventory_backed_and_family_path_free() {
 fn strict_preflight_gap_strict_preflight_gap_registry_tracks_current_retirement_protocol() {
     assert_eq!(
         STRICT_UNRESOLVED_PREFLIGHT_GAPS.len(),
-        7,
+        8,
         "strict unresolved preflight gap retirement must remove entries from this registry"
     );
 

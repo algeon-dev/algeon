@@ -155,7 +155,7 @@ impl ScheduledLocalParquetRead {
             )
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
-            .with_fact("path", chunk.path.display())
+            .with_fact("path", chunk_path_fact(&chunk))
             .with_fact("row_groups", format_row_groups(&chunk))
         })?;
         metrics.record_source_read_queue_wait(wait_timer.elapsed());
@@ -246,7 +246,7 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
         .with_stage(budget_boundary)
         .with_chunk_index(chunk.chunk_index)
         .with_file_index(chunk.file_index)
-        .with_path(chunk.path.display())
+        .with_path(chunk_path_fact(chunk))
         .with_attempt(attempt + 1, max_attempts)
         .with_source_read_contract(
             SourceReadReservationContractQuality::CorrectedLowerLevelBudget.as_str(),
@@ -270,6 +270,14 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
             metrics,
         ),
     }))
+}
+
+fn chunk_path_fact(chunk: &SourceChunk) -> String {
+    if chunk.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&chunk.path)
+    } else {
+        chunk.location.diagnostic_location()
+    }
 }
 
 struct ScheduledLocalParquetReadRetryOutput {

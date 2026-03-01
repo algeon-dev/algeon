@@ -846,6 +846,12 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
         },
         PlanNode::Join(join) if keyed_filtered_semi_anti_join_capable(join) => vec![
             ReservationRequirement::modeled(
+                ReservationKind::OperatorOutput,
+                "join_filtered_build_key_deduplicate",
+                "join_filtered_build_key_deduplicate_output_contract",
+                ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
+            ),
+            ReservationRequirement::modeled(
                 ReservationKind::HashTable,
                 "join_hash_table",
                 "hash_join_pre_build_reservation_size_bytes",

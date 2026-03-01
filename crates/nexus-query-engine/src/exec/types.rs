@@ -23,7 +23,7 @@ use crate::{
     metrics::QueryMetrics,
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{DevicePlacement, ExecutionContext},
-    source::{LocalParquetSource, SourceColumnRef},
+    source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
 };
 
 /// Local lookup table for GPU-resident inputs consumed by a query.
@@ -583,9 +583,16 @@ impl GpuHashJoinBuildCache {
 /// columns, predicates, file identities, row groups, scan limit, and chunk
 /// boundaries. It is stable for equivalent local source scans, but is not a
 /// cross-version or cross-process persistence format.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct GpuLocalParquetSourceCacheKey {
     fingerprint: String,
+    diagnostic_fingerprint: String,
+}
+
+impl std::fmt::Debug for GpuLocalParquetSourceCacheKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuLocalParquetSourceCacheKey").field("fingerprint", &self.diagnostic_fingerprint).finish()
+    }
 }
 
 impl GpuLocalParquetSourceCacheKey {
@@ -601,8 +608,9 @@ impl GpuLocalParquetSourceCacheKey {
         );
         push_token(&mut fingerprint, "file_count", source.files.len().to_string());
         for (index, file) in source.files.iter().enumerate() {
-            push_token(&mut fingerprint, format!("file.{index}.location"), file.location.reader_path());
+            push_token(&mut fingerprint, format!("file.{index}.location"), file.location.diagnostic_location());
             push_token(&mut fingerprint, format!("file.{index}.stable_id"), &file.stable_id);
+            push_resolved_source_contract(&mut fingerprint, format!("file.{index}.resolved"), &file.resolved_source);
             push_token(
                 &mut fingerprint,
                 format!("file.{index}.size"),
@@ -639,10 +647,17 @@ impl GpuLocalParquetSourceCacheKey {
                 format!("file.{index}.row_group_rows"),
                 file.row_group_rows.as_deref(),
             );
+            push_reader_decimal_types(
+                &mut fingerprint,
+                format!("file.{index}.reader_decimal_types"),
+                &file.reader_decimal_types,
+            );
             let partition_values = file.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
             push_string_vec(&mut fingerprint, format!("file.{index}.partition_values"), &partition_values);
         }
-        Self { fingerprint }
+        let mut diagnostic_fingerprint = fingerprint.clone();
+        redact_source_cache_fingerprint(&mut diagnostic_fingerprint, source);
+        Self { fingerprint, diagnostic_fingerprint }
     }
 
     /// Build a key for one bounded local Parquet source chunk.
@@ -661,8 +676,9 @@ impl GpuLocalParquetSourceCacheKey {
             chunk.scan_limit_rows.map_or_else(|| "none".to_string(), |limit| limit.to_string()),
         );
         push_token(&mut fingerprint, "chunk.file_index", chunk.file_index.to_string());
-        push_token(&mut fingerprint, "chunk.location", chunk.location.reader_path());
+        push_token(&mut fingerprint, "chunk.location", chunk.location.diagnostic_location());
         push_token(&mut fingerprint, "chunk.stable_id", &chunk.stable_id);
+        push_resolved_source_contract(&mut fingerprint, "chunk.resolved", &chunk.resolved_source);
         push_token(&mut fingerprint, "chunk.reads_all_row_groups", chunk.reads_all_row_groups.to_string());
         push_usize_vec(&mut fingerprint, "chunk.row_groups", &chunk.row_group_indexes);
         push_optional_u64(&mut fingerprint, "chunk.known_file_bytes", chunk.known_file_bytes);
@@ -723,14 +739,22 @@ impl GpuLocalParquetSourceCacheKey {
             chunk.source_file_row_group_rows.as_deref(),
         );
         push_string_vec(&mut fingerprint, "chunk.read_columns", &chunk.read_columns);
+        push_reader_decimal_types(&mut fingerprint, "chunk.reader_decimal_types", &chunk.reader_decimal_types);
+        push_token(
+            &mut fingerprint,
+            "chunk.reader_decimal_types_footer_verified",
+            chunk.reader_decimal_types_footer_verified.to_string(),
+        );
         let partition_values = chunk.partition_values.iter().map(ToString::to_string).collect::<Vec<_>>();
         push_string_vec(&mut fingerprint, "chunk.partition_values", &partition_values);
-        Self { fingerprint }
+        let mut diagnostic_fingerprint = fingerprint.clone();
+        redact_source_chunk_cache_fingerprint(&mut diagnostic_fingerprint, chunk);
+        Self { fingerprint, diagnostic_fingerprint }
     }
 
     /// Escaped textual fingerprint for diagnostics and tests.
     pub fn as_str(&self) -> &str {
-        &self.fingerprint
+        &self.diagnostic_fingerprint
     }
 }
 
@@ -1026,6 +1050,136 @@ fn push_source_scan_contract(output: &mut String, source: &LocalParquetSource) {
     );
 }
 
+fn push_resolved_source_contract(output: &mut String, label: impl AsRef<str>, resolved_source: &ResolvedParquetSource) {
+    let label = label.as_ref();
+    push_optional_string(
+        output,
+        format!("{label}.original_location"),
+        Some(resolved_source.original_location.as_str()),
+    );
+    push_optional_string(output, format!("{label}.reader_location"), Some(resolved_source.reader_location.as_str()));
+    push_optional_string(output, format!("{label}.storage_domain"), resolved_source.storage_domain.as_deref());
+    push_optional_string(output, format!("{label}.content_identity"), resolved_source.content_identity.as_deref());
+    push_optional_string(output, format!("{label}.storage_profile_id"), resolved_source.storage_profile_id.as_deref());
+    push_token(output, format!("{label}.read_strategy"), resolved_source.read_strategy.as_str());
+    push_token(output, format!("{label}.decode_input"), resolved_source.decode_input.as_str());
+    push_token(output, format!("{label}.remote_read_mode"), resolved_source.remote_read_mode.as_str());
+    push_token(output, format!("{label}.credential_mode"), resolved_source.credential_mode.as_str());
+    push_token(output, format!("{label}.lakehouse_cache_status"), resolved_source.cache_status.as_str());
+    push_token(
+        output,
+        format!("{label}.lakehouse_cache_read_mode"),
+        resolved_source.lakehouse_cache_read_mode.as_str(),
+    );
+    push_optional_string(
+        output,
+        format!("{label}.lakehouse_cache_root"),
+        resolved_source.lakehouse_cache_root.as_deref(),
+    );
+    push_optional_string(
+        output,
+        format!("{label}.lakehouse_cache_path"),
+        resolved_source.lakehouse_cache_path.as_deref(),
+    );
+    push_optional_u64(output, format!("{label}.lakehouse_cache_max_bytes"), resolved_source.lakehouse_cache_max_bytes);
+    push_token(
+        output,
+        format!("{label}.lakehouse_cache_fill_mode"),
+        resolved_source.lakehouse_cache_fill_mode.as_str(),
+    );
+    push_token(
+        output,
+        format!("{label}.remote_host_buffer_ranged_enabled"),
+        resolved_source.remote_host_buffer_ranged_enabled.to_string(),
+    );
+    push_optional_string(output, format!("{label}.fallback_reason"), resolved_source.fallback_reason.as_deref());
+}
+
+fn redact_source_cache_fingerprint(output: &mut String, source: &LocalParquetSource) {
+    for (index, file) in source.files.iter().enumerate() {
+        replace_token_value(
+            output,
+            format!("file.{index}.location"),
+            file.location.reader_path().as_str(),
+            file.location.diagnostic_location().as_str(),
+        );
+        replace_token_value(
+            output,
+            format!("file.{index}.stable_id"),
+            file.stable_id.as_str(),
+            file.location.diagnostic_stable_id(file.stable_id.as_str()).as_str(),
+        );
+        redact_resolved_source_contract(output, format!("file.{index}.resolved"), &file.resolved_source);
+    }
+}
+
+fn redact_source_chunk_cache_fingerprint(output: &mut String, chunk: &SourceChunk) {
+    replace_token_value(
+        output,
+        "chunk.location",
+        chunk.location.reader_path().as_str(),
+        chunk.location.diagnostic_location().as_str(),
+    );
+    replace_token_value(
+        output,
+        "chunk.stable_id",
+        chunk.stable_id.as_str(),
+        chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()).as_str(),
+    );
+    redact_resolved_source_contract(output, "chunk.resolved", &chunk.resolved_source);
+}
+
+fn redact_resolved_source_contract(
+    output: &mut String,
+    label: impl AsRef<str>,
+    resolved_source: &ResolvedParquetSource,
+) {
+    let label = label.as_ref();
+    replace_token_value(
+        output,
+        format!("{label}.original_location"),
+        resolved_source.original_location.as_str(),
+        stable_hashed_string(resolved_source.original_location.as_str()).as_str(),
+    );
+    replace_token_value(
+        output,
+        format!("{label}.reader_location"),
+        resolved_source.reader_location.as_str(),
+        stable_hashed_string(resolved_source.reader_location.as_str()).as_str(),
+    );
+    replace_optional_token_value(output, format!("{label}.storage_domain"), resolved_source.storage_domain.as_deref());
+    replace_optional_token_value(
+        output,
+        format!("{label}.content_identity"),
+        resolved_source.content_identity.as_deref(),
+    );
+    replace_optional_token_value(
+        output,
+        format!("{label}.lakehouse_cache_root"),
+        resolved_source.lakehouse_cache_root.as_deref(),
+    );
+    replace_optional_token_value(
+        output,
+        format!("{label}.lakehouse_cache_path"),
+        resolved_source.lakehouse_cache_path.as_deref(),
+    );
+}
+
+fn replace_optional_token_value(output: &mut String, key: impl AsRef<str>, value: Option<&str>) {
+    if let Some(value) = value {
+        replace_token_value(output, key, value, stable_hashed_string(value).as_str());
+    }
+}
+
+fn replace_token_value(output: &mut String, key: impl AsRef<str>, current_value: &str, new_value: &str) {
+    let key = escape_token(key.as_ref());
+    let current_value = escape_token(current_value);
+    let new_value = escape_token(new_value);
+    let needle = format!("{key}={current_value};");
+    let replacement = format!("{key}={new_value};");
+    *output = output.replace(&needle, replacement.as_str());
+}
+
 fn push_source_refs(output: &mut String, label: impl AsRef<str>, refs: &[SourceColumnRef]) {
     let values = refs.iter().map(format_source_ref).collect::<Vec<_>>();
     push_string_vec(output, label, &values);
@@ -1053,6 +1207,16 @@ fn push_usize_vec(output: &mut String, label: impl AsRef<str>, values: &[usize])
     }
 }
 
+fn push_reader_decimal_types(output: &mut String, label: impl AsRef<str>, values: &[ParquetReaderDecimalType]) {
+    let label = label.as_ref();
+    push_token(output, format!("{label}.len"), values.len().to_string());
+    for (index, value) in values.iter().enumerate() {
+        push_token(output, format!("{label}.{index}.column_name"), &value.column_name);
+        push_token(output, format!("{label}.{index}.type_id"), value.type_id.as_str());
+        push_token(output, format!("{label}.{index}.cudf_scale"), value.cudf_scale.to_string());
+    }
+}
+
 fn push_optional_usize_vec(output: &mut String, label: impl AsRef<str>, values: Option<&[usize]>) {
     match values {
         Some(values) => push_usize_vec(output, label, values),
@@ -1077,6 +1241,26 @@ fn push_optional_u64_vec(output: &mut String, label: impl AsRef<str>, values: Op
         },
         None => push_token(output, label, "none"),
     }
+}
+
+fn push_optional_string(output: &mut String, label: impl AsRef<str>, value: Option<&str>) {
+    match value {
+        Some(value) => push_token(output, label, value),
+        None => push_token(output, label, "none"),
+    }
+}
+
+fn stable_hashed_string(value: &str) -> String {
+    format!("fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len())
+}
+
+fn stable_fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn push_token(output: &mut String, key: impl AsRef<str>, value: impl ToString) {

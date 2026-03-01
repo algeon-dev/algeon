@@ -8,7 +8,7 @@
 
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -48,7 +48,7 @@ pub use io_capability::{
 };
 pub(crate) use object_store::{ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey};
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
-use object_store::{SourceObjectStoreRegistry, default_source_fetch_runtime};
+use object_store::{SourceObjectStoreRegistry, default_lakehouse_cache_fill_runtime, default_source_fetch_runtime};
 pub use policy::{
     DevicePlacement, MemoryControlPolicy, MemoryResourcePolicy, MemorySpaceId, ReservationKind, SourceChunkPlanningMode,
 };
@@ -64,9 +64,10 @@ pub use service_stream::{
 };
 pub use source_fetch::{
     DEFAULT_GDS_MAX_CONCURRENT_OPS, DEFAULT_GDS_MIN_CHUNK_BYTES, DEFAULT_HOST_FETCH_BUDGET_BYTES,
-    DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, HostFetchBudget, HostFetchPermit,
-    SourceFetchConfig, SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason,
-    SourceFetchSubstrate, default_host_fetch_budget_bytes,
+    DEFAULT_HOST_FETCH_BUDGET_CAP_BYTES, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
+    DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS, HostFetchBudget, HostFetchPermit, SourceFetchConfig,
+    SourceFetchStrategy, SourceFetchStrategyDecision, SourceFetchStrategyReason, SourceFetchSubstrate,
+    default_host_fetch_budget_bytes,
 };
 use source_fetch::{GdsConcurrencyGate, SourceFetchConcurrencyGate, SourceFetchOperationPermit};
 
@@ -114,6 +115,115 @@ impl ExecutionCancellation {
 impl Default for ExecutionCancellation {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Structured outcome for an asynchronous lakehouse cache fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LakehouseCacheFillOutcome {
+    /// The complete object was written to the local lakehouse cache.
+    Completed,
+    /// The background fill failed after it was accepted for execution.
+    Failed,
+}
+
+/// Error facts captured for a failed asynchronous lakehouse cache fill.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LakehouseCacheFillErrorEvent {
+    pub(crate) code: String,
+    pub(crate) kind: String,
+    pub(crate) status: String,
+    pub(crate) operation: String,
+}
+
+/// Structured asynchronous lakehouse cache fill event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LakehouseCacheFillEvent {
+    pub(crate) outcome: LakehouseCacheFillOutcome,
+    pub(crate) bytes: Option<u64>,
+    pub(crate) elapsed: Duration,
+    pub(crate) cache_path_hash: String,
+    pub(crate) stable_id_hash: String,
+    pub(crate) file_index: Option<usize>,
+    pub(crate) chunk_index: Option<usize>,
+    pub(crate) error: Option<LakehouseCacheFillErrorEvent>,
+}
+
+/// Credential-free snapshot of a background lakehouse cache-fill completion event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LakehouseCacheFillEventSnapshot {
+    /// Stable event outcome.
+    pub outcome: &'static str,
+    /// Complete-object bytes written for successful fills, when known.
+    pub bytes: Option<u64>,
+    /// Elapsed time from accepted background job start to completion/failure.
+    pub elapsed: Duration,
+    /// Stable hash of the local cache path.
+    pub cache_path_hash: String,
+    /// Stable hash of the source stable id.
+    pub stable_id_hash: String,
+    /// Source file index associated with the fill, when known.
+    pub file_index: Option<usize>,
+    /// Source chunk index associated with the fill, when known.
+    pub chunk_index: Option<usize>,
+    /// Stable native error code for failed fills, when present.
+    pub error_code: Option<String>,
+    /// Stable native error kind for failed fills, when present.
+    pub error_kind: Option<String>,
+    /// Stable native error status for failed fills, when present.
+    pub error_status: Option<String>,
+    /// Stable native error operation for failed fills, when present.
+    pub error_operation: Option<String>,
+}
+
+impl LakehouseCacheFillOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl From<&LakehouseCacheFillEvent> for LakehouseCacheFillEventSnapshot {
+    fn from(event: &LakehouseCacheFillEvent) -> Self {
+        Self {
+            outcome: event.outcome.as_str(),
+            bytes: event.bytes,
+            elapsed: event.elapsed,
+            cache_path_hash: event.cache_path_hash.clone(),
+            stable_id_hash: event.stable_id_hash.clone(),
+            file_index: event.file_index,
+            chunk_index: event.chunk_index,
+            error_code: event.error.as_ref().map(|error| error.code.clone()),
+            error_kind: event.error.as_ref().map(|error| error.kind.clone()),
+            error_status: event.error.as_ref().map(|error| error.status.clone()),
+            error_operation: event.error.as_ref().map(|error| error.operation.clone()),
+        }
+    }
+}
+
+/// Query-context-local event sink for asynchronous lakehouse cache fill completion.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LakehouseCacheFillEventSink {
+    events: Arc<Mutex<Vec<LakehouseCacheFillEvent>>>,
+}
+
+impl LakehouseCacheFillEventSink {
+    pub(crate) fn record(&self, event: LakehouseCacheFillEvent) {
+        match self.events.lock() {
+            Ok(mut events) => events.push(event),
+            Err(_error) => {
+                eprintln!("[nexus-query-engine] warning: failed to record poisoned lakehouse cache fill event sink");
+            },
+        }
+    }
+
+    pub(crate) fn events(&self) -> Vec<LakehouseCacheFillEvent> {
+        match self.events.lock() {
+            Ok(events) => events.clone(),
+            Err(_error) => Vec::new(),
+        }
     }
 }
 
@@ -212,10 +322,18 @@ pub struct ExecutionContext {
     host_fetch_budget: HostFetchBudget,
     /// Service-wide operation-count gate for object-store fetches.
     source_fetch_concurrency: SourceFetchConcurrencyGate,
+    /// Service-wide byte budget for background lakehouse complete-object cache fills.
+    lakehouse_cache_fill_budget: HostFetchBudget,
+    /// Service-wide operation-count gate for background lakehouse complete-object cache fills.
+    lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate,
+    /// Structured completion/failure events from asynchronous lakehouse cache fills.
+    lakehouse_cache_fill_events: LakehouseCacheFillEventSink,
     /// Service-wide operation-count gate for future GDS direct-device reads.
     gds_concurrency: GdsConcurrencyGate,
     /// Service-scoped async runtime used for object-store source fetches.
     source_fetch_runtime: Arc<tokio::runtime::Runtime>,
+    /// Service-scoped async runtime used for background lakehouse cache fills.
+    lakehouse_cache_fill_runtime: Arc<tokio::runtime::Runtime>,
     /// Cached object-store clients used by source fetch workers.
     source_object_stores: Arc<SourceObjectStoreRegistry>,
     /// Deployment-level IO capability probes used for readiness/reporting.
@@ -276,8 +394,15 @@ impl ExecutionContext {
             service_stream_pool,
             host_fetch_budget: HostFetchBudget::default(),
             source_fetch_concurrency: SourceFetchConcurrencyGate::default(),
+            lakehouse_cache_fill_budget: HostFetchBudget::default(),
+            lakehouse_cache_fill_concurrency: SourceFetchConcurrencyGate::new(
+                DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS,
+            )
+            .expect("default lakehouse cache fill concurrency is non-zero"),
+            lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             gds_concurrency: GdsConcurrencyGate::default(),
             source_fetch_runtime: default_source_fetch_runtime(),
+            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime(),
             source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
             deployment_io_capability: DeploymentIoCapability::probe_current_host(),
             cancellation: ExecutionCancellation::new(),
@@ -338,8 +463,12 @@ impl ExecutionContext {
             service_stream_pool: self.service_stream_pool.clone(),
             host_fetch_budget: self.host_fetch_budget.clone(),
             source_fetch_concurrency: self.source_fetch_concurrency.clone(),
+            lakehouse_cache_fill_budget: self.lakehouse_cache_fill_budget.clone(),
+            lakehouse_cache_fill_concurrency: self.lakehouse_cache_fill_concurrency.clone(),
+            lakehouse_cache_fill_events: self.lakehouse_cache_fill_events.clone(),
             gds_concurrency: self.gds_concurrency.clone(),
             source_fetch_runtime: Arc::clone(&self.source_fetch_runtime),
+            lakehouse_cache_fill_runtime: Arc::clone(&self.lakehouse_cache_fill_runtime),
             source_object_stores: Arc::clone(&self.source_object_stores),
             deployment_io_capability: self.deployment_io_capability.clone(),
             cancellation: self.cancellation.clone(),
@@ -421,6 +550,26 @@ impl ExecutionContext {
         self.source_fetch_concurrency.max_concurrent_ops()
     }
 
+    /// Returns the service-wide background lakehouse cache-fill byte budget.
+    pub fn lakehouse_cache_fill_budget(&self) -> HostFetchBudget {
+        self.lakehouse_cache_fill_budget.clone()
+    }
+
+    /// Maximum background lakehouse cache-fill operations admitted concurrently.
+    pub fn lakehouse_cache_fill_max_concurrent_ops(&self) -> usize {
+        self.lakehouse_cache_fill_concurrency.max_concurrent_ops()
+    }
+
+    /// Structured asynchronous lakehouse cache-fill completion/failure events.
+    pub(crate) fn lakehouse_cache_fill_events(&self) -> LakehouseCacheFillEventSink {
+        self.lakehouse_cache_fill_events.clone()
+    }
+
+    /// Returns credential-free background cache-fill events observed by this context so far.
+    pub fn lakehouse_cache_fill_event_snapshots(&self) -> Vec<LakehouseCacheFillEventSnapshot> {
+        self.lakehouse_cache_fill_events.events().iter().map(LakehouseCacheFillEventSnapshot::from).collect()
+    }
+
     /// Maximum future GDS DMA operations admitted concurrently.
     pub fn gds_max_concurrent_ops(&self) -> usize {
         self.gds_concurrency.max_concurrent_ops()
@@ -456,8 +605,29 @@ impl ExecutionContext {
         self.source_fetch_concurrency.acquire_with_timeout(&self.cancellation, timeout, operation)
     }
 
+    pub(crate) fn acquire_lakehouse_cache_fill_operation_with_timeout(
+        &self,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<Option<SourceFetchOperationPermit>> {
+        self.lakehouse_cache_fill_concurrency.acquire_with_timeout(&self.cancellation, timeout, operation)
+    }
+
+    pub(crate) fn acquire_lakehouse_cache_fill_budget_with_timeout(
+        &self,
+        bytes: u64,
+        timeout: Duration,
+        operation: &'static str,
+    ) -> Result<Option<HostFetchPermit>> {
+        self.lakehouse_cache_fill_budget.acquire_with_timeout(&self.cancellation, bytes, timeout, operation)
+    }
+
     pub(crate) fn s3_object_store(&self, key: S3ObjectStoreKey) -> Result<Arc<dyn ::object_store::ObjectStore>> {
         self.source_object_stores.s3_store(key)
+    }
+
+    pub(crate) fn source_storage_profile(&self, id: &str) -> Result<&SourceStorageProfile> {
+        self.source_object_stores.profile(id)
     }
 
     pub(crate) fn spawn_object_store_fetch(
@@ -485,6 +655,24 @@ impl ExecutionContext {
         T: Send + 'static,
     {
         self.source_fetch_runtime.spawn(async move {
+            let timer = Instant::now();
+            let value = future_factory().await;
+            on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
+        })
+    }
+
+    /// Spawns a caller-provided async background lakehouse cache-fill task.
+    pub(crate) fn spawn_lakehouse_cache_fill<F, Fut, T>(
+        &self,
+        future_factory: F,
+        on_result: impl FnOnce(ObjectStoreCustomFetchResult<T>) + Send + 'static,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<T>> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.lakehouse_cache_fill_runtime.spawn(async move {
             let timer = Instant::now();
             let value = future_factory().await;
             on_result(ObjectStoreCustomFetchResult { value, elapsed: timer.elapsed() });
@@ -524,18 +712,19 @@ impl ExecutionContext {
     ) {
         source_fetch_runtime.spawn(async move {
             let timer = Instant::now();
+            let path_fact = crate::source::redacted_object_store_path_diagnostic(location.as_ref());
             let bytes = async move {
                 let result = store.get(&location).await?;
                 result.bytes().await
             }
             .await
-            .map_err(|error| {
+            .map_err(|_error| {
                 QueryError::new(
                     QueryErrorCode::CudfDependencyFailure,
                     "nexus_query_engine.source_fetch.object_store",
                     "failed to fetch native Parquet source bytes through object_store",
                 )
-                .with_source(error)
+                .with_fact("path", path_fact)
             });
             on_result(ObjectStoreFetchResult { bytes, elapsed: timer.elapsed() });
         });
@@ -612,6 +801,10 @@ pub struct ExecutionContextBuilder {
     host_fetch_budget_bytes: Option<u64>,
     /// Max object-store SourceFetch operations allowed concurrently.
     host_fetch_max_concurrent_ops: Option<usize>,
+    /// Background lakehouse cache-fill budget size used when constructing the default fill budget.
+    lakehouse_cache_fill_budget_bytes: Option<u64>,
+    /// Max background lakehouse complete-object cache-fill operations allowed concurrently.
+    lakehouse_cache_fill_max_concurrent_ops: Option<usize>,
     /// Optional caller-supplied deployment IO capability diagnostic.
     deployment_io_capability: Option<DeploymentIoCapability>,
     /// Cooperative cancellation flag observed by native execution.
@@ -748,6 +941,18 @@ impl ExecutionContextBuilder {
         self
     }
 
+    /// Sets the service-wide background lakehouse cache-fill byte budget.
+    pub fn with_lakehouse_cache_fill_budget_bytes(mut self, budget_bytes: u64) -> Self {
+        self.lakehouse_cache_fill_budget_bytes = Some(budget_bytes);
+        self
+    }
+
+    /// Sets the service-wide background lakehouse cache-fill operation cap.
+    pub fn with_lakehouse_cache_fill_max_concurrent_ops(mut self, max_concurrent_ops: usize) -> Self {
+        self.lakehouse_cache_fill_max_concurrent_ops = Some(max_concurrent_ops);
+        self
+    }
+
     /// Supplies deployment IO capability diagnostics instead of probing the current host.
     pub fn with_deployment_io_capability(mut self, capability: DeploymentIoCapability) -> Self {
         self.deployment_io_capability = Some(capability);
@@ -818,6 +1023,12 @@ impl ExecutionContextBuilder {
         if let Some(max_concurrent_ops) = self.host_fetch_max_concurrent_ops {
             source_fetch_config.host_fetch_max_concurrent_ops = max_concurrent_ops;
         }
+        if let Some(lakehouse_cache_fill_budget_bytes) = self.lakehouse_cache_fill_budget_bytes {
+            source_fetch_config.lakehouse_cache_fill_budget_bytes = Some(lakehouse_cache_fill_budget_bytes);
+        }
+        if let Some(lakehouse_cache_fill_max_concurrent_ops) = self.lakehouse_cache_fill_max_concurrent_ops {
+            source_fetch_config.lakehouse_cache_fill_max_concurrent_ops = lakehouse_cache_fill_max_concurrent_ops;
+        }
         source_fetch_config.validate_for_deployment(&deployment_io_capability)?;
         let host_fetch_budget = match self.host_fetch_budget {
             Some(budget) => budget,
@@ -827,8 +1038,14 @@ impl ExecutionContextBuilder {
         };
         let source_fetch_concurrency =
             SourceFetchConcurrencyGate::new(source_fetch_config.host_fetch_max_concurrent_ops)?;
+        let lakehouse_cache_fill_budget = HostFetchBudget::new(
+            source_fetch_config.lakehouse_cache_fill_budget_bytes.unwrap_or_else(default_host_fetch_budget_bytes),
+        )?;
+        let lakehouse_cache_fill_concurrency =
+            SourceFetchConcurrencyGate::new(source_fetch_config.lakehouse_cache_fill_max_concurrent_ops)?;
         let gds_concurrency = GdsConcurrencyGate::new(source_fetch_config.gds_max_concurrent_ops)?;
         let source_fetch_runtime = default_source_fetch_runtime();
+        let lakehouse_cache_fill_runtime = default_lakehouse_cache_fill_runtime();
         let source_object_stores = Arc::new(SourceObjectStoreRegistry::with_profiles(self.source_storage_profiles)?);
         if let Some(runtime) = self.runtime {
             let service_stream_pool_size = self
@@ -852,8 +1069,12 @@ impl ExecutionContextBuilder {
                 service_stream_pool,
                 host_fetch_budget,
                 source_fetch_concurrency,
+                lakehouse_cache_fill_budget,
+                lakehouse_cache_fill_concurrency,
+                lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
                 gds_concurrency,
                 source_fetch_runtime,
+                lakehouse_cache_fill_runtime,
                 source_object_stores,
                 deployment_io_capability,
                 cancellation: self.cancellation,
@@ -909,8 +1130,12 @@ impl ExecutionContextBuilder {
             service_stream_pool,
             host_fetch_budget,
             source_fetch_concurrency,
+            lakehouse_cache_fill_budget,
+            lakehouse_cache_fill_concurrency,
+            lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             gds_concurrency,
             source_fetch_runtime,
+            lakehouse_cache_fill_runtime,
             source_object_stores,
             deployment_io_capability,
             cancellation: self.cancellation,
@@ -1016,6 +1241,84 @@ mod tests {
     }
 
     #[test]
+    fn execution_context_records_lakehouse_cache_fill_resource_limits() {
+        let context = ExecutionContext::builder()
+            .with_lakehouse_cache_fill_budget_bytes(2048)
+            .with_lakehouse_cache_fill_max_concurrent_ops(3)
+            .build()
+            .unwrap();
+
+        assert_eq!(context.lakehouse_cache_fill_budget().budget_bytes(), 2048);
+        assert_eq!(context.lakehouse_cache_fill_max_concurrent_ops(), 3);
+    }
+
+    #[test]
+    fn lakehouse_cache_fill_event_sink_records_structured_events() {
+        let sink = LakehouseCacheFillEventSink::default();
+
+        sink.record(LakehouseCacheFillEvent {
+            outcome: LakehouseCacheFillOutcome::Completed,
+            bytes: Some(4096),
+            elapsed: Duration::from_millis(7),
+            cache_path_hash: "cache-path-hash".to_string(),
+            stable_id_hash: "stable-id-hash".to_string(),
+            file_index: Some(2),
+            chunk_index: None,
+            error: None,
+        });
+        sink.record(LakehouseCacheFillEvent {
+            outcome: LakehouseCacheFillOutcome::Failed,
+            bytes: None,
+            elapsed: Duration::from_millis(3),
+            cache_path_hash: "failed-path-hash".to_string(),
+            stable_id_hash: "failed-stable-hash".to_string(),
+            file_index: Some(3),
+            chunk_index: Some(4),
+            error: Some(LakehouseCacheFillErrorEvent {
+                code: "cudf_dependency_failure".to_string(),
+                kind: "external".to_string(),
+                status: "temporary".to_string(),
+                operation: "nexus_query_engine.lakehouse_cache.background_fill.fetch".to_string(),
+            }),
+        });
+
+        let events = sink.events();
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].outcome, LakehouseCacheFillOutcome::Completed);
+        assert_eq!(events[0].bytes, Some(4096));
+        assert_eq!(events[1].outcome, LakehouseCacheFillOutcome::Failed);
+        assert_eq!(
+            events[1].error.as_ref().map(|error| error.operation.as_str()),
+            Some("nexus_query_engine.lakehouse_cache.background_fill.fetch")
+        );
+    }
+
+    #[test]
+    fn stream_lease_context_shares_lakehouse_cache_fill_event_sink() {
+        let context = ExecutionContext::builder().build().unwrap();
+        let stream_lease = context.service_stream_pool().acquire().unwrap();
+        let leased_context = context.with_stream_lease(&stream_lease).unwrap();
+
+        leased_context.lakehouse_cache_fill_events().record(LakehouseCacheFillEvent {
+            outcome: LakehouseCacheFillOutcome::Completed,
+            bytes: Some(8192),
+            elapsed: Duration::from_millis(5),
+            cache_path_hash: "leased-cache-path-hash".to_string(),
+            stable_id_hash: "leased-stable-id-hash".to_string(),
+            file_index: Some(1),
+            chunk_index: Some(2),
+            error: None,
+        });
+
+        let snapshots = context.lakehouse_cache_fill_event_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].outcome, "completed");
+        assert_eq!(snapshots[0].bytes, Some(8192));
+        assert_eq!(snapshots[0].cache_path_hash, "leased-cache-path-hash");
+    }
+
+    #[test]
     fn execution_context_records_source_chunk_planning_mode() {
         let context = ExecutionContext::builder()
             .with_source_chunk_planning_mode(SourceChunkPlanningMode::LocalParquetThroughput)
@@ -1046,6 +1349,8 @@ mod tests {
         assert_eq!(config.substrate, SourceFetchSubstrate::Auto);
         assert_eq!(config.host_fetch_budget_bytes, None);
         assert_eq!(config.host_fetch_max_concurrent_ops, DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS);
+        assert_eq!(config.lakehouse_cache_fill_budget_bytes, None);
+        assert_eq!(config.lakehouse_cache_fill_max_concurrent_ops, DEFAULT_LAKEHOUSE_CACHE_FILL_MAX_CONCURRENT_OPS);
         assert_eq!(config.gds_max_concurrent_ops, DEFAULT_GDS_MAX_CONCURRENT_OPS);
         assert_eq!(config.gds_min_chunk_bytes, DEFAULT_GDS_MIN_CHUNK_BYTES);
     }
@@ -1153,6 +1458,18 @@ mod tests {
         let error = zero_ops.validate_for_deployment(&deployment).unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
         assert_eq!(error.fact_value("field"), Some("gds_max_concurrent_ops"));
+
+        let zero_cache_fill_ops =
+            SourceFetchConfig { lakehouse_cache_fill_max_concurrent_ops: 0, ..SourceFetchConfig::default() };
+        let error = zero_cache_fill_ops.validate_for_deployment(&deployment).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("lakehouse_cache_fill_max_concurrent_ops"));
+
+        let zero_cache_fill_budget =
+            SourceFetchConfig { lakehouse_cache_fill_budget_bytes: Some(0), ..SourceFetchConfig::default() };
+        let error = zero_cache_fill_budget.validate_for_deployment(&deployment).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("lakehouse_cache_fill_budget_bytes"));
 
         let zero_min_chunk = SourceFetchConfig { gds_min_chunk_bytes: 0, ..SourceFetchConfig::default() };
         let error = zero_min_chunk.validate_for_deployment(&deployment).unwrap_err();

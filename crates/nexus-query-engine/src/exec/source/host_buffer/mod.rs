@@ -7,19 +7,26 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+use futures::StreamExt;
+use object_store::ObjectStoreExt;
+
 use super::{
-    cudf_contract::{MiniParquetHostBufferDescriptor, cudf_local_parquet_source_mini_host_buffer_chunk},
+    cudf_contract::{
+        MiniParquetHostBufferDescriptor, cudf_local_parquet_source_mini_host_buffer_chunk,
+        mini_host_buffer_reader_decimal_types_for_chunk, mini_host_buffer_reader_decimal_types_for_file,
+    },
     *,
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    parquet_metadata::parse_complete_parquet_metadata,
-    runtime::S3ObjectStoreKey,
+    parquet_metadata::{parse_complete_parquet_metadata, write_parquet_footer_sidecar_from_file},
+    runtime::{LakehouseCacheFillErrorEvent, LakehouseCacheFillEvent, LakehouseCacheFillOutcome, S3ObjectStoreKey},
 };
 
 mod ranged_parquet;
 
 static LAKEHOUSE_CACHE_READ_PIN_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE: Duration = Duration::from_millis(250);
 
 struct SourceFetchLocation {
     bucket: String,
@@ -31,13 +38,23 @@ struct SourceFetchLocation {
 pub(super) fn read_object_store_parquet_file(
     context: &ExecutionContext,
     source: &LocalParquetSource,
+    source_node_id: NodeId,
     file: &LocalParquetFile,
     file_index: usize,
     chunk_index: usize,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
-    let fetch = start_object_store_parquet_file_fetch(context, file, source.scan_limit)?;
-    finish_object_store_parquet_file_fetch(context, source, file, file_index, chunk_index, fetch, metrics)
+    let fetch = start_object_store_parquet_file_fetch(context, source, file)?;
+    finish_object_store_parquet_file_fetch(
+        context,
+        source,
+        source_node_id,
+        file,
+        file_index,
+        chunk_index,
+        fetch,
+        metrics,
+    )
 }
 
 pub(super) fn ensure_local_cache_parquet_file(
@@ -77,6 +94,42 @@ pub(super) fn ensure_local_cache_parquet_chunk(
         Some(chunk.file_index),
         Some(chunk.chunk_index),
         metrics,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BackgroundLakehouseCacheFillEnqueue {
+    Enqueued,
+    Skipped(&'static str),
+}
+
+pub(super) fn enqueue_background_lakehouse_cache_file_fill(
+    context: &ExecutionContext,
+    file: &LocalParquetFile,
+) -> Result<BackgroundLakehouseCacheFillEnqueue> {
+    enqueue_background_lakehouse_cache_entry_fill(
+        context,
+        &file.location,
+        &file.resolved_source,
+        file.file_size_bytes,
+        file.stable_id.as_str(),
+        None,
+        None,
+    )
+}
+
+pub(super) fn enqueue_background_lakehouse_cache_chunk_fill(
+    context: &ExecutionContext,
+    chunk: &SourceChunk,
+) -> Result<BackgroundLakehouseCacheFillEnqueue> {
+    enqueue_background_lakehouse_cache_entry_fill(
+        context,
+        &chunk.location,
+        &chunk.resolved_source,
+        chunk.known_file_bytes,
+        chunk.stable_id.as_str(),
+        Some(chunk.file_index),
+        Some(chunk.chunk_index),
     )
 }
 
@@ -195,9 +248,9 @@ pub(super) fn publish_lakehouse_optimized_batch_frame(
             "failed to write optimized lakehouse cache batch parquet file",
             error,
         )
-        .with_fact("path", entry.path.display())
-        .with_fact("temp_path", temp_path.display())
-        .with_fact("stable_id", entry.stable_id.as_str()));
+        .with_fact("path", lakehouse_cache_path_fact(&entry.path))
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(entry.stable_id.as_str())));
     }
     if let Err(error) = fs::rename(&temp_path, &entry.path) {
         let _ = fs::remove_file(&temp_path);
@@ -210,7 +263,7 @@ pub(super) fn publish_lakehouse_optimized_batch_frame(
             None,
             None,
         )
-        .with_fact("temp_path", temp_path.display()));
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
     }
     evict_lakehouse_cache(entry.cache_root.as_deref(), &entry.path, entry.cache_max_bytes);
     Ok(true)
@@ -230,8 +283,8 @@ fn acquire_lakehouse_cache_read_pin(
             "nexus_query_engine.lakehouse_cache.read_pin",
             "lakehouse cache entry is missing before read pin acquisition",
         )
-        .with_fact("path", cache_path.display())
-        .with_fact("stable_id", stable_id));
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id)));
     }
     let pin_path = lakehouse_cache_read_pin_path(cache_path);
     let mut pin_file = OpenOptions::new().write(true).create_new(true).open(&pin_path).map_err(|error| {
@@ -244,7 +297,7 @@ fn acquire_lakehouse_cache_read_pin(
             file_index,
             chunk_index,
         )
-        .with_fact("pin_path", pin_path.display())
+        .with_fact("pin_path", lakehouse_cache_path_fact(&pin_path))
     })?;
     if let Err(error) = writeln!(pin_file, "pid={}", std::process::id()) {
         let _ = fs::remove_file(&pin_path);
@@ -257,7 +310,7 @@ fn acquire_lakehouse_cache_read_pin(
             file_index,
             chunk_index,
         )
-        .with_fact("pin_path", pin_path.display()));
+        .with_fact("pin_path", lakehouse_cache_path_fact(&pin_path)));
     }
     if !cache_path.is_file() {
         let _ = fs::remove_file(&pin_path);
@@ -266,9 +319,9 @@ fn acquire_lakehouse_cache_read_pin(
             "nexus_query_engine.lakehouse_cache.read_pin",
             "lakehouse cache entry disappeared during read pin acquisition",
         )
-        .with_fact("path", cache_path.display())
-        .with_fact("pin_path", pin_path.display())
-        .with_fact("stable_id", stable_id));
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("pin_path", lakehouse_cache_path_fact(&pin_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id)));
     }
     Ok(LakehouseCacheReadPin { path: Some(pin_path) })
 }
@@ -332,10 +385,11 @@ fn local_cache_optimized_batch_signature(
         .iter()
         .map(|chunk| {
             format!(
-                "stable_id={} storage_domain={:?} content_identity={:?} known_file_bytes={:?} row_groups={:?}",
-                chunk.stable_id,
-                chunk.resolved_source.storage_domain,
-                chunk.resolved_source.content_identity,
+                "stable_id={} resolved_contract={} reader_decimal_contract={} reader_decimal_footer_verified={} known_file_bytes={:?} row_groups={:?}",
+                chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()),
+                optimized_batch_resolved_source_contract_signature(&chunk.resolved_source),
+                optimized_batch_reader_decimal_contract_signature(&chunk.reader_decimal_types),
+                chunk.reader_decimal_types_footer_verified,
                 chunk.known_file_bytes,
                 chunk.row_group_indexes
             )
@@ -348,6 +402,116 @@ fn local_cache_optimized_batch_signature(
         signature.push('\n');
     }
     signature
+}
+
+fn optimized_batch_reader_decimal_contract_signature(
+    reader_decimal_types: &[crate::source::ParquetReaderDecimalType],
+) -> String {
+    let mut output = String::new();
+    push_optimized_batch_contract_value(
+        &mut output,
+        "reader_decimal_types.len",
+        reader_decimal_types.len().to_string().as_str(),
+    );
+    for (index, decimal_type) in reader_decimal_types.iter().enumerate() {
+        push_optimized_batch_contract_value(
+            &mut output,
+            format!("reader_decimal_types.{index}.column_name").as_str(),
+            decimal_type.column_name.as_str(),
+        );
+        push_optimized_batch_contract_value(
+            &mut output,
+            format!("reader_decimal_types.{index}.type_id").as_str(),
+            decimal_type.type_id.as_str(),
+        );
+        push_optimized_batch_contract_value(
+            &mut output,
+            format!("reader_decimal_types.{index}.cudf_scale").as_str(),
+            decimal_type.cudf_scale.to_string().as_str(),
+        );
+    }
+    output
+}
+
+fn optimized_batch_resolved_source_contract_signature(
+    resolved_source: &crate::source::ResolvedParquetSource,
+) -> String {
+    let mut output = String::new();
+    push_optimized_batch_contract_hash(
+        &mut output,
+        "original_location",
+        Some(resolved_source.original_location.as_str()),
+    );
+    push_optimized_batch_contract_hash(&mut output, "reader_location", Some(resolved_source.reader_location.as_str()));
+    push_optimized_batch_contract_hash(&mut output, "storage_domain", resolved_source.storage_domain.as_deref());
+    push_optimized_batch_contract_hash(&mut output, "content_identity", resolved_source.content_identity.as_deref());
+    push_optimized_batch_contract_value(
+        &mut output,
+        "storage_profile_id",
+        resolved_source.storage_profile_id.as_deref().unwrap_or("none"),
+    );
+    push_optimized_batch_contract_value(&mut output, "read_strategy", resolved_source.read_strategy.as_str());
+    push_optimized_batch_contract_value(&mut output, "decode_input", resolved_source.decode_input.as_str());
+    push_optimized_batch_contract_value(&mut output, "remote_read_mode", resolved_source.remote_read_mode.as_str());
+    push_optimized_batch_contract_value(&mut output, "credential_mode", resolved_source.credential_mode.as_str());
+    push_optimized_batch_contract_value(&mut output, "cache_status", resolved_source.cache_status.as_str());
+    push_optimized_batch_contract_value(
+        &mut output,
+        "lakehouse_cache_read_mode",
+        resolved_source.lakehouse_cache_read_mode.as_str(),
+    );
+    push_optimized_batch_contract_hash(
+        &mut output,
+        "lakehouse_cache_root",
+        resolved_source.lakehouse_cache_root.as_deref(),
+    );
+    push_optimized_batch_contract_hash(
+        &mut output,
+        "lakehouse_cache_path",
+        resolved_source.lakehouse_cache_path.as_deref(),
+    );
+    push_optimized_batch_contract_value(
+        &mut output,
+        "lakehouse_cache_max_bytes",
+        resolved_source
+            .lakehouse_cache_max_bytes
+            .map_or_else(|| "none".to_string(), |bytes| bytes.to_string())
+            .as_str(),
+    );
+    push_optimized_batch_contract_value(
+        &mut output,
+        "lakehouse_cache_fill_mode",
+        resolved_source.lakehouse_cache_fill_mode.as_str(),
+    );
+    push_optimized_batch_contract_value(
+        &mut output,
+        "remote_host_buffer_ranged_enabled",
+        if resolved_source.remote_host_buffer_ranged_enabled { "true" } else { "false" },
+    );
+    push_optimized_batch_contract_value(
+        &mut output,
+        "fallback_reason",
+        resolved_source.fallback_reason.as_deref().unwrap_or("none"),
+    );
+    output
+}
+
+fn push_optimized_batch_contract_hash(output: &mut String, key: &str, value: Option<&str>) {
+    match value {
+        Some(value) => push_optimized_batch_contract_value(
+            output,
+            key,
+            format!("fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len()).as_str(),
+        ),
+        None => push_optimized_batch_contract_value(output, key, "none"),
+    }
+}
+
+fn push_optimized_batch_contract_value(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push('=');
+    output.push_str(value);
+    output.push(';');
 }
 
 fn optimized_batch_uses_identity_source_frame(source: &LocalParquetSource) -> bool {
@@ -440,8 +604,18 @@ fn ensure_local_cache_parquet_entry(
     metrics: &mut QueryMetrics,
 ) -> Result<()> {
     context.check_cancellation("nexus_query_engine.lakehouse_cache.ensure")?;
-    if cache_path.is_file() {
+    if complete_cache_file_matches_expected_size(cache_path, estimated_fetch_bytes) {
         return Ok(());
+    }
+    if resolved_source.cache_status == crate::source::LakehouseCacheStatus::Hit {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.lakehouse_cache.stale_hit",
+            "planned lakehouse cache hit is missing or does not match source metadata",
+        )
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id))
+        .with_fact("expected_bytes", estimated_fetch_bytes.map(|bytes| bytes.to_string()).unwrap_or_default()));
     }
     if !matches!(location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
         return Err(QueryError::new(
@@ -449,8 +623,8 @@ fn ensure_local_cache_parquet_entry(
             "nexus_query_engine.lakehouse_cache.location",
             "local lakehouse cache fill requires an object-store source location",
         )
-        .with_fact("path", cache_path.display())
-        .with_fact("stable_id", stable_id));
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id)));
     }
     if let Some(parent) = cache_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -468,7 +642,7 @@ fn ensure_local_cache_parquet_entry(
 
     let lock_path = lakehouse_cache_lock_path(cache_path);
     let _lock = acquire_lakehouse_cache_lock(context, cache_path, &lock_path, stable_id, file_index, chunk_index)?;
-    if cache_path.is_file() {
+    if complete_cache_file_matches_expected_size(cache_path, estimated_fetch_bytes) {
         return Ok(());
     }
 
@@ -478,10 +652,253 @@ fn ensure_local_cache_parquet_entry(
     metrics.record_source_fetch_concurrency_wait(fetch.concurrency_wait_elapsed);
     metrics.record_source_fetch(fetch.actual_bytes, fetch.fetch_elapsed);
     metrics.source_read_time += fetch.fetch_elapsed;
-    publish_lakehouse_cache_file(cache_path, fetch.bytes(), stable_id, file_index, chunk_index)?;
+    validate_lakehouse_cache_fetch_size(
+        cache_path,
+        stable_id,
+        estimated_fetch_bytes,
+        fetch.actual_bytes,
+        file_index,
+        chunk_index,
+    )?;
+    publish_lakehouse_cache_file(
+        cache_path,
+        fetch.bytes(),
+        stable_id,
+        sidecar_content_identity(resolved_source, stable_id),
+        file_index,
+        chunk_index,
+    )?;
     evict_lakehouse_cache(cache_root, cache_path, cache_max_bytes);
     fetch.release_after_decode();
     Ok(())
+}
+
+fn validate_lakehouse_cache_fetch_size(
+    cache_path: &Path,
+    stable_id: &str,
+    expected_bytes: Option<u64>,
+    actual_bytes: u64,
+    file_index: Option<usize>,
+    chunk_index: Option<usize>,
+) -> Result<()> {
+    let Some(expected_bytes) = expected_bytes else {
+        return Ok(());
+    };
+    if actual_bytes == expected_bytes {
+        return Ok(());
+    }
+    let mut error = QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        "nexus_query_engine.lakehouse_cache.fill_size",
+        "lakehouse cache fill fetched a different byte count than source metadata",
+    )
+    .with_fact("path", lakehouse_cache_path_fact(cache_path))
+    .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id))
+    .with_fact("expected_bytes", expected_bytes)
+    .with_fact("actual_bytes", actual_bytes);
+    if let Some(file_index) = file_index {
+        error = error.with_fact("file_index", file_index);
+    }
+    if let Some(chunk_index) = chunk_index {
+        error = error.with_fact("chunk_index", chunk_index);
+    }
+    Err(error)
+}
+
+fn complete_cache_file_matches_expected_size(cache_path: &Path, expected_bytes: Option<u64>) -> bool {
+    let Ok(metadata) = fs::metadata(cache_path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    let Some(expected_bytes) = expected_bytes else {
+        return false;
+    };
+    metadata.len() == expected_bytes
+}
+
+fn enqueue_background_lakehouse_cache_entry_fill(
+    context: &ExecutionContext,
+    location: &crate::source::ParquetSourceLocation,
+    resolved_source: &crate::source::ResolvedParquetSource,
+    estimated_fetch_bytes: Option<u64>,
+    stable_id: &str,
+    file_index: Option<usize>,
+    chunk_index: Option<usize>,
+) -> Result<BackgroundLakehouseCacheFillEnqueue> {
+    if resolved_source.lakehouse_cache_fill_mode != crate::source::LakehouseCacheFillMode::Background {
+        return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_disabled"));
+    }
+    let Some(cache_path) = resolved_source.lakehouse_cache_path.as_ref().map(PathBuf::from) else {
+        return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("missing_cache_path"));
+    };
+    if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {
+        return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("cache_file_exists"));
+    }
+    if !matches!(location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+        return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("not_object_store_source"));
+    }
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            lakehouse_cache_io_error(
+                error,
+                "nexus_query_engine.lakehouse_cache.background_fill.mkdir",
+                "failed to create background lakehouse cache parent directory",
+                &cache_path,
+                stable_id,
+                file_index,
+                chunk_index,
+            )
+        })?;
+    }
+
+    let lock_path = lakehouse_cache_lock_path(&cache_path);
+    for attempt in 0..2 {
+        match OpenOptions::new().write(true).create_new(true).open(&lock_path) {
+            Ok(mut file) => {
+                let _ = writeln!(file, "pid={}", std::process::id());
+                break;
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if attempt == 0 && remove_lakehouse_cache_lock_if_stale(&lock_path) {
+                    continue;
+                }
+                return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_already_running"));
+            },
+            Err(error) => {
+                return Err(lakehouse_cache_io_error(
+                    error,
+                    "nexus_query_engine.lakehouse_cache.background_fill.lock",
+                    "failed to create background lakehouse cache fill lock",
+                    &cache_path,
+                    stable_id,
+                    file_index,
+                    chunk_index,
+                )
+                .with_fact("lock_path", lakehouse_cache_path_fact(&lock_path)));
+            },
+        }
+    }
+    let lock_guard = BackgroundLakehouseCacheLock { path: lock_path.clone() };
+    let Some(operation_permit) = context.acquire_lakehouse_cache_fill_operation_with_timeout(
+        Duration::ZERO,
+        "nexus_query_engine.lakehouse_cache.background_fill.concurrency",
+    )?
+    else {
+        drop(lock_guard);
+        return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
+    };
+    let initial_budget_bytes = estimated_fetch_bytes.filter(|bytes| *bytes > 0).unwrap_or(1);
+    let budget_permit = match context.acquire_lakehouse_cache_fill_budget_with_timeout(
+        initial_budget_bytes,
+        Duration::ZERO,
+        "nexus_query_engine.lakehouse_cache.background_fill.budget",
+    ) {
+        Ok(Some(permit)) => permit,
+        Ok(None) => {
+            drop(lock_guard);
+            return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated"));
+        },
+        Err(error) if error.code() == QueryErrorCode::MemoryReservationFailed => {
+            drop(lock_guard);
+            return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated"));
+        },
+        Err(error) => return Err(error),
+    };
+
+    let fetch_location = source_fetch_location(location, resolved_source)?;
+    let store = context.s3_object_store(S3ObjectStoreKey {
+        bucket: fetch_location.bucket.clone(),
+        region: fetch_location.region.clone(),
+        storage_profile_id: fetch_location.storage_profile_id.clone(),
+    })?;
+    let cache_root = resolved_source.lakehouse_cache_root.clone();
+    let cache_max_bytes = resolved_source.lakehouse_cache_max_bytes;
+    let temp_path = lakehouse_cache_temp_path(&cache_path);
+    let stable_id = stable_id.to_string();
+    let callback_stable_id = stable_id.clone();
+    let callback_file_index = file_index;
+    let callback_chunk_index = chunk_index;
+    let callback_cache_path_hash = stable_log_hash(&cache_path.display().to_string());
+    let callback_stable_id_hash = stable_log_hash(callback_stable_id.as_str());
+    let event_sink = context.lakehouse_cache_fill_events();
+    let sidecar_content_identity = sidecar_content_identity(resolved_source, stable_id.as_str()).to_string();
+    let _fetch_handle = context.spawn_lakehouse_cache_fill(
+        {
+            let cache_path = cache_path.clone();
+            move || {
+                let _operation_permit = operation_permit;
+                stream_lakehouse_cache_fill(
+                    store,
+                    fetch_location.key,
+                    cache_path,
+                    temp_path,
+                    lock_guard,
+                    stable_id,
+                    sidecar_content_identity,
+                    estimated_fetch_bytes,
+                    budget_permit,
+                )
+            }
+        },
+        move |fill_result| {
+            match fill_result.value {
+                Ok(bytes) => {
+                    event_sink.record(LakehouseCacheFillEvent {
+                        outcome: LakehouseCacheFillOutcome::Completed,
+                        bytes: Some(bytes),
+                        elapsed: fill_result.elapsed,
+                        cache_path_hash: callback_cache_path_hash.clone(),
+                        stable_id_hash: callback_stable_id_hash.clone(),
+                        file_index: callback_file_index,
+                        chunk_index: callback_chunk_index,
+                        error: None,
+                    });
+                    eprintln!(
+                        "[nexus-query-engine] lakehouse_cache_background_fill outcome=completed bytes={} elapsed_ns={} cache_path_hash={} stable_id_hash={} file_index={} chunk_index={}",
+                        bytes,
+                        fill_result.elapsed.as_nanos().min(u128::from(u64::MAX)),
+                        callback_cache_path_hash,
+                        callback_stable_id_hash,
+                        optional_usize_log(callback_file_index),
+                        optional_usize_log(callback_chunk_index),
+                    );
+                    evict_lakehouse_cache(cache_root.as_deref(), &cache_path, cache_max_bytes);
+                },
+                Err(error) => {
+                    event_sink.record(LakehouseCacheFillEvent {
+                        outcome: LakehouseCacheFillOutcome::Failed,
+                        bytes: None,
+                        elapsed: fill_result.elapsed,
+                        cache_path_hash: callback_cache_path_hash.clone(),
+                        stable_id_hash: callback_stable_id_hash.clone(),
+                        file_index: callback_file_index,
+                        chunk_index: callback_chunk_index,
+                        error: Some(LakehouseCacheFillErrorEvent {
+                            code: error.code().to_string(),
+                            kind: error.kind().to_string(),
+                            status: error.status().to_string(),
+                            operation: error.operation().to_string(),
+                        }),
+                    });
+                    eprintln!(
+                        "[nexus-query-engine] lakehouse_cache_background_fill outcome=failed error_code={} error_kind={} error_status={} error_operation={} elapsed_ns={} cache_path_hash={} stable_id_hash={} file_index={} chunk_index={}",
+                        error.code(),
+                        error.kind(),
+                        error.status(),
+                        error.operation(),
+                        fill_result.elapsed.as_nanos().min(u128::from(u64::MAX)),
+                        callback_cache_path_hash,
+                        callback_stable_id_hash,
+                        optional_usize_log(callback_file_index),
+                        optional_usize_log(callback_chunk_index),
+                    );
+                },
+            }
+        },
+    );
+    Ok(BackgroundLakehouseCacheFillEnqueue::Enqueued)
 }
 
 pub(super) struct ScheduledHostParquetFetch {
@@ -490,19 +907,11 @@ pub(super) struct ScheduledHostParquetFetch {
 
 pub(super) fn start_object_store_parquet_file_fetch(
     context: &ExecutionContext,
+    source: &LocalParquetSource,
     file: &LocalParquetFile,
-    scan_limit: Option<usize>,
 ) -> Result<ScheduledHostParquetFetch> {
-    if let Some(limit) = scan_limit
-        && matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. })
-    {
-        let selector = file
-            .row_groups
-            .as_ref()
-            .filter(|row_groups| !row_groups.is_empty())
-            .map(|row_groups| ranged_parquet::RangedRowGroupSelector::Explicit(row_groups.clone()))
-            .unwrap_or(ranged_parquet::RangedRowGroupSelector::ScanLimit(limit as u64));
-        return start_host_parquet_buffer_ranged_fetch(context, &file.location, &file.resolved_source, selector);
+    if let Some(request) = ranged_parquet_file_request(source, file) {
+        return start_host_parquet_buffer_ranged_fetch(context, &file.location, &file.resolved_source, request);
     }
     start_host_parquet_buffer_fetch(context, &file.location, &file.resolved_source, file.file_size_bytes)
 }
@@ -510,18 +919,21 @@ pub(super) fn start_object_store_parquet_file_fetch(
 pub(super) fn finish_object_store_parquet_file_fetch(
     context: &ExecutionContext,
     source: &LocalParquetSource,
+    source_node_id: NodeId,
     file: &LocalParquetFile,
     file_index: usize,
     chunk_index: usize,
     fetch: ScheduledHostParquetFetch,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
-    let mut fetch = fetch.finish()?;
+    let mut fetch =
+        finish_with_full_fetch_fallback(context, &file.location, &file.resolved_source, file.file_size_bytes, fetch)?;
     metrics.record_host_fetch_budget_wait(fetch.host_budget_wait_elapsed);
     metrics.record_source_fetch_concurrency_wait(fetch.concurrency_wait_elapsed);
     metrics.record_source_fetch(fetch.actual_bytes, fetch.fetch_elapsed);
     let decode_timer = Instant::now();
-    let frame = if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+    let output = if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+        let reader_decimal_types = mini_host_buffer_reader_decimal_types_for_file(context, source, file)?;
         let descriptor = MiniParquetHostBufferDescriptor::from_file(
             file,
             source,
@@ -530,11 +942,12 @@ pub(super) fn finish_object_store_parquet_file_fetch(
             fetch.actual_bytes,
             &ranged_fetch.mini_row_group_bytes,
             &ranged_fetch.mini_row_group_rows,
+            reader_decimal_types,
         );
         let (mini_source, mini_chunk) =
             cudf_local_parquet_source_mini_host_buffer_chunk(context, source, descriptor)
                 .map_err(|error| attach_ranged_fetch_file_facts(error, ranged_fetch, file, file_index, chunk_index))?;
-        DataFrame::read_parquet_source_chunk_from_host_buffer(
+        DataFrame::read_parquet_source_chunk_from_host_buffer_with_evidence(
             context.runtime(),
             &mini_source,
             &mini_chunk,
@@ -544,7 +957,7 @@ pub(super) fn finish_object_store_parquet_file_fetch(
     } else {
         let (cudf_source, cudf_chunk) =
             cudf_local_parquet_source_file_selection(context, source, file, file_index, chunk_index)?;
-        DataFrame::read_parquet_source_chunk_from_host_buffer(
+        DataFrame::read_parquet_source_chunk_from_host_buffer_with_evidence(
             context.runtime(),
             &cudf_source,
             &cudf_chunk,
@@ -558,8 +971,8 @@ pub(super) fn finish_object_store_parquet_file_fetch(
             "failed to decode object-store Parquet source file from host buffer",
             error,
         )
-        .with_fact("path", file.path.display())
-        .with_fact("stable_id", file.stable_id.as_str())
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
         .with_fact("read_columns", source.read_columns.len());
         if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
@@ -569,6 +982,8 @@ pub(super) fn finish_object_store_parquet_file_fetch(
         }
     })?;
     let decode_elapsed = decode_timer.elapsed();
+    let read_evidence = output.read_evidence().cloned();
+    let frame = output.into_frame();
     metrics.record_source_decode_time(decode_elapsed);
     metrics.parquet_read_time += decode_elapsed;
     metrics.source_read_time += fetch.fetch_elapsed;
@@ -578,6 +993,20 @@ pub(super) fn finish_object_store_parquet_file_fetch(
     metrics.row_groups_selected += fetched_file_row_group_count(file, &fetch);
     metrics.read_columns += source.read_columns.len() as u64;
     metrics.record_input_batch(frame.num_rows() as u64);
+    let host_buffer_fetch = fetch.runtime_metrics();
+    record_source_file_read_runtime(
+        source,
+        source_node_id,
+        file,
+        file_index,
+        chunk_index,
+        fetched_file_row_group_count(file, &fetch),
+        frame.num_rows() as u64,
+        decode_elapsed,
+        &host_buffer_fetch,
+        read_evidence.as_ref(),
+        metrics,
+    );
     fetch.release_after_decode();
     Ok(frame)
 }
@@ -591,27 +1020,40 @@ pub(super) fn read_object_store_parquet_chunk(
     token: &ExecutionBudgetToken,
     metrics: &mut QueryMetrics,
 ) -> Result<ObjectStoreParquetChunkRead> {
+    let _source_file = crate::chunk::source_file_for_chunk(
+        source,
+        chunk,
+        "nexus_query_engine.source_decode.host_buffer_chunk.source_file",
+    )?;
     let estimated_fetch_bytes = chunk.known_file_bytes.or(chunk.estimated_source_read_bytes);
-    let mut fetch = if let Some(selector) = ranged_scan_limit_chunk_selector(source, chunk) {
-        start_host_parquet_buffer_ranged_fetch(context, &chunk.location, &chunk.resolved_source, selector)?.finish()?
+    let fetch = if let Some(request) = ranged_parquet_chunk_request(source, chunk) {
+        start_host_parquet_buffer_ranged_fetch(context, &chunk.location, &chunk.resolved_source, request)?
     } else {
         start_host_parquet_buffer_fetch(context, &chunk.location, &chunk.resolved_source, estimated_fetch_bytes)?
-            .finish()?
     };
+    let mut fetch = finish_with_full_fetch_fallback(
+        context,
+        &chunk.location,
+        &chunk.resolved_source,
+        estimated_fetch_bytes,
+        fetch,
+    )?;
     metrics.record_host_fetch_budget_wait(fetch.host_budget_wait_elapsed);
     metrics.record_source_fetch_concurrency_wait(fetch.concurrency_wait_elapsed);
     metrics.record_source_fetch(fetch.actual_bytes, fetch.fetch_elapsed);
     let decode_timer = Instant::now();
     let outcome = if let Some(ranged_fetch) = fetch.ranged_fetch.as_ref() {
+        let reader_decimal_types = mini_host_buffer_reader_decimal_types_for_chunk(context, source, chunk)?;
         let descriptor = MiniParquetHostBufferDescriptor::from_chunk(
             chunk,
             fetch.actual_bytes,
             &ranged_fetch.mini_row_group_bytes,
             &ranged_fetch.mini_row_group_rows,
+            reader_decimal_types,
         );
         let (mini_source, mini_chunk) = cudf_local_parquet_source_mini_host_buffer_chunk(context, source, descriptor)
             .map_err(|error| attach_ranged_fetch_facts(error, ranged_fetch, chunk))?;
-        DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
+        DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
             context.runtime(),
             &mini_source,
             &mini_chunk,
@@ -620,7 +1062,7 @@ pub(super) fn read_object_store_parquet_chunk(
             token,
         )
     } else {
-        DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer(
+        DataFrame::read_parquet_source_chunk_with_budget_from_host_buffer_with_evidence(
             context.runtime(),
             cudf_source,
             cudf_chunk,
@@ -635,7 +1077,8 @@ pub(super) fn read_object_store_parquet_chunk(
             "failed to decode bounded object-store Parquet source chunk from host buffer",
             error,
         )
-        .with_fact("path", chunk.path.display())
+        .with_fact("path", parquet_chunk_path_fact(chunk))
+        .with_fact("stable_id", parquet_chunk_stable_id_fact(chunk))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("read_columns", chunk.read_columns.len())
@@ -654,13 +1097,25 @@ pub(super) fn read_object_store_parquet_chunk(
     {
         metrics.row_groups_selected += row_group_count;
     }
+    let host_buffer_fetch = fetch.runtime_metrics();
     fetch.release_after_decode();
-    Ok(ObjectStoreParquetChunkRead { outcome, observed_row_group_count })
+    Ok(ObjectStoreParquetChunkRead { outcome, observed_row_group_count, host_buffer_fetch })
 }
 
 pub(super) struct ObjectStoreParquetChunkRead {
-    pub(super) outcome: BudgetedExecutionOutcome<DataFrame>,
+    pub(super) outcome: BudgetedExecutionOutcome<cudf::frame::dataframe::ParquetSourceChunkReadOutput>,
     pub(super) observed_row_group_count: Option<u64>,
+    pub(super) host_buffer_fetch: HostBufferFetchRuntimeMetrics,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct HostBufferFetchRuntimeMetrics {
+    pub(super) fetch_mode: String,
+    pub(super) payload_bytes: u64,
+    pub(super) requested_range_count: u64,
+    pub(super) requested_range_bytes: u64,
+    pub(super) original_file_bytes: u64,
+    pub(super) mini_parquet_footer_bytes: u64,
 }
 
 fn fetched_file_row_group_count(file: &LocalParquetFile, fetch: &HostParquetBuffer) -> u64 {
@@ -675,7 +1130,7 @@ fn fetched_file_row_group_count(file: &LocalParquetFile, fetch: &HostParquetBuff
             parse_complete_parquet_metadata(
                 fetch.bytes(),
                 "nexus_query_engine.source_decode.host_buffer_file_metadata",
-                file.path.display(),
+                parquet_file_path_fact(file),
             )
             .ok()
             .map(|metadata| metadata.num_row_groups())
@@ -691,7 +1146,7 @@ fn fetched_chunk_row_group_count(chunk: &SourceChunk, fetch: &HostParquetBuffer)
         parse_complete_parquet_metadata(
             fetch.bytes(),
             "nexus_query_engine.source_decode.host_buffer_chunk_metadata",
-            chunk.path.display(),
+            parquet_chunk_path_fact(chunk),
         )
         .ok()
         .map(|metadata| metadata.num_row_groups() as u64)
@@ -709,34 +1164,175 @@ fn represented_file_row_group_count(file: &LocalParquetFile) -> Option<usize> {
         .map(Vec::len)
 }
 
-fn ranged_scan_limit_chunk_selector(
+fn finish_with_full_fetch_fallback(
+    context: &ExecutionContext,
+    location: &crate::source::ParquetSourceLocation,
+    resolved_source: &crate::source::ResolvedParquetSource,
+    estimated_fetch_bytes: Option<u64>,
+    fetch: ScheduledHostParquetFetch,
+) -> Result<HostParquetBuffer> {
+    match fetch.finish() {
+        Ok(fetch) => Ok(fetch),
+        Err(error) if error.code() == QueryErrorCode::UnsupportedPlanShape => {
+            start_host_parquet_buffer_fetch(context, location, resolved_source, estimated_fetch_bytes)?.finish()
+        },
+        Err(error) => Err(error),
+    }
+}
+
+fn column_pruning_likely_applies(source: &LocalParquetSource) -> bool {
+    if source.read_column_file_indices.is_empty() {
+        return false;
+    }
+    if let Some(file_column_count) = source.file_column_count {
+        let mut indices = source.read_column_file_indices.clone();
+        indices.sort_unstable();
+        indices.dedup();
+        return indices.len() < file_column_count;
+    }
+    !source.read_column_file_indices.iter().copied().eq(0..source.read_column_file_indices.len())
+}
+
+fn source_read_bytes_are_strict_subset(selected: Option<u64>, total: Option<u64>) -> bool {
+    matches!((selected, total), (Some(selected), Some(total)) if selected > 0 && selected < total)
+}
+
+fn file_column_pruning_applies(file: &LocalParquetFile, source: &LocalParquetSource) -> bool {
+    column_pruning_likely_applies(source)
+        || source_read_bytes_are_strict_subset(
+            source_read_bytes_for_all_rows(
+                file.projected_row_group_compressed_bytes.as_ref(),
+                file.pure_filter_row_group_compressed_bytes.as_ref(),
+            ),
+            file.row_group_bytes.as_ref().map(|bytes| bytes.iter().sum()),
+        )
+}
+
+fn chunk_column_pruning_applies(chunk: &SourceChunk, source: &LocalParquetSource) -> bool {
+    column_pruning_likely_applies(source)
+        || source_read_bytes_are_strict_subset(chunk.estimated_source_read_bytes, chunk.known_file_bytes)
+        || source_read_bytes_are_strict_subset(
+            source_read_bytes_for_all_rows(
+                chunk.source_file_projected_compressed_bytes.as_ref(),
+                chunk.source_file_pure_filter_compressed_bytes.as_ref(),
+            ),
+            chunk.source_file_row_group_bytes.as_ref().map(|bytes| bytes.iter().sum()),
+        )
+}
+
+fn source_read_bytes_for_all_rows(projected: Option<&Vec<u64>>, pure_filter: Option<&Vec<u64>>) -> Option<u64> {
+    match (projected, pure_filter) {
+        (Some(projected), Some(pure_filter)) if projected.len() == pure_filter.len() => {
+            projected.iter().zip(pure_filter).try_fold(0u64, |total, (projected, pure_filter)| {
+                total.checked_add(projected.saturating_add(*pure_filter))
+            })
+        },
+        (Some(projected), None) => projected.iter().try_fold(0u64, |total, bytes| total.checked_add(*bytes)),
+        (None, Some(pure_filter)) => pure_filter.iter().try_fold(0u64, |total, bytes| total.checked_add(*bytes)),
+        _ => None,
+    }
+}
+
+fn chunk_source_file_row_group_count(chunk: &SourceChunk) -> Option<usize> {
+    chunk
+        .source_file_row_group_rows
+        .as_ref()
+        .or(chunk.source_file_row_group_bytes.as_ref())
+        .or(chunk.source_file_projected_compressed_bytes.as_ref())
+        .or(chunk.source_file_projected_uncompressed_bytes.as_ref())
+        .or(chunk.source_file_pure_filter_compressed_bytes.as_ref())
+        .or(chunk.source_file_pure_filter_uncompressed_bytes.as_ref())
+        .map(Vec::len)
+}
+
+fn ranged_parquet_file_request(
     source: &LocalParquetSource,
-    chunk: &SourceChunk,
-) -> Option<ranged_parquet::RangedRowGroupSelector> {
-    let source_scan_limit = source.scan_limit?;
-    if source_scan_limit == 0 {
+    file: &LocalParquetFile,
+) -> Option<ranged_parquet::RangedParquetFetchRequest> {
+    if !file.resolved_source.remote_host_buffer_ranged_enabled {
         return None;
     }
-    let scan_limit = u64::try_from(source_scan_limit).ok()?;
+    if !matches!(file.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
+        return None;
+    }
+    let column_indices = source.read_column_file_indices.clone();
+    let column_pruned = file_column_pruning_applies(file, source);
+    if let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty())
+        && represented_file_row_group_count(file).is_some_and(|total| row_groups.len() < total)
+    {
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::Explicit(row_groups.clone()),
+            Some(column_indices),
+        ));
+    }
+    let scan_limit = source.scan_limit.filter(|limit| *limit > 0).and_then(|limit| u64::try_from(limit).ok());
+    if let Some(scan_limit) = scan_limit {
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::ScanLimit(scan_limit),
+            Some(column_indices),
+        ));
+    }
+    if let Some(row_groups) = file.row_groups.as_ref().filter(|row_groups| !row_groups.is_empty())
+        && column_pruned
+        && represented_file_row_group_count(file).is_some()
+    {
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::Explicit(row_groups.clone()),
+            Some(column_indices),
+        ));
+    }
+    if column_pruned && represented_file_row_group_count(file).is_some_and(|total| total > 0) {
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::Explicit(
+                (0..represented_file_row_group_count(file).expect("checked above")).collect(),
+            ),
+            Some(column_indices),
+        ));
+    }
+    None
+}
+
+fn ranged_parquet_chunk_request(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+) -> Option<ranged_parquet::RangedParquetFetchRequest> {
+    if !chunk.resolved_source.remote_host_buffer_ranged_enabled {
+        return None;
+    }
     if !matches!(chunk.location, crate::source::ParquetSourceLocation::ObjectStoreUri { .. }) {
         return None;
     }
+    let column_indices = source.read_column_file_indices.clone();
+    let column_pruned = chunk_column_pruning_applies(chunk, source);
     if !chunk.row_group_indexes.is_empty()
-        && chunk
-            .source_file_row_group_rows
-            .as_ref()
-            .is_some_and(|row_groups| chunk.row_group_indexes.len() < row_groups.len())
+        && chunk_source_file_row_group_count(chunk).is_some_and(|row_groups| chunk.row_group_indexes.len() < row_groups)
     {
-        return Some(ranged_parquet::RangedRowGroupSelector::Explicit(chunk.row_group_indexes.clone()));
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::Explicit(chunk.row_group_indexes.clone()),
+            Some(column_indices),
+        ));
     }
+    let scan_limit = source.scan_limit.filter(|limit| *limit > 0).and_then(|limit| u64::try_from(limit).ok());
     if chunk.scan_limit_rows.is_some()
-        && chunk.source_file_row_group_bytes.is_none()
-        && chunk.source_file_projected_compressed_bytes.is_none()
-        && chunk.source_file_projected_uncompressed_bytes.is_none()
-        && chunk.source_file_pure_filter_compressed_bytes.is_none()
-        && chunk.source_file_pure_filter_uncompressed_bytes.is_none()
+        && let Some(scan_limit) = scan_limit
     {
-        return Some(ranged_parquet::RangedRowGroupSelector::ScanLimit(scan_limit));
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::ScanLimit(scan_limit),
+            Some(column_indices),
+        ));
+    }
+    if !chunk.row_group_indexes.is_empty() && column_pruned && chunk_source_file_row_group_count(chunk).is_some() {
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::Explicit(chunk.row_group_indexes.clone()),
+            Some(column_indices),
+        ));
+    }
+    if column_pruned && let Some(total_row_groups) = chunk_source_file_row_group_count(chunk).filter(|count| *count > 0)
+    {
+        return Some(ranged_parquet::RangedParquetFetchRequest::new(
+            ranged_parquet::RangedRowGroupSelector::Explicit((0..total_row_groups).collect()),
+            Some(column_indices),
+        ));
     }
     None
 }
@@ -747,14 +1343,20 @@ fn attach_ranged_fetch_facts(
     chunk: &SourceChunk,
 ) -> QueryError {
     error
-        .with_fact("source_fetch_mode", "ranged_scan_limit")
+        .with_fact("source_fetch_mode", "ranged_parquet")
         .with_fact("mini_parquet_bytes", ranged_fetch.mini_payload_bytes)
+        .with_fact("requested_range_count", ranged_fetch.requested_range_count)
+        .with_fact("requested_range_bytes", ranged_fetch.requested_range_bytes)
         .with_fact("mini_row_group_bytes", comma_separated_u64(&ranged_fetch.mini_row_group_bytes))
         .with_fact("mini_parquet_footer_bytes", ranged_fetch.footer_bytes)
         .with_fact("original_file_bytes", ranged_fetch.original_file_bytes)
         .with_fact(
             "selected_original_row_groups",
             comma_separated_usize_values(&ranged_fetch.selected_original_row_groups),
+        )
+        .with_fact(
+            "selected_file_column_indices",
+            comma_separated_usize_values(&ranged_fetch.selected_file_column_indices),
         )
         .with_fact("mini_row_groups", ranged_fetch.mini_row_group_rows.len())
         .with_fact("original_chunk_row_groups", format_row_groups(chunk))
@@ -768,8 +1370,10 @@ fn attach_ranged_fetch_file_facts(
     chunk_index: usize,
 ) -> QueryError {
     error
-        .with_fact("source_fetch_mode", "ranged_scan_limit")
+        .with_fact("source_fetch_mode", "ranged_parquet")
         .with_fact("mini_parquet_bytes", ranged_fetch.mini_payload_bytes)
+        .with_fact("requested_range_count", ranged_fetch.requested_range_count)
+        .with_fact("requested_range_bytes", ranged_fetch.requested_range_bytes)
         .with_fact("mini_row_group_bytes", comma_separated_u64(&ranged_fetch.mini_row_group_bytes))
         .with_fact("mini_parquet_footer_bytes", ranged_fetch.footer_bytes)
         .with_fact("original_file_bytes", ranged_fetch.original_file_bytes)
@@ -777,11 +1381,31 @@ fn attach_ranged_fetch_file_facts(
             "selected_original_row_groups",
             comma_separated_usize_values(&ranged_fetch.selected_original_row_groups),
         )
+        .with_fact(
+            "selected_file_column_indices",
+            comma_separated_usize_values(&ranged_fetch.selected_file_column_indices),
+        )
         .with_fact("mini_row_groups", ranged_fetch.mini_row_group_rows.len())
-        .with_fact("path", file.path.display())
-        .with_fact("stable_id", file.stable_id.as_str())
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("file_index", file_index)
         .with_fact("chunk_index", chunk_index)
+}
+
+fn parquet_file_path_fact(file: &LocalParquetFile) -> String {
+    file.location.diagnostic_location()
+}
+
+fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
+    chunk.location.diagnostic_location()
+}
+
+fn parquet_file_stable_id_fact(file: &LocalParquetFile) -> String {
+    file.location.diagnostic_stable_id(file.stable_id.as_str())
+}
+
+fn parquet_chunk_stable_id_fact(chunk: &SourceChunk) -> String {
+    chunk.location.diagnostic_stable_id(chunk.stable_id.as_str())
 }
 
 fn comma_separated_usize_values(values: &[usize]) -> String {
@@ -802,6 +1426,16 @@ struct HostParquetBuffer {
     fetch_elapsed: std::time::Duration,
 }
 
+struct BackgroundLakehouseCacheLock {
+    path: PathBuf,
+}
+
+impl Drop for BackgroundLakehouseCacheLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 #[derive(Debug, Clone)]
 struct RangedParquetFetchDiagnostics {
     mini_payload_bytes: u64,
@@ -810,6 +1444,9 @@ struct RangedParquetFetchDiagnostics {
     mini_row_group_rows: Vec<u64>,
     mini_row_group_bytes: Vec<u64>,
     footer_bytes: u64,
+    selected_file_column_indices: Vec<usize>,
+    requested_range_count: usize,
+    requested_range_bytes: u64,
 }
 
 impl From<&ranged_parquet::RangedParquetFetch> for RangedParquetFetchDiagnostics {
@@ -821,6 +1458,9 @@ impl From<&ranged_parquet::RangedParquetFetch> for RangedParquetFetchDiagnostics
             mini_row_group_rows: fetch.mini_row_group_rows.clone(),
             mini_row_group_bytes: fetch.mini_row_group_bytes.clone(),
             footer_bytes: fetch.footer_bytes,
+            selected_file_column_indices: fetch.selected_file_column_indices.clone(),
+            requested_range_count: fetch.requested_range_count,
+            requested_range_bytes: fetch.requested_range_bytes,
         }
     }
 }
@@ -841,6 +1481,28 @@ impl ScheduledHostParquetFetch {
 impl HostParquetBuffer {
     fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    fn runtime_metrics(&self) -> HostBufferFetchRuntimeMetrics {
+        if let Some(ranged_fetch) = self.ranged_fetch.as_ref() {
+            HostBufferFetchRuntimeMetrics {
+                fetch_mode: "ranged_parquet".to_string(),
+                payload_bytes: self.actual_bytes,
+                requested_range_count: ranged_fetch.requested_range_count as u64,
+                requested_range_bytes: ranged_fetch.requested_range_bytes,
+                original_file_bytes: ranged_fetch.original_file_bytes,
+                mini_parquet_footer_bytes: ranged_fetch.footer_bytes,
+            }
+        } else {
+            HostBufferFetchRuntimeMetrics {
+                fetch_mode: "full_object".to_string(),
+                payload_bytes: self.actual_bytes,
+                requested_range_count: 0,
+                requested_range_bytes: 0,
+                original_file_bytes: self.actual_bytes,
+                mini_parquet_footer_bytes: 0,
+            }
+        }
     }
 
     fn release_after_decode(&mut self) {
@@ -879,6 +1541,9 @@ fn acquire_lakehouse_cache_lock(
                 return Ok(LakehouseCacheLock { path: Some(lock_path.to_path_buf()) });
             },
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if remove_lakehouse_cache_lock_if_stale(lock_path) {
+                    continue;
+                }
                 if cache_path.is_file() {
                     return Ok(LakehouseCacheLock { path: None });
                 }
@@ -891,9 +1556,9 @@ fn acquire_lakehouse_cache_lock(
                     "nexus_query_engine.lakehouse_cache.lock_timeout",
                     "timed out waiting for a lakehouse cache fill lock",
                 )
-                .with_fact("path", cache_path.display())
-                .with_fact("lock_path", lock_path.display())
-                .with_fact("stable_id", stable_id);
+                .with_fact("path", lakehouse_cache_path_fact(cache_path))
+                .with_fact("lock_path", lakehouse_cache_path_fact(lock_path))
+                .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id));
                 if let Some(file_index) = file_index {
                     error = error.with_fact("file_index", file_index);
                 }
@@ -912,7 +1577,7 @@ fn acquire_lakehouse_cache_lock(
                     file_index,
                     chunk_index,
                 )
-                .with_fact("lock_path", lock_path.display()));
+                .with_fact("lock_path", lakehouse_cache_path_fact(lock_path)));
             },
         }
     }
@@ -923,6 +1588,7 @@ fn publish_lakehouse_cache_file(
     cache_path: &Path,
     bytes: &[u8],
     stable_id: &str,
+    sidecar_content_identity: &str,
     file_index: Option<usize>,
     chunk_index: Option<usize>,
 ) -> Result<()> {
@@ -937,7 +1603,7 @@ fn publish_lakehouse_cache_file(
             file_index,
             chunk_index,
         )
-        .with_fact("temp_path", temp_path.display())
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path))
     })?;
     if let Err(error) = temp_file.write_all(bytes).and_then(|()| temp_file.sync_all()) {
         let _ = fs::remove_file(&temp_path);
@@ -950,7 +1616,7 @@ fn publish_lakehouse_cache_file(
             file_index,
             chunk_index,
         )
-        .with_fact("temp_path", temp_path.display()));
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
     }
     drop(temp_file);
     if let Err(error) = fs::rename(&temp_path, cache_path) {
@@ -964,9 +1630,17 @@ fn publish_lakehouse_cache_file(
             file_index,
             chunk_index,
         )
-        .with_fact("temp_path", temp_path.display()));
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
     }
+    let _ = write_parquet_footer_sidecar_from_file(cache_path, sidecar_content_identity);
     Ok(())
+}
+
+fn sidecar_content_identity<'a>(
+    resolved_source: &'a crate::source::ResolvedParquetSource,
+    stable_id: &'a str,
+) -> &'a str {
+    resolved_source.content_identity.as_deref().unwrap_or(stable_id)
 }
 
 fn lakehouse_cache_lock_path(cache_path: &Path) -> PathBuf {
@@ -974,10 +1648,68 @@ fn lakehouse_cache_lock_path(cache_path: &Path) -> PathBuf {
     cache_path.with_file_name(format!("{file_name}.lock"))
 }
 
+fn remove_lakehouse_cache_lock_if_stale(lock_path: &Path) -> bool {
+    let Ok(lock_content) = fs::read_to_string(lock_path) else {
+        return false;
+    };
+    if !Path::new("/proc").is_dir() {
+        return false;
+    }
+    if let Some(pid) =
+        lock_content.lines().find_map(|line| line.strip_prefix("pid=")).and_then(|pid| pid.trim().parse::<u32>().ok())
+    {
+        if pid == std::process::id() || Path::new("/proc").join(pid.to_string()).exists() {
+            return false;
+        }
+    } else if !malformed_lakehouse_cache_lock_is_stale(lock_path) {
+        return false;
+    }
+    fs::remove_file(lock_path).is_ok()
+}
+
+fn malformed_lakehouse_cache_lock_is_stale(lock_path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(lock_path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    modified.elapsed().is_ok_and(|elapsed| elapsed >= MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE)
+}
+
 fn lakehouse_cache_temp_path(cache_path: &Path) -> PathBuf {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |duration| duration.as_nanos());
     let file_name = cache_path.file_name().and_then(|value| value.to_str()).unwrap_or("cache-entry");
     cache_path.with_file_name(format!(".{file_name}.tmp.{}.{}", std::process::id(), nonce))
+}
+
+fn stable_log_hash(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn lakehouse_cache_path_fact(path: &Path) -> String {
+    format!("lakehouse_cache_path:fnv64:{}", stable_log_hash(&path.display().to_string()))
+}
+
+fn lakehouse_cache_stable_id_fact(stable_id: &str) -> String {
+    format!("lakehouse_cache_stable_id:fnv64:{}", stable_log_hash(stable_id))
+}
+
+fn object_store_bucket_fact(bucket: &str) -> String {
+    format!("object_store_bucket:fnv64:{}", stable_log_hash(bucket))
+}
+
+fn object_store_key_fact(location: &object_store::path::Path) -> String {
+    crate::source::redacted_object_store_path_diagnostic(location.as_ref())
+}
+
+fn optional_usize_log(value: Option<usize>) -> String {
+    value.map_or_else(|| "none".to_string(), |value| value.to_string())
 }
 
 fn lakehouse_cache_read_pin_path(cache_path: &Path) -> PathBuf {
@@ -1019,6 +1751,7 @@ fn evict_lakehouse_cache(cache_root: Option<&str>, protected_path: &Path, max_by
             continue;
         }
         if fs::remove_file(&entry.path).is_ok() {
+            let _ = fs::remove_file(crate::parquet_metadata::parquet_footer_sidecar_path(&entry.path));
             retained_bytes = retained_bytes.saturating_sub(entry.bytes);
         }
     }
@@ -1061,6 +1794,7 @@ fn is_lakehouse_cache_data_file(path: &Path) -> bool {
         return false;
     };
     !(name.ends_with(".lock")
+        || name.ends_with(".footer.v1")
         || is_lakehouse_cache_read_pin_name(name)
         || (name.starts_with('.') && name.contains(".tmp.")))
 }
@@ -1126,8 +1860,8 @@ fn lakehouse_cache_io_error(
     chunk_index: Option<usize>,
 ) -> QueryError {
     let mut error = QueryError::new(QueryErrorCode::CudfDependencyFailure, operation, message)
-        .with_fact("path", cache_path.display())
-        .with_fact("stable_id", stable_id)
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id))
         .with_source(error);
     if let Some(file_index) = file_index {
         error = error.with_fact("file_index", file_index);
@@ -1152,7 +1886,7 @@ fn start_host_parquet_buffer_fetch(
         error
             .with_fact_if_absent("source_fetch_substrate", "object_store")
             .with_fact_if_absent("source_fetch_scheme", "s3")
-            .with_fact_if_absent("bucket", fetch_location.bucket.as_str())
+            .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
     })?;
     let mut host_budget_wait_elapsed = host_budget_wait_timer.elapsed();
     let concurrency_wait_timer = Instant::now();
@@ -1160,7 +1894,7 @@ fn start_host_parquet_buffer_fetch(
         error
             .with_fact_if_absent("source_fetch_substrate", "object_store")
             .with_fact_if_absent("source_fetch_scheme", "s3")
-            .with_fact_if_absent("bucket", fetch_location.bucket.as_str())
+            .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
     })?;
     let concurrency_wait_elapsed = concurrency_wait_timer.elapsed();
     let store = context.s3_object_store(S3ObjectStoreKey {
@@ -1177,7 +1911,7 @@ fn start_host_parquet_buffer_fetch(
                 error
                     .with_fact_if_absent("source_fetch_substrate", "object_store")
                     .with_fact_if_absent("source_fetch_scheme", "s3")
-                    .with_fact_if_absent("bucket", fetch_location.bucket.as_str())
+                    .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
                     .with_fact_if_absent("region", fetch_location.region.as_str())
             })
             .and_then(|bytes| {
@@ -1193,7 +1927,7 @@ fn start_host_parquet_buffer_fetch(
                     error
                         .with_fact_if_absent("source_fetch_substrate", "object_store")
                         .with_fact_if_absent("source_fetch_scheme", "s3")
-                        .with_fact_if_absent("bucket", fetch_location.bucket.as_str())
+                        .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
                         .with_fact_if_absent("actual_bytes", actual_bytes)
                 })?;
                 host_budget_wait_elapsed += grow_wait_timer.elapsed();
@@ -1213,15 +1947,150 @@ fn start_host_parquet_buffer_fetch(
     Ok(ScheduledHostParquetFetch { receiver })
 }
 
+async fn stream_lakehouse_cache_fill(
+    store: std::sync::Arc<dyn object_store::ObjectStore>,
+    location: object_store::path::Path,
+    cache_path: PathBuf,
+    temp_path: PathBuf,
+    lock_guard: BackgroundLakehouseCacheLock,
+    stable_id: String,
+    sidecar_content_identity: String,
+    estimated_fetch_bytes: Option<u64>,
+    mut budget_permit: crate::runtime::HostFetchPermit,
+) -> Result<u64> {
+    let _lock = lock_guard;
+    if complete_cache_file_matches_expected_size(&cache_path, estimated_fetch_bytes) {
+        return Ok(0);
+    }
+    let result = store.get(&location).await.map_err(|_error| {
+        QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.lakehouse_cache.background_fill.fetch",
+            "failed to start background lakehouse cache object fetch",
+        )
+        .with_fact("path", lakehouse_cache_path_fact(&cache_path))
+        .with_fact("object_store_path", object_store_key_fact(&location))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
+    })?;
+    let mut temp_file = OpenOptions::new().write(true).create_new(true).open(&temp_path).map_err(|error| {
+        lakehouse_cache_io_error(
+            error,
+            "nexus_query_engine.lakehouse_cache.background_fill.temp",
+            "failed to create background lakehouse cache temp file",
+            &cache_path,
+            stable_id.as_str(),
+            None,
+            None,
+        )
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path))
+    })?;
+
+    let mut total_bytes = 0u64;
+    let mut stream = result.into_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|_error| {
+            let _ = fs::remove_file(&temp_path);
+            QueryError::new(
+                QueryErrorCode::CudfDependencyFailure,
+                "nexus_query_engine.lakehouse_cache.background_fill.fetch",
+                "failed to stream background lakehouse cache object bytes",
+            )
+            .with_fact("path", lakehouse_cache_path_fact(&cache_path))
+            .with_fact("object_store_path", object_store_key_fact(&location))
+            .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
+        })?;
+        total_bytes = total_bytes
+            .checked_add(u64::try_from(chunk.len()).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.lakehouse_cache.background_fill.size",
+                    "background lakehouse cache chunk length exceeds u64 range",
+                )
+            })?)
+            .ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.lakehouse_cache.background_fill.size",
+                    "background lakehouse cache byte count overflows u64",
+                )
+            })?;
+        if total_bytes > budget_permit.bytes() {
+            budget_permit.grow_to(total_bytes).map_err(|error| {
+                let _ = fs::remove_file(&temp_path);
+                error
+                    .with_fact_if_absent("path", lakehouse_cache_path_fact(&cache_path))
+                    .with_fact_if_absent("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
+                    .with_fact_if_absent("background_fill_bytes", total_bytes)
+            })?;
+        }
+        if let Err(error) = temp_file.write_all(&chunk) {
+            let _ = fs::remove_file(&temp_path);
+            return Err(lakehouse_cache_io_error(
+                error,
+                "nexus_query_engine.lakehouse_cache.background_fill.write",
+                "failed to write background lakehouse cache temp file",
+                &cache_path,
+                stable_id.as_str(),
+                None,
+                None,
+            )
+            .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
+        }
+    }
+    if let Some(expected_bytes) = estimated_fetch_bytes
+        && total_bytes != expected_bytes
+    {
+        let _ = fs::remove_file(&temp_path);
+        return Err(QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.lakehouse_cache.background_fill.size",
+            "background lakehouse cache fetch byte count did not match source metadata",
+        )
+        .with_fact("path", lakehouse_cache_path_fact(&cache_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id.as_str()))
+        .with_fact("expected_bytes", expected_bytes)
+        .with_fact("actual_bytes", total_bytes));
+    }
+    if let Err(error) = temp_file.sync_all() {
+        let _ = fs::remove_file(&temp_path);
+        return Err(lakehouse_cache_io_error(
+            error,
+            "nexus_query_engine.lakehouse_cache.background_fill.sync",
+            "failed to sync background lakehouse cache temp file",
+            &cache_path,
+            stable_id.as_str(),
+            None,
+            None,
+        )
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
+    }
+    drop(temp_file);
+    if let Err(error) = fs::rename(&temp_path, &cache_path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(lakehouse_cache_io_error(
+            error,
+            "nexus_query_engine.lakehouse_cache.background_fill.publish",
+            "failed to atomically publish background lakehouse cache file",
+            &cache_path,
+            stable_id.as_str(),
+            None,
+            None,
+        )
+        .with_fact("temp_path", lakehouse_cache_path_fact(&temp_path)));
+    }
+    let _ = write_parquet_footer_sidecar_from_file(&cache_path, sidecar_content_identity.as_str());
+    Ok(total_bytes)
+}
+
 /// Schedules a footer-first ranged Parquet fetch that returns a compact
-/// mini-Parquet buffer covering the requested scan limit. Used when the
-/// source carries a `scan_limit`, so that `SELECT ... LIMIT N` over remote
-/// S3 Parquet does not pull the entire object before libcudf can trim.
+/// mini-Parquet buffer covering selected row groups and file columns. This is
+/// the host-buffer fallback for remote reads that can still avoid full-object
+/// S3 transfer before libcudf sees the file.
 fn start_host_parquet_buffer_ranged_fetch(
     context: &ExecutionContext,
     location: &crate::source::ParquetSourceLocation,
     resolved_source: &crate::source::ResolvedParquetSource,
-    selector: ranged_parquet::RangedRowGroupSelector,
+    request: ranged_parquet::RangedParquetFetchRequest,
 ) -> Result<ScheduledHostParquetFetch> {
     context.check_cancellation("nexus_query_engine.source_fetch.host_buffer_ranged")?;
     let fetch_location = source_fetch_location(location, resolved_source)?;
@@ -1230,8 +2099,8 @@ fn start_host_parquet_buffer_ranged_fetch(
         error
             .with_fact_if_absent("source_fetch_substrate", "object_store")
             .with_fact_if_absent("source_fetch_scheme", "s3")
-            .with_fact_if_absent("bucket", fetch_location.bucket.as_str())
-            .with_fact_if_absent("source_fetch_mode", "ranged_scan_limit")
+            .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
+            .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
     })?;
     let mut host_budget_wait_elapsed = host_budget_wait_timer.elapsed();
     let concurrency_wait_timer = Instant::now();
@@ -1239,8 +2108,8 @@ fn start_host_parquet_buffer_ranged_fetch(
         error
             .with_fact_if_absent("source_fetch_substrate", "object_store")
             .with_fact_if_absent("source_fetch_scheme", "s3")
-            .with_fact_if_absent("bucket", fetch_location.bucket.as_str())
-            .with_fact_if_absent("source_fetch_mode", "ranged_scan_limit")
+            .with_fact_if_absent("bucket", object_store_bucket_fact(fetch_location.bucket.as_str()))
+            .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
     })?;
     let concurrency_wait_elapsed = concurrency_wait_timer.elapsed();
     let store = context.s3_object_store(S3ObjectStoreKey {
@@ -1253,7 +2122,7 @@ fn start_host_parquet_buffer_ranged_fetch(
     let region_for_error = fetch_location.region.clone();
     let (sender, receiver) = std::sync::mpsc::channel();
     let _fetch_handle = context.spawn_object_store_custom_fetch(
-        move || ranged_parquet::fetch_ranged_parquet(store, key, selector),
+        move || ranged_parquet::fetch_ranged_parquet(store, key, request),
         move |fetch_result| {
             let fetch_elapsed = fetch_result.elapsed;
             let result = fetch_result
@@ -1262,8 +2131,8 @@ fn start_host_parquet_buffer_ranged_fetch(
                     error
                         .with_fact_if_absent("source_fetch_substrate", "object_store")
                         .with_fact_if_absent("source_fetch_scheme", "s3")
-                        .with_fact_if_absent("source_fetch_mode", "ranged_scan_limit")
-                        .with_fact_if_absent("bucket", bucket_for_error.as_str())
+                        .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
+                        .with_fact_if_absent("bucket", object_store_bucket_fact(bucket_for_error.as_str()))
                         .with_fact_if_absent("region", region_for_error.as_str())
                 })
                 .and_then(|ranged_fetch| {
@@ -1273,8 +2142,8 @@ fn start_host_parquet_buffer_ranged_fetch(
                         error
                             .with_fact_if_absent("source_fetch_substrate", "object_store")
                             .with_fact_if_absent("source_fetch_scheme", "s3")
-                            .with_fact_if_absent("source_fetch_mode", "ranged_scan_limit")
-                            .with_fact_if_absent("bucket", bucket_for_error.as_str())
+                            .with_fact_if_absent("source_fetch_mode", "ranged_parquet")
+                            .with_fact_if_absent("bucket", object_store_bucket_fact(bucket_for_error.as_str()))
                             .with_fact_if_absent("actual_bytes", actual_bytes)
                     })?;
                     host_budget_wait_elapsed += grow_wait_timer.elapsed();
@@ -1369,8 +2238,9 @@ mod tests {
         plan::QueryPlanBuilder,
         runtime::SourceChunkPlanningMode,
         source::{
-            CredentialMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn, ParquetSourceLocation,
-            ResolvedParquetSource, SourceColumnRef, SourceNode,
+            CredentialMode, LakehouseCacheFillMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn,
+            ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
+            SourceColumnRef, SourceNode,
         },
     };
 
@@ -1378,11 +2248,36 @@ mod tests {
         let schema = Arc::new(Schema::new(vec![Field::new("payload", ArrowDataType::Int32, true)]));
         let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
             .unwrap()
+            .with_resolved_parquet_source(
+                ResolvedParquetSource::remote_host_buffer(
+                    "s3://bucket/table/part-0.parquet",
+                    "s3://bucket/table/part-0.parquet",
+                    CredentialMode::SharedProcessEnv,
+                )
+                .with_remote_host_buffer_ranged_enabled(true),
+            )
+            .unwrap()
             .with_stable_id("part-0")
             .with_file_size_bytes(4096)
             .with_row_group_bytes(vec![1024, 1024, 2048])
             .with_row_group_rows(vec![10, 10, 10]);
         LocalParquetSource::from_files(vec![file], schema, vec!["payload".to_string()]).with_scan_limit(Some(15))
+    }
+
+    #[test]
+    fn complete_cache_file_hit_requires_expected_size() {
+        let unique = LAKEHOUSE_CACHE_READ_PIN_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("nexus-cache-size-test-{}-{unique}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("part-0.parquet");
+        fs::write(&path, [0_u8; 8]).unwrap();
+
+        assert!(complete_cache_file_matches_expected_size(&path, Some(8)));
+        assert!(!complete_cache_file_matches_expected_size(&path, Some(9)));
+        assert!(!complete_cache_file_matches_expected_size(&path, None));
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
     }
 
     fn source_chunk(source: &LocalParquetSource, row_group_indexes: Vec<usize>) -> SourceChunk {
@@ -1414,6 +2309,8 @@ mod tests {
             source_file_pure_filter_compressed_bytes: Some(vec![0, 0, 0]),
             source_file_pure_filter_uncompressed_bytes: Some(vec![0, 0, 0]),
             source_file_row_group_rows: Some(vec![10, 10, 10]),
+            reader_decimal_types: Vec::new(),
+            reader_decimal_types_footer_verified: false,
             read_columns: vec!["payload".to_string()],
             partition_values: vec![],
             zero_column_count: false,
@@ -1484,6 +2381,8 @@ mod tests {
             source_file_pure_filter_compressed_bytes: Some(vec![0]),
             source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
             source_file_row_group_rows: Some(vec![10]),
+            reader_decimal_types: Vec::new(),
+            reader_decimal_types_footer_verified: false,
             read_columns: vec!["c0".to_string(), "c1".to_string()],
             partition_values: vec![],
             zero_column_count: false,
@@ -1524,6 +2423,35 @@ mod tests {
     }
 
     #[test]
+    fn optimized_batch_entry_is_scoped_by_resolved_source_contract() {
+        let source = optimized_cache_source();
+        let batch = optimized_cache_batch();
+        let first_signature = local_cache_optimized_batch_signature(&source, &batch);
+
+        let mut different_profile_batch = batch.clone();
+        for chunk in &mut different_profile_batch.chunks {
+            chunk.resolved_source = chunk
+                .resolved_source
+                .clone()
+                .with_storage_profile_id("different-profile")
+                .with_lakehouse_cache_path(format!("/tmp/other-cache/file-{}.parquet", chunk.file_index));
+        }
+        let second_signature = local_cache_optimized_batch_signature(&source, &different_profile_batch);
+
+        assert_ne!(first_signature, second_signature);
+
+        let mut different_decimal_batch = batch.clone();
+        for chunk in &mut different_decimal_batch.chunks {
+            chunk.reader_decimal_types =
+                vec![ParquetReaderDecimalType::new("c0", ParquetReaderDecimalTypeId::Decimal64, -2)];
+            chunk.reader_decimal_types_footer_verified = true;
+        }
+        let decimal_signature = local_cache_optimized_batch_signature(&source, &different_decimal_batch);
+
+        assert_ne!(first_signature, decimal_signature);
+    }
+
+    #[test]
     fn parse_s3_source_uri_preserves_storage_profile_id() {
         let location = parse_s3_source_uri("s3://bucket/prefix/file.parquet", Some("rest-s3".to_string())).unwrap();
 
@@ -1548,11 +2476,289 @@ mod tests {
     }
 
     #[test]
+    fn background_lakehouse_cache_fill_enqueue_reports_saturated_gate_without_blocking() {
+        let root = unique_temp_cache_root("background-fill-saturated");
+        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
+        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let _held_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                Duration::ZERO,
+                "nexus_query_engine.test.background_fill_gate",
+            )
+            .unwrap()
+            .unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
+        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_lakehouse_cache_fill_does_not_skip_wrong_size_cache_file() {
+        let root = unique_temp_cache_root("background-fill-wrong-size");
+        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        fs::write(&cache_path, b"incomplete").unwrap();
+        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let _held_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                Duration::ZERO,
+                "nexus_query_engine.test.background_fill_gate",
+            )
+            .unwrap()
+            .unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
+        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_lakehouse_cache_fill_removes_stale_lock_before_enqueue() {
+        let root = unique_temp_cache_root("background-fill-stale-lock");
+        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        let lock_path = lakehouse_cache_lock_path(&cache_path);
+        fs::write(&lock_path, b"pid=4294967295\n").unwrap();
+        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let _held_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                Duration::ZERO,
+                "nexus_query_engine.test.background_fill_gate",
+            )
+            .unwrap()
+            .unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
+        assert!(!lock_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_lakehouse_cache_fill_removes_stale_malformed_lock_before_enqueue() {
+        let root = unique_temp_cache_root("background-fill-malformed-stale-lock");
+        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
+        fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        let lock_path = lakehouse_cache_lock_path(&cache_path);
+        fs::write(&lock_path, b"").unwrap();
+        thread::sleep(MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE + Duration::from_millis(25));
+        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let _held_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                Duration::ZERO,
+                "nexus_query_engine.test.background_fill_gate",
+            )
+            .unwrap()
+            .unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
+        assert!(!lock_path.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_lakehouse_cache_fill_enqueue_reports_saturated_byte_budget() {
+        let root = unique_temp_cache_root("background-fill-byte-budget");
+        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
+        let context = ExecutionContext::builder().with_lakehouse_cache_fill_budget_bytes(512).build().unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+                .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+                .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_byte_budget_saturated"));
+        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_lakehouse_cache_fill_accepts_host_buffer_fallback_sources() {
+        let root = unique_temp_cache_root("background-fill-host-buffer");
+        let cache_path = root.join("v1/s3/bucket/content/part-0.parquet");
+        let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
+        let _held_permit = context
+            .acquire_lakehouse_cache_fill_operation_with_timeout(
+                Duration::ZERO,
+                "nexus_query_engine.test.background_fill_gate",
+            )
+            .unwrap()
+            .unwrap();
+        let resolved_source = ResolvedParquetSource::remote_host_buffer(
+            "s3://bucket/table/part-0.parquet",
+            "s3://bucket/table/part-0.parquet",
+            CredentialMode::SharedProcessEnv,
+        )
+        .with_lakehouse_cache_config(root.to_str().unwrap(), None)
+        .with_lakehouse_cache_path(cache_path.to_str().unwrap())
+        .with_lakehouse_cache_fill_mode(LakehouseCacheFillMode::Background);
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-0.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(resolved_source)
+            .unwrap()
+            .with_stable_id("part-0")
+            .with_file_size_bytes(1024);
+
+        let outcome = enqueue_background_lakehouse_cache_file_fill(&context, &file).unwrap();
+
+        assert_eq!(outcome, BackgroundLakehouseCacheFillEnqueue::Skipped("fill_concurrency_saturated"));
+        assert!(!lakehouse_cache_lock_path(&cache_path).exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn background_lakehouse_cache_fill_log_ids_hash_sensitive_values() {
+        let sensitive = "s3://access:secret@bucket/path/file.parquet?token=do-not-leak";
+        let first = stable_log_hash(sensitive);
+        let second = stable_log_hash(sensitive);
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 16);
+        assert!(!first.contains("s3://"));
+        assert!(!first.contains("secret"));
+        assert!(!first.contains("do-not-leak"));
+    }
+
+    #[test]
+    fn host_buffer_object_store_error_facts_redact_source_identity() {
+        let sensitive = "s3://secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak";
+        let file = LocalParquetFile::object_store_uri(sensitive).unwrap().with_stable_id(sensitive);
+
+        let path = parquet_file_path_fact(&file);
+        let stable_id = parquet_file_stable_id_fact(&file);
+
+        assert!(path.starts_with("object_store:s3:fnv64:"));
+        assert!(stable_id.starts_with("object_store:s3:stable_id_fnv64:"));
+        for diagnostic in [&path, &stable_id] {
+            for sensitive_part in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
+                assert!(!diagnostic.contains(sensitive_part), "diagnostic leaked {sensitive_part}: {diagnostic}");
+            }
+        }
+    }
+
+    #[test]
+    fn lakehouse_cache_error_facts_hash_source_derived_values() {
+        let sensitive_path =
+            PathBuf::from("/tmp/cache/s3/secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak");
+        let sensitive_stable_id = "s3://secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak";
+        let error = lakehouse_cache_io_error(
+            std::io::Error::other("permission denied"),
+            "nexus_query_engine.test.cache_error",
+            "failed cache operation",
+            &sensitive_path,
+            sensitive_stable_id,
+            None,
+            None,
+        );
+
+        let rendered = error.to_string();
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("lakehouse_cache_path:fnv64:")));
+        assert!(
+            error.fact_value("stable_id").is_some_and(|value| value.starts_with("lakehouse_cache_stable_id:fnv64:"))
+        );
+        assert!(object_store_bucket_fact("secret-bucket").starts_with("object_store_bucket:fnv64:"));
+        for sensitive in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
+            assert!(!rendered.contains(sensitive), "error leaked {sensitive}: {rendered}");
+        }
+    }
+
+    #[test]
+    fn ranged_fetch_facts_report_general_ranged_parquet_mode() {
+        let source = scan_limited_source();
+        let chunk = source_chunk(&source, vec![0]);
+        let diagnostics = RangedParquetFetchDiagnostics {
+            mini_payload_bytes: 128,
+            mini_row_group_bytes: vec![64],
+            mini_row_group_rows: vec![10],
+            footer_bytes: 32,
+            original_file_bytes: 4096,
+            selected_original_row_groups: vec![0],
+            selected_file_column_indices: vec![0],
+            requested_range_count: 3,
+            requested_range_bytes: 256,
+        };
+        let error = QueryError::new(
+            QueryErrorCode::CudfDependencyFailure,
+            "nexus_query_engine.test.ranged_fetch_facts",
+            "test ranged fetch diagnostics",
+        );
+
+        let error = attach_ranged_fetch_facts(error, &diagnostics, &chunk);
+
+        assert_eq!(error.fact_value("source_fetch_mode"), Some("ranged_parquet"));
+        assert_eq!(error.fact_value("requested_range_count"), Some("3"));
+        assert_eq!(error.fact_value("requested_range_bytes"), Some("256"));
+        assert_eq!(error.fact_value("selected_file_column_indices"), Some("0"));
+    }
+
+    #[test]
     fn lakehouse_cache_eviction_keeps_protected_entry_and_removes_old_data_files() {
         let root = unique_temp_cache_root("eviction");
         let old_a = write_cache_entry(&root, "v1/s3/bucket/content/a.parquet__h1", 4);
         let old_b = write_cache_entry(&root, "v1/s3/bucket/content/b.parquet__h2", 4);
         let protected = write_cache_entry(&root, "v1/s3/bucket/content/c.parquet__h3", 4);
+        let old_a_sidecar = crate::parquet_metadata::parquet_footer_sidecar_path(&old_a);
+        fs::write(&old_a_sidecar, b"sidecar").unwrap();
         let lock_path = lakehouse_cache_lock_path(&old_b);
         fs::write(&lock_path, b"locked").unwrap();
 
@@ -1560,6 +2766,7 @@ mod tests {
 
         assert!(protected.exists());
         assert!(!old_a.exists());
+        assert!(!old_a_sidecar.exists());
         assert!(old_b.exists());
         assert!(lock_path.exists());
         let _ = fs::remove_dir_all(root);
@@ -1618,26 +2825,161 @@ mod tests {
         let source = scan_limited_source();
         let chunk = source_chunk(&source, vec![0]);
 
-        let selector = ranged_scan_limit_chunk_selector(&source, &chunk);
+        let request = ranged_parquet_chunk_request(&source, &chunk);
         assert!(matches!(
-            selector,
+            request.map(|request| request.row_group_selector),
             Some(ranged_parquet::RangedRowGroupSelector::Explicit(row_groups)) if row_groups == vec![0]
         ));
     }
 
     #[test]
-    fn ranged_scan_limit_trigger_requires_source_limit_and_skipped_row_groups() {
+    fn ranged_chunk_request_uses_explicit_selection_without_source_limit() {
         let source = scan_limited_source();
-        let chunk = source_chunk(&source, vec![0, 1, 2]);
-        assert!(ranged_scan_limit_chunk_selector(&source, &chunk).is_none());
+        let chunk = source_chunk(&source, vec![0]);
+        let request = ranged_parquet_chunk_request(&source, &chunk);
+        assert!(matches!(
+            request.map(|request| request.row_group_selector),
+            Some(ranged_parquet::RangedRowGroupSelector::Explicit(row_groups)) if row_groups == vec![0]
+        ));
 
         let source_without_limit = source.clone().with_scan_limit(None);
         let limited_chunk = source_chunk(&source_without_limit, vec![0]);
-        assert!(ranged_scan_limit_chunk_selector(&source_without_limit, &limited_chunk).is_none());
+        let request = ranged_parquet_chunk_request(&source_without_limit, &limited_chunk);
+        assert!(matches!(
+            request.map(|request| request.row_group_selector),
+            Some(ranged_parquet::RangedRowGroupSelector::Explicit(row_groups)) if row_groups == vec![0]
+        ));
 
         let zero_limit_source = source.with_scan_limit(Some(0));
         let zero_limit_chunk = source_chunk(&zero_limit_source, vec![0]);
-        assert!(ranged_scan_limit_chunk_selector(&zero_limit_source, &zero_limit_chunk).is_none());
+        let request = ranged_parquet_chunk_request(&zero_limit_source, &zero_limit_chunk);
+        assert!(matches!(
+            request.map(|request| request.row_group_selector),
+            Some(ranged_parquet::RangedRowGroupSelector::Explicit(row_groups)) if row_groups == vec![0]
+        ));
+    }
+
+    #[test]
+    fn ranged_chunk_request_respects_host_buffer_ranged_gate() {
+        let mut source = scan_limited_source();
+        source.files[0].resolved_source =
+            source.files[0].resolved_source.clone().with_remote_host_buffer_ranged_enabled(false);
+        let chunk = source_chunk(&source, vec![0]);
+
+        assert!(ranged_parquet_chunk_request(&source, &chunk).is_none());
+    }
+
+    #[test]
+    fn ranged_chunk_request_includes_all_read_columns_including_filter_only_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("projected", ArrowDataType::Int32, true),
+            Field::new("filter_only", ArrowDataType::Int32, true),
+            Field::new("unused", ArrowDataType::Int32, true),
+        ]));
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-filter.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(
+                ResolvedParquetSource::remote_host_buffer(
+                    "s3://bucket/table/part-filter.parquet",
+                    "s3://bucket/table/part-filter.parquet",
+                    CredentialMode::SharedProcessEnv,
+                )
+                .with_remote_host_buffer_ranged_enabled(true),
+            )
+            .unwrap()
+            .with_stable_id("part-filter")
+            .with_file_size_bytes(4096)
+            .with_row_group_bytes(vec![2048, 2048])
+            .with_projected_row_group_bytes(vec![512, 512], vec![1024, 1024])
+            .with_pure_filter_row_group_bytes(vec![256, 256], vec![512, 512])
+            .with_row_group_rows(vec![10, 10]);
+        let source = LocalParquetSource::from_files(
+            vec![file],
+            schema,
+            vec!["projected".to_string(), "filter_only".to_string()],
+        )
+        .with_column_roles(vec!["projected".to_string()], vec!["filter_only".to_string()])
+        .with_column_file_indices(vec![0, 1], vec![0], vec![1]);
+        let mut chunk = source_chunk(&source, vec![0, 1]);
+        chunk.estimated_source_read_bytes = Some(1536);
+        chunk.source_file_projected_compressed_bytes = Some(vec![512, 512]);
+        chunk.source_file_pure_filter_compressed_bytes = Some(vec![256, 256]);
+
+        let request = ranged_parquet_chunk_request(&source, &chunk).unwrap();
+
+        assert_eq!(request.file_column_indices, Some(vec![0, 1]));
+        assert!(matches!(
+            request.row_group_selector,
+            ranged_parquet::RangedRowGroupSelector::Explicit(row_groups) if row_groups == vec![0, 1]
+        ));
+    }
+
+    #[test]
+    fn ranged_chunk_request_treats_prefix_projection_as_column_pruning_when_file_column_count_is_known() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("c0", ArrowDataType::Int32, true),
+            Field::new("c1", ArrowDataType::Int32, true),
+            Field::new("c2", ArrowDataType::Int32, true),
+        ]));
+        let file = LocalParquetFile::object_store_uri("s3://bucket/table/part-prefix.parquet")
+            .unwrap()
+            .with_resolved_parquet_source(
+                ResolvedParquetSource::remote_host_buffer(
+                    "s3://bucket/table/part-prefix.parquet",
+                    "s3://bucket/table/part-prefix.parquet",
+                    CredentialMode::SharedProcessEnv,
+                )
+                .with_remote_host_buffer_ranged_enabled(true),
+            )
+            .unwrap()
+            .with_stable_id("part-prefix")
+            .with_file_size_bytes(4096)
+            .with_row_group_bytes(vec![2048, 2048])
+            .with_row_group_rows(vec![10, 10]);
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["c0".to_string(), "c1".to_string()])
+            .with_column_file_indices(vec![0, 1], vec![0, 1], vec![])
+            .with_file_column_count(3);
+        let chunk = source_chunk(&source, vec![0, 1]);
+
+        let request = ranged_parquet_chunk_request(&source, &chunk).unwrap();
+
+        assert_eq!(request.file_column_indices, Some(vec![0, 1]));
+        assert!(matches!(
+            request.row_group_selector,
+            ranged_parquet::RangedRowGroupSelector::Explicit(row_groups) if row_groups == vec![0, 1]
+        ));
+    }
+
+    #[test]
+    fn ranged_file_request_uses_scan_limit_when_explicit_row_groups_cover_whole_file() {
+        let mut source = scan_limited_source();
+        source.files[0] = source.files[0].clone().with_row_groups(vec![0, 1, 2]);
+
+        let request = ranged_parquet_file_request(&source, &source.files[0]).unwrap();
+
+        assert!(matches!(request.row_group_selector, ranged_parquet::RangedRowGroupSelector::ScanLimit(15)));
+    }
+
+    #[test]
+    fn ranged_file_request_prefers_scan_limit_prefix_over_column_pruned_whole_file() {
+        let source = scan_limited_source().with_column_file_indices(vec![0], vec![0], vec![]).with_file_column_count(2);
+
+        let request = ranged_parquet_file_request(&source, &source.files[0]).unwrap();
+
+        assert_eq!(request.file_column_indices, Some(vec![0]));
+        assert!(matches!(request.row_group_selector, ranged_parquet::RangedRowGroupSelector::ScanLimit(15)));
+    }
+
+    #[test]
+    fn ranged_chunk_request_prefers_scan_limit_prefix_over_column_pruned_whole_file() {
+        let source = scan_limited_source().with_column_file_indices(vec![0], vec![0], vec![]).with_file_column_count(2);
+        let mut chunk = source_chunk(&source, vec![0, 1, 2]);
+        chunk.scan_limit_rows = Some(15);
+
+        let request = ranged_parquet_chunk_request(&source, &chunk).unwrap();
+
+        assert_eq!(request.file_column_indices, Some(vec![0]));
+        assert!(matches!(request.row_group_selector, ranged_parquet::RangedRowGroupSelector::ScanLimit(15)));
     }
 
     #[test]
@@ -1652,9 +2994,13 @@ mod tests {
         chunk.source_file_pure_filter_compressed_bytes = None;
         chunk.source_file_pure_filter_uncompressed_bytes = None;
         chunk.source_file_row_group_rows = Some(vec![30]);
+        chunk.estimated_source_read_bytes = chunk.known_file_bytes;
 
-        let selector = ranged_scan_limit_chunk_selector(&source, &chunk);
+        let request = ranged_parquet_chunk_request(&source, &chunk);
 
-        assert!(matches!(selector, Some(ranged_parquet::RangedRowGroupSelector::ScanLimit(15))));
+        assert!(matches!(
+            request.map(|request| request.row_group_selector),
+            Some(ranged_parquet::RangedRowGroupSelector::ScanLimit(15))
+        ));
     }
 }

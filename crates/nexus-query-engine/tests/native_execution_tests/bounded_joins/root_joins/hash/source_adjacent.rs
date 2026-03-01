@@ -50,7 +50,7 @@ fn bounded_native_query_executes_root_hash_join_with_chunked_tokenized_leaf_read
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
     assert_eq!(metrics.source_chunks_attempted, 7);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_committed, 7);
     assert_eq!(metrics.source_read_prefetches_started, 0);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
@@ -187,7 +187,7 @@ fn bounded_native_query_reconciles_streamed_join_probe_prefetch_after_decode() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_committed, 7);
     assert_eq!(metrics.source_read_prefetches_started, metrics.source_read_prefetches_completed);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
@@ -258,7 +258,7 @@ fn bounded_native_query_skips_streamed_join_probe_prefetch_without_minimum_decod
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_committed, 7);
     assert_eq!(metrics.source_read_prefetches_started, 0);
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
@@ -341,7 +341,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_prob
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_committed, 7);
     assert_eq!(metrics.reservation_denied_count, 0);
     let left_node_id = left.to_string();
     let left_source_read_reserves = metrics
@@ -681,7 +681,7 @@ fn bounded_native_query_streams_source_adjacent_filter_projection_into_hash_buil
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 7);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_committed, 7);
     assert_eq!(metrics.reservation_denied_count, 0);
     assert!(
         metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_source_concat"),

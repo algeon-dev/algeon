@@ -28,9 +28,10 @@ pub use dimension_pruning::{
     DimensionDerivedPruningRequest, DimensionDerivedRowGroupPruningCandidateDiagnostics,
     DimensionDerivedRowGroupPruningDiagnostics, DimensionDerivedRowGroupPruningOptions,
     DimensionDerivedRowGroupPruningRejectedReason, DimensionKeyAccumulator, DimensionKeyFilter, KeyRange,
-    RowGroupOverlapSelection, apply_dimension_derived_pruning_with_stats, dimension_key_filter_from_batch,
-    discover_dimension_derived_pruning_requests, seed_dimension_derived_reader_predicates,
-    select_overlapping_row_groups,
+    LocalParquetRowGroupSelection, LocalParquetRowGroupSelectionApplyResult, RowGroupOverlapSelection,
+    apply_dimension_derived_pruning_with_stats, apply_local_parquet_row_group_selections,
+    dimension_key_filter_from_batch, discover_dimension_derived_pruning_requests,
+    seed_dimension_derived_reader_predicates, select_overlapping_row_groups,
 };
 pub use dynamic_filter::{
     DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME, DynamicFilterRouteCandidateDiagnostics,

@@ -1093,9 +1093,9 @@ pub(super) fn source_chunk_structural_part(chunk: &SourceChunk) -> String {
         "source={};file_index={};stable_id={};location={};path={};read_columns={};partition_values={};row_groups={};reads_all={};source_file_row_groups={};known_rows={};estimated_source_read_bytes={};estimated_chunk_bytes={};known_row_group_bytes={};projected_uncompressed_bytes={};pure_filter_uncompressed_bytes={};scan_limit_rows={};zero_column_count={}",
         chunk.source_node_id,
         chunk.file_index,
-        chunk.stable_id,
-        chunk.location,
-        chunk.path.display(),
+        chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()),
+        chunk.location.diagnostic_location(),
+        source_chunk_path_fact(chunk),
         chunk.read_columns.join(","),
         chunk.partition_values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join(","),
         format_usize_list(&chunk.row_group_indexes),
@@ -1118,4 +1118,12 @@ pub(super) fn source_chunk_structural_part(chunk: &SourceChunk) -> String {
 
 fn format_usize_list(values: &[usize]) -> String {
     values.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
+}
+
+fn source_chunk_path_fact(chunk: &SourceChunk) -> String {
+    if chunk.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&chunk.path)
+    } else {
+        chunk.location.diagnostic_location()
+    }
 }

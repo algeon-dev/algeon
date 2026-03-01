@@ -65,7 +65,8 @@ pub(super) fn lower_source_reader_batch_predicate(
             &predicate,
         )
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_reader_predicate_error(
+                source,
                 OP_READER_PREDICATE,
                 "failed to build batch-stable source-aware local parquet reader predicate",
                 error,
@@ -87,12 +88,26 @@ fn lower_source_reader_predicate_with_cudf_contract(
     let predicate = lower_cudf_source_reader_predicate(source, predicate)?;
     cudf::io::source::build_local_parquet_reader_predicate(context.runtime(), cudf_source, cudf_chunk, &predicate)
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_reader_predicate_error(
+                source,
                 OP_READER_PREDICATE,
                 "failed to build cudf source-aware local parquet reader predicate",
                 error,
             )
         })
+}
+
+fn cudf_reader_predicate_error(
+    source: &LocalParquetSource,
+    operation: &'static str,
+    message: &'static str,
+    error: cudf::Error,
+) -> QueryError {
+    if source.files.iter().any(|file| !file.location.is_local_path()) {
+        QueryError::from_cudf_without_source(operation, message, &error)
+    } else {
+        QueryError::from_cudf(operation, message, error)
+    }
 }
 
 fn lower_source_reader_ast_expr(

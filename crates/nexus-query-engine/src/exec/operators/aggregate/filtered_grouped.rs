@@ -577,6 +577,7 @@ fn prepare_filtered_grouped_predicates_for_chunk(
     Ok(FilteredGroupedPreparedChunk { frame, schema: Arc::new(Schema::new(fields)), predicate_aliases })
 }
 
+#[allow(clippy::type_complexity)]
 fn prepare_filtered_grouped_partial_segment(
     prepared_chunk: &FilteredGroupedPreparedChunk,
     input_schema: &ArrowSchemaRef,

@@ -6,24 +6,30 @@
 //! exact source-read preflight bytes.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use parquet::file::{
-    metadata::ParquetMetaData,
-    reader::{FileReader, SerializedFileReader},
+use parquet::{
+    basic::{ConvertedType, LogicalType, Type as ParquetPhysicalType},
+    file::{
+        metadata::ParquetMetaData,
+        reader::{FileReader, SerializedFileReader},
+    },
 };
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    expr::LiteralValue,
-    parquet_metadata::fetch_object_store_parquet_metadata,
+    expr::{Expr, LiteralValue},
+    parquet_metadata::{fetch_object_store_parquet_metadata, read_parquet_footer_sidecar},
     plan::NodeId,
     runtime::{ExecutionContext, MemoryControlPolicy, S3ObjectStoreKey, SourceChunkPlanningMode},
-    source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
+    source::{
+        LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetReaderDecimalType,
+        ParquetReaderDecimalTypeId, ParquetSourceLocation,
+    },
 };
 
 /// Row-group cap used by local-throughput source planning when the configured
@@ -253,7 +259,9 @@ fn local_parquet_throughput_file_uses_supported_reader_path(file: &LocalParquetF
     match file.resolved_source.read_strategy {
         ParquetReadStrategy::LocalKvikio => file.location.is_local_path(),
         ParquetReadStrategy::LocalCacheKvikio => file.path.is_file(),
-        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteKvikioExperimental => false,
+        ParquetReadStrategy::RemoteHostBuffer
+        | ParquetReadStrategy::RemoteDirect
+        | ParquetReadStrategy::RemoteKvikioExperimental => false,
     }
 }
 
@@ -452,6 +460,11 @@ pub struct SourceChunk {
     pub source_file_pure_filter_uncompressed_bytes: Option<Vec<u64>>,
     /// Per-row-group row counts for the full file, if available.
     pub source_file_row_group_rows: Option<Vec<u64>>,
+    /// Per-read-column decimal storage types proven from Parquet metadata.
+    pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
+    /// True when `reader_decimal_types` came from, or was checked against, the
+    /// footer for this exact object-store file during source chunk planning.
+    pub reader_decimal_types_footer_verified: bool,
     /// Physical file columns read by the source.
     pub read_columns: Vec<String>,
     /// Partition values attached to the source file.
@@ -523,6 +536,94 @@ impl SourceChunk {
         .flatten()
         .reduce(|left, right| if left == right { left } else { usize::MAX })
         .filter(|count| *count != usize::MAX)
+    }
+}
+
+/// Returns the source file referenced by `chunk` after validating that the
+/// chunk's executable identity still matches the file at `file_index`.
+pub(crate) fn source_file_for_chunk<'a>(
+    source: &'a LocalParquetSource,
+    chunk: &SourceChunk,
+    operation: &'static str,
+) -> Result<&'a LocalParquetFile> {
+    let file = source.files.get(chunk.file_index).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "local parquet source chunk references a missing source file",
+        )
+        .with_fact("reason", "source_chunk_file_index_missing")
+        .with_fact("path", source_chunk_path_fact(chunk))
+        .with_fact("stable_id", chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()))
+        .with_fact("chunk_index", chunk.chunk_index)
+        .with_fact("file_index", chunk.file_index)
+        .with_fact("source_files", source.files.len())
+    })?;
+    validate_source_chunk_identity(source, file, chunk, operation)?;
+    Ok(file)
+}
+
+fn validate_source_chunk_identity(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    chunk: &SourceChunk,
+    operation: &'static str,
+) -> Result<()> {
+    if chunk.location != file.location {
+        return Err(source_chunk_identity_mismatch_error(file, chunk, operation, "location"));
+    }
+    if chunk.path != file.path {
+        return Err(source_chunk_identity_mismatch_error(file, chunk, operation, "reader_path"));
+    }
+    if chunk.resolved_source != file.resolved_source {
+        return Err(source_chunk_identity_mismatch_error(file, chunk, operation, "resolved_source"));
+    }
+    if chunk.stable_id != file.stable_id {
+        return Err(source_chunk_identity_mismatch_error(file, chunk, operation, "stable_id"));
+    }
+    if chunk.partition_values != file.partition_values {
+        return Err(source_chunk_identity_mismatch_error(file, chunk, operation, "partition_values"));
+    }
+    if chunk.read_columns != source.read_columns {
+        return Err(source_chunk_identity_mismatch_error(file, chunk, operation, "read_columns"));
+    }
+    Ok(())
+}
+
+fn source_chunk_identity_mismatch_error(
+    file: &LocalParquetFile,
+    chunk: &SourceChunk,
+    operation: &'static str,
+    field: &'static str,
+) -> QueryError {
+    QueryError::new(
+        QueryErrorCode::InvalidPlan,
+        operation,
+        "local parquet source chunk identity does not match its referenced source file",
+    )
+    .with_fact("reason", "source_chunk_identity_mismatch")
+    .with_fact("field", field)
+    .with_fact("path", source_chunk_path_fact(chunk))
+    .with_fact("source_file_path", source_file_path_fact(file))
+    .with_fact("stable_id", chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()))
+    .with_fact("source_file_stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+    .with_fact("chunk_index", chunk.chunk_index)
+    .with_fact("file_index", chunk.file_index)
+}
+
+fn source_chunk_path_fact(chunk: &SourceChunk) -> String {
+    if chunk.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&chunk.path)
+    } else {
+        chunk.location.diagnostic_location()
+    }
+}
+
+fn source_file_path_fact(file: &LocalParquetFile) -> String {
+    if file.location.is_local_path() {
+        crate::source::redacted_path_diagnostic(&file.path)
+    } else {
+        file.location.diagnostic_location()
     }
 }
 
@@ -603,9 +704,16 @@ fn chunk_multi_source_batch_rejection(chunk: &SourceChunk) -> Option<&'static st
     }
     if !matches!(
         chunk.resolved_source.read_strategy,
-        crate::source::ParquetReadStrategy::LocalKvikio | crate::source::ParquetReadStrategy::LocalCacheKvikio
+        crate::source::ParquetReadStrategy::LocalKvikio
+            | crate::source::ParquetReadStrategy::LocalCacheKvikio
+            | crate::source::ParquetReadStrategy::RemoteDirect
     ) {
         return Some("ineligible_read_strategy");
+    }
+    if matches!(chunk.resolved_source.read_strategy, crate::source::ParquetReadStrategy::RemoteDirect)
+        && chunk.resolved_source.remote_read_mode != crate::source::RemoteParquetReadMode::RequireDirect
+    {
+        return Some("ineligible_remote_read_mode");
     }
     if chunk.read_columns.is_empty() {
         return Some("ineligible_empty_read_columns");
@@ -782,11 +890,17 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     let mut metadata_unavailable_files = 0;
     let mut metadata_load_time = Duration::ZERO;
     let mut metadata_load_count = 0u64;
+    let metadata_prefetch =
+        metadata_cache.prefetch_footer_metadata_for_source(source, metadata_load_context.as_ref())?;
+    metadata_load_time += metadata_prefetch.load_time;
+    metadata_load_count = metadata_load_count.saturating_add(metadata_prefetch.load_count);
 
     for (file_index, file) in source.files.iter().enumerate() {
         let metadata_load = read_parquet_metadata(source, file, metadata_cache, metadata_load_context.as_ref())?;
         metadata_load_time += metadata_load.load_time;
         metadata_load_count = metadata_load_count.saturating_add(metadata_load.load_count);
+        let reader_decimal_types = metadata_load.reader_decimal_types;
+        let reader_decimal_types_footer_verified = metadata_load.reader_decimal_types_footer_verified;
         let metadata = metadata_load.metadata;
         saw_metadata |= metadata.is_some();
         if metadata.is_none() {
@@ -796,7 +910,16 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
 
         let row_groups = planned_row_groups(file, file_index, metadata.as_ref())?;
         let Some(row_groups) = row_groups else {
-            chunks.push(single_all_row_groups_chunk(source_node_id, source, file, file_index, chunks.len(), policy));
+            chunks.push(single_all_row_groups_chunk(
+                source_node_id,
+                source,
+                file,
+                file_index,
+                chunks.len(),
+                policy,
+                &reader_decimal_types,
+                reader_decimal_types_footer_verified,
+            ));
             continue;
         };
 
@@ -808,6 +931,8 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             &row_groups,
             metadata.as_ref(),
             policy,
+            &reader_decimal_types,
+            reader_decimal_types_footer_verified,
             &mut chunks,
         );
     }
@@ -823,7 +948,7 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             "zero-column count source requires parquet row-count metadata for each planned chunk",
         )
         .with_fact("reason", "row_count_metadata_unavailable")
-        .with_fact("path", chunk.path.display())
+        .with_fact("path", source_chunk_path_fact(chunk))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index));
     }
@@ -872,7 +997,7 @@ fn apply_source_scan_limit_to_chunks(
                 "nexus_query_engine.source_chunk.scan_limit",
                 "source scan limit requires row-count metadata for planned chunks",
             )
-            .with_fact("path", chunk.path.display())
+            .with_fact("path", source_chunk_path_fact(&chunk))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
         })?;
@@ -937,7 +1062,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
             "nexus_query_engine.source_chunk.scan_limit",
             "source scan limit requires per-row-group row-count metadata for chunk prefix trimming",
         )
-        .with_fact("path", chunk.path.display())
+        .with_fact("path", source_chunk_path_fact(chunk))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index)
     })?;
@@ -951,7 +1076,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
                 "nexus_query_engine.source_chunk.scan_limit",
                 "source scan limit row group is outside row-count metadata",
             )
-            .with_fact("path", chunk.path.display())
+            .with_fact("path", source_chunk_path_fact(chunk))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("row_group", row_group)
@@ -964,7 +1089,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
                 "nexus_query_engine.source_chunk.scan_limit",
                 "source scan limit row group row counts overflow native range",
             )
-            .with_fact("path", chunk.path.display())
+            .with_fact("path", source_chunk_path_fact(chunk))
             .with_fact("file_index", chunk.file_index)
             .with_fact("chunk_index", chunk.chunk_index)
         })?;
@@ -978,7 +1103,7 @@ fn scan_limit_row_group_prefix(chunk: &SourceChunk, keep_rows: u64) -> Result<(V
         "nexus_query_engine.source_chunk.scan_limit",
         "planned chunk row groups do not cover the requested source scan limit",
     )
-    .with_fact("path", chunk.path.display())
+    .with_fact("path", source_chunk_path_fact(chunk))
     .with_fact("file_index", chunk.file_index)
     .with_fact("chunk_index", chunk.chunk_index)
     .with_fact("requested_rows", keep_rows)
@@ -1095,6 +1220,147 @@ impl SourceMetadataCache {
         }
         Ok(FooterMetadataLoad { metadata, load_time, load_count: 1 })
     }
+
+    fn prefetch_footer_metadata_for_source(
+        &mut self,
+        source: &LocalParquetSource,
+        context: Option<&SourceMetadataLoadContext<'_>>,
+    ) -> Result<FooterMetadataLoad> {
+        let Some(context) = context else {
+            return Ok(FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 });
+        };
+        let timer = Instant::now();
+        let mut load_count = 0u64;
+        let mut pending = Vec::<PendingFooterMetadataFetch>::new();
+
+        for file in &source.files {
+            if !source_file_needs_footer_metadata(source, file) {
+                continue;
+            }
+            let key = SourceMetadataCacheKey::from_file(file);
+            if self.footers.contains_key(&key) {
+                continue;
+            }
+            if let Some(metadata) = load_local_parquet_footer_metadata(file) {
+                self.footers.insert(key, Some(metadata));
+                load_count = load_count.saturating_add(1);
+                continue;
+            }
+            if !source_file_can_fetch_object_store_footer(file) {
+                continue;
+            }
+            load_count = load_count.saturating_add(1);
+            let fetch_location = match source_metadata_fetch_location(file) {
+                Ok(fetch_location) => fetch_location,
+                Err(_error) => {
+                    self.footers.insert(key, None);
+                    continue;
+                },
+            };
+            let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
+                bucket: fetch_location.bucket.clone(),
+                region: fetch_location.region.clone(),
+                storage_profile_id: fetch_location.storage_profile_id.clone(),
+            }) {
+                Ok(store) => store,
+                Err(_error) => {
+                    self.footers.insert(key, None);
+                    continue;
+                },
+            };
+            let Some(operation_permit) = context.execution_context.acquire_source_fetch_operation_with_timeout(
+                OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT,
+                "nexus_query_engine.source_metadata.object_store_footer_prefetch",
+            )?
+            else {
+                self.footers.insert(key, None);
+                continue;
+            };
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let key_path = fetch_location.key;
+            let fetch_handle = context.execution_context.spawn_object_store_custom_fetch(
+                move || fetch_object_store_parquet_metadata(store, key_path),
+                move |fetch_result| {
+                    let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
+                    let _ = sender.send(metadata);
+                    drop(operation_permit);
+                },
+            );
+            pending.push(PendingFooterMetadataFetch { key, handle: fetch_handle, receiver });
+        }
+
+        while !pending.is_empty() {
+            let mut index = 0;
+            while index < pending.len() {
+                match pending[index].receiver.try_recv() {
+                    Ok(Ok(metadata)) => {
+                        let completed = pending.swap_remove(index);
+                        self.footers.insert(completed.key.clone(), Some(metadata));
+                    },
+                    Ok(Err(error)) => {
+                        if error.code() == QueryErrorCode::Cancelled {
+                            return Err(error);
+                        }
+                        let completed = pending.swap_remove(index);
+                        self.footers.insert(completed.key.clone(), None);
+                    },
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        index += 1;
+                    },
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        let completed = pending.swap_remove(index);
+                        self.footers.insert(completed.key.clone(), None);
+                    },
+                }
+            }
+            if pending.is_empty() {
+                break;
+            }
+            context
+                .execution_context
+                .check_cancellation("nexus_query_engine.source_metadata.object_store_footer_prefetch")?;
+            let Some(remaining) = OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT.checked_sub(timer.elapsed()) else {
+                for pending_fetch in pending.drain(..) {
+                    match pending_fetch.receiver.try_recv() {
+                        Ok(Ok(metadata)) => {
+                            self.footers.insert(pending_fetch.key.clone(), Some(metadata));
+                        },
+                        Ok(Err(error)) => {
+                            if error.code() == QueryErrorCode::Cancelled {
+                                return Err(error);
+                            }
+                            self.footers.insert(pending_fetch.key.clone(), None);
+                        },
+                        Err(std::sync::mpsc::TryRecvError::Empty | std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.footers.insert(pending_fetch.key.clone(), None);
+                        },
+                    }
+                }
+                break;
+            };
+            match pending[0].receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
+                Ok(Ok(metadata)) => {
+                    let completed = pending.swap_remove(0);
+                    self.footers.insert(completed.key.clone(), Some(metadata));
+                },
+                Ok(Err(error)) => {
+                    if error.code() == QueryErrorCode::Cancelled {
+                        return Err(error);
+                    }
+                    let completed = pending.swap_remove(0);
+                    self.footers.insert(completed.key.clone(), None);
+                },
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    let completed = pending.swap_remove(0);
+                    self.footers.insert(completed.key.clone(), None);
+                },
+            }
+        }
+
+        let load_time = if load_count > 0 { timer.elapsed() } else { Duration::ZERO };
+        Ok(FooterMetadataLoad { metadata: None, load_time, load_count })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1102,9 +1368,42 @@ struct SourceMetadataLoadContext<'a> {
     execution_context: &'a ExecutionContext,
 }
 
+struct PendingFooterMetadataFetch {
+    key: SourceMetadataCacheKey,
+    handle: tokio::task::JoinHandle<()>,
+    receiver: std::sync::mpsc::Receiver<Result<Arc<ParquetMetaData>>>,
+}
+
+impl Drop for PendingFooterMetadataFetch {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<ParquetMetaData>> {
-    local_parquet_footer_metadata_path(file)
-        .and_then(|path| SerializedFileReader::try_from(path).ok().map(|reader| Arc::new(reader.metadata().clone())))
+    local_parquet_footer_metadata_path(file).and_then(|path| {
+        let content_identity = sidecar_content_identity(file);
+        if matches!(
+            file.resolved_source.read_strategy,
+            ParquetReadStrategy::LocalCacheKvikio | ParquetReadStrategy::RemoteDirect
+        ) && let Ok(Some(metadata)) = read_parquet_footer_sidecar(path, content_identity)
+        {
+            return Some(metadata);
+        }
+        SerializedFileReader::try_from(path).ok().map(|reader| {
+            if matches!(
+                file.resolved_source.read_strategy,
+                ParquetReadStrategy::LocalCacheKvikio | ParquetReadStrategy::RemoteDirect
+            ) {
+                let _ = crate::parquet_metadata::write_parquet_footer_sidecar_from_file(path, content_identity);
+            }
+            Arc::new(reader.metadata().clone())
+        })
+    })
+}
+
+fn sidecar_content_identity(file: &LocalParquetFile) -> &str {
+    file.resolved_source.content_identity.as_deref().unwrap_or(file.stable_id.as_str())
 }
 
 fn local_parquet_footer_metadata_path(file: &LocalParquetFile) -> Option<&std::path::Path> {
@@ -1125,10 +1424,7 @@ fn load_object_store_parquet_footer_metadata(
     context: &SourceMetadataLoadContext<'_>,
     file: &LocalParquetFile,
 ) -> Result<Option<Arc<ParquetMetaData>>> {
-    if !matches!(
-        file.resolved_source.read_strategy,
-        ParquetReadStrategy::RemoteHostBuffer | ParquetReadStrategy::RemoteKvikioExperimental
-    ) {
+    if !source_file_can_fetch_object_store_footer(file) {
         return Ok(None);
     }
     const OPERATION: &str = "nexus_query_engine.source_metadata.object_store_footer";
@@ -1183,6 +1479,15 @@ fn load_object_store_parquet_footer_metadata(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Ok(None),
         }
     }
+}
+
+fn source_file_can_fetch_object_store_footer(file: &LocalParquetFile) -> bool {
+    matches!(
+        file.resolved_source.read_strategy,
+        ParquetReadStrategy::RemoteHostBuffer
+            | ParquetReadStrategy::RemoteDirect
+            | ParquetReadStrategy::RemoteKvikioExperimental
+    )
 }
 
 struct SourceMetadataFetchLocation {
@@ -1252,14 +1557,26 @@ fn parse_s3_metadata_source_uri(uri: &str, storage_profile_id: Option<String>) -
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SourceMetadataCacheKey {
+    location: ParquetSourceLocation,
     path: PathBuf,
     stable_id: String,
     file_size_bytes: Option<u64>,
+    read_strategy: ParquetReadStrategy,
+    storage_profile_id: Option<String>,
+    content_identity: String,
 }
 
 impl SourceMetadataCacheKey {
     fn from_file(file: &LocalParquetFile) -> Self {
-        Self { path: file.path.clone(), stable_id: file.stable_id.clone(), file_size_bytes: file.file_size_bytes }
+        Self {
+            location: file.location.clone(),
+            path: file.path.clone(),
+            stable_id: file.stable_id.clone(),
+            file_size_bytes: file.file_size_bytes,
+            read_strategy: file.resolved_source.read_strategy,
+            storage_profile_id: file.resolved_source.storage_profile_id.clone(),
+            content_identity: sidecar_content_identity(file).to_string(),
+        }
     }
 }
 
@@ -1364,6 +1681,8 @@ struct SourceMetadataLoad {
     metadata: Option<RowGroupMetadata>,
     load_time: Duration,
     load_count: u64,
+    reader_decimal_types: Vec<ParquetReaderDecimalType>,
+    reader_decimal_types_footer_verified: bool,
 }
 
 fn read_parquet_metadata(
@@ -1372,17 +1691,33 @@ fn read_parquet_metadata(
     metadata_cache: &mut SourceMetadataCache,
     metadata_load_context: Option<&SourceMetadataLoadContext<'_>>,
 ) -> Result<SourceMetadataLoad> {
-    let needs_footer_metadata = file.row_group_bytes.is_none()
-        || file.projected_row_group_compressed_bytes.is_none()
-        || file.projected_row_group_uncompressed_bytes.is_none()
-        || file.pure_filter_row_group_compressed_bytes.is_none()
-        || file.pure_filter_row_group_uncompressed_bytes.is_none()
-        || file.row_group_rows.is_none();
-    let footer_load = if needs_footer_metadata {
+    let needs_object_store_decimal_contract =
+        object_store_decimal_reader_predicate_requires_footer_contract(source, file);
+    let footer_load = if source_file_needs_footer_metadata(source, file) {
         metadata_cache.footer_metadata(file, metadata_load_context)?
     } else {
         FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 }
     };
+    let footer_reader_decimal_types =
+        footer_load.metadata.as_ref().map(|metadata| parquet_reader_decimal_types(metadata, source));
+    let reader_decimal_types = if needs_object_store_decimal_contract {
+        let Some(footer_reader_decimal_types) = footer_reader_decimal_types else {
+            return Err(reader_decimal_type_metadata_unavailable_error(source, file));
+        };
+        validate_supplied_reader_decimal_types_match_footer(
+            source,
+            file,
+            &file.reader_decimal_types,
+            &footer_reader_decimal_types,
+        )?;
+        footer_reader_decimal_types
+    } else if file.reader_decimal_types.is_empty() {
+        footer_reader_decimal_types.unwrap_or_default()
+    } else {
+        file.reader_decimal_types.clone()
+    };
+    let reader_decimal_types_footer_verified = needs_object_store_decimal_contract;
+    validate_object_store_reader_decimal_types(source, file, &reader_decimal_types)?;
     let file_metadata = footer_load.metadata.as_ref().map(|metadata| {
         let read_column_indexes = source.read_column_file_indices.iter().copied().collect::<BTreeSet<_>>();
         let projected_column_indexes = source
@@ -1484,9 +1819,323 @@ fn read_parquet_metadata(
             }),
             load_time: footer_load.load_time,
             load_count: footer_load.load_count,
+            reader_decimal_types,
+            reader_decimal_types_footer_verified,
         })
     } else {
-        Ok(SourceMetadataLoad { metadata: None, load_time: footer_load.load_time, load_count: footer_load.load_count })
+        Ok(SourceMetadataLoad {
+            metadata: None,
+            load_time: footer_load.load_time,
+            load_count: footer_load.load_count,
+            reader_decimal_types,
+            reader_decimal_types_footer_verified,
+        })
+    }
+}
+
+fn source_file_needs_footer_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
+    file.row_group_bytes.is_none()
+        || file.projected_row_group_compressed_bytes.is_none()
+        || file.projected_row_group_uncompressed_bytes.is_none()
+        || file.pure_filter_row_group_compressed_bytes.is_none()
+        || file.pure_filter_row_group_uncompressed_bytes.is_none()
+        || file.row_group_rows.is_none()
+        || object_store_decimal_reader_predicate_requires_footer_contract(source, file)
+        || (file.reader_decimal_types.is_empty()
+            && source
+                .reader_predicate
+                .as_ref()
+                .is_some_and(|predicate| source.reader_predicate_requires_source_contract(predicate)))
+}
+
+pub(crate) fn footer_verified_object_store_reader_decimal_types(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    footer_verified_object_store_reader_decimal_types_with_supplied(context, source, file, &file.reader_decimal_types)
+}
+
+pub(crate) fn footer_verified_object_store_reader_decimal_types_with_supplied(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    supplied_reader_decimal_types: &[ParquetReaderDecimalType],
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    let mut metadata_cache = SourceMetadataCache::default();
+    footer_verified_object_store_reader_decimal_types_with_supplied_cache(
+        context,
+        source,
+        file,
+        supplied_reader_decimal_types,
+        &mut metadata_cache,
+    )
+}
+
+pub(crate) fn footer_verified_object_store_reader_decimal_types_with_supplied_cache(
+    context: &ExecutionContext,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    supplied_reader_decimal_types: &[ParquetReaderDecimalType],
+    metadata_cache: &mut SourceMetadataCache,
+) -> Result<Option<Vec<ParquetReaderDecimalType>>> {
+    if !object_store_decimal_reader_predicate_requires_footer_contract(source, file) {
+        return Ok(None);
+    }
+    let file_with_supplied_types;
+    let file = if supplied_reader_decimal_types == file.reader_decimal_types {
+        file
+    } else {
+        file_with_supplied_types = file.clone().with_reader_decimal_types(supplied_reader_decimal_types.to_vec());
+        &file_with_supplied_types
+    };
+    let metadata_load = read_parquet_metadata(
+        source,
+        file,
+        metadata_cache,
+        Some(&SourceMetadataLoadContext { execution_context: context }),
+    )?;
+    Ok(Some(metadata_load.reader_decimal_types))
+}
+
+pub(crate) fn object_store_decimal_reader_predicate_requires_footer_contract(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+) -> bool {
+    matches!(
+        file.resolved_source.read_strategy,
+        ParquetReadStrategy::RemoteDirect
+            | ParquetReadStrategy::RemoteHostBuffer
+            | ParquetReadStrategy::RemoteKvikioExperimental
+    ) && matches!(file.location, ParquetSourceLocation::ObjectStoreUri { .. })
+        && source
+            .reader_predicate
+            .as_ref()
+            .is_some_and(|predicate| source.reader_predicate_requires_source_contract(predicate))
+}
+
+fn validate_object_store_reader_decimal_types(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    reader_decimal_types: &[ParquetReaderDecimalType],
+) -> Result<()> {
+    if !object_store_decimal_reader_predicate_requires_footer_contract(source, file) {
+        return Ok(());
+    }
+    let predicate = source.reader_predicate.as_ref().expect("contract check requires predicate");
+    let missing = reader_predicate_decimal_columns(source, predicate)
+        .into_iter()
+        .filter(|column| !reader_decimal_types.iter().any(|reader_type| reader_type.column_name == *column))
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(reader_decimal_type_metadata_error(
+        source,
+        file,
+        "reader_decimal_type_metadata_unavailable",
+        missing.join(","),
+        None,
+    ))
+}
+
+fn validate_supplied_reader_decimal_types_match_footer(
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    supplied_reader_decimal_types: &[ParquetReaderDecimalType],
+    footer_reader_decimal_types: &[ParquetReaderDecimalType],
+) -> Result<()> {
+    if supplied_reader_decimal_types.is_empty() {
+        return Ok(());
+    }
+    let Some(predicate) = source.reader_predicate.as_ref() else {
+        return Ok(());
+    };
+    let supplied_by_column = supplied_reader_decimal_types
+        .iter()
+        .map(|reader_type| (reader_type.column_name.as_str(), reader_type))
+        .collect::<BTreeMap<_, _>>();
+    let footer_by_column = footer_reader_decimal_types
+        .iter()
+        .map(|reader_type| (reader_type.column_name.as_str(), reader_type))
+        .collect::<BTreeMap<_, _>>();
+    let mismatched = reader_predicate_decimal_columns(source, predicate)
+        .into_iter()
+        .filter_map(|column| {
+            let supplied = supplied_by_column.get(column.as_str())?;
+            let footer = footer_by_column.get(column.as_str())?;
+            ((supplied.type_id != footer.type_id) || (supplied.cudf_scale != footer.cudf_scale)).then_some(format!(
+                "{}:{}:{}!=footer:{}:{}",
+                column,
+                supplied.type_id.as_str(),
+                supplied.cudf_scale,
+                footer.type_id.as_str(),
+                footer.cudf_scale
+            ))
+        })
+        .collect::<Vec<_>>();
+    if mismatched.is_empty() {
+        return Ok(());
+    }
+    Err(reader_decimal_type_metadata_error(
+        source,
+        file,
+        "reader_decimal_type_metadata_mismatch",
+        mismatched.join(","),
+        Some("supplied_reader_decimal_types_do_not_match_footer"),
+    ))
+}
+
+fn reader_decimal_type_metadata_unavailable_error(source: &LocalParquetSource, file: &LocalParquetFile) -> QueryError {
+    let missing = source
+        .reader_predicate
+        .as_ref()
+        .map(|predicate| reader_predicate_decimal_columns(source, predicate).into_iter().collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+    reader_decimal_type_metadata_error(source, file, "reader_decimal_type_metadata_unavailable", missing, None)
+}
+
+fn reader_decimal_type_metadata_error(
+    _source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    reason: &'static str,
+    columns: String,
+    detail: Option<&'static str>,
+) -> QueryError {
+    let mut error = QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.source_metadata.reader_decimal_type",
+        "remote decimal reader predicates require Parquet footer reader type metadata",
+    )
+    .with_fact("reason", reason)
+    .with_fact("path", file.location.diagnostic_location())
+    .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
+    .with_fact("read_strategy", file.resolved_source.read_strategy.as_str())
+    .with_fact("remote_read_mode", file.resolved_source.remote_read_mode.as_str())
+    .with_fact("missing_reader_decimal_columns", columns);
+    if let Some(detail) = detail {
+        error = error.with_fact("detail", detail);
+    }
+    error
+}
+
+fn reader_predicate_decimal_columns(source: &LocalParquetSource, expr: &Expr) -> BTreeSet<String> {
+    let mut columns = BTreeSet::new();
+    collect_reader_predicate_decimal_columns(source, expr, &mut columns);
+    columns
+}
+
+fn collect_reader_predicate_decimal_columns(source: &LocalParquetSource, expr: &Expr, columns: &mut BTreeSet<String>) {
+    match expr {
+        Expr::Column(column) => {
+            if source
+                .schema
+                .field_with_name(column.name())
+                .is_ok_and(|field| matches!(field.data_type(), arrow::datatypes::DataType::Decimal128(_, _)))
+            {
+                columns.insert(column.name().to_string());
+            }
+        },
+        Expr::Literal(_) => {},
+        Expr::Not(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::Alias { expr: inner, .. }
+        | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. }
+        | Expr::Like { expr: inner, .. }
+        | Expr::Substring { expr: inner, .. }
+        | Expr::Lower(inner)
+        | Expr::Upper(inner)
+        | Expr::StringLength { expr: inner, .. }
+        | Expr::RegexpReplace { expr: inner, .. }
+        | Expr::Abs(inner)
+        | Expr::Sqrt { expr: inner, .. }
+        | Expr::Round { expr: inner, .. }
+        | Expr::Extract { expr: inner, .. }
+        | Expr::DateTrunc { expr: inner, .. } => collect_reader_predicate_decimal_columns(source, inner, columns),
+        Expr::Binary { left, right, .. }
+        | Expr::IsDistinctFrom { left, right }
+        | Expr::IsNotDistinctFrom { left, right } => {
+            collect_reader_predicate_decimal_columns(source, left, columns);
+            collect_reader_predicate_decimal_columns(source, right, columns);
+        },
+        Expr::InList { expr, list, .. } => {
+            collect_reader_predicate_decimal_columns(source, expr, columns);
+            for item in list {
+                collect_reader_predicate_decimal_columns(source, item, columns);
+            }
+        },
+        Expr::Concat(exprs) => {
+            for item in exprs {
+                collect_reader_predicate_decimal_columns(source, item, columns);
+            }
+        },
+        Expr::Case { branches, else_expr } => {
+            for branch in branches {
+                collect_reader_predicate_decimal_columns(source, &branch.when, columns);
+                collect_reader_predicate_decimal_columns(source, &branch.then, columns);
+            }
+            collect_reader_predicate_decimal_columns(source, else_expr, columns);
+        },
+    }
+}
+
+fn parquet_reader_decimal_types(
+    metadata: &ParquetMetaData,
+    source: &LocalParquetSource,
+) -> Vec<ParquetReaderDecimalType> {
+    source
+        .read_columns
+        .iter()
+        .zip(&source.read_column_file_indices)
+        .filter_map(|(column_name, file_index)| {
+            let field = source.schema.field_with_name(column_name).ok()?;
+            if !matches!(field.data_type(), arrow::datatypes::DataType::Decimal128(_, _)) {
+                return None;
+            }
+            let descriptor = metadata.file_metadata().schema_descr().columns().get(*file_index)?;
+            let (_precision, scale) = parquet_decimal_precision_scale(descriptor)?;
+            let type_id = parquet_reader_decimal_type_id(descriptor)?;
+            Some(ParquetReaderDecimalType::new(
+                column_name.clone(),
+                type_id,
+                crate::datatypes::arrow_decimal_scale_to_cudf_scale(scale),
+            ))
+        })
+        .collect()
+}
+
+fn parquet_decimal_precision_scale(descriptor: &parquet::schema::types::ColumnDescriptor) -> Option<(u8, i8)> {
+    if let Some(LogicalType::Decimal { precision, scale }) = descriptor.logical_type_ref() {
+        return Some((u8::try_from(*precision).ok()?, i8::try_from(*scale).ok()?));
+    }
+    (descriptor.converted_type() == ConvertedType::DECIMAL)
+        .then(|| (descriptor.type_precision(), descriptor.type_scale()))
+        .and_then(|(precision, scale)| Some((u8::try_from(precision).ok()?, i8::try_from(scale).ok()?)))
+}
+
+fn parquet_reader_decimal_type_id(
+    descriptor: &parquet::schema::types::ColumnDescriptor,
+) -> Option<ParquetReaderDecimalTypeId> {
+    match descriptor.physical_type() {
+        ParquetPhysicalType::INT32 => Some(ParquetReaderDecimalTypeId::Decimal32),
+        ParquetPhysicalType::INT64 => Some(ParquetReaderDecimalTypeId::Decimal64),
+        ParquetPhysicalType::FIXED_LEN_BYTE_ARRAY => match descriptor.type_length() {
+            0..=4 => Some(ParquetReaderDecimalTypeId::Decimal32),
+            5..=8 => Some(ParquetReaderDecimalTypeId::Decimal64),
+            9..=16 => Some(ParquetReaderDecimalTypeId::Decimal128),
+            _ => None,
+        },
+        ParquetPhysicalType::BYTE_ARRAY => {
+            parquet_decimal_precision_scale(descriptor).and_then(|(precision, _)| match precision {
+                1..=9 => Some(ParquetReaderDecimalTypeId::Decimal32),
+                10..=18 => Some(ParquetReaderDecimalTypeId::Decimal64),
+                19..=38 => Some(ParquetReaderDecimalTypeId::Decimal128),
+                _ => None,
+            })
+        },
+        _ => None,
     }
 }
 
@@ -1546,7 +2195,8 @@ fn validate_selected_row_groups(
                 "nexus_query_engine.source_chunk.plan",
                 "selected parquet row group is outside file metadata",
             )
-            .with_fact("path", file.path.display())
+            .with_fact("path", file.location.diagnostic_location())
+            .with_fact("stable_id", file.location.diagnostic_stable_id(file.stable_id.as_str()))
             .with_fact("file_index", file_index)
             .with_fact("row_group_position", row_group_position)
             .with_fact("row_group", row_group)
@@ -1564,6 +2214,8 @@ fn append_row_group_chunks(
     row_groups: &[usize],
     metadata: Option<&RowGroupMetadata>,
     policy: SourceChunkPlanningPolicy,
+    reader_decimal_types: &[ParquetReaderDecimalType],
+    reader_decimal_types_footer_verified: bool,
     chunks: &mut Vec<SourceChunk>,
 ) {
     let max_row_groups = policy.effective_max_row_groups_per_chunk();
@@ -1595,6 +2247,8 @@ fn append_row_group_chunks(
                 row_groups.len(),
                 metadata,
                 policy,
+                reader_decimal_types,
+                reader_decimal_types_footer_verified,
                 &mut current,
                 chunks,
             );
@@ -1619,6 +2273,8 @@ fn append_row_group_chunks(
         row_groups.len(),
         metadata,
         policy,
+        reader_decimal_types,
+        reader_decimal_types_footer_verified,
         &mut current,
         chunks,
     );
@@ -1631,6 +2287,8 @@ fn push_pending_chunk(
     planned_row_group_count: usize,
     metadata: Option<&RowGroupMetadata>,
     policy: SourceChunkPlanningPolicy,
+    reader_decimal_types: &[ParquetReaderDecimalType],
+    reader_decimal_types_footer_verified: bool,
     pending: &mut PendingChunk,
     chunks: &mut Vec<SourceChunk>,
 ) {
@@ -1683,6 +2341,8 @@ fn push_pending_chunk(
         source_file_pure_filter_uncompressed_bytes: metadata
             .and_then(RowGroupMetadata::pure_filter_uncompressed_bytes_vec),
         source_file_row_group_rows: metadata.and_then(RowGroupMetadata::row_group_rows_vec),
+        reader_decimal_types: reader_decimal_types.to_vec(),
+        reader_decimal_types_footer_verified,
         read_columns: source.read_columns.clone(),
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
@@ -1807,6 +2467,8 @@ fn single_all_row_groups_chunk(
     file_index: usize,
     chunk_index: usize,
     policy: SourceChunkPlanningPolicy,
+    reader_decimal_types: &[ParquetReaderDecimalType],
+    reader_decimal_types_footer_verified: bool,
 ) -> SourceChunk {
     SourceChunk {
         source_node_id,
@@ -1834,6 +2496,8 @@ fn single_all_row_groups_chunk(
         source_file_pure_filter_compressed_bytes: None,
         source_file_pure_filter_uncompressed_bytes: None,
         source_file_row_group_rows: None,
+        reader_decimal_types: reader_decimal_types.to_vec(),
+        reader_decimal_types_footer_verified,
         read_columns: source.read_columns.clone(),
         partition_values: file.partition_values.clone(),
         zero_column_count: source.is_zero_column_count_source(),
@@ -2074,7 +2738,13 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
 
     use super::*;
-    use crate::source::{CredentialMode, LakehouseCacheStatus, ParquetReadStrategy, ResolvedParquetSource};
+    use crate::{
+        expr::{BinaryOp, Expr, LiteralValue},
+        source::{
+            CredentialMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetReadStrategy, RemoteParquetReadMode,
+            ResolvedParquetSource,
+        },
+    };
 
     fn batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
         SourceChunk {
@@ -2103,6 +2773,8 @@ mod tests {
             source_file_pure_filter_compressed_bytes: Some(vec![0]),
             source_file_pure_filter_uncompressed_bytes: Some(vec![0]),
             source_file_row_group_rows: Some(vec![1]),
+            reader_decimal_types: Vec::new(),
+            reader_decimal_types_footer_verified: false,
             read_columns: vec!["c0".to_string()],
             partition_values: vec![],
             zero_column_count: false,
@@ -2113,6 +2785,17 @@ mod tests {
             source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
             source_chunk_planning_reason: "test_policy".to_string(),
         }
+    }
+
+    fn remote_direct_require_batchable_chunk(index: usize, file_index: usize, bytes: u64) -> SourceChunk {
+        let mut chunk = batchable_chunk(index, file_index, bytes);
+        let location = format!("s3://bucket/part-{file_index}.parquet");
+        chunk.resolved_source =
+            ResolvedParquetSource::remote_direct(location.clone(), CredentialMode::SharedProcessEnv)
+                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+        chunk.location = ParquetSourceLocation::object_store_uri(&location).expect("valid s3 object URI");
+        chunk.path = PathBuf::from(location);
+        chunk
     }
 
     fn bounded_policy(
@@ -2208,6 +2891,221 @@ mod tests {
         assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
         assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn remote_direct_metadata_path_respects_cache_read_bypass() {
+        let path = std::env::temp_dir().join(format!(
+            "nexus-query-engine-remote-direct-bypass-{}-{}.parquet",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::write(&path, b"placeholder").unwrap();
+        let resolved_source =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_lakehouse_cache_path(path.display().to_string())
+                .with_lakehouse_cache_read_mode(LakehouseCacheReadMode::Bypassed)
+                .with_content_identity("content-a");
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved_source).unwrap().with_stable_id("stable-a");
+
+        assert!(local_parquet_footer_metadata_path(&file).is_none());
+        assert_eq!(sidecar_content_identity(&file), "content-a");
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn source_metadata_cache_key_distinguishes_object_store_profile_and_content_identity() {
+        let base_resolved =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+        let base = LocalParquetFile::from_resolved_parquet_source(base_resolved)
+            .expect("valid remote direct source")
+            .with_stable_id("part-0")
+            .with_file_size_bytes(4096);
+        let other_profile = base
+            .clone()
+            .with_resolved_parquet_source(base.resolved_source.clone().with_storage_profile_id("profile-b"))
+            .expect("valid profiled remote direct source");
+        let other_content = base
+            .clone()
+            .with_resolved_parquet_source(base.resolved_source.clone().with_content_identity("content-b"))
+            .expect("valid content-scoped remote direct source");
+        let other_location = LocalParquetFile::from_resolved_parquet_source(
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-1.parquet", CredentialMode::SharedProcessEnv)
+                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect),
+        )
+        .expect("valid remote direct source")
+        .with_stable_id("part-0")
+        .with_file_size_bytes(4096);
+
+        assert_ne!(SourceMetadataCacheKey::from_file(&base), SourceMetadataCacheKey::from_file(&other_profile));
+        assert_ne!(SourceMetadataCacheKey::from_file(&base), SourceMetadataCacheKey::from_file(&other_content));
+        assert_ne!(SourceMetadataCacheKey::from_file(&base), SourceMetadataCacheKey::from_file(&other_location));
+    }
+
+    #[test]
+    fn remote_direct_decimal_reader_predicate_requires_footer_type_metadata() {
+        let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
+        let resolved =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved)
+            .expect("valid remote direct source")
+            .with_stable_id("part-0")
+            .with_file_size_bytes(4096);
+        let predicate = Expr::binary(
+            Expr::column("discount"),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
+        );
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
+            .with_column_file_indices(vec![0], vec![0], vec![])
+            .with_reader_predicate(predicate);
+
+        let error = plan_local_parquet_source_chunks(
+            NodeId::from_index_for_internal_use(7),
+            &source,
+            SourceChunkPlanningPolicy::new(None, 1),
+        )
+        .expect_err("remote decimal reader predicates need proven footer dtype metadata");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
+        assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
+        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
+        assert_eq!(error.fact_value("missing_reader_decimal_columns"), Some("discount"));
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
+        assert!(!error.to_string().contains("s3://bucket"));
+    }
+
+    #[test]
+    fn remote_host_buffer_decimal_reader_predicate_requires_footer_type_metadata() {
+        let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
+        let resolved = ResolvedParquetSource::remote_host_buffer(
+            "s3://bucket/table/part-0.parquet",
+            "s3://bucket/table/part-0.parquet",
+            CredentialMode::SharedProcessEnv,
+        );
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved)
+            .expect("valid remote host-buffer source")
+            .with_stable_id("part-0")
+            .with_file_size_bytes(4096);
+        let predicate = Expr::binary(
+            Expr::column("discount"),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
+        );
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
+            .with_column_file_indices(vec![0], vec![0], vec![])
+            .with_reader_predicate(predicate);
+
+        let error = plan_local_parquet_source_chunks(
+            NodeId::from_index_for_internal_use(7),
+            &source,
+            SourceChunkPlanningPolicy::new(None, 1),
+        )
+        .expect_err("remote host-buffer decimal predicates need proven footer dtype metadata");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
+        assert_eq!(error.fact_value("read_strategy"), Some("remote_host_buffer"));
+        assert_eq!(error.fact_value("remote_read_mode"), Some("allow_host_fallback"));
+        assert_eq!(error.fact_value("missing_reader_decimal_columns"), Some("discount"));
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store:s3:fnv64:")));
+        assert!(!error.to_string().contains("s3://bucket"));
+    }
+
+    #[test]
+    fn remote_direct_decimal_reader_predicate_rejects_supplied_footer_type_mismatch() {
+        let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
+        let resolved =
+            ResolvedParquetSource::remote_direct("s3://bucket/table/part-0.parquet", CredentialMode::SharedProcessEnv)
+                .with_remote_read_mode(RemoteParquetReadMode::RequireDirect);
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved)
+            .expect("valid remote direct source")
+            .with_stable_id("part-0")
+            .with_reader_decimal_types(vec![ParquetReaderDecimalType::new(
+                "discount",
+                ParquetReaderDecimalTypeId::Decimal32,
+                -2,
+            )]);
+        let predicate = Expr::binary(
+            Expr::column("discount"),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
+        );
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
+            .with_column_file_indices(vec![0], vec![0], vec![])
+            .with_reader_predicate(predicate);
+        let footer_reader_decimal_types =
+            vec![ParquetReaderDecimalType::new("discount", ParquetReaderDecimalTypeId::Decimal64, -2)];
+
+        let error = validate_supplied_reader_decimal_types_match_footer(
+            &source,
+            &source.files[0],
+            &source.files[0].reader_decimal_types,
+            &footer_reader_decimal_types,
+        )
+        .expect_err("pre-attached reader decimal types must match footer metadata");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_mismatch"));
+        assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
+        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
+        assert!(
+            error
+                .fact_value("missing_reader_decimal_columns")
+                .is_some_and(|value| { value.contains("discount:decimal32:-2!=footer:decimal64:-2") })
+        );
+        assert!(!error.to_string().contains("s3://bucket"));
+    }
+
+    #[test]
+    fn remote_host_buffer_decimal_reader_predicate_rejects_supplied_footer_type_mismatch() {
+        let schema = Arc::new(Schema::new(vec![Field::new("discount", DataType::Decimal128(15, 2), true)]));
+        let resolved = ResolvedParquetSource::remote_host_buffer(
+            "s3://bucket/table/part-0.parquet",
+            "s3://bucket/table/part-0.parquet",
+            CredentialMode::SharedProcessEnv,
+        );
+        let file = LocalParquetFile::from_resolved_parquet_source(resolved)
+            .expect("valid remote host-buffer source")
+            .with_stable_id("part-0")
+            .with_reader_decimal_types(vec![ParquetReaderDecimalType::new(
+                "discount",
+                ParquetReaderDecimalTypeId::Decimal32,
+                -2,
+            )]);
+        let predicate = Expr::binary(
+            Expr::column("discount"),
+            BinaryOp::GtEq,
+            Expr::literal(LiteralValue::Decimal128 { raw: 5, precision: 15, scale: 2 }),
+        );
+        let source = LocalParquetSource::from_files(vec![file], schema, vec!["discount".to_string()])
+            .with_column_file_indices(vec![0], vec![0], vec![])
+            .with_reader_predicate(predicate);
+        let footer_reader_decimal_types =
+            vec![ParquetReaderDecimalType::new("discount", ParquetReaderDecimalTypeId::Decimal64, -2)];
+
+        let error = validate_supplied_reader_decimal_types_match_footer(
+            &source,
+            &source.files[0],
+            &source.files[0].reader_decimal_types,
+            &footer_reader_decimal_types,
+        )
+        .expect_err("pre-attached host-buffer reader decimal types must match footer metadata");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_mismatch"));
+        assert_eq!(error.fact_value("read_strategy"), Some("remote_host_buffer"));
+        assert_eq!(error.fact_value("remote_read_mode"), Some("allow_host_fallback"));
+        assert!(
+            error
+                .fact_value("missing_reader_decimal_columns")
+                .is_some_and(|value| { value.contains("discount:decimal32:-2!=footer:decimal64:-2") })
+        );
+        assert!(!error.to_string().contains("s3://bucket"));
     }
 
     #[test]
@@ -2350,14 +3248,46 @@ mod tests {
         read_all.row_group_indexes.clear();
         let mut host_buffer = batchable_chunk(2, 2, 30);
         host_buffer.resolved_source.read_strategy = ParquetReadStrategy::RemoteHostBuffer;
+        let remote_direct = remote_direct_require_batchable_chunk(3, 3, 40);
 
         let batches = plan_source_chunk_batches(
-            &[batchable_chunk(0, 0, 10), read_all, host_buffer, batchable_chunk(3, 3, 40)],
+            &[batchable_chunk(0, 0, 10), read_all, host_buffer, remote_direct, batchable_chunk(4, 4, 50)],
             None,
         );
 
-        assert_eq!(batches.len(), 4);
+        assert_eq!(batches.len(), 5);
         assert!(batches.iter().all(SourceChunkBatch::is_singleton));
+        assert_eq!(batches[3].source_batching_reason, "incompatible_read_strategy");
+    }
+
+    #[test]
+    fn source_chunk_batches_group_adjacent_remote_direct_chunks() {
+        let chunks = vec![
+            remote_direct_require_batchable_chunk(0, 0, 10),
+            remote_direct_require_batchable_chunk(1, 1, 20),
+            remote_direct_require_batchable_chunk(2, 2, 30),
+        ];
+
+        let batches = plan_source_chunk_batches(&chunks, Some(35));
+
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(batches[0].estimated_source_read_bytes, Some(30));
+        assert_eq!(batches[1].chunks.iter().map(|chunk| chunk.chunk_index).collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn source_chunk_batches_keep_prefer_direct_remote_chunks_singleton() {
+        let mut prefer_direct = remote_direct_require_batchable_chunk(0, 0, 10);
+        prefer_direct.resolved_source.remote_read_mode = RemoteParquetReadMode::PreferDirect;
+        let chunks = vec![prefer_direct, remote_direct_require_batchable_chunk(1, 1, 20)];
+
+        let batches = plan_source_chunk_batches(&chunks, None);
+
+        assert_eq!(batches.len(), 2);
+        assert!(batches.iter().all(SourceChunkBatch::is_singleton));
+        assert_eq!(batches[0].source_batching_reason, "ineligible_remote_read_mode");
+        assert_eq!(batches[1].source_batching_reason, "trailing_singleton");
     }
 
     #[test]
