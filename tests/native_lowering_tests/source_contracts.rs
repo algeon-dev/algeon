@@ -88,6 +88,34 @@ fn pushed_down_parquet_predicate_uses_filter_input_schema_for_validation() {
 }
 
 #[test]
+fn pushed_down_substring_prefix_predicate_is_rewritten_to_reader_pushdown_ranges() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-prefix-predicate");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan_with_pushed_down_label_prefix_predicate(&path);
+    let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics.len(), 1);
+    assert_eq!(result.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
+    assert!(result.source_diagnostics[0].rejected_features.is_empty());
+    let source = native_local_parquet_source(&result.plans[0]);
+    let reader_predicate = source.reader_predicate.as_ref().expect("prefix predicate should be pushed to the reader");
+    let reader_predicate_text = reader_predicate.to_string();
+    assert!(!reader_predicate_text.contains("SUBSTRING"), "{reader_predicate_text}");
+    assert!(reader_predicate_text.contains("label >= \"a\""), "{reader_predicate_text}");
+    assert!(reader_predicate_text.contains("label < \"b\""), "{reader_predicate_text}");
+    assert!(reader_predicate_text.contains("label >= \"b\""), "{reader_predicate_text}");
+    assert!(reader_predicate_text.contains("label < \"c\""), "{reader_predicate_text}");
+    assert!(native_filter_exprs(&result.plans[0]).is_empty());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn pushed_down_parquet_predicate_without_filter_is_reader_pushdown() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-pushed-predicate-without-filter");
     let path = dir.join("input.parquet");

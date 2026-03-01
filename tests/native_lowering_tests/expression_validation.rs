@@ -44,6 +44,36 @@ fn explicit_numeric_cast_lowers_to_native_expr_and_reads_inner_column() {
 }
 
 #[test]
+fn scan_only_partial_reader_predicate_keeps_native_residual_filter() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-partial-reader-residual");
+    let path = dir.join("input.parquet");
+    write_parquet_file_with_tpch_like_columns(&path);
+    let scan = parquet_scan_with_pushed_down_partial_reader_predicate(&path);
+    let plan = aggregate_sort_limit_plan_without_filter(scan, Operator::Plus);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let source = native_local_parquet_source(&result.plans[0]);
+    let reader_predicate = source
+        .reader_predicate
+        .as_ref()
+        .expect("supported scan predicate conjunct should be pushed into the reader")
+        .to_string();
+    assert!(reader_predicate.contains("payload = 10"), "{reader_predicate}");
+    assert!(!reader_predicate.contains("LIKE"), "{reader_predicate}");
+
+    let filters = native_filter_exprs(&result.plans[0]);
+    assert_eq!(filters.len(), 1, "unsupported scan predicate residual must remain as a native filter");
+    let residual = filters[0].to_string();
+    assert!(residual.contains("payload = 10"), "{residual}");
+    assert!(residual.contains("LIKE"), "{residual}");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn decimal_division_lowers_with_declared_binary_output_type() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-decimal-divide");
     let path = dir.join("input.parquet");

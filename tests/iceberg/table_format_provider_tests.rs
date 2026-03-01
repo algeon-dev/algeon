@@ -180,6 +180,33 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
 }
 
 #[tokio::test]
+async fn iceberg_provider_pushes_supported_filter_conjuncts_and_keeps_native_filter_for_residual() {
+    let schema = iceberg_test_schema();
+    let planner = Arc::new(RecordingPlanner::new(native_admissible_scan_plan(Arc::clone(&schema))));
+    let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(Arc::clone(&schema), planner.clone()));
+    let ctx = SessionContext::new_with_config(direct_friendly_session_config());
+    ctx.register_table("iceberg_t", provider).unwrap();
+
+    let df = ctx.sql("select value from iceberg_t where id = 1 and value not like 'bad%'").await.unwrap();
+    let physical_plan = df.create_physical_plan().await.unwrap();
+    let result = lower_physical_plan_to_native(physical_plan);
+
+    assert_eq!(result.rewritten_count(), 1);
+    let source = native_local_parquet_source(&result.plans[0]);
+    let reader_predicate = source
+        .reader_predicate
+        .as_ref()
+        .expect("supported conjunct should still push into the table-format reader")
+        .to_string();
+    assert!(reader_predicate.contains("id = 1"), "{reader_predicate}");
+    assert!(!reader_predicate.contains("LIKE"), "{reader_predicate}");
+    assert!(
+        native_plan_filter_count(&result.plans[0]) >= 1,
+        "the native filter must remain because NOT LIKE was only a residual expression"
+    );
+}
+
+#[tokio::test]
 async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicate() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("ship_date", DataType::Date32, false),

@@ -2454,16 +2454,12 @@ fn native_optimizer_reuses_large_existing_superset_with_smaller_local_parquet_so
 }
 
 #[test]
-fn native_optimizer_rejects_large_filtered_existing_superset_for_local_parquet_source_reuse() {
-    let plan = large_filtered_superset_with_smaller_local_parquet_source_variant_plan();
-    let options = NativeOptimizerOptions {
-        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
-        ..NativeOptimizerOptions::disabled()
-    };
-    let result = optimize_query_plan(plan.clone(), &options);
+fn native_optimizer_rejects_large_superset_reuse_when_variant_feeds_grouped_aggregate() {
+    let plan = large_superset_with_grouped_aggregate_source_variant_plan();
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
 
-    assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.plan, plan);
     let diagnostics = &result.diagnostics.local_parquet_source_reuse;
     assert_eq!(diagnostics.considered_count, 1);
     assert_eq!(diagnostics.applied_count, 0);
@@ -2472,6 +2468,59 @@ fn native_optimizer_rejects_large_filtered_existing_superset_for_local_parquet_s
         Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::VariantTooLarge)
     );
     assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 2);
+}
+
+#[test]
+fn native_optimizer_reuses_large_superset_when_grouped_aggregate_variant_is_not_widened() {
+    let plan = large_grouped_aggregate_superset_with_smaller_source_variant_plan();
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    assert!(diagnostics.candidates[0].applied);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
+}
+
+#[test]
+fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjacent_grouped_aggregate() {
+    let plan = large_filtered_superset_with_smaller_local_parquet_source_variant_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    assert!(diagnostics.candidates[0].applied);
+    assert_eq!(diagnostics.candidates[0].branch_filter_count, 1);
+    assert_eq!(local_parquet_source_count_for_stable_id(&result.plan, "inventory"), 1);
+    let branch_filters = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Filter(filter) => Some(&filter.predicate),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(branch_filters.len(), 1);
+    assert!(
+        branch_filters[0].to_string().contains(" OR "),
+        "test predicate should cover recursive replay normalization"
+    );
+    assert!(
+        branch_filters[0].to_string().contains(" AND "),
+        "test predicate should cover recursive replay normalization"
+    );
+    assert_no_non_decimal_binary_output_types(
+        branch_filters[0],
+        "replayed reader predicate should strip declared boolean output type before native filter validation",
+    );
 }
 
 #[test]
@@ -5992,6 +6041,78 @@ fn large_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_quer
     builder.finish_gpu_resident(union)
 }
 
+fn large_superset_with_grouped_aggregate_source_variant_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let superset = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk", "inv_quantity", "inv_price"],
+        600 * 1024 * 1024,
+        10_000_000,
+    ));
+    let aggregate_input = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk", "inv_quantity"],
+        64 * 1024 * 1024,
+        1_000_000,
+    ));
+    let aggregate_schema = schema(&["inv_item_sk", "sum_qty"]);
+    let aggregate = builder.add_aggregate(
+        aggregate_input,
+        AggregateSpec::new(
+            vec![Expr::column("inv_item_sk")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let superset_item = builder.add_projection(
+        superset,
+        vec![
+            ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("inv_quantity"), Field::new("sum_qty", DataType::Int32, false)),
+        ],
+    );
+    let union = builder.add_union(vec![aggregate, superset_item], aggregate_schema);
+    builder.finish_gpu_resident(union)
+}
+
+fn large_grouped_aggregate_superset_with_smaller_source_variant_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_input = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk", "inv_quantity", "inv_price"],
+        600 * 1024 * 1024,
+        10_000_000,
+    ));
+    let subset = builder.add_source(estimated_local_source_with_stable_id(
+        "inventory",
+        "inventory",
+        &["inv_item_sk"],
+        64 * 1024 * 1024,
+        1_000_000,
+    ));
+    let aggregate_schema = schema(&["inv_item_sk", "sum_qty"]);
+    let aggregate = builder.add_aggregate(
+        aggregate_input,
+        AggregateSpec::new(
+            vec![Expr::column("inv_item_sk")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("inv_quantity"), "sum_qty")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let subset_item = builder.add_projection(
+        subset,
+        vec![
+            ProjectionOutput::new(Expr::column("inv_item_sk"), Field::new("inv_item_sk", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::literal(LiteralValue::Int32(0)), Field::new("sum_qty", DataType::Int32, false)),
+        ],
+    );
+    let union = builder.add_union(vec![aggregate, subset_item], aggregate_schema);
+    builder.finish_gpu_resident(union)
+}
+
 fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let superset = builder.add_source(estimated_local_source_with_stable_id_and_predicate(
@@ -6000,7 +6121,7 @@ fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> n
         &["inv_item_sk", "inv_date_sk"],
         600 * 1024 * 1024,
         10_000_000,
-        Expr::binary(Expr::column("inv_date_sk"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(2_452_001))),
+        nested_reader_predicate_with_declared_boolean_output_types(),
     ));
     let subset = builder.add_source(estimated_local_source_with_stable_id(
         "inventory",
@@ -6019,6 +6140,86 @@ fn large_filtered_superset_with_smaller_local_parquet_source_variant_plan() -> n
     );
     let union = builder.add_union(vec![superset_item, subset_item], schema(&["inv_item_sk"]));
     builder.finish_gpu_resident(union)
+}
+
+fn nested_reader_predicate_with_declared_boolean_output_types() -> Expr {
+    let date_lower = Expr::binary_with_output_type(
+        Expr::column("inv_date_sk"),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Int32(2_452_001)),
+        DataType::Boolean,
+    );
+    let date_upper = Expr::binary_with_output_type(
+        Expr::column("inv_date_sk"),
+        BinaryOp::Lt,
+        Expr::literal(LiteralValue::Int32(2_452_010)),
+        DataType::Boolean,
+    );
+    let date_range = Expr::binary_with_output_type(date_lower, BinaryOp::And, date_upper, DataType::Boolean);
+    let item_range = Expr::binary_with_output_type(
+        Expr::column("inv_item_sk"),
+        BinaryOp::GtEq,
+        Expr::literal(LiteralValue::Int32(10)),
+        DataType::Boolean,
+    );
+    Expr::binary_with_output_type(date_range, BinaryOp::Or, item_range, DataType::Boolean)
+}
+
+fn assert_no_non_decimal_binary_output_types(expr: &Expr, message: &str) {
+    match expr {
+        Expr::Binary { left, op, right, output_type } => {
+            assert!(
+                output_type.is_none()
+                    || (*op == BinaryOp::Divide
+                        && output_type
+                            .as_ref()
+                            .is_some_and(|data_type| matches!(data_type, DataType::Decimal128(_, _)))),
+                "{message}: {expr}"
+            );
+            assert_no_non_decimal_binary_output_types(left, message);
+            assert_no_non_decimal_binary_output_types(right, message);
+        },
+        Expr::Not(inner)
+        | Expr::IsNull(inner)
+        | Expr::IsNotNull(inner)
+        | Expr::Cast { expr: inner, .. }
+        | Expr::TryCast { expr: inner, .. }
+        | Expr::Like { expr: inner, .. }
+        | Expr::Substring { expr: inner, .. }
+        | Expr::Lower(inner)
+        | Expr::Upper(inner)
+        | Expr::StringLength { expr: inner, .. }
+        | Expr::RegexpReplace { expr: inner, .. }
+        | Expr::Abs(inner)
+        | Expr::Sqrt { expr: inner, .. }
+        | Expr::Round { expr: inner, .. }
+        | Expr::Extract { expr: inner, .. }
+        | Expr::DateTrunc { expr: inner, .. }
+        | Expr::Alias { expr: inner, .. } => assert_no_non_decimal_binary_output_types(inner, message),
+        Expr::Concat(exprs) => {
+            for expr in exprs {
+                assert_no_non_decimal_binary_output_types(expr, message);
+            }
+        },
+        Expr::InList { expr, list, .. } => {
+            assert_no_non_decimal_binary_output_types(expr, message);
+            for expr in list {
+                assert_no_non_decimal_binary_output_types(expr, message);
+            }
+        },
+        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
+            assert_no_non_decimal_binary_output_types(left, message);
+            assert_no_non_decimal_binary_output_types(right, message);
+        },
+        Expr::Case { branches, else_expr } => {
+            for branch in branches {
+                assert_no_non_decimal_binary_output_types(&branch.when, message);
+                assert_no_non_decimal_binary_output_types(&branch.then, message);
+            }
+            assert_no_non_decimal_binary_output_types(else_expr, message);
+        },
+        Expr::Column(_) | Expr::Literal(_) => {},
+    }
 }
 
 fn customer_address_source(columns: &[&str], file_indices: &[usize], predicate: Option<Expr>) -> SourceNode {

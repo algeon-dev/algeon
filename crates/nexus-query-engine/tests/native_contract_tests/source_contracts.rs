@@ -167,6 +167,171 @@ fn local_parquet_source_reader_predicate_accepts_column_typed_integer_literals()
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_rewrites_fixed_ascii_substring_prefix_in_list() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("phone", DataType::Utf8, false),
+        Field::new("payload", DataType::Int64, false),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-prefix.parquet")
+                .with_stable_id("reader-predicate-prefix")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["phone".to_string(), "payload".to_string()],
+    );
+    let predicate = Expr::in_list(
+        Expr::substring(Expr::column("phone"), 1, Some(2)),
+        vec![Expr::literal(LiteralValue::Utf8("13".to_string())), Expr::literal(LiteralValue::Utf8("31".to_string()))],
+    );
+
+    assert!(!source.reader_predicate_is_supported(&predicate));
+    let rewritten = source
+        .reader_predicate_supported_expression(&predicate)
+        .expect("fixed ASCII prefix substring IN list should rewrite to reader ranges");
+
+    assert!(source.reader_predicate_is_supported(&rewritten));
+    let rewritten_text = rewritten.to_string();
+    assert!(!rewritten_text.contains("SUBSTRING"), "{rewritten_text}");
+    assert!(rewritten_text.contains("phone >= \"13\""), "{rewritten_text}");
+    assert!(rewritten_text.contains("phone < \"14\""), "{rewritten_text}");
+    assert!(rewritten_text.contains("phone >= \"31\""), "{rewritten_text}");
+    assert!(rewritten_text.contains("phone < \"32\""), "{rewritten_text}");
+}
+
+#[test]
+fn local_parquet_source_reader_predicate_prefix_rewrite_preserves_filter_truth_boundaries() {
+    let schema = Arc::new(Schema::new(vec![Field::new("phone", DataType::Utf8, true)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-prefix-boundaries.parquet")
+                .with_stable_id("reader-predicate-prefix-boundaries")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["phone".to_string()],
+    );
+    let predicate = Expr::in_list(
+        Expr::substring(Expr::column("phone"), 1, Some(2)),
+        vec![Expr::literal(LiteralValue::Utf8("13".to_string())), Expr::literal(LiteralValue::Utf8("31".to_string()))],
+    );
+    let rewritten = source
+        .reader_predicate_supported_expression(&predicate)
+        .expect("fixed ASCII prefix substring IN list should rewrite to reader ranges");
+
+    for phone in [
+        None,
+        Some(""),
+        Some("1"),
+        Some("12"),
+        Some("13"),
+        Some("130"),
+        Some("13é"),
+        Some("14"),
+        Some("30"),
+        Some("31"),
+        Some("31😀"),
+        Some("32"),
+    ] {
+        let expected = phone.is_some_and(|value| {
+            let prefix = value.chars().take(2).collect::<String>();
+            matches!(prefix.as_str(), "13" | "31")
+        });
+        assert_eq!(
+            eval_prefix_rewrite_filter_truth(&rewritten, phone),
+            expected,
+            "phone={phone:?} rewritten={rewritten}"
+        );
+    }
+}
+
+#[test]
+fn local_parquet_source_reader_predicate_rejects_unsafe_substring_prefix_rewrites() {
+    let schema = Arc::new(Schema::new(vec![Field::new("phone", DataType::Utf8, false)]));
+    let source = LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/reader-predicate-unsafe-prefix.parquet")
+                .with_stable_id("reader-predicate-unsafe-prefix")
+                .with_file_size_bytes(1024),
+        ],
+        schema,
+        vec!["phone".to_string()],
+    );
+    let wrong_start = Expr::in_list(
+        Expr::substring(Expr::column("phone"), 2, Some(2)),
+        vec![Expr::literal(LiteralValue::Utf8("13".to_string()))],
+    );
+    let shorter_literal = Expr::in_list(
+        Expr::substring(Expr::column("phone"), 1, Some(2)),
+        vec![Expr::literal(LiteralValue::Utf8("1".to_string()))],
+    );
+    let non_ascii_literal = Expr::in_list(
+        Expr::substring(Expr::column("phone"), 1, Some(2)),
+        vec![Expr::literal(LiteralValue::Utf8("éa".to_string()))],
+    );
+
+    assert!(source.reader_predicate_supported_expression(&wrong_start).is_none());
+    assert!(source.reader_predicate_supported_expression(&shorter_literal).is_none());
+    assert!(source.reader_predicate_supported_expression(&non_ascii_literal).is_none());
+}
+
+fn eval_prefix_rewrite_filter_truth(expr: &Expr, phone: Option<&str>) -> bool {
+    eval_prefix_rewrite_bool(expr, phone).unwrap_or(false)
+}
+
+fn eval_prefix_rewrite_bool(expr: &Expr, phone: Option<&str>) -> Option<bool> {
+    match expr {
+        Expr::Binary { left, op: BinaryOp::And, right, .. } => {
+            sql_and(eval_prefix_rewrite_bool(left, phone), eval_prefix_rewrite_bool(right, phone))
+        },
+        Expr::Binary { left, op: BinaryOp::Or, right, .. } => {
+            sql_or(eval_prefix_rewrite_bool(left, phone), eval_prefix_rewrite_bool(right, phone))
+        },
+        Expr::Binary { left, op, right, .. } => {
+            let left = eval_prefix_rewrite_string(left, phone)?;
+            let right = eval_prefix_rewrite_string(right, phone)?;
+            Some(match op {
+                BinaryOp::Eq => left == right,
+                BinaryOp::NotEq => left != right,
+                BinaryOp::Gt => left > right,
+                BinaryOp::GtEq => left >= right,
+                BinaryOp::Lt => left < right,
+                BinaryOp::LtEq => left <= right,
+                other => panic!("unsupported prefix rewrite operator in test evaluator: {other:?}"),
+            })
+        },
+        Expr::Not(input) => eval_prefix_rewrite_bool(input, phone).map(|value| !value),
+        other => panic!("unsupported prefix rewrite expression in test evaluator: {other:?}"),
+    }
+}
+
+fn eval_prefix_rewrite_string(expr: &Expr, phone: Option<&str>) -> Option<String> {
+    match expr {
+        Expr::Column(column) if column.name() == "phone" => phone.map(str::to_string),
+        Expr::Literal(LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value)) => Some(value.clone()),
+        Expr::Alias { expr, .. } => eval_prefix_rewrite_string(expr, phone),
+        other => panic!("unsupported prefix rewrite string expression in test evaluator: {other:?}"),
+    }
+}
+
+fn sql_and(left: Option<bool>, right: Option<bool>) -> Option<bool> {
+    match (left, right) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+fn sql_or(left: Option<bool>, right: Option<bool>) -> Option<bool> {
+    match (left, right) {
+        (Some(true), _) | (_, Some(true)) => Some(true),
+        (Some(false), Some(false)) => Some(false),
+        _ => None,
+    }
+}
+
+#[test]
 fn local_parquet_source_represents_order_insensitive_scan_limit() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::UInt32, false)]));
     let source = LocalParquetSource::from_files(

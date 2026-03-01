@@ -3,11 +3,11 @@ use std::{
     sync::Arc,
 };
 
-use arrow::datatypes::{Field, Schema};
+use arrow::datatypes::{DataType, Field, Schema};
 
 use super::rewrite;
 use crate::{
-    expr::Expr,
+    expr::{BinaryOp, CaseWhen, Expr},
     plan::{
         FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
@@ -190,15 +190,18 @@ fn discover_source_reuse_candidates(
         let any_variant_too_large = variants.iter().any(|variant| {
             variant.selected_source_bytes.is_some_and(|bytes| bytes > options.max_variant_selected_bytes)
         });
-        let has_existing_unfiltered_superset_variant = variants.iter().any(|variant| {
-            variant.reader_predicate.is_none() && variant_read_columns_match_superset(variant, &superset_read_columns)
-        });
+        let large_variant_blocks_source_adjacent_grouped_aggregate = (has_unknown_variant_size
+            || any_variant_too_large)
+            && variants.iter().any(|variant| {
+                source_variant_feeds_source_adjacent_grouped_aggregate(plan, variant.source_node_id)
+                    && source_reuse_would_widen_variant(variant, &superset_read_columns)
+            });
 
         let rejected_reason = if variants.iter().any(|variant| !variant.supported_contract)
             || source_group_has_conflicting_file_order(&variants)
         {
             Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
-        } else if (has_unknown_variant_size || any_variant_too_large) && !has_existing_unfiltered_superset_variant {
+        } else if large_variant_blocks_source_adjacent_grouped_aggregate {
             Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
         } else if source_group_has_conflicting_file_columns(&variants) {
             Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
@@ -224,6 +227,46 @@ fn discover_source_reuse_candidates(
     }
 
     SourceReuseDiscovery { diagnostics, rewrites }
+}
+
+fn source_variant_feeds_source_adjacent_grouped_aggregate(plan: &QueryPlan, source_node_id: NodeId) -> bool {
+    let parents = source_parent_map(plan);
+    let mut stack = parents.get(&source_node_id).cloned().unwrap_or_default();
+    let mut visited = BTreeSet::new();
+    while let Some(node_id) = stack.pop() {
+        if !visited.insert(node_id) {
+            continue;
+        }
+        let Some(node) = plan.node(node_id) else {
+            continue;
+        };
+        match &node.kind {
+            PlanNode::Aggregate(aggregate)
+                if !aggregate.spec.group_exprs.is_empty() && aggregate.spec.grouping_sets.is_none() =>
+            {
+                return true;
+            },
+            PlanNode::Filter(_) | PlanNode::Projection(_) => {
+                stack.extend(parents.get(&node_id).into_iter().flatten().copied());
+            },
+            _ => {},
+        }
+    }
+    false
+}
+
+fn source_parent_map(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
+    let mut parents = BTreeMap::<NodeId, Vec<NodeId>>::new();
+    for node in plan.nodes() {
+        for input in node.input_ids() {
+            parents.entry(*input).or_default().push(node.id);
+        }
+    }
+    parents
+}
+
+fn source_reuse_would_widen_variant(variant: &SourceVariant, superset_read_columns: &[SupersetColumn]) -> bool {
+    variant.reader_predicate.is_some() || !variant_read_columns_match_superset(variant, superset_read_columns)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -601,7 +644,7 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
         {
             let output_schema = self.nodes[current.index()].output_schema().clone();
             current = self.push_node(
-                PlanNode::Filter(FilterNode { input: current, predicate }),
+                PlanNode::Filter(FilterNode { input: current, predicate: branch_replay_predicate(predicate) }),
                 PlanFacts::device(output_schema, SchemaBehavior::PreservesInput),
             );
         }
@@ -632,5 +675,65 @@ impl<'a> LocalParquetSourceReuseRewriter<'a> {
         let id = NodeId::from_index_for_internal_use(self.nodes.len());
         self.nodes.push(QueryNode { id, kind, facts });
         id
+    }
+}
+
+fn branch_replay_predicate(predicate: Expr) -> Expr {
+    match predicate {
+        Expr::Binary { left, op, right, output_type } => {
+            let keep_output_type = matches!(op, BinaryOp::Divide)
+                && output_type.as_ref().is_some_and(|data_type| matches!(data_type, DataType::Decimal128(_, _)));
+            Expr::Binary {
+                left: Box::new(branch_replay_predicate(*left)),
+                op,
+                right: Box::new(branch_replay_predicate(*right)),
+                output_type: keep_output_type.then_some(output_type).flatten(),
+            }
+        },
+        Expr::Not(expr) => Expr::logical_not(branch_replay_predicate(*expr)),
+        Expr::IsNull(expr) => Expr::is_null(branch_replay_predicate(*expr)),
+        Expr::IsNotNull(expr) => Expr::is_not_null(branch_replay_predicate(*expr)),
+        Expr::Cast { expr, target_type } => Expr::cast(branch_replay_predicate(*expr), target_type),
+        Expr::TryCast { expr, target_type } => Expr::try_cast(branch_replay_predicate(*expr), target_type),
+        Expr::Like { expr, pattern, escape, negated } => {
+            Expr::Like { expr: Box::new(branch_replay_predicate(*expr)), pattern, escape, negated }
+        },
+        Expr::Substring { expr, start, length } => Expr::substring(branch_replay_predicate(*expr), start, length),
+        Expr::Lower(expr) => Expr::lower(branch_replay_predicate(*expr)),
+        Expr::Upper(expr) => Expr::upper(branch_replay_predicate(*expr)),
+        Expr::StringLength { expr, output_type } => Expr::string_length(branch_replay_predicate(*expr), output_type),
+        Expr::RegexpReplace { expr, pattern, replacement, output_type } => {
+            Expr::regexp_replace(branch_replay_predicate(*expr), pattern, replacement, output_type)
+        },
+        Expr::Concat(exprs) => Expr::concat(exprs.into_iter().map(branch_replay_predicate).collect()),
+        Expr::Abs(expr) => Expr::abs(branch_replay_predicate(*expr)),
+        Expr::Sqrt { expr, output_type } => Expr::sqrt(branch_replay_predicate(*expr), output_type),
+        Expr::Round { expr, decimal_places, output_type } => {
+            Expr::round(branch_replay_predicate(*expr), decimal_places, output_type)
+        },
+        Expr::InList { expr, list, negated } => Expr::InList {
+            expr: Box::new(branch_replay_predicate(*expr)),
+            list: list.into_iter().map(branch_replay_predicate).collect(),
+            negated,
+        },
+        Expr::IsDistinctFrom { left, right } => {
+            Expr::is_distinct_from(branch_replay_predicate(*left), branch_replay_predicate(*right))
+        },
+        Expr::IsNotDistinctFrom { left, right } => {
+            Expr::is_not_distinct_from(branch_replay_predicate(*left), branch_replay_predicate(*right))
+        },
+        Expr::Case { branches, else_expr } => Expr::case(
+            branches
+                .into_iter()
+                .map(|branch| CaseWhen::new(branch_replay_predicate(branch.when), branch_replay_predicate(branch.then)))
+                .collect(),
+            branch_replay_predicate(*else_expr),
+        ),
+        Expr::Extract { field, expr } => Expr::extract(field, branch_replay_predicate(*expr)),
+        Expr::DateTrunc { field, expr, output_type } => {
+            Expr::date_trunc(field, branch_replay_predicate(*expr), output_type)
+        },
+        Expr::Alias { expr, alias } => branch_replay_predicate(*expr).alias(alias),
+        Expr::Column(_) | Expr::Literal(_) => predicate,
     }
 }
