@@ -51,17 +51,17 @@ NATIVE_MAX_SOURCE_CHUNK_BYTES=4294967296  # 4 GiB
 NATIVE_MAX_ROW_GROUPS_PER_CHUNK=1024
 
 # ---------------------------------------------------------------------------
-# DataFusion session  (DATAFUSION__ prefix, double-underscore separator)
+# DataFusion session  (single underscores; DataFusion SessionConfig::from_env)
 # These are read by DataFusion's SessionConfig::from_env().
 #
-# DATAFUSION__EXECUTION__TARGET_PARTITIONS  CPU parallelism for fallback path (no effect on GPU)
-# DATAFUSION__EXECUTION__BATCH_SIZE         Arrow record-batch size for fallback path
+# DATAFUSION_EXECUTION_TARGET_PARTITIONS  CPU parallelism for fallback path (no effect on GPU)
+# DATAFUSION_EXECUTION_BATCH_SIZE         Arrow record-batch size for fallback path
 # ---------------------------------------------------------------------------
-DATAFUSION__EXECUTION__TARGET_PARTITIONS=16
-DATAFUSION__EXECUTION__BATCH_SIZE=8192
+DATAFUSION_EXECUTION_TARGET_PARTITIONS="${DATAFUSION_EXECUTION_TARGET_PARTITIONS:-16}"
+DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"
 
 # ---------------------------------------------------------------------------
-# Iceberg / AWS Glue or local Glue-compatible catalog
+# Iceberg REST, AWS Glue, or local Glue-compatible catalog
 #
 # NEXUS_ICEBERG_CATALOG_KIND   Catalog backend: rest or glue
 # NEXUS_ICEBERG_CATALOG_NAME   DataFusion catalog name (first segment of catalog.ns.table)
@@ -143,8 +143,8 @@ ARGS=(
     -e "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}"
 
     # DataFusion session
-    -e "DATAFUSION__EXECUTION__TARGET_PARTITIONS=${DATAFUSION__EXECUTION__TARGET_PARTITIONS}"
-    -e "DATAFUSION__EXECUTION__BATCH_SIZE=${DATAFUSION__EXECUTION__BATCH_SIZE}"
+    -e "DATAFUSION_EXECUTION_TARGET_PARTITIONS=${DATAFUSION_EXECUTION_TARGET_PARTITIONS}"
+    -e "DATAFUSION_EXECUTION_BATCH_SIZE=${DATAFUSION_EXECUTION_BATCH_SIZE}"
 
     # Iceberg / local REST or Glue-compatible catalog
     -e "NEXUS_ICEBERG_CATALOG_KIND=${ICEBERG_CATALOG_KIND}"

@@ -29,27 +29,27 @@ const MEMORY_POLICY_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_MEMORY_POLICY";
 const DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_DEVICE_BUDGET_BYTES";
 const MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_CUGRAPH_CONSTRUCTION_MAX_SOURCE_CHUNK_BYTES";
 
-const HEADER: &str = concat!(
-    "variant\t",
-    "sql_construction_policy\t",
-    "edge_normalize_inserted\t",
-    "runtime_construction_policy\t",
-    "runtime_outcome\t",
-    "input_rows\t",
-    "graph_input_rows\t",
-    "graph_output_rows\t",
-    "output_rows\t",
-    "output_bytes\t",
-    "wall_ms\t",
-    "graph_elapsed_ms\t",
-    "graph_output_device_bytes\t",
-    "reservation_live_peak_bytes\t",
-    "reservation_denied_count\t",
-    "gpu_resident_input_handoffs\t",
-    "host_to_device_uploads\t",
-    "device_to_host_materializations\t",
-    "failure"
-);
+const COLUMNS: &[&str] = &[
+    "variant",
+    "sql_construction_policy",
+    "edge_normalize_inserted",
+    "runtime_construction_policy",
+    "runtime_outcome",
+    "input_rows",
+    "graph_input_rows",
+    "graph_output_rows",
+    "output_rows",
+    "output_bytes",
+    "wall_ms",
+    "graph_elapsed_ms",
+    "graph_output_device_bytes",
+    "reservation_live_peak_bytes",
+    "reservation_denied_count",
+    "gpu_resident_input_handoffs",
+    "host_to_device_uploads",
+    "device_to_host_materializations",
+    "failure",
+];
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -86,7 +86,7 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
         env_u64(DEVICE_BUDGET_BYTES_ENV, NativeCudfExecutionConfig::auto_sized_device_budget_bytes(),),
         env_u64(MAX_SOURCE_CHUNK_BYTES_ENV, NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,),
     );
-    println!("{HEADER}");
+    println!("{}", COLUMNS.join("\t"));
 
     for variant in variants() {
         println!("{}", collect_variant(&ctx, rows, variant).await.to_tsv());
@@ -290,7 +290,7 @@ impl ReportRow {
     }
 
     fn to_tsv(&self) -> String {
-        [
+        let fields = [
             self.variant.to_string(),
             self.sql_construction_policy.to_string(),
             self.edge_normalize_inserted.to_string(),
@@ -310,8 +310,9 @@ impl ReportRow {
             self.host_to_device_uploads.to_string(),
             self.device_to_host_materializations.to_string(),
             self.failure.as_deref().map(tsv_field).unwrap_or_else(|| "none".to_string()),
-        ]
-        .join("\t")
+        ];
+        debug_assert_eq!(fields.len(), COLUMNS.len());
+        fields.join("\t")
     }
 }
 
@@ -408,4 +409,18 @@ fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}-{stamp}"));
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_tsv_row_contract_matches_columns() {
+        let row = ReportRow::failed(variants()[0], 10, "bad\tfailure".to_string());
+        assert_eq!(SCHEMA_VERSION, 1);
+        assert_eq!(COLUMNS.first(), Some(&"variant"));
+        assert_eq!(COLUMNS.last(), Some(&"failure"));
+        assert_eq!(row.to_tsv().split('\t').count(), COLUMNS.len());
+    }
 }

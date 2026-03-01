@@ -27,6 +27,53 @@ type BenchmarkResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
 const REPORT_SCHEMA_VERSION: u32 = 7;
 const REPORT_HEADER: &str = "query_id\titeration\tfixture_mode\tcatalog_type\ttable_ident\ttpch_scale_factor\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_bytes\tadmitted_native_source_file_count\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tlakehouse_cache_read_mode\tlakehouse_cache_fill_mode\tsource_fallback_reason\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tnative_source_read_runtime_rows\tlakehouse_cache_fill_event_snapshot_rows\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcomparison_mode\tparity_status\tparity_detail\ttimeout_category\tnative_output_fingerprint\tcpu_output_fingerprint\treport_elapsed_ms\twarmup_iterations\tmeasured_iterations\tcredential_source";
+const REPORT_COLUMNS: &[&str] = &[
+    "query_id",
+    "iteration",
+    "fixture_mode",
+    "catalog_type",
+    "table_ident",
+    "tpch_scale_factor",
+    "table_format",
+    "snapshot_id",
+    "planned_data_file_count",
+    "planned_bytes",
+    "admitted_native_source_file_count",
+    "native_source_read_capability",
+    "source_read_strategy",
+    "source_decode_input",
+    "credential_mode",
+    "lakehouse_cache_status",
+    "lakehouse_cache_read_mode",
+    "lakehouse_cache_fill_mode",
+    "source_fallback_reason",
+    "direct_device_read_disposition",
+    "object_store_staging_mode",
+    "object_store_staging_status",
+    "staged_data_file_count",
+    "staged_bytes",
+    "native_planning_outcome",
+    "native_runtime_outcome",
+    "native_runtime_elapsed_ms",
+    "native_output_rows",
+    "native_output_batches",
+    "native_source_read_runtime_rows",
+    "lakehouse_cache_fill_event_snapshot_rows",
+    "cpu_runtime_outcome",
+    "cpu_runtime_elapsed_ms",
+    "cpu_output_rows",
+    "cpu_output_batches",
+    "comparison_mode",
+    "parity_status",
+    "parity_detail",
+    "timeout_category",
+    "native_output_fingerprint",
+    "cpu_output_fingerprint",
+    "report_elapsed_ms",
+    "warmup_iterations",
+    "measured_iterations",
+    "credential_source",
+];
 
 const QUERY_IDS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS";
 const WARMUPS_ENV: &str = "NEXUS_ICEBERG_TPCH_BENCH_WARMUPS";
@@ -755,6 +802,7 @@ pub(crate) struct IcebergTpchBenchmarkReport {
 impl IcebergTpchBenchmarkReport {
     pub(crate) fn to_tsv(&self) -> String {
         let rows = self.rows.iter().map(IcebergTpchBenchmarkRow::to_tsv_row).collect::<Vec<_>>().join("\n");
+        debug_assert_eq!(REPORT_COLUMNS.join("\t"), REPORT_HEADER);
         format!("# native_iceberg_tpch_benchmark_tsv_schema_version={REPORT_SCHEMA_VERSION}\n{REPORT_HEADER}\n{rows}\n")
     }
 
@@ -772,6 +820,7 @@ impl IcebergTpchBenchmarkReport {
 
 pub(crate) fn write_benchmark_tsv_header(writer: &mut impl Write) -> io::Result<()> {
     writeln!(writer, "# native_iceberg_tpch_benchmark_tsv_schema_version={REPORT_SCHEMA_VERSION}")?;
+    debug_assert_eq!(REPORT_COLUMNS.join("\t"), REPORT_HEADER);
     writeln!(writer, "{REPORT_HEADER}")?;
     writer.flush()
 }
@@ -805,7 +854,7 @@ pub(crate) struct IcebergTpchBenchmarkRow {
 impl IcebergTpchBenchmarkRow {
     fn to_tsv_row(&self) -> String {
         let row = &self.smoke_row;
-        [
+        let fields = [
             row.query_id.clone(),
             self.iteration.to_string(),
             row.fixture_mode.clone(),
@@ -851,11 +900,9 @@ impl IcebergTpchBenchmarkRow {
             self.warmup_iterations.to_string(),
             self.measured_iterations.to_string(),
             row.credential_source.clone(),
-        ]
-        .into_iter()
-        .map(|field| stable_tsv_field(&field))
-        .collect::<Vec<_>>()
-        .join("\t")
+        ];
+        debug_assert_eq!(fields.len(), REPORT_COLUMNS.len());
+        fields.into_iter().map(|field| stable_tsv_field(&field)).collect::<Vec<_>>().join("\t")
     }
 }
 
@@ -1088,3 +1135,16 @@ impl fmt::Display for BenchmarkError {
 }
 
 impl StdError for BenchmarkError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_header_matches_columns() {
+        assert_eq!(REPORT_SCHEMA_VERSION, 7);
+        assert_eq!(REPORT_COLUMNS.first(), Some(&"query_id"));
+        assert_eq!(REPORT_COLUMNS.last(), Some(&"credential_source"));
+        assert_eq!(REPORT_COLUMNS.join("\t"), REPORT_HEADER);
+    }
+}

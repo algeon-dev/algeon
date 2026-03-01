@@ -117,17 +117,7 @@ print(json.dumps({
 }
 
 pub(super) fn handle_python_oracle_unavailable(message: impl AsRef<str>) {
-    if python_oracle_required() {
-        panic!("{}", message.as_ref().trim());
-    }
-    eprintln!("{}", message.as_ref().trim());
-}
-
-pub(super) fn python_oracle_required() -> bool {
-    matches!(
-        std::env::var("CUDF_CUGRAPH_ORACLE_REQUIRED").as_deref(),
-        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "required" | "REQUIRED")
-    )
+    crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }
 
 pub(super) fn write_tiny_directed_edges(path: &Path) {

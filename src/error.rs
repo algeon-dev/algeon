@@ -16,6 +16,8 @@ pub use code::{ErrorCode, ErrorKind, ErrorStatus, kind_for_code, status_for_code
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
+const NATIVE_FACT_COLLISION_KEYS: &str = "native_fact_collision_keys";
+
 /// Adapter result type used before conversion to `DataFusionError`.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -28,9 +30,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Empty keys panic, and inserting the same key twice panics. The adapter
 /// uses `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation` for cuDF
 /// source classification. Those keys may come from direct adapter cuDF calls or
-/// from native facts copied unchanged by [`Error::from_native`]. The
+/// from non-colliding native facts copied by [`Error::from_native`]. The
 /// `native_code`, `native_kind`, `native_status`, and `native_operation` keys
-/// describe errors wrapped from `nexus-query-engine`.
+/// describe errors wrapped from `nexus-query-engine`; colliding native facts
+/// are skipped and reported under `native_fact_collision_keys`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
@@ -121,10 +124,10 @@ impl Error {
     /// The adapter maps the native code into the closest [`ErrorCode`] and
     /// preserves the native classification under reserved facts: `native_code`,
     /// `native_kind`, `native_status`, and `native_operation`. Native facts are
-    /// copied unprefixed so existing machine-readable context is not hidden.
-    /// Collisions with already-inserted adapter/native classification keys,
-    /// especially the `native_*` keys, or duplicate native fact keys currently
-    /// panic through [`Facts`] insertion.
+    /// copied unprefixed when they do not collide with adapter facts. If a
+    /// native fact would overwrite an adapter/native classification fact, the
+    /// adapter preserves the existing fact, skips the colliding native fact, and
+    /// records the skipped keys in `native_fact_collision_keys`.
     ///
     /// `operation` should be the stable dotted id for the adapter operation, and
     /// `message` should be human-facing adapter context.
@@ -139,8 +142,16 @@ impl Error {
             .with_fact("native_kind", source.kind())
             .with_fact("native_status", source.status())
             .with_fact("native_operation", source.operation());
+        let mut collision_keys = Vec::new();
         for (key, value) in source.facts().iter() {
+            if key == NATIVE_FACT_COLLISION_KEYS || error.facts.get(key).is_some() {
+                collision_keys.push(key);
+                continue;
+            }
             error.facts.insert(key, value.to_string());
+        }
+        if !collision_keys.is_empty() {
+            error.facts.insert(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));
         }
         error.with_source(source)
     }

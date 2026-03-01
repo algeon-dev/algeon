@@ -28,9 +28,9 @@ use serde_json::Value;
 #[tokio::test]
 async fn cugraph_bfs_reads_generated_graph500_rmat_fixture() {
     let Some(fixture) = Graph500Fixture::discover() else {
-        eprintln!(
-            "skipping Graph500 R-MAT SQL BFS smoke: generate fixture with \
-             `fixture/scripts/run_gen.sh graph500_rmat --scale 12 --edgefactor 16 --overwrite`"
+        crate::cugraph_optional_fixture::handle_cugraph_graph500_rmat_unavailable(
+            "Graph500 R-MAT SQL BFS smoke",
+            "generate fixture with `fixture/scripts/run_gen.sh graph500_rmat --scale 12 --edgefactor 16 --overwrite`",
         );
         return;
     };

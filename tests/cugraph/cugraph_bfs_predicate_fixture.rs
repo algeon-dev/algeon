@@ -1350,15 +1350,5 @@ fn optional_string_max_slowdown() -> Option<f64> {
 }
 
 fn handle_python_oracle_unavailable(message: impl AsRef<str>) {
-    if python_oracle_required() {
-        panic!("{}", message.as_ref().trim());
-    }
-    eprintln!("{}", message.as_ref().trim());
-}
-
-fn python_oracle_required() -> bool {
-    matches!(
-        std::env::var("CUDF_CUGRAPH_ORACLE_REQUIRED").as_deref(),
-        Ok("1" | "true" | "TRUE" | "yes" | "YES" | "required" | "REQUIRED")
-    )
+    crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }

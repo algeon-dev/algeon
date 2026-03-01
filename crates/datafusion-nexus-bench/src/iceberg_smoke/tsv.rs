@@ -74,10 +74,6 @@ pub(crate) fn optional_u128(value: Option<u128>) -> String {
 pub(crate) fn optional_duration_ms_text(value: Option<usize>) -> String {
     value.map_or_else(|| "none".to_string(), |value| format!("{:.3}", value as f64 / 1_000_000.0))
 }
-pub(crate) fn sanitize_nested(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ").replace('|', "/")
-}
-
 pub(crate) fn list_or_none(values: &[String]) -> String {
     if values.is_empty() { "none".to_string() } else { values.join(",") }
 }

@@ -110,9 +110,8 @@ pub(crate) fn optimize_projection_simplification(
         return ProjectionSimplificationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let sink = rewrite::rewrite_sink(plan.sink(), new_root);
     ProjectionSimplificationResult {
-        plan: QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, sink),
+        plan: rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink()),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

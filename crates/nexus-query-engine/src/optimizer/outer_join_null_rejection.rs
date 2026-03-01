@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
 
+use super::rewrite;
 use crate::{
     expr::{ColumnRef, Expr},
     plan::{
@@ -226,9 +227,8 @@ pub(crate) fn optimize_outer_join_null_rejection(
     }
 
     let change = if changed { super::NativeOptimizerChange::Changed } else { super::NativeOptimizerChange::Unchanged };
-    let sink = plan.sink().clone();
     let root = plan.root_id();
-    OuterJoinNullRejectionResult { plan: QueryPlan::from_rewritten_parts(nodes, root, sink), change, diagnostics }
+    OuterJoinNullRejectionResult { plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink()), change, diagnostics }
 }
 
 #[derive(Debug, Clone)]

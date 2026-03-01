@@ -15,7 +15,7 @@ const AUTHORIZATION_HEADER: &str = "authorization";
 const BEARER_PREFIX: &str = "Bearer ";
 
 /// Clone-cheap handle over `(mode, token_store)`. Constructed once at
-/// server start, cloned into the [`crate::server::flight::DatafusionCudfFlightSqlService`].
+/// server start and cloned into the Flight SQL service.
 #[derive(Clone)]
 pub struct AuthInterceptor {
     mode: AuthMode,

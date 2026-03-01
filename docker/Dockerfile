@@ -88,12 +88,16 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 #   NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES
 #   NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 #
-# ── Iceberg / AWS Glue (omit all to disable) ────────────────────────────────
-#   NEXUS_ICEBERG_GLUE_DATABASE         required when any Iceberg var set
-#   NEXUS_ICEBERG_WAREHOUSE             required  (s3://...)
-#   NEXUS_ICEBERG_GLUE_TABLES           required  "alias=db.tbl,tbl2"
-#   NEXUS_ICEBERG_GLUE_CATALOG_NAME     default: glue
-#   NEXUS_ICEBERG_GLUE_CATALOG_ID       optional
+# ── Iceberg catalog (omit all to disable) ───────────────────────────────────
+#   NEXUS_ICEBERG_CATALOG_KIND          rest | glue
+#   NEXUS_ICEBERG_CATALOG_NAME          DataFusion catalog name
+#   NEXUS_ICEBERG_NAMESPACE             namespace / Glue database
+#   NEXUS_ICEBERG_WAREHOUSE             s3:// warehouse root
+#   NEXUS_ICEBERG_TABLES                optional "alias=table,table2"
+#   NEXUS_ICEBERG_GLUE_CATALOG_ID       optional Glue account/catalog ID
+#   NEXUS_ICEBERG_REST_URI              REST catalog URI when kind=rest
+#   NEXUS_ICEBERG_GLUE_URI              Moto/local Glue endpoint when kind=glue
+#   NEXUS_ICEBERG_S3_*                  explicit S3-compatible endpoint/creds
 #   AWS_DEFAULT_REGION                            required (KvikIO S3Endpoint reads ONLY this
 #                                                 variable; AWS_REGION alone is not enough and
 #                                                 will cause silent fallthrough to unsigned S3
@@ -102,9 +106,9 @@ ENV LD_LIBRARY_PATH=/app/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}} \
 #   AWS_PROFILE                                   optional
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN
 #
-# ── DataFusion session (DATAFUSION__ prefix, __ separator) ──────────────────
-#   DATAFUSION__EXECUTION__TARGET_PARTITIONS
-#   DATAFUSION__EXECUTION__BATCH_SIZE
+# ── DataFusion session (single underscores; SessionConfig::from_env) ────────
+#   DATAFUSION_EXECUTION_TARGET_PARTITIONS
+#   DATAFUSION_EXECUTION_BATCH_SIZE
 #
 # ── Pipeline execution mode ──────────────────────────────────────────────────
 #   CUDF_NATIVE_PIPELINE_EXECUTION_MODE           strict_bounded | adaptive

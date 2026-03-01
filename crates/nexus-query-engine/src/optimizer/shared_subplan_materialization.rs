@@ -161,8 +161,7 @@ pub(crate) fn optimize_shared_subplan_materialization(
     let mut diagnostics = scalar_derivation.diagnostics;
     diagnostics.merge(rewriter.diagnostics);
     let changed = rewriter.changed;
-    let new_sink = rewrite::sink_with_input(&sink, new_root);
-    let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
+    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, &sink);
     let change = if changed || scalar_derivation.change.changed() {
         super::NativeOptimizerChange::Changed
     } else {
@@ -193,8 +192,7 @@ fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> SharedSu
     let sink = plan.sink().clone();
     let mut rewriter = ScalarAggregateDerivationRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(root);
-    let new_sink = rewrite::sink_with_input(&sink, new_root);
-    let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, new_sink);
+    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, &sink);
     SharedSubplanMaterializationResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,

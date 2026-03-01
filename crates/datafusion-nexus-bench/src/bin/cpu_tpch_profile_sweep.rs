@@ -18,6 +18,10 @@ use datafusion_nexus_bench::{
     TpchDatasetMetadata, TpchQuery, prepare_tpch_report_dataset,
 };
 
+const TSV_SCHEMA_VERSION: u32 = 1;
+const TSV_COLUMNS: &[&str] =
+    &["query_id", "cpu_wall_ms", "output_batches", "output_rows", "output_bytes", "output_fingerprint", "failure"];
+
 #[tokio::main]
 async fn main() -> DataFusionResult<()> {
     let config = CpuTpchConfig::from_env()?;
@@ -26,7 +30,7 @@ async fn main() -> DataFusionResult<()> {
         .map_err(|error| datafusion::common::DataFusionError::External(Box::new(error)))?;
 
     print_metadata(&metadata, &config);
-    println!("query_id\tcpu_wall_ms\toutput_batches\toutput_rows\toutput_bytes\toutput_fingerprint\tfailure");
+    println!("{}", TSV_COLUMNS.join("\t"));
     for query in config.selected_queries() {
         match run_cpu_query(&metadata, query, &config).await {
             Ok(row) => println!("{}", row.to_tsv(query.id)),
@@ -108,15 +112,17 @@ struct CpuQueryRow {
 
 impl CpuQueryRow {
     fn to_tsv(&self, query_id: &str) -> String {
-        format!(
-            "{}\t{:.3}\t{}\t{}\t{}\t{}\tnone",
-            query_id,
-            self.wall_ms,
-            self.output_batches,
-            self.output_rows,
-            self.output_bytes,
-            stable_tsv_field(&self.output_fingerprint)
-        )
+        let fields = [
+            query_id.to_string(),
+            format!("{:.3}", self.wall_ms),
+            self.output_batches.to_string(),
+            self.output_rows.to_string(),
+            self.output_bytes.to_string(),
+            stable_tsv_field(&self.output_fingerprint),
+            "none".to_string(),
+        ];
+        debug_assert_eq!(fields.len(), TSV_COLUMNS.len());
+        fields.join("\t")
     }
 }
 
@@ -159,7 +165,7 @@ async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> DataFusionRe
 }
 
 fn print_metadata(metadata: &TpchDatasetMetadata, config: &CpuTpchConfig) {
-    println!("# cpu_tpch_profile_sweep_tsv_schema_version=1");
+    println!("# cpu_tpch_profile_sweep_tsv_schema_version={TSV_SCHEMA_VERSION}");
     println!("# tpch_dataset_root={}", metadata.root.display());
     println!("# tpch_dataset_scale_factor={}", metadata.scale_factor);
     println!("# tpch_dataset_provenance={}", metadata.provenance);
@@ -301,4 +307,24 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("{prefix}-{id}"));
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_profile_tsv_row_contract_matches_columns() {
+        let row = CpuQueryRow {
+            wall_ms: 1.25,
+            output_batches: 2,
+            output_rows: 3,
+            output_bytes: 4,
+            output_fingerprint: "finger\tprint".to_string(),
+        };
+        assert_eq!(TSV_SCHEMA_VERSION, 1);
+        assert_eq!(TSV_COLUMNS.first(), Some(&"query_id"));
+        assert_eq!(TSV_COLUMNS.last(), Some(&"failure"));
+        assert_eq!(row.to_tsv("q01").split('\t').count(), TSV_COLUMNS.len());
+    }
 }

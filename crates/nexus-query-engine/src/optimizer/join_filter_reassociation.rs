@@ -136,10 +136,8 @@ pub(crate) fn optimize_join_filter_reassociation(
         let diagnostics = rewriter.diagnostics;
         return JoinFilterReassociationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
-    let (nodes, new_root) = rewrite::compact_reachable_rewritten_nodes(rewriter.nodes, new_root);
-    let sink = rewrite::rewrite_sink(plan.sink(), new_root);
     JoinFilterReassociationResult {
-        plan: QueryPlan::from_rewritten_parts(nodes, new_root, sink),
+        plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink()),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

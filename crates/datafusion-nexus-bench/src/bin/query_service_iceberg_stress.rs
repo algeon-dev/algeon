@@ -23,6 +23,29 @@ use nexus_query_engine::{QueryError, QueryService, QueryServiceConfig, QueryServ
 use tokio::sync::Barrier;
 
 const TSV_SCHEMA_VERSION: u32 = 1;
+const TSV_COLUMNS: &[&str] = &[
+    "row_type",
+    "request_index",
+    "tenant_id",
+    "iteration",
+    "admission_sequence",
+    "admission_wait_ms",
+    "total_wall_ms",
+    "native_wall_ms",
+    "planning_outcome",
+    "post_native_execution_path",
+    "native_runtime_outcome",
+    "count_status",
+    "expected_count",
+    "native_count",
+    "native_output_rows",
+    "error_code",
+    "error_kind",
+    "error_status",
+    "error_operation",
+    "error_facts",
+    "error_message",
+];
 const AWS_REGION_ENV: &str = "AWS_REGION";
 const AWS_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
 const NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
@@ -224,7 +247,8 @@ impl StressReport {
                 format_ms(summary.p95_total_wall_ms),
             ));
         }
-        output.push_str("row_type\trequest_index\ttenant_id\titeration\tadmission_sequence\tadmission_wait_ms\ttotal_wall_ms\tnative_wall_ms\tplanning_outcome\tpost_native_execution_path\tnative_runtime_outcome\tcount_status\texpected_count\tnative_count\tnative_output_rows\terror_code\terror_kind\terror_status\terror_operation\terror_facts\terror_message\n");
+        output.push_str(&TSV_COLUMNS.join("\t"));
+        output.push('\n');
         for row in &self.rows {
             output.push_str(&row.to_tsv_line());
             output.push('\n');
@@ -235,7 +259,7 @@ impl StressReport {
 
 impl StressRow {
     fn to_tsv_line(&self) -> String {
-        [
+        let fields = [
             self.row_type.to_string(),
             self.request_index.to_string(),
             self.tenant_id.clone(),
@@ -257,11 +281,9 @@ impl StressRow {
             self.error.operation.clone().unwrap_or_else(|| "none".to_string()),
             format_facts(&self.error.facts),
             self.error.message.clone().unwrap_or_else(|| "none".to_string()),
-        ]
-        .into_iter()
-        .map(|field| tsv_escape(&field))
-        .collect::<Vec<_>>()
-        .join("\t")
+        ];
+        debug_assert_eq!(fields.len(), TSV_COLUMNS.len());
+        fields.into_iter().map(|field| tsv_escape(&field)).collect::<Vec<_>>().join("\t")
     }
 }
 
@@ -806,5 +828,31 @@ mod tests {
             std::env::remove_var(TENANTS_ENV);
         }
         assert!(error.to_string().contains("duplicate tenant id"));
+    }
+
+    #[test]
+    fn stress_tsv_row_contract_matches_columns() {
+        assert_eq!(TSV_SCHEMA_VERSION, 1);
+        assert_eq!(TSV_COLUMNS.first(), Some(&"row_type"));
+        assert_eq!(TSV_COLUMNS.last(), Some(&"error_message"));
+        let row = StressRow {
+            row_type: "query",
+            request_index: 1,
+            tenant_id: "interactive".to_string(),
+            iteration: 1,
+            admission_sequence: Some(1),
+            admission_wait_ms: Some(0.0),
+            total_wall_ms: 10.0,
+            native_wall_ms: Some(5.0),
+            planning_outcome: "accepted_replaced".to_string(),
+            post_native_execution_path: "native".to_string(),
+            native_runtime_outcome: "succeeded",
+            count_status: "matched",
+            expected_count: Some(1),
+            native_count: Some(1),
+            native_output_rows: Some(1),
+            error: StructuredFailure::default(),
+        };
+        assert_eq!(row.to_tsv_line().split('\t').count(), TSV_COLUMNS.len());
     }
 }

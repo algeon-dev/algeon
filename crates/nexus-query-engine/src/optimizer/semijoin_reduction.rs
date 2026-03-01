@@ -276,8 +276,7 @@ pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionO
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let sink = rewrite::sink_with_input(plan.sink(), new_root);
-    let rewritten_plan = QueryPlan::from_rewritten_parts(rewriter.nodes, new_root, sink);
+    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink());
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
         reject_applied_candidates(&mut diagnostics, reason, None, None, None);
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };

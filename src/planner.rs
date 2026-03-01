@@ -8,29 +8,13 @@
 //! error. Once a native execution node starts running, CPU fallback is no
 //! longer attempted.
 
-use std::{
-    collections::BTreeSet,
-    fmt,
-    sync::{Arc, Mutex},
-};
-
-use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult, config::ConfigOptions},
-    physical_optimizer::PhysicalOptimizerRule,
-    physical_plan::{
-        ExecutionPlan, aggregates::AggregateExec, filter::FilterExec, limit::LocalLimitExec,
-        projection::ProjectionExec, sorts::sort::SortExec,
-    },
-};
+use std::fmt;
 
 use crate::{
     error::{Error, ErrorCode},
-    native_exec::{
-        NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig, gpu_resident_producer_input_name,
-    },
+    native_exec::NativeCudfExecutionConfig,
     policy::{FallbackReason, GpuFallbackPolicy},
-    report::{CandidateOutcome, GpuCandidate, PlanningReport},
-    session::{CUDF_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME},
+    report::GpuCandidate,
 };
 
 mod leaf_guard;

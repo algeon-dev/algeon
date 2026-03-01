@@ -24,6 +24,34 @@ use datafusion_nexus_bench::{
 };
 
 const SCHEMA_VERSION: u32 = 1;
+const TSV_COLUMNS: &[&str] = &[
+    "query_id",
+    "parity_status",
+    "speedup_vs_cpu",
+    "native_rewritten",
+    "cpu_outcome",
+    "cpu_iteration_failures",
+    "cpu_wall_ms_mean",
+    "cpu_wall_ms_min",
+    "cpu_wall_ms_median",
+    "cpu_wall_ms_max",
+    "cpu_output_batches",
+    "cpu_output_rows",
+    "cpu_output_bytes",
+    "cpu_output_fingerprint",
+    "cpu_failure",
+    "native_outcome",
+    "native_iteration_failures",
+    "native_wall_ms_mean",
+    "native_wall_ms_min",
+    "native_wall_ms_median",
+    "native_wall_ms_max",
+    "native_output_batches",
+    "native_output_rows",
+    "native_output_bytes",
+    "native_output_fingerprint",
+    "native_failure",
+];
 
 /// Queries where byte-for-byte content fingerprint parity is waived for the
 /// ClickBench benchmark, with the reason kept explicit. The benchmark compares
@@ -803,15 +831,7 @@ impl BenchmarkReport {
             writeln!(output, "# clickbench_benchmark_dump_rows_dir={}", dir.display()).unwrap();
         }
         writeln!(output, "# clickbench_benchmark_iteration_failure_policy=any_failed_iteration_fails_row").unwrap();
-        writeln!(
-            output,
-            "query_id\tparity_status\tspeedup_vs_cpu\tnative_rewritten\
-             \tcpu_outcome\tcpu_iteration_failures\tcpu_wall_ms_mean\tcpu_wall_ms_min\tcpu_wall_ms_median\tcpu_wall_ms_max\
-             \tcpu_output_batches\tcpu_output_rows\tcpu_output_bytes\tcpu_output_fingerprint\tcpu_failure\
-             \tnative_outcome\tnative_iteration_failures\tnative_wall_ms_mean\tnative_wall_ms_min\tnative_wall_ms_median\tnative_wall_ms_max\
-             \tnative_output_batches\tnative_output_rows\tnative_output_bytes\tnative_output_fingerprint\tnative_failure"
-        )
-        .unwrap();
+        writeln!(output, "{}", TSV_COLUMNS.join("\t")).unwrap();
         for row in &self.rows {
             writeln!(output, "{}", row.to_tsv_line()).unwrap();
         }
@@ -821,7 +841,7 @@ impl BenchmarkReport {
 
 impl BenchmarkRow {
     fn to_tsv_line(&self) -> String {
-        let mut fields: Vec<String> = Vec::with_capacity(24);
+        let mut fields: Vec<String> = Vec::with_capacity(TSV_COLUMNS.len());
         fields.push(self.query_id.clone());
         fields.push(self.parity_status.as_str().to_string());
         fields.push(format_opt_f64(self.speedup_vs_cpu()));
@@ -833,6 +853,7 @@ impl BenchmarkRow {
         fields.push(native_rewritten_label.to_string());
         push_engine_columns(&mut fields, self.cpu.as_ref());
         push_engine_columns(&mut fields, self.native.as_ref());
+        debug_assert_eq!(fields.len(), TSV_COLUMNS.len());
         fields.join("\t")
     }
 }
@@ -964,6 +985,9 @@ mod tests {
     fn tsv_header_exposes_backward_compatible_list_and_reason_metadata() {
         let report = BenchmarkReport { config: test_config(), metadata: test_metadata(), rows: Vec::new() };
         let tsv = report.to_tsv();
+        assert_eq!(TSV_COLUMNS.first(), Some(&"query_id"));
+        assert_eq!(TSV_COLUMNS.last(), Some(&"native_failure"));
+        assert_eq!(TSV_COLUMNS.join("\t"), tsv.lines().find(|line| !line.starts_with('#')).unwrap());
         assert!(
             tsv.contains(
                 "# clickbench_benchmark_nondeterministic_queries=q04,q18,q25,q26,q31,q32,q33,q39,q40,q41,q42\n"

@@ -129,6 +129,8 @@ mod pipeline_compiler;
 mod plan_contracts;
 #[path = "native_contract_tests/preference_contracts.rs"]
 mod preference_contracts;
+#[path = "native_contract_tests/public_facade.rs"]
+mod public_facade;
 #[path = "native_contract_tests/reservation_tracker_contracts.rs"]
 mod reservation_tracker_contracts;
 #[path = "native_contract_tests/source_contracts.rs"]

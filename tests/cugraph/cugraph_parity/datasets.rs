@@ -68,6 +68,20 @@ pub fn load_and_verify() -> Result<LoadedDatasets, LoadAndVerifyError> {
     Ok(LoadedDatasets { data_root: root, manifest })
 }
 
+pub fn load_and_verify_optional() -> Option<LoadedDatasets> {
+    match load_and_verify() {
+        Ok(loaded) => Some(loaded),
+        Err(error @ LoadAndVerifyError::Manifest(ParityManifestError::MissingManifest { .. })) => {
+            crate::cugraph_optional_fixture::handle_cugraph_fixture_unavailable(
+                "cuGraph parity fixture",
+                format!("{error}. Run `fixture/scripts/run_gen.sh cugraph` to populate local data"),
+            );
+            None
+        },
+        Err(error) => panic!("cuGraph parity fixture is present but invalid: {error}"),
+    }
+}
+
 fn verify_dataset_checksums(data_root: &Path, manifest: &ParityManifest) -> Result<(), LoadAndVerifyError> {
     for dataset in &manifest.datasets {
         verify_one_checksum(data_root, &dataset.id, &dataset.path, &dataset.sha256)?;

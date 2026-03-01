@@ -38,6 +38,7 @@ use datafusion_nexus_bench::{
 const DEFAULT_QUERY_IDS: &[&str] =
     &["q03", "q07", "q22", "q26", "q32", "q37", "q42", "q52", "q55", "q62", "q82", "q85", "q92", "q93", "q97"];
 
+const TSV_SCHEMA_VERSION: u32 = 1;
 const TSV_HEADER: &str = concat!(
     "engine\tquery_id\titeration\twarmup\twall_ms\toutcome\tplanning_outcome\toutput_batches\toutput_rows\toutput_bytes",
     "\treservation_live_peak_bytes\treservation_denied_count\tretry_count\tnative_runtime_started\tfailure",
@@ -69,6 +70,96 @@ const TSV_HEADER: &str = concat!(
     "\taggregate_strategy_rows\tjoin_strategy_rows\ttask_operator_rows\ttask_runtime_rows",
     "\tstatistical_aggregate_execution_mode\tstatistical_aggregate_tolerance_contract",
 );
+const TSV_COLUMNS: &[&str] = &[
+    "engine",
+    "query_id",
+    "iteration",
+    "warmup",
+    "wall_ms",
+    "outcome",
+    "planning_outcome",
+    "output_batches",
+    "output_rows",
+    "output_bytes",
+    "reservation_live_peak_bytes",
+    "reservation_denied_count",
+    "retry_count",
+    "native_runtime_started",
+    "failure",
+    "parquet_read_time_ms",
+    "source_read_time_ms",
+    "source_read_queue_wait_time_ms",
+    "source_cache_lookup_time_ms",
+    "host_fetch_budget_wait_time_ms",
+    "source_fetch_concurrency_wait_time_ms",
+    "source_fetch_time_ms",
+    "source_decode_time_ms",
+    "operator_time_ms",
+    "chunk_operator_time_ms",
+    "final_merge_time_ms",
+    "final_sort_time_ms",
+    "materialization_time_ms",
+    "aggregate_libcudf_runtime_probe_count",
+    "aggregate_libcudf_runtime_probe_elapsed_ns",
+    "aggregate_libcudf_runtime_probe_input_rows",
+    "aggregate_exact_cardinality_probe_count",
+    "aggregate_exact_cardinality_probe_elapsed_ns",
+    "aggregate_exact_cardinality_probe_input_rows",
+    "aggregate_prepared_sort_groupby_elapsed_ns",
+    "aggregate_encoded_key_partial_elapsed_ns",
+    "runtime_operator_class",
+    "runtime_operator_class_ms",
+    "peak_memory_operator_class",
+    "peak_memory_operator_class_bytes",
+    "task_reservation_operator_class",
+    "task_reservation_operator_class_bytes",
+    "source_chunks_planned",
+    "source_chunks_attempted",
+    "source_chunks_committed",
+    "source_chunks_retried",
+    "source_read_prefetches_started",
+    "source_read_prefetches_completed",
+    "source_read_prefetches_skipped",
+    "source_read_prefetches_abandoned",
+    "source_cache_hits",
+    "source_cache_misses",
+    "source_cache_inserts",
+    "source_cache_insert_skipped",
+    "source_cache_retained_bytes",
+    "source_fetch_bytes",
+    "source_fetch_count",
+    "row_groups_planned",
+    "row_groups_committed",
+    "hash_join_build_count",
+    "filtered_join_build_count",
+    "one_shot_join_count",
+    "partitioned_join_count",
+    "join_partitioning_status",
+    "dynamic_filter_produced_count",
+    "dynamic_filter_skipped_count",
+    "dynamic_filter_applied_count",
+    "dynamic_filter_row_groups_pruned",
+    "dynamic_filter_source_bytes_pruned",
+    "dynamic_filter_reader_predicate_rows_before",
+    "dynamic_filter_reader_predicate_rows_after",
+    "dynamic_filter_reader_predicate_rows_filtered",
+    "dynamic_filter_post_decode_rows_before",
+    "dynamic_filter_post_decode_rows_after",
+    "dynamic_filter_post_decode_rows_filtered",
+    "dynamic_filter_source_post_decode_rows_filtered",
+    "dynamic_filter_filter_post_decode_rows_filtered",
+    "dynamic_filter_join_probe_post_decode_rows_filtered",
+    "dynamic_filter_post_decode_reduction_stage",
+    "dynamic_filter_measured_reduction_status",
+    "dynamic_filter_work_avoidance_status",
+    "dynamic_filter_runtime_rows",
+    "aggregate_strategy_rows",
+    "join_strategy_rows",
+    "task_operator_rows",
+    "task_runtime_rows",
+    "statistical_aggregate_execution_mode",
+    "statistical_aggregate_tolerance_contract",
+];
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -174,7 +265,7 @@ impl BenchConfig {
 }
 
 fn print_metadata(cfg: &BenchConfig) {
-    println!("# tpcds_three_way_bench_tsv_schema_version=1");
+    println!("# tpcds_three_way_bench_tsv_schema_version={TSV_SCHEMA_VERSION}");
     println!("# tpcds_benchmark_engine={}", cfg.engine.as_str());
     println!("# tpcds_benchmark_root={}", cfg.root.display());
     println!("# tpcds_benchmark_query_ids={}", cfg.queries.iter().map(|q| q.id).collect::<Vec<_>>().join(","));
@@ -627,7 +718,7 @@ fn row_fields(
 ) -> Vec<String> {
     let p1 = P1BottleneckSummary::from_outcome(outcome);
     let metrics = outcome.native_metrics.as_ref();
-    vec![
+    let fields = vec![
         engine.as_str().to_string(),
         query.id.to_string(),
         iteration.to_string(),
@@ -725,7 +816,9 @@ fn row_fields(
         metrics.map_or_else(|| "not_run".to_string(), format_task_runtime_rows),
         statistical_aggregate_execution_mode_for_row(engine),
         statistical_aggregate_tolerance_contract_for_row(engine),
-    ]
+    ];
+    debug_assert_eq!(fields.len(), TSV_COLUMNS.len());
+    fields
 }
 
 fn statistical_aggregate_execution_mode_for_row(engine: Engine) -> String {
@@ -1048,48 +1141,25 @@ fn join_partitioning_status(metrics: &NativeDataFusionExecutionMetrics) -> Strin
 }
 
 fn format_join_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    if metrics.join_strategy_rows.is_empty() {
-        return "none".to_string();
-    }
-    let mut rows = metrics.join_strategy_rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_join_strategy_metric_rows(&metrics.join_strategy_rows)
 }
 
 fn format_aggregate_strategy_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    if metrics.aggregate_strategy_rows.is_empty() {
-        return "none".to_string();
-    }
-    let mut rows = metrics.aggregate_strategy_rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_aggregate_strategy_metric_rows(&metrics.aggregate_strategy_rows)
 }
 
 fn format_dynamic_filter_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    if metrics.dynamic_filter_runtime_rows.is_empty() {
-        return "none".to_string();
-    }
-    let mut rows = metrics.dynamic_filter_runtime_rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_dynamic_filter_runtime_metric_rows(
+        &metrics.dynamic_filter_runtime_rows,
+    )
 }
 
 fn format_task_operator_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    if metrics.task_operator_rows.is_empty() {
-        return "none".to_string();
-    }
-    let mut rows = metrics.task_operator_rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_task_operator_metric_rows(&metrics.task_operator_rows)
 }
 
 fn format_task_runtime_rows(metrics: &NativeDataFusionExecutionMetrics) -> String {
-    if metrics.task_runtime_rows.is_empty() {
-        return "none".to_string();
-    }
-    let mut rows = metrics.task_runtime_rows.iter().collect::<Vec<_>>();
-    rows.sort_by_key(|row| row.to_stable_kv_row());
-    rows.iter().map(|row| sanitize_nested(&row.to_stable_kv_row())).collect::<Vec<_>>().join("|")
+    datafusion_nexus::native_report::format_native_task_runtime_metric_rows(&metrics.task_runtime_rows)
 }
 
 fn metric_field(
@@ -1101,10 +1171,6 @@ fn metric_field(
 
 fn optional_f64_text(value: Option<f64>) -> String {
     value.map_or_else(|| "not_run".to_string(), |value| format!("{value:.3}"))
-}
-
-fn sanitize_nested(s: &str) -> String {
-    s.replace(['\t', '\n', '\r'], " ").replace('|', "/")
 }
 
 fn max_optional_usize(left: Option<usize>, right: Option<usize>) -> Option<usize> {
@@ -1139,6 +1205,8 @@ mod tests {
         };
         let p1 = P1BottleneckSummary::from_outcome(&outcome);
         assert_eq!(p1.runtime_operator_class, "not_run");
+        assert_eq!(TSV_SCHEMA_VERSION, 1);
+        assert_eq!(TSV_COLUMNS.join("\t"), TSV_HEADER);
         assert_eq!(TSV_HEADER.split('\t').count(), row_fields(query, 0, false, &outcome, Engine::CpuDataFusion).len());
     }
 
