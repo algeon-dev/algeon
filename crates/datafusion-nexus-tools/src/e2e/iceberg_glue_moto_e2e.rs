@@ -2,7 +2,7 @@
 //!
 //! This exercises the real `GlueIcebergCatalogBackend` without requiring
 //! a developer-owned AWS Glue catalog. Bring up `fixture/iceberg-local` first,
-//! then run with `CUDF_ICEBERG_GLUE_LOCAL_E2E=1`.
+//! then run with `NEXUS_ICEBERG_GLUE_LOCAL_E2E=1`.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -33,23 +33,21 @@ pub async fn run() -> E2eResult<()> {
 }
 
 fn require_local_glue_enabled() -> E2eResult<()> {
-    match std::env::var("CUDF_ICEBERG_GLUE_LOCAL_E2E").as_deref() {
+    match std::env::var("NEXUS_ICEBERG_GLUE_LOCAL_E2E").as_deref() {
         Ok("1") => Ok(()),
         _ => {
-            Err("local Glue E2E requires CUDF_ICEBERG_GLUE_LOCAL_E2E=1 and fixture/iceberg-local Moto + RustFS".into())
+            Err("local Glue E2E requires NEXUS_ICEBERG_GLUE_LOCAL_E2E=1 and fixture/iceberg-local Moto + RustFS".into())
         },
     }
 }
 
 fn local_glue_config() -> GlueIcebergCatalogConfig {
-    let glue_uri =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_URI").unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let glue_uri = std::env::var("NEXUS_ICEBERG_GLUE_URI").unwrap_or_else(|_| "http://localhost:5001".to_string());
     let warehouse = local_warehouse();
     let s3_endpoint =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
-    let s3_region = std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
-    let path_style =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE").map(|value| value == "true").unwrap_or(true);
+        std::env::var("NEXUS_ICEBERG_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
+    let s3_region = std::env::var("NEXUS_ICEBERG_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let path_style = std::env::var("NEXUS_ICEBERG_S3_PATH_STYLE").map(|value| value == "true").unwrap_or(true);
 
     GlueIcebergCatalogConfig::new("glue", warehouse, "us-east-1")
         .with_uri(glue_uri)
@@ -59,14 +57,13 @@ fn local_glue_config() -> GlueIcebergCatalogConfig {
 }
 
 fn require_local_endpoint_env() -> E2eResult<()> {
-    let glue_uri =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_GLUE_URI").unwrap_or_else(|_| "http://localhost:5001".to_string());
+    let glue_uri = std::env::var("NEXUS_ICEBERG_GLUE_URI").unwrap_or_else(|_| "http://localhost:5001".to_string());
     let s3_endpoint =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
+        std::env::var("NEXUS_ICEBERG_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".to_string());
     let warehouse = local_warehouse();
-    require_loopback_http_url("DATAFUSION_NEXUS_ICEBERG_GLUE_URI", &glue_uri)?;
-    require_loopback_http_url("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT", &s3_endpoint)?;
-    require_s3_warehouse("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE", &warehouse)?;
+    require_loopback_http_url("NEXUS_ICEBERG_GLUE_URI", &glue_uri)?;
+    require_loopback_http_url("NEXUS_ICEBERG_S3_ENDPOINT", &s3_endpoint)?;
+    require_s3_warehouse("NEXUS_ICEBERG_WAREHOUSE", &warehouse)?;
     Ok(())
 }
 
@@ -99,15 +96,15 @@ fn require_s3_warehouse(name: &str, value: &str) -> E2eResult<()> {
 }
 
 fn local_warehouse() -> String {
-    std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string())
+    std::env::var("NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string())
 }
 
 fn local_env(name: &str) -> Option<String> {
     match name {
         datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV => Some(moto_access_key()),
         datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some(moto_secret_key()),
-        datafusion_nexus::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some(local_s3_access_key()),
-        datafusion_nexus::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some(local_s3_secret_key()),
+        datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some(local_s3_access_key()),
+        datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some(local_s3_secret_key()),
         _ => None,
     }
 }
@@ -121,12 +118,12 @@ fn moto_secret_key() -> String {
 }
 
 fn local_s3_access_key() -> String {
-    std::env::var(datafusion_nexus::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)
+    std::env::var(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)
         .unwrap_or_else(|_| "cudfadmin".to_string())
 }
 
 fn local_s3_secret_key() -> String {
-    std::env::var(datafusion_nexus::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
+    std::env::var(datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)
         .unwrap_or_else(|_| "cudfadminsecret".to_string())
 }
 

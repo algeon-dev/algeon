@@ -34,15 +34,15 @@ pub use crate::table_format::iceberg::{
 const LOAD_GLUE_TABLE_OPERATION: &str = "datafusion_nexus.iceberg.load_glue_table";
 
 /// Glue catalog name used when constructing an Iceberg catalog from env.
-pub const CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "CUDF_ICEBERG_GLUE_CATALOG_NAME";
+pub const NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_NAME";
 /// Glue database name used by env-driven Iceberg helpers.
-pub const CUDF_ICEBERG_GLUE_DATABASE_ENV: &str = "CUDF_ICEBERG_GLUE_DATABASE";
+pub const NEXUS_ICEBERG_GLUE_DATABASE_ENV: &str = "NEXUS_ICEBERG_GLUE_DATABASE";
 /// Glue table name used by env-driven Iceberg helpers.
-pub const CUDF_ICEBERG_GLUE_TABLE_ENV: &str = "CUDF_ICEBERG_GLUE_TABLE";
+pub const NEXUS_ICEBERG_GLUE_TABLE_ENV: &str = "NEXUS_ICEBERG_GLUE_TABLE";
 /// Iceberg warehouse URI, typically an `s3://...` root.
-pub const CUDF_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "CUDF_ICEBERG_GLUE_WAREHOUSE";
+pub const NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_GLUE_WAREHOUSE";
 /// Optional Glue catalog id for cross-account catalog targeting.
-pub const CUDF_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "CUDF_ICEBERG_GLUE_CATALOG_ID";
+pub const NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV: &str = "NEXUS_ICEBERG_GLUE_CATALOG_ID";
 
 /// Optional AWS profile name. Non-secret; preferred over raw env credentials.
 pub const AWS_PROFILE_ENV: &str = "AWS_PROFILE";
@@ -64,20 +64,20 @@ pub const AWS_SECURITY_TOKEN_ENV: &str = "AWS_SECURITY_TOKEN";
 /// Deliberately distinct from `AWS_ACCESS_KEY_ID` so a local REST/RustFS stack
 /// never silently picks up a developer's real AWS credentials. Consumed at
 /// connect time and never retained in diagnostics.
-pub const CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID";
+pub const NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV: &str = "NEXUS_ICEBERG_S3_ACCESS_KEY_ID";
 /// Explicit S3 secret access key for the REST FileIO path. Secret; consumed at
 /// connect time and never retained in diagnostics. See
-/// [`CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV`] for why this is not `AWS_*`.
-pub const CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY";
+/// [`NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV`] for why this is not `AWS_*`.
+pub const NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV: &str = "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY";
 /// Optional explicit S3 session token for the REST FileIO path. Secret;
 /// consumed at connect time and never retained in diagnostics.
-pub const CUDF_ICEBERG_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN";
+pub const NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV: &str = "NEXUS_ICEBERG_S3_SESSION_TOKEN";
 /// Optional S3-compatible endpoint for Glue/REST FileIO.
-pub const CUDF_ICEBERG_S3_ENDPOINT_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT";
+pub const NEXUS_ICEBERG_S3_ENDPOINT_ENV: &str = "NEXUS_ICEBERG_S3_ENDPOINT";
 /// Optional S3 region for Glue/REST FileIO.
-pub const CUDF_ICEBERG_S3_REGION_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_REGION";
+pub const NEXUS_ICEBERG_S3_REGION_ENV: &str = "NEXUS_ICEBERG_S3_REGION";
 /// Optional S3 path-style flag for Glue/REST FileIO.
-pub const CUDF_ICEBERG_S3_PATH_STYLE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE";
+pub const NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str = "NEXUS_ICEBERG_S3_PATH_STYLE";
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.
@@ -442,14 +442,14 @@ async fn load_glue_table_with_env(
         props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
     }
     if let (Some(access_key_id), Some(secret_access_key)) =
-        (non_empty(get(CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)), non_empty(get(CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)))
+        (non_empty(get(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)), non_empty(get(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)))
     {
         props.insert(S3_ACCESS_KEY_ID.to_string(), access_key_id);
         props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret_access_key);
         props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
         props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
     }
-    if let Some(session_token) = non_empty(get(CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+    if let Some(session_token) = non_empty(get(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
         props.insert(S3_SESSION_TOKEN.to_string(), session_token);
     }
 

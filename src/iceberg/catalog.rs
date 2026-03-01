@@ -564,9 +564,9 @@ impl GlueIcebergCatalogConfig {
         }
 
         let explicit_s3_credentials = (
-            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
-            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)),
+            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)),
         );
         let aws_credentials = (
             super::non_empty(get(crate::iceberg::AWS_ACCESS_KEY_ID_ENV)),
@@ -580,11 +580,11 @@ impl GlueIcebergCatalogConfig {
         } else if has_s3_endpoint {
             // Local/S3-compatible endpoints must not silently reuse a
             // developer's ambient AWS credentials. Operators that need signed
-            // requests for such endpoints should set DATAFUSION_NEXUS_ICEBERG_S3_*.
+            // requests for such endpoints should set NEXUS_ICEBERG_S3_*.
             s3 = s3.with_unsigned_requests();
         } else if let (Some(access_key_id), Some(secret_access_key), session_token) = aws_credentials {
             // Preserve the existing real-AWS behavior while still allowing
-            // local S3-compatible tests to override with DATAFUSION_NEXUS_ICEBERG_S3_*.
+            // local S3-compatible tests to override with NEXUS_ICEBERG_S3_*.
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
         }
         SourceStorageProfile::s3(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, s3)
@@ -640,15 +640,15 @@ fn glue_catalog_props(
     }
 
     if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
     ) {
         props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
         props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
         props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
         props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
     }
-    if let Some(token) = super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+    if let Some(token) = super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
         props.insert(S3_SESSION_TOKEN.to_string(), token);
     }
 
@@ -796,7 +796,7 @@ impl IcebergCatalogBackend for GlueIcebergCatalogBackend {
 /// Unlike the Glue backend, REST has **no default storage factory**, so the
 /// backend constructed from this config always injects an S3 `OpenDalStorage`
 /// factory. The static S3 credentials are read at connect time from explicit
-/// `DATAFUSION_NEXUS_ICEBERG_S3_*` environment variables (never the ambient
+/// `NEXUS_ICEBERG_S3_*` environment variables (never the ambient
 /// `AWS_*` chain) and are not retained in this struct.
 #[derive(Clone, PartialEq, Eq)]
 pub struct RestIcebergCatalogConfig {
@@ -925,7 +925,7 @@ impl RestIcebergCatalogConfig {
     }
 
     /// Builds the native source storage profile for this REST catalog using the
-    /// explicit `DATAFUSION_NEXUS_ICEBERG_S3_*` credential environment.
+    /// explicit `NEXUS_ICEBERG_S3_*` credential environment.
     pub fn source_storage_profile_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> SourceStorageProfile {
         let mut s3 = S3SourceStorageProfile::default_chain();
         let has_s3_endpoint = self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty());
@@ -939,10 +939,10 @@ impl RestIcebergCatalogConfig {
             s3 = s3.with_path_style_access(path_style);
         }
         if let (Some(access_key_id), Some(secret_access_key)) = (
-            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-            super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+            super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
         ) {
-            let session_token = super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV));
+            let session_token = super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV));
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
         } else if has_s3_endpoint {
             s3 = s3.with_unsigned_requests();
@@ -962,10 +962,10 @@ impl RestIcebergCatalogConfig {
 ///
 /// Non-empty `s3.access-key-id` and `s3.secret-access-key` are inserted only
 /// when both are present; a session token is inserted from
-/// [`crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV`] when present. Empty
+/// [`crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV`] when present. Empty
 /// optional values are omitted rather than inserted as empty strings.
 ///
-/// S3 credentials come ONLY from the explicit `DATAFUSION_NEXUS_ICEBERG_S3_*`
+/// S3 credentials come ONLY from the explicit `NEXUS_ICEBERG_S3_*`
 /// environment variables read here. To enforce that, the prop map always sets
 /// `s3.disable-config-load=true` and `s3.disable-ec2-metadata=true`, which turn
 /// off OpenDAL's ambient credential discovery (the `AWS_*` environment chain,
@@ -1002,13 +1002,13 @@ fn rest_catalog_props(
         props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
     }
     if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
+        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
+        super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
     ) {
         props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
         props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
     }
-    if let Some(token) = super::non_empty(get(crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+    if let Some(token) = super::non_empty(get(crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
         props.insert(S3_SESSION_TOKEN.to_string(), token);
     }
     props
@@ -1217,9 +1217,9 @@ mod rest_tests {
     fn rest_props_resolve_static_s3_credentials_from_env() {
         let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
         let env = |name: &str| match name {
-            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
             _ => None,
         };
         let props = rest_catalog_props(&config, env);
@@ -1233,7 +1233,7 @@ mod rest_tests {
         // Only an access key, no secret: neither should be inserted.
         let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
         let env = |name: &str| match name {
-            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
             _ => None,
         };
         let props = rest_catalog_props(&config, env);
@@ -1334,9 +1334,9 @@ mod rest_tests {
             .with_s3_region("us-east-1")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("AKIA_LOCAL".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rest-secret".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
             _ => None,
         };
 
@@ -1438,9 +1438,9 @@ mod rest_tests {
         let env = |name: &str| match name {
             crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("moto-access".to_string()),
             crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("moto-secret".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
             _ => None,
         };
 
@@ -1466,9 +1466,9 @@ mod rest_tests {
             .with_s3_region("us-west-2")
             .with_s3_path_style_access(true);
         let env = |name: &str| match name {
-            crate::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
-            crate::iceberg::CUDF_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("rustfs-access".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("rustfs-secret".to_string()),
+            crate::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
             crate::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-ignored".to_string()),
             crate::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-ignored".to_string()),
             _ => None,
@@ -1501,7 +1501,6 @@ mod rest_tests {
     fn glue_parquet_strategy_config_uses_injected_server_strategy() {
         let injected = TableFormatParquetReadStrategyConfig {
             preference: crate::TableFormatParquetReadStrategyPreference::RemoteKvikio,
-            remote_kvikio_experimental: true,
             lakehouse_cache_root: Some(std::path::PathBuf::from("/tmp/glue-cache")),
             lakehouse_cache_policy: crate::TableFormatLakehouseCachePolicy::ReadThrough,
             lakehouse_cache_max_bytes: Some(2048),
@@ -1514,7 +1513,6 @@ mod rest_tests {
         let strategy = config.parquet_read_strategy_config_from(injected);
 
         assert_eq!(strategy.preference, crate::TableFormatParquetReadStrategyPreference::RemoteKvikio);
-        assert!(strategy.remote_kvikio_experimental);
         assert_eq!(strategy.lakehouse_cache_root, Some(std::path::PathBuf::from("/tmp/glue-cache")));
         assert_eq!(strategy.lakehouse_cache_policy, crate::TableFormatLakehouseCachePolicy::ReadThrough);
         assert_eq!(strategy.lakehouse_cache_max_bytes, Some(2048));

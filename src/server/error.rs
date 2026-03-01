@@ -5,8 +5,11 @@ use tonic::{Status, metadata::MetadataValue};
 
 use crate::{Error, ErrorCode, ErrorKind};
 
+/// Flight SQL response metadata key containing the stable adapter error code.
 pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
+/// Flight SQL response metadata key containing the stable adapter error kind.
 pub const ERROR_KIND_METADATA_KEY: &str = "x-datafusion-nexus-error-kind";
+/// Flight SQL response metadata key containing the retry/status classification.
 pub const ERROR_STATUS_METADATA_KEY: &str = "x-datafusion-nexus-error-status";
 const DATAFUSION_ERROR_FALLBACK_OPERATION: &str = "datafusion_nexus.server.datafusion_error";
 
@@ -161,8 +164,8 @@ fn client_datafusion_error_message(error: &DataFusionError) -> String {
 ///   out, so the function was never registered. Point operators at rebuilding
 ///   with the feature.
 /// - Built *with* the `cugraph` feature: the code is present but registration is
-///   gated on `DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED=true` (and the optional
-///   `DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS` allowlist). A not-found here
+///   gated on `NEXUS_SERVER_CUGRAPH_ENABLED=true` (and the optional
+///   `NEXUS_SERVER_CUGRAPH_ALGORITHMS` allowlist). A not-found here
 ///   means the runtime toggle is off or the function was excluded, not a build
 ///   problem — point operators at the env vars instead.
 #[cfg(not(feature = "cugraph"))]
@@ -183,8 +186,8 @@ fn maybe_append_cugraph_feature_hint(message: String) -> String {
     if is_cugraph_table_function_not_found(&message) {
         format!(
             "{message}; this build includes the `cugraph` feature but cuGraph SQL functions are \
-             not registered - set DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED=true (and ensure the \
-             function is not excluded by DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS) to enable them"
+             not registered - set NEXUS_SERVER_CUGRAPH_ENABLED=true (and ensure the \
+             function is not excluded by NEXUS_SERVER_CUGRAPH_ALGORITHMS) to enable them"
         )
     } else {
         message
@@ -394,7 +397,7 @@ mod tests {
         assert_eq!(status.code(), Code::NotFound);
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
         assert!(status.message().contains("cugraph_list_algorithms"));
-        assert!(status.message().contains("DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED=true"));
+        assert!(status.message().contains("NEXUS_SERVER_CUGRAPH_ENABLED=true"));
         // The runtime build must not tell operators to rebuild.
         assert!(!status.message().contains("without the `cugraph` feature"));
     }

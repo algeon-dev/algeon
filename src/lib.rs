@@ -68,10 +68,10 @@ pub use iceberg::catalog::{
 };
 #[cfg(feature = "iceberg")]
 pub use iceberg::{
-    CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, CUDF_ICEBERG_S3_ENDPOINT_ENV, CUDF_ICEBERG_S3_PATH_STYLE_ENV,
-    CUDF_ICEBERG_S3_REGION_ENV, CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, CUDF_ICEBERG_S3_SESSION_TOKEN_ENV,
     CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig, GlueIcebergTableDiagnostics,
     GlueIcebergTableRegistration, IcebergTableFormatPlanner, LoadedGlueIcebergTable,
+    NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+    NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV,
     iceberg_file_scan_tasks_to_table_format_scan_plan, iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
     register_glue_table,
 };
@@ -125,11 +125,10 @@ pub use source_cardinality::{
     SOURCE_UNIQUE_KEYS_METADATA_KEY, register_source_unique_keys_for_path, schema_with_source_unique_keys,
 };
 pub use table_format::{
-    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV,
-    CUDF_ICEBERG_REMOTE_DIRECT_ENV, CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-    CUDF_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
-    CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV, CUDF_LAKEHOUSE_CACHE_READ_ENV,
-    CUDF_LAKEHOUSE_CACHE_ROOT_ENV, CudfTableFormatScanExec, TableFormat, TableFormatColumnMapping,
+    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CudfTableFormatScanExec, NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV,
+    NEXUS_ICEBERG_REMOTE_DIRECT_ENV, NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
+    NEXUS_ICEBERG_REMOTE_HOST_BUFFER_RANGED_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
+    NEXUS_LAKEHOUSE_CACHE_READ_ENV, NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, TableFormat, TableFormatColumnMapping,
     TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat,
     TableFormatDeleteFile, TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition,
     TableFormatLakehouseCachePolicy, TableFormatLakehouseCacheReadPolicy, TableFormatParquetReadStrategyConfig,

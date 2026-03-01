@@ -30,16 +30,16 @@ fn glue_config_requires_caller_owned_table_identity() {
 #[test]
 fn glue_config_env_overlay_keeps_only_profile_and_region_diagnostics() {
     let env = HashMap::from([
-        ("CUDF_ICEBERG_GLUE_DATABASE", "analytics_db"),
-        ("CUDF_ICEBERG_GLUE_TABLE", "orders_sf10"),
+        ("NEXUS_ICEBERG_GLUE_DATABASE", "analytics_db"),
+        ("NEXUS_ICEBERG_GLUE_TABLE", "orders_sf10"),
         ("AWS_PROFILE", "local-dev"),
         ("AWS_REGION", "us-west-2"),
     ]);
 
     let config = GlueIcebergTableConfig::new(
         "glue",
-        env["CUDF_ICEBERG_GLUE_DATABASE"],
-        env["CUDF_ICEBERG_GLUE_TABLE"],
+        env["NEXUS_ICEBERG_GLUE_DATABASE"],
+        env["NEXUS_ICEBERG_GLUE_TABLE"],
         "s3://warehouse/root/",
         env["AWS_REGION"],
     )

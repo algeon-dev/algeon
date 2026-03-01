@@ -5,17 +5,15 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use datafusion_nexus::server::{
-    DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_NEXUS_SERVER_BIND_ENV,
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV,
-    DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
+    NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
+    NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
 };
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::server::{
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
+    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+    NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference};
@@ -42,15 +40,15 @@ fn server_config_defaults_to_single_flight_sql_admission() {
 
 #[test]
 fn server_config_rejects_zero_admission_limit() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV, "0".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_MAX_IN_FLIGHT_ENV, "0".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_MAX_IN_FLIGHT_ENV));
 }
 
 #[test]
 fn server_config_accepts_statement_ticket_ttl() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, "30".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, "30".to_string())]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(config.statement_ticket_ttl.as_secs(), 30);
@@ -58,26 +56,26 @@ fn server_config_accepts_statement_ticket_ttl() {
 
 #[test]
 fn server_config_rejects_zero_statement_ticket_ttl() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, "0".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, "0".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV));
 }
 
 #[test]
 fn server_config_requires_complete_bounded_native_profile() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV));
 }
 
 #[test]
 fn server_config_accepts_bounded_native_profile() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
-        (DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
-        (DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
     ]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -96,7 +94,7 @@ fn server_config_accepts_bounded_native_profile() {
 
 #[test]
 fn server_config_accepts_explicit_unbounded_native_profile() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string())]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
@@ -109,30 +107,30 @@ fn server_config_accepts_explicit_unbounded_native_profile() {
 #[test]
 fn server_config_rejects_unbounded_native_profile_with_bounded_knobs() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
-        (DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
-        (DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
-        (DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
     ]);
 
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
 }
 
 #[test]
 fn server_config_rejects_unknown_native_memory_policy() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "best_effort".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "best_effort".to_string())]);
 
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
 }
 
 #[cfg(not(feature = "iceberg"))]
 #[test]
 fn server_config_rejects_iceberg_env_without_iceberg_feature() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string())]);
+    let env = BTreeMap::from([(NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains("--features server,iceberg"));
@@ -141,7 +139,7 @@ fn server_config_rejects_iceberg_env_without_iceberg_feature() {
 #[cfg(not(feature = "cugraph"))]
 #[test]
 fn server_config_rejects_cugraph_env_without_cugraph_feature() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains("--features server,cugraph"));
@@ -152,11 +150,11 @@ fn server_config_rejects_cugraph_env_without_cugraph_feature() {
 fn server_cugraph_config_accepts_enabled_env() {
     use datafusion_nexus::{CugraphAlgorithm, CugraphGraphConstructionPolicy};
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank,cugraph_bfs".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, "false".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank,cugraph_bfs".to_string()),
+        (NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, "false".to_string()),
+        (NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, "false".to_string()),
+        (NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, "raw_libcugraph".to_string()),
     ]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -175,28 +173,28 @@ fn server_cugraph_config_accepts_enabled_env() {
 #[test]
 fn server_cugraph_config_rejects_unknown_algorithm() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank,cugraph_missing".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank,cugraph_missing".to_string()),
     ]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV));
     assert!(error.to_string().contains("cugraph_missing"));
 }
 
 #[cfg(feature = "cugraph")]
 #[test]
 fn server_cugraph_config_rejects_settings_without_enabled_true() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_CUGRAPH_ENABLED_ENV));
 }
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
 async fn server_cugraph_session_registers_algorithm_udtfs_when_enabled() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
 
@@ -232,8 +230,8 @@ async fn server_cugraph_sql_exec_inherits_server_native_memory_policy() {
     use datafusion::physical_plan::displayable;
 
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
@@ -277,8 +275,8 @@ async fn server_cugraph_session_does_not_register_udtfs_when_disabled() {
 #[tokio::test]
 async fn server_cugraph_allowlist_rejects_disallowed_algorithm_at_planning() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
@@ -293,7 +291,7 @@ async fn server_cugraph_udtfs_and_views_survive_session_state_rebuild() {
     use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
     use datafusion_nexus::{CudfOptimizerConfig, CudfSessionStateBuilderExt};
 
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let ctx = datafusion_nexus::server::build_session_context(&config).await.unwrap();
     ctx.sql("CREATE VIEW target_edges AS SELECT 1::BIGINT AS src, 2::BIGINT AS dst")
@@ -320,10 +318,10 @@ async fn server_cugraph_udtfs_and_views_survive_session_state_rebuild() {
 
 #[test]
 fn server_config_rejects_malformed_bind_address() {
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_BIND_ENV, "not-a-socket".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_BIND_ENV, "not-a-socket".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_BIND_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_BIND_ENV));
 }
 
 #[cfg(feature = "iceberg")]
@@ -349,8 +347,8 @@ fn server_iceberg_config_ignores_aws_env_without_catalog_request() {
 #[test]
 fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -363,14 +361,14 @@ fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
 #[test]
 fn server_iceberg_config_accepts_backend_neutral_namespace_env() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_TABLES_ENV,
+        NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_TABLES_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV, "iceberg".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "analytics".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_TABLES_ENV, "orders=tpch_sf1_orders,nation".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_CATALOG_NAME_ENV, "iceberg".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "analytics".to_string()),
+        (NEXUS_ICEBERG_TABLES_ENV, "orders=tpch_sf1_orders,nation".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -391,17 +389,16 @@ fn server_iceberg_config_accepts_backend_neutral_namespace_env() {
 #[test]
 fn server_iceberg_config_catalog_name_does_not_affect_glue_catalog_handle() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
-        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_TABLES_ENV,
+        NEXUS_ICEBERG_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_TABLES_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV, "iceberg".to_string()),
+        (NEXUS_ICEBERG_CATALOG_NAME_ENV, "iceberg".to_string()),
         // Glue-specific catalog handle is set independently.
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, "my_glue_handle".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "analytics".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_TABLES_ENV, "nation".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, "my_glue_handle".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "analytics".to_string()),
+        (NEXUS_ICEBERG_TABLES_ENV, "nation".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -427,8 +424,8 @@ fn server_config_session_profile_defaults_to_cpu_fallback_without_iceberg() {
 #[test]
 fn server_config_session_profile_defaults_to_native_when_iceberg_configured() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -443,29 +440,29 @@ fn server_config_session_profile_defaults_to_native_when_iceberg_configured() {
 #[cfg(feature = "iceberg")]
 #[test]
 fn server_config_session_profile_env_overrides_iceberg_default() {
-    use datafusion_nexus::server::DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV;
+    use datafusion_nexus::server::NEXUS_SERVER_SESSION_PROFILE_ENV;
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
-        (DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV, "cpu_fallback".to_string()),
+        (NEXUS_SERVER_SESSION_PROFILE_ENV, "cpu_fallback".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(
         config.session_profile,
         datafusion_nexus::server::ServerSessionProfile::CpuFallback,
-        "explicit DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=cpu_fallback must override the Iceberg default"
+        "explicit NEXUS_SERVER_SESSION_PROFILE=cpu_fallback must override the Iceberg default"
     );
 }
 
 #[test]
 fn server_config_session_profile_rejects_unknown_value() {
-    use datafusion_nexus::server::DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV;
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV, "bogus".to_string())]);
+    use datafusion_nexus::server::NEXUS_SERVER_SESSION_PROFILE_ENV;
+    let env = BTreeMap::from([(NEXUS_SERVER_SESSION_PROFILE_ENV, "bogus".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_SESSION_PROFILE_ENV));
 }
 
 #[test]
@@ -518,8 +515,8 @@ fn apply_session_profile_cpu_fallback_preserves_base_target_partitions() {
 #[test]
 fn build_session_config_picks_native_profile_when_iceberg_configured() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -539,9 +536,9 @@ fn build_session_config_picks_native_profile_when_iceberg_configured() {
 #[test]
 fn server_iceberg_config_backward_compat_glue_database_maps_to_namespace() {
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
-        (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
-        (datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV, "nation".to_string()),
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_TABLES_ENV, "nation".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -566,24 +563,23 @@ fn expect_rest_backend(
 #[test]
 fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV,
-        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_S3_REGION_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV, "us-east-2".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_URI_ENV, "http://localhost:5001".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-2".to_string()),
+        (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
         (datafusion_nexus::iceberg::AWS_ACCESS_KEY_ID_ENV, "AKIA_GLUE".to_string()),
         (datafusion_nexus::iceberg::AWS_SECRET_ACCESS_KEY_ENV, "glue-secret".to_string()),
-        (datafusion_nexus::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_LOCAL".to_string()),
-        (datafusion_nexus::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "local-secret".to_string()),
+        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_LOCAL".to_string()),
+        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "local-secret".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
@@ -615,16 +611,15 @@ fn server_iceberg_config_kind_glue_explicit_selects_glue_backend() {
 #[test]
 fn server_iceberg_glue_config_debug_redacts_local_endpoint_urls() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV,
-        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_URI_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
+        NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV, "https://user:glue-secret@glue.local".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "https://user:s3-secret@s3.local".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "glue".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (NEXUS_ICEBERG_GLUE_URI_ENV, "https://user:glue-secret@glue.local".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "https://user:s3-secret@s3.local".to_string()),
         (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -641,10 +636,10 @@ fn server_iceberg_glue_config_debug_redacts_local_endpoint_urls() {
 #[cfg(feature = "iceberg")]
 #[test]
 fn server_iceberg_config_invalid_kind_is_rejected() {
-    use datafusion_nexus::server::{DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV};
+    use datafusion_nexus::server::{NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV};
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "delta".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "delta".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
     ]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
     assert!(error.to_string().contains("glue"), "error should name the accepted kinds: {error}");
@@ -655,21 +650,20 @@ fn server_iceberg_config_invalid_kind_is_rejected() {
 #[test]
 fn server_iceberg_config_kind_rest_happy_path() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
-        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV,
+        NEXUS_ICEBERG_S3_REGION_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
-        (datafusion_nexus::iceberg::CUDF_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_REST".to_string()),
-        (datafusion_nexus::iceberg::CUDF_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "rest-secret".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://localhost:9000".to_string()),
+        (NEXUS_ICEBERG_S3_REGION_ENV, "us-east-1".to_string()),
+        (NEXUS_ICEBERG_S3_PATH_STYLE_ENV, "true".to_string()),
+        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, "AKIA_REST".to_string()),
+        (datafusion_nexus::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV, "rest-secret".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let profiles = config.native_optimizer_config.native_execution_config().source_storage_profiles();
@@ -704,24 +698,22 @@ fn server_iceberg_config_kind_rest_happy_path() {
 #[test]
 fn server_iceberg_config_owns_table_format_parquet_strategy() {
     use datafusion_nexus::server::{
-        CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV,
-        CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV, CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
-        DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_ENDPOINT_ENV,
+        NEXUS_ICEBERG_S3_REGION_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
+        NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://user:secret@localhost:9000/rustfs?sig=secret".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV, "us-west-2".to_string()),
-        (CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, "local_cache".to_string()),
-        (CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, "true".to_string()),
-        (CUDF_LAKEHOUSE_CACHE_ROOT_ENV, "/tmp/nexus-cache".to_string()),
-        (CUDF_LAKEHOUSE_CACHE_POLICY_ENV, "read_through".to_string()),
-        (CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "4096".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_S3_ENDPOINT_ENV, "http://user:secret@localhost:9000/rustfs?sig=secret".to_string()),
+        (NEXUS_ICEBERG_S3_REGION_ENV, "us-west-2".to_string()),
+        (NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, "local_cache".to_string()),
+        (NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, "/tmp/nexus-cache".to_string()),
+        (NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, "read_through".to_string()),
+        (NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "4096".to_string()),
     ]);
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
@@ -729,7 +721,6 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
     let strategy = iceberg.parquet_read_strategy_config;
 
     assert_eq!(strategy.preference, TableFormatParquetReadStrategyPreference::LocalCache);
-    assert!(strategy.remote_kvikio_experimental);
     assert_eq!(strategy.lakehouse_cache_root, Some(PathBuf::from("/tmp/nexus-cache")));
     assert_eq!(strategy.lakehouse_cache_policy, TableFormatLakehouseCachePolicy::ReadThrough);
     assert_eq!(strategy.lakehouse_cache_max_bytes, Some(4096));
@@ -742,21 +733,20 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
 #[test]
 fn server_iceberg_config_rejects_unknown_table_format_parquet_strategy() {
     use datafusion_nexus::server::{
-        CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
-        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, NEXUS_ICEBERG_REST_URI_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
-        (CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, "surprise".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, "surprise".to_string()),
     ]);
 
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV));
+    assert!(error.to_string().contains(NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV));
     assert!(error.to_string().contains("host_buffer"));
 }
 
@@ -764,68 +754,58 @@ fn server_iceberg_config_rejects_unknown_table_format_parquet_strategy() {
 #[test]
 fn server_iceberg_config_rejects_unknown_lakehouse_cache_policy() {
     use datafusion_nexus::server::{
-        CUDF_LAKEHOUSE_CACHE_POLICY_ENV, DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV,
-        DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
-        (CUDF_LAKEHOUSE_CACHE_POLICY_ENV, "eventual".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, "eventual".to_string()),
     ]);
 
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
-    assert!(error.to_string().contains(CUDF_LAKEHOUSE_CACHE_POLICY_ENV));
+    assert!(error.to_string().contains(NEXUS_LAKEHOUSE_CACHE_POLICY_ENV));
     assert!(error.to_string().contains("fill_before_read"));
 }
 
 #[cfg(feature = "iceberg")]
 #[test]
-fn server_iceberg_config_rejects_invalid_table_format_strategy_bool_and_size() {
+fn server_iceberg_config_rejects_invalid_table_format_strategy_size() {
     use datafusion_nexus::server::{
-        CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_REST_URI_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
     };
     let required = [
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ];
-    let invalid_bool = required
-        .iter()
-        .cloned()
-        .chain([(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, "sometimes".to_string())])
-        .collect::<BTreeMap<_, _>>();
-    let invalid_bool_error = ServerConfig::from_env_get(|name| invalid_bool.get(name).cloned()).unwrap_err();
-    assert!(invalid_bool_error.to_string().contains(CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV));
-
     let zero_size = required
         .iter()
         .cloned()
-        .chain([(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "0".to_string())])
+        .chain([(NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, "0".to_string())])
         .collect::<BTreeMap<_, _>>();
     let zero_size_error = ServerConfig::from_env_get(|name| zero_size.get(name).cloned()).unwrap_err();
-    assert!(zero_size_error.to_string().contains(CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV));
+    assert!(zero_size_error.to_string().contains(NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV));
 }
 
 #[cfg(feature = "iceberg")]
 #[test]
 fn server_iceberg_config_kind_rest_does_not_require_region() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_REST_URI_ENV,
     };
     // No AWS_REGION_ENV present — REST must still succeed.
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     let iceberg = config.iceberg.expect("iceberg config must be present");
@@ -836,17 +816,16 @@ fn server_iceberg_config_kind_rest_does_not_require_region() {
 #[test]
 fn server_iceberg_config_kind_rest_requires_uri() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, NEXUS_ICEBERG_NAMESPACE_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://lakehouse/warehouse".to_string()),
     ]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
     assert!(
-        error.to_string().contains(datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV),
+        error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_REST_URI_ENV),
         "error should name the missing REST URI env var: {error}"
     );
 }
@@ -855,17 +834,16 @@ fn server_iceberg_config_kind_rest_requires_uri() {
 #[test]
 fn server_iceberg_config_kind_rest_requires_warehouse() {
     use datafusion_nexus::server::{
-        DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV,
-        DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV,
+        NEXUS_ICEBERG_CATALOG_KIND_ENV, NEXUS_ICEBERG_NAMESPACE_ENV, NEXUS_ICEBERG_REST_URI_ENV,
     };
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
-        (DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
+        (NEXUS_ICEBERG_CATALOG_KIND_ENV, "rest".to_string()),
+        (NEXUS_ICEBERG_NAMESPACE_ENV, "tpch_sf1".to_string()),
+        (NEXUS_ICEBERG_REST_URI_ENV, "http://localhost:8181".to_string()),
     ]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
     assert!(
-        error.to_string().contains(datafusion_nexus::server::DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV),
+        error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV),
         "error should name the missing warehouse env var: {error}"
     );
 }

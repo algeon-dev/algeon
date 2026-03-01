@@ -2,7 +2,7 @@
 //!
 //! This exercises the real `RestIcebergCatalogBackend` against a local REST
 //! fixture + S3-compatible store (RustFS). It is an explicit `cargo run` tool,
-//! not a `cargo test` target. `CUDF_ICEBERG_REST_E2E=1` is still required so an
+//! not a `cargo test` target. `NEXUS_ICEBERG_REST_E2E=1` is still required so an
 //! accidental invocation fails before touching external services.
 //!
 //! Bring the stack up and load data first:
@@ -10,14 +10,14 @@
 //! ```bash
 //! docker compose -f fixture/iceberg-local/docker-compose.yml up -d
 //! fixture/iceberg-local/load.sh            # loader (Milestone 3c)
-//! CUDF_ICEBERG_REST_E2E=1 \
-//!   DATAFUSION_NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
-//!   DATAFUSION_NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
-//!   DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
-//!   DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE=true \
-//!   DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
-//!   DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
-//!   DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
+//! NEXUS_ICEBERG_REST_E2E=1 \
+//!   NEXUS_ICEBERG_REST_URI=http://localhost:8181 \
+//!   NEXUS_ICEBERG_WAREHOUSE=s3://lakehouse/warehouse \
+//!   NEXUS_ICEBERG_S3_ENDPOINT=http://localhost:9000 \
+//!   NEXUS_ICEBERG_S3_PATH_STYLE=true \
+//!   NEXUS_ICEBERG_S3_ACCESS_KEY_ID=cudfadmin \
+//!   NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY=cudfadminsecret \
+//!   NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 //!   cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
 //! ```
 
@@ -46,28 +46,27 @@ pub async fn run() -> E2eResult<()> {
 }
 
 fn require_e2e_enabled() -> E2eResult<()> {
-    match std::env::var("CUDF_ICEBERG_REST_E2E").as_deref() {
+    match std::env::var("NEXUS_ICEBERG_REST_E2E").as_deref() {
         Ok("1") => Ok(()),
-        _ => Err("iceberg REST E2E requires CUDF_ICEBERG_REST_E2E=1 and fixture/iceberg-local".into()),
+        _ => Err("iceberg REST E2E requires NEXUS_ICEBERG_REST_E2E=1 and fixture/iceberg-local".into()),
     }
 }
 
 fn require_local_rest_storage_env() -> E2eResult<()> {
-    let rest_uri =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
-    require_loopback_http_url("DATAFUSION_NEXUS_ICEBERG_REST_URI", &rest_uri)?;
+    let rest_uri = std::env::var("NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
+    require_loopback_http_url("NEXUS_ICEBERG_REST_URI", &rest_uri)?;
 
-    let endpoint = require_env("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT")?;
-    require_loopback_http_url("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT", &endpoint)?;
+    let endpoint = require_env("NEXUS_ICEBERG_S3_ENDPOINT")?;
+    require_loopback_http_url("NEXUS_ICEBERG_S3_ENDPOINT", &endpoint)?;
 
-    let path_style = require_env("DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE")?;
+    let path_style = require_env("NEXUS_ICEBERG_S3_PATH_STYLE")?;
     if path_style != "true" {
-        return Err("local REST E2E requires DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE=true for RustFS".into());
+        return Err("local REST E2E requires NEXUS_ICEBERG_S3_PATH_STYLE=true for RustFS".into());
     }
 
-    require_env("DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID")?;
-    require_env("DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY")?;
-    reject_non_empty_env("DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN")?;
+    require_env("NEXUS_ICEBERG_S3_ACCESS_KEY_ID")?;
+    require_env("NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY")?;
+    reject_non_empty_env("NEXUS_ICEBERG_S3_SESSION_TOKEN")?;
     reject_non_empty_env("AWS_SESSION_TOKEN")?;
     reject_non_empty_env("AWS_SECURITY_TOKEN")?;
     Ok(())
@@ -107,20 +106,16 @@ fn reject_non_empty_env(name: &'static str) -> E2eResult<()> {
     Ok(())
 }
 
-/// Builds a REST config from the standard `DATAFUSION_NEXUS_ICEBERG_*` env vars.
-/// S3 credentials are resolved from `DATAFUSION_NEXUS_ICEBERG_S3_*` by the
+/// Builds a REST config from the standard `NEXUS_ICEBERG_*` env vars.
+/// S3 credentials are resolved from `NEXUS_ICEBERG_S3_*` by the
 /// backend itself (never `AWS_*`).
 fn rest_config_from_env() -> RestIcebergCatalogConfig {
-    let uri =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
-    let warehouse =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
+    let uri = std::env::var("NEXUS_ICEBERG_REST_URI").unwrap_or_else(|_| "http://localhost:8181".to_string());
+    let warehouse = std::env::var("NEXUS_ICEBERG_WAREHOUSE").unwrap_or_else(|_| "s3://lakehouse/warehouse".to_string());
 
-    let endpoint =
-        std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT").expect("validated DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT");
-    let path_style = std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE")
-        .expect("validated DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE");
-    let region = std::env::var("DATAFUSION_NEXUS_ICEBERG_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let endpoint = std::env::var("NEXUS_ICEBERG_S3_ENDPOINT").expect("validated NEXUS_ICEBERG_S3_ENDPOINT");
+    let path_style = std::env::var("NEXUS_ICEBERG_S3_PATH_STYLE").expect("validated NEXUS_ICEBERG_S3_PATH_STYLE");
+    let region = std::env::var("NEXUS_ICEBERG_S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
 
     RestIcebergCatalogConfig::new("lake", uri, warehouse)
         .with_s3_endpoint(endpoint)
@@ -141,8 +136,7 @@ async fn rest_backend_lists_namespaces_local() {
 /// Read path: scoped catalog provider over the configured namespace exposes its
 /// tables. Mirrors the Glue local E2E check but against REST + RustFS.
 async fn rest_scoped_catalog_provider_discovers_tables_local() {
-    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for local REST E2E");
+    let namespace = std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST E2E");
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
@@ -167,18 +161,18 @@ async fn rest_scoped_catalog_provider_discovers_tables_local() {
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
-/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
-///   CUDF_ICEBERG_REST_E2E_TABLE=nation CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS=25 \
+/// NEXUS_ICEBERG_REST_E2E=1 NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
+///   NEXUS_ICEBERG_REST_E2E_TABLE=nation NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS=25 \
 ///   cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
 /// ```
 async fn rest_datafusion_scan_local() {
     use datafusion::prelude::{SessionConfig, SessionContext};
 
-    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for local REST scan E2E");
-    let table = std::env::var("CUDF_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
+    let namespace =
+        std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST scan E2E");
+    let table = std::env::var("NEXUS_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
     let expected_rows: Option<i64> =
-        std::env::var("CUDF_ICEBERG_REST_E2E_EXPECTED_ROWS").ok().and_then(|v| v.parse().ok());
+        std::env::var("NEXUS_ICEBERG_REST_E2E_EXPECTED_ROWS").ok().and_then(|v| v.parse().ok());
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
@@ -220,12 +214,12 @@ async fn rest_datafusion_scan_local() {
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
-/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
+/// NEXUS_ICEBERG_REST_E2E=1 NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 ///   cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
 /// ```
 async fn rest_table_metadata_contract_local() {
-    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for local REST metadata E2E");
+    let namespace =
+        std::env::var("NEXUS_ICEBERG_NAMESPACE").expect("set NEXUS_ICEBERG_NAMESPACE for local REST metadata E2E");
 
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(RestIcebergCatalogBackend::from_config_env(rest_config_from_env()).await.unwrap());
@@ -278,14 +272,14 @@ async fn rest_table_metadata_contract_local() {
 /// configured REST/RustFS endpoint, path-style flag, region, and static
 /// credentials.
 ///
-/// GPU-native parity is gated behind `CUDF_ICEBERG_REST_E2E_GPU_PARITY=1`.
+/// GPU-native parity is gated behind `NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1`.
 /// When set, the test executes the native-rewritten plan and a GPU execution
 /// failure is a real failure — it does NOT silently skip. Enable it for local
 /// validation of the configured S3 endpoint.
 ///
 /// Run against a loaded `tpch_sf1` namespace:
 /// ```bash
-/// CUDF_ICEBERG_REST_E2E=1 DATAFUSION_NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
+/// NEXUS_ICEBERG_REST_E2E=1 NEXUS_ICEBERG_NAMESPACE=tpch_sf1 \
 ///   cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e
 /// ```
 async fn rest_native_planning_and_parity_local() {
@@ -298,12 +292,12 @@ async fn rest_native_planning_and_parity_local() {
         CudfOptimizerConfig, CudfSessionStateBuilderExt, GpuFallbackPolicy, NativeCudfExecutionConfig,
     };
 
-    let namespace = std::env::var("DATAFUSION_NEXUS_ICEBERG_NAMESPACE")
-        .expect("set DATAFUSION_NEXUS_ICEBERG_NAMESPACE for local REST planning/parity E2E");
+    let namespace = std::env::var("NEXUS_ICEBERG_NAMESPACE")
+        .expect("set NEXUS_ICEBERG_NAMESPACE for local REST planning/parity E2E");
     // `nation` is small and has a `n_regionkey` group key — a stable
     // aggregate-over-Iceberg shape the native rule rewrites.
-    let table = std::env::var("CUDF_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
-    let group_col = std::env::var("CUDF_ICEBERG_REST_E2E_GROUP_COL").unwrap_or_else(|_| "n_regionkey".to_string());
+    let table = std::env::var("NEXUS_ICEBERG_REST_E2E_TABLE").unwrap_or_else(|_| "nation".to_string());
+    let group_col = std::env::var("NEXUS_ICEBERG_REST_E2E_GROUP_COL").unwrap_or_else(|_| "n_regionkey".to_string());
 
     // No ORDER BY: a top-level sort introduces a SortPreservingMergeExec that the
     // native rule does not absorb (it would reject the whole plan with no CPU
@@ -402,10 +396,10 @@ async fn rest_native_planning_and_parity_local() {
     // GPU-native parity is opt-in. Set this for local REST/RustFS/local-cache
     // validation of the native source-storage profile path. We do NOT silently
     // skip on error — a failure when the flag is set is a real failure.
-    let gpu_parity = std::env::var("CUDF_ICEBERG_REST_E2E_GPU_PARITY").map(|v| v == "1").unwrap_or(false);
+    let gpu_parity = std::env::var("NEXUS_ICEBERG_REST_E2E_GPU_PARITY").map(|v| v == "1").unwrap_or(false);
     if !gpu_parity {
         eprintln!(
-            "GPU-native parity not run: set CUDF_ICEBERG_REST_E2E_GPU_PARITY=1 to enable \
+            "GPU-native parity not run: set NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1 to enable \
              local REST/RustFS/local-cache native profile validation"
         );
         return;
@@ -417,7 +411,7 @@ async fn rest_native_planning_and_parity_local() {
         .expect("plan native sql (exec)")
         .collect()
         .await
-        .expect("execute native (GPU) plan — CUDF_ICEBERG_REST_E2E_GPU_PARITY=1 requires it to run");
+        .expect("execute native (GPU) plan — NEXUS_ICEBERG_REST_E2E_GPU_PARITY=1 requires it to run");
     let native_rows = sorted_rows(&native_batches);
     eprintln!("native plan produced {} rows", native_rows.len());
     assert_eq!(native_rows, cpu_rows, "native vs CPU row parity mismatch for {namespace}.{table}");

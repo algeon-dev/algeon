@@ -94,15 +94,15 @@ impl IcebergNativeSmokeConfig {
                 IcebergNativeSmokeFixture::LocalMetadata { metadata_location, table_ident }
             },
             "glue_s3" => {
-                explicit_glue_table = get(CUDF_ICEBERG_GLUE_TABLE_ENV).is_some();
-                let database_env = get(CUDF_ICEBERG_GLUE_DATABASE_ENV);
+                explicit_glue_table = get(NEXUS_ICEBERG_GLUE_TABLE_ENV).is_some();
+                let database_env = get(NEXUS_ICEBERG_GLUE_DATABASE_ENV);
                 explicit_catalog_namespace = database_env.is_some();
-                let catalog_name = get(CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV)
+                let catalog_name = get(NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV)
                     .unwrap_or_else(|| DEFAULT_SMOKE_GLUE_CATALOG_NAME.to_string());
                 let database = database_env.unwrap_or_else(|| DEFAULT_SMOKE_GLUE_DATABASE.to_string());
-                let table = get(CUDF_ICEBERG_GLUE_TABLE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_TABLE.to_string());
+                let table = get(NEXUS_ICEBERG_GLUE_TABLE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_TABLE.to_string());
                 let warehouse =
-                    get(CUDF_ICEBERG_GLUE_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_WAREHOUSE.to_string());
+                    get(NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV).unwrap_or_else(|| DEFAULT_SMOKE_GLUE_WAREHOUSE.to_string());
                 let region = get(AWS_REGION_ENV)
                     .or_else(|| get(AWS_DEFAULT_REGION_ENV))
                     .unwrap_or_else(|| DEFAULT_SMOKE_GLUE_REGION.to_string());
@@ -116,7 +116,7 @@ impl IcebergNativeSmokeConfig {
                 if let Some(profile) = get(AWS_PROFILE_ENV).filter(|value| !value.trim().is_empty()) {
                     glue_config = glue_config.with_profile(profile);
                 }
-                glue_config.catalog_id = match get(CUDF_ICEBERG_GLUE_CATALOG_ID_ENV) {
+                glue_config.catalog_id = match get(NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV) {
                     Some(value) if value.trim().is_empty() => None,
                     Some(value) => Some(value),
                     None if DEFAULT_SMOKE_GLUE_CATALOG_ID.trim().is_empty() => None,

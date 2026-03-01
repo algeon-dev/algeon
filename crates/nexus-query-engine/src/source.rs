@@ -163,10 +163,8 @@ pub enum ParquetReadStrategy {
     RemoteHostBuffer,
     /// Read a previously materialized local byte-cache entry through the path-based reader.
     LocalCacheKvikio,
-    /// Path-based cuDF/libcudf read for a remote object-store URI such as `s3://...`.
+    /// Path-based cuDF/libcudf remote KvikIO read for an object-store URI such as `s3://...`.
     RemoteDirect,
-    /// Experimental path-based cuDF/libcudf read for a remote URI such as `s3://...`.
-    RemoteKvikioExperimental,
 }
 
 impl ParquetReadStrategy {
@@ -177,7 +175,6 @@ impl ParquetReadStrategy {
             Self::RemoteHostBuffer => "remote_host_buffer",
             Self::LocalCacheKvikio => "local_cache_kvikio",
             Self::RemoteDirect => "remote_direct",
-            Self::RemoteKvikioExperimental => "remote_kvikio_experimental",
         }
     }
 }
@@ -497,30 +494,6 @@ impl ResolvedParquetSource {
             credential_mode,
             cache_status,
             lakehouse_cache_read_mode: LakehouseCacheReadMode::Enabled,
-            lakehouse_cache_root: None,
-            lakehouse_cache_path: None,
-            lakehouse_cache_max_bytes: None,
-            lakehouse_cache_fill_mode: LakehouseCacheFillMode::Disabled,
-            remote_host_buffer_ranged_enabled: false,
-            fallback_reason: None,
-        }
-    }
-
-    /// Builds an experimental remote path-based read contract.
-    pub fn remote_kvikio_experimental(original_location: impl Into<String>, credential_mode: CredentialMode) -> Self {
-        let original_location = original_location.into();
-        Self {
-            reader_location: original_location.clone(),
-            original_location,
-            storage_domain: None,
-            content_identity: None,
-            storage_profile_id: None,
-            read_strategy: ParquetReadStrategy::RemoteKvikioExperimental,
-            decode_input: SourceDecodeInput::Filepath,
-            remote_read_mode: RemoteParquetReadMode::PreferDirect,
-            credential_mode,
-            cache_status: LakehouseCacheStatus::Disabled,
-            lakehouse_cache_read_mode: LakehouseCacheReadMode::Disabled,
             lakehouse_cache_root: None,
             lakehouse_cache_path: None,
             lakehouse_cache_max_bytes: None,

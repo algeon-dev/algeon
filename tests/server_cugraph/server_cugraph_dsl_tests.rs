@@ -15,7 +15,7 @@ use arrow::{
 };
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
 use datafusion_nexus::server::{
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve,
+    NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV, ServerConfig, serve,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -24,7 +24,7 @@ use tonic::{Code, transport::Endpoint};
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
     let addr = free_local_addr();
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 
@@ -100,7 +100,7 @@ async fn cugraph_dsl_metadata_and_dry_run_work_over_flight_sql_view() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
     let addr = free_local_addr();
-    let env = BTreeMap::from([(DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string())]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;
 
@@ -147,8 +147,8 @@ async fn cugraph_dsl_nullable_parquet_edge_schema_validates_over_flight_sql() {
 async fn cugraph_dsl_disallowed_algorithm_rejected_over_flight_sql() {
     let addr = free_local_addr();
     let env = BTreeMap::from([
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
-        (DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "true".to_string()),
+        (NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
     ]);
     let mut config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     config.bind_addr = addr;

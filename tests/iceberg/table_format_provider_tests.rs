@@ -569,7 +569,7 @@ fn table_format_parquet_resolver_scopes_local_cache_by_catalog_endpoint_without_
 }
 
 #[test]
-fn native_lowering_preserves_remote_kvikio_reader_contract_for_dispatch() {
+fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
     let schema = iceberg_test_schema();
     let mut plan = native_admissible_scan_plan(Arc::clone(&schema));
     plan.data_files = vec![
@@ -580,7 +580,7 @@ fn native_lowering_preserves_remote_kvikio_reader_contract_for_dispatch() {
             TableFormatReadCapability::object_store("s3"),
         )
         .with_size_bytes(4096)
-        .with_resolved_parquet_source(ResolvedParquetSource::remote_kvikio_experimental(
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
             "s3://bucket/table/data-0001.parquet",
             CredentialMode::SharedProcessEnv,
         )),
@@ -592,10 +592,10 @@ fn native_lowering_preserves_remote_kvikio_reader_contract_for_dispatch() {
     assert_eq!(result.rewritten_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
     let file = &source.files[0];
-    assert_eq!(file.resolved_source.read_strategy, ParquetReadStrategy::RemoteKvikioExperimental);
+    assert_eq!(file.resolved_source.read_strategy, ParquetReadStrategy::RemoteDirect);
     assert_eq!(file.resolved_source.decode_input, SourceDecodeInput::Filepath);
     assert_eq!(file.path.to_string_lossy(), "s3://bucket/table/data-0001.parquet");
-    assert_eq!(source.diagnostics.source_read_strategy, "remote_kvikio_experimental");
+    assert_eq!(source.diagnostics.source_read_strategy, "remote_direct");
     assert_eq!(source.diagnostics.source_decode_input, "filepath");
 }
 

@@ -30,7 +30,7 @@ use nexus_query_engine::{
 
 #[test]
 fn benchmark_config_defaults_to_verified_tpch_subset_without_exposing_credentials() {
-    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
+    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
     assert_eq!(config.query_ids, vec!["q01", "q03", "q06", "q10"]);
@@ -47,13 +47,13 @@ fn benchmark_config_defaults_to_verified_tpch_subset_without_exposing_credential
 fn benchmark_config_accepts_iteration_query_and_staging_overrides() {
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS", "q06,q01"),
-        ("CUDF_ICEBERG_TPCH_BENCH_WARMUPS", "2"),
-        ("CUDF_ICEBERG_TPCH_BENCH_ITERATIONS", "3"),
-        ("CUDF_ICEBERG_TPCH_BENCH_OBJECT_STORE_STAGING", "required"),
-        ("CUDF_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS", "60"),
-        ("CUDF_ICEBERG_TPCH_BENCH_ITERATION_TIMEOUT_SECS", "600"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS", "q06,q01"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_WARMUPS", "2"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_ITERATIONS", "3"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_OBJECT_STORE_STAGING", "required"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS", "60"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_ITERATION_TIMEOUT_SECS", "600"),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -70,9 +70,9 @@ fn benchmark_config_accepts_iteration_query_and_staging_overrides() {
 fn benchmark_config_accepts_cpu_baseline_timeout_override() {
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS", "90"),
-        ("CUDF_ICEBERG_TPCH_BENCH_CPU_BASELINE_TIMEOUT_SECS", "45"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_TIMEOUT_SECS", "90"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_CPU_BASELINE_TIMEOUT_SECS", "45"),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
 
@@ -138,7 +138,7 @@ fn tpcds_native_execution_profile_uses_analytics_statistical_aggregate_default()
 #[test]
 fn tpcds_native_execution_profile_accepts_statistical_aggregate_env_override() {
     let env =
-        HashMap::from([("CUDF_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE", "datafusion_exact_host_welford")]);
+        HashMap::from([("NEXUS_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE", "datafusion_exact_host_welford")]);
     let config = native_iceberg_smoke_report::native_execution_config_for_profile_with_env(
         NativeExecutionProfile::TpcdsBenchmark,
         |name| env.get(name).map(|value| value.to_string()),
@@ -369,9 +369,9 @@ fn full_sf1_staged_s3_gate_passes_for_all_queries_with_staged_native_parity() {
     let query_ids = datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
-        ("CUDF_ICEBERG_TPCH_BENCH_ITERATIONS", "1"),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
+        ("NEXUS_ICEBERG_TPCH_BENCH_ITERATIONS", "1"),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let report = IcebergTpchBenchmarkReport {
@@ -392,8 +392,8 @@ fn full_sf1_staged_s3_gate_fails_on_direct_or_unmatched_rows() {
     let query_ids = datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let mut rows =
@@ -413,8 +413,8 @@ fn full_sf1_staged_s3_gate_reports_timeout_failures_separately() {
     let query_ids = datafusion_nexus_bench::TPCH_QUERIES.iter().map(|query| query.id).collect::<Vec<_>>().join(",");
     let env = HashMap::from([
         ("AWS_PROFILE", "local-dev"),
-        ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
-        ("CUDF_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
+        ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3"),
+        ("NEXUS_ICEBERG_TPCH_BENCH_QUERY_IDS", query_ids.as_str()),
     ]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let mut rows =
@@ -432,7 +432,7 @@ fn full_sf1_staged_s3_gate_reports_timeout_failures_separately() {
 
 #[test]
 fn full_sf1_staged_s3_gate_does_not_apply_to_default_subset() {
-    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("CUDF_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
+    let env = HashMap::from([("AWS_PROFILE", "local-dev"), ("NEXUS_ICEBERG_SMOKE_FIXTURE_MODE", "glue_s3")]);
     let config = IcebergTpchBenchmarkConfig::from_env_get(|name| env.get(name).map(|value| value.to_string())).unwrap();
     let report = IcebergTpchBenchmarkReport { rows: vec![staged_s3_matched_row("q01")] };
 

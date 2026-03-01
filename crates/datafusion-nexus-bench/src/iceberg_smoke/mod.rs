@@ -35,10 +35,10 @@ use datafusion_nexus::{
     TableFormatParquetSourceMetadata, TableFormatPlanner, TableFormatReadCapability, TableFormatScanDiagnostics,
     TableFormatScanPlan, TableFormatScanRequest, TableFormatUnsupportedFeatureCode, compare_record_batches,
     iceberg::{
-        AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CUDF_ICEBERG_GLUE_CATALOG_ID_ENV,
-        CUDF_ICEBERG_GLUE_CATALOG_NAME_ENV, CUDF_ICEBERG_GLUE_DATABASE_ENV, CUDF_ICEBERG_GLUE_TABLE_ENV,
-        CUDF_ICEBERG_GLUE_WAREHOUSE_ENV, CudfIcebergTableProvider, GlueIcebergCredentialSource, GlueIcebergTableConfig,
-        IcebergTableFormatPlanner,
+        AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, CudfIcebergTableProvider, GlueIcebergCredentialSource,
+        GlueIcebergTableConfig, IcebergTableFormatPlanner, NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV,
+        NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV, NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_ICEBERG_GLUE_TABLE_ENV,
+        NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
         catalog::{IcebergCatalogBackend, RestIcebergCatalogBackend, RestIcebergCatalogConfig},
         iceberg_schema_to_datafusion_arrow_schema, load_glue_table,
     },
@@ -61,42 +61,42 @@ type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 const REPORT_SCHEMA_VERSION: u32 = 10;
 const REPORT_HEADER: &str = "query_id\tfixture_mode\tcatalog_type\ttable_ident\tsql\ttable_format\tsnapshot_id\tplanned_data_file_count\tplanned_delete_file_count\tplanned_bytes\tadmitted_native_source_file_count\trejected_feature_list\tnative_source_read_capability\tsource_read_strategy\tsource_decode_input\tcredential_mode\tlakehouse_cache_status\tlakehouse_cache_read_mode\tlakehouse_cache_fill_mode\tsource_fallback_reason\tdirect_device_read_disposition\tobject_store_staging_mode\tobject_store_staging_status\tstaged_data_file_count\tstaged_bytes\tnative_planning_outcome\tnative_reason_code\tpost_native_execution_path\tcpu_arrow_reader_fallback\tnative_runtime_started\tnative_runtime_outcome\tnative_runtime_elapsed_ms\tnative_output_rows\tnative_output_batches\tsource_fetch_bytes\tsource_fetch_count\thost_fetch_budget_wait_time_ms\tsource_fetch_concurrency_wait_time_ms\tsource_fetch_time_ms\tsource_decode_time_ms\tnative_source_read_runtime_rows\tlakehouse_cache_fill_event_snapshot_rows\texpected_count\tnative_count_value\tcpu_runtime_started\tcpu_runtime_outcome\tcpu_runtime_elapsed_ms\tcpu_output_rows\tcpu_output_batches\tcpu_output_fingerprint\tnative_output_fingerprint\tcomparison_mode\tparity_status\tparity_detail\tcredential_source";
 
-const FIXTURE_MODE_ENV: &str = "CUDF_ICEBERG_SMOKE_FIXTURE_MODE";
-const LOCAL_METADATA_LOCATION_ENV: &str = "CUDF_ICEBERG_METADATA_LOCATION";
-const LOCAL_TABLE_IDENT_ENV: &str = "CUDF_ICEBERG_TABLE_IDENT";
-const TABLE_ALIAS_ENV: &str = "CUDF_ICEBERG_TABLE_ALIAS";
-const QUERY_ENV: &str = "CUDF_ICEBERG_SMOKE_QUERY";
-const QUERY_IDS_ENV: &str = "CUDF_ICEBERG_SMOKE_QUERY_IDS";
-const TPCDS_QUERY_IDS_ENV: &str = "CUDF_ICEBERG_TPCDS_SMOKE_QUERY_IDS";
-const CUSTOM_WORKLOAD_ENV: &str = "CUDF_ICEBERG_CUSTOM_WORKLOAD";
-const CUSTOM_QUERY_FILE_ENV: &str = "CUDF_ICEBERG_CUSTOM_QUERY_FILE";
-const STREAM_TSV_ENV: &str = "CUDF_ICEBERG_SMOKE_STREAM_TSV";
-const CONTINUE_ON_QUERY_ERROR_ENV: &str = "CUDF_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR";
-const SMOKE_EXECUTION_MODE_ENV: &str = "CUDF_ICEBERG_SMOKE_EXECUTION_MODE";
-const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "CUDF_ICEBERG_SMOKE_CPU_BASELINE_TIMEOUT_SECS";
-const NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_ICEBERG_NATIVE_DEVICE_BUDGET_BYTES";
-const NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_SOURCE_CHUNK_BYTES";
-const NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
-const NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_RETRY_ATTEMPTS";
-const NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_ICEBERG_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
-const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "CUDF_ICEBERG_NATIVE_MAX_SOURCE_READS_IN_FLIGHT";
+const FIXTURE_MODE_ENV: &str = "NEXUS_ICEBERG_SMOKE_FIXTURE_MODE";
+const LOCAL_METADATA_LOCATION_ENV: &str = "NEXUS_ICEBERG_METADATA_LOCATION";
+const LOCAL_TABLE_IDENT_ENV: &str = "NEXUS_ICEBERG_TABLE_IDENT";
+const TABLE_ALIAS_ENV: &str = "NEXUS_ICEBERG_TABLE_ALIAS";
+const QUERY_ENV: &str = "NEXUS_ICEBERG_SMOKE_QUERY";
+const QUERY_IDS_ENV: &str = "NEXUS_ICEBERG_SMOKE_QUERY_IDS";
+const TPCDS_QUERY_IDS_ENV: &str = "NEXUS_ICEBERG_TPCDS_SMOKE_QUERY_IDS";
+const CUSTOM_WORKLOAD_ENV: &str = "NEXUS_ICEBERG_CUSTOM_WORKLOAD";
+const CUSTOM_QUERY_FILE_ENV: &str = "NEXUS_ICEBERG_CUSTOM_QUERY_FILE";
+const STREAM_TSV_ENV: &str = "NEXUS_ICEBERG_SMOKE_STREAM_TSV";
+const CONTINUE_ON_QUERY_ERROR_ENV: &str = "NEXUS_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR";
+const SMOKE_EXECUTION_MODE_ENV: &str = "NEXUS_ICEBERG_SMOKE_EXECUTION_MODE";
+const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_SMOKE_CPU_BASELINE_TIMEOUT_SECS";
+const NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_ICEBERG_NATIVE_DEVICE_BUDGET_BYTES";
+const NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_SOURCE_CHUNK_BYTES";
+const NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
+const NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_RETRY_ATTEMPTS";
+const NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "NEXUS_ICEBERG_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+const NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_SOURCE_READS_IN_FLIGHT";
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
-    "CUDF_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
-const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_ICEBERG_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
-const TPCH_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCH_SCALE_FACTOR";
-const TPCDS_SCALE_FACTOR_ENV: &str = "CUDF_ICEBERG_TPCDS_SCALE_FACTOR";
-const OBJECT_STORE_STAGING_ENV: &str = "CUDF_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
-const GLUE_URI_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_GLUE_URI";
-const REST_URI_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_REST_URI";
-const REST_WAREHOUSE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_WAREHOUSE";
-const REST_NAMESPACE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_NAMESPACE";
-const REST_TABLE_ENV: &str = "CUDF_ICEBERG_REST_TABLE";
-const REST_S3_ENDPOINT_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT";
-const REST_S3_REGION_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_REGION";
-const REST_S3_PATH_STYLE_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE";
-const REST_S3_ACCESS_KEY_ID_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_ACCESS_KEY_ID";
-const REST_S3_SECRET_ACCESS_KEY_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY";
-const REST_S3_SESSION_TOKEN_ENV: &str = "DATAFUSION_NEXUS_ICEBERG_S3_SESSION_TOKEN";
+    "NEXUS_ICEBERG_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
+const NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "NEXUS_ICEBERG_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
+const TPCH_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCH_SCALE_FACTOR";
+const TPCDS_SCALE_FACTOR_ENV: &str = "NEXUS_ICEBERG_TPCDS_SCALE_FACTOR";
+const OBJECT_STORE_STAGING_ENV: &str = "NEXUS_ICEBERG_SMOKE_OBJECT_STORE_STAGING";
+const GLUE_URI_ENV: &str = "NEXUS_ICEBERG_GLUE_URI";
+const REST_URI_ENV: &str = "NEXUS_ICEBERG_REST_URI";
+const REST_WAREHOUSE_ENV: &str = "NEXUS_ICEBERG_WAREHOUSE";
+const REST_NAMESPACE_ENV: &str = "NEXUS_ICEBERG_NAMESPACE";
+const REST_TABLE_ENV: &str = "NEXUS_ICEBERG_REST_TABLE";
+const REST_S3_ENDPOINT_ENV: &str = "NEXUS_ICEBERG_S3_ENDPOINT";
+const REST_S3_REGION_ENV: &str = "NEXUS_ICEBERG_S3_REGION";
+const REST_S3_PATH_STYLE_ENV: &str = "NEXUS_ICEBERG_S3_PATH_STYLE";
+const REST_S3_ACCESS_KEY_ID_ENV: &str = "NEXUS_ICEBERG_S3_ACCESS_KEY_ID";
+const REST_S3_SECRET_ACCESS_KEY_ENV: &str = "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY";
+const REST_S3_SESSION_TOKEN_ENV: &str = "NEXUS_ICEBERG_S3_SESSION_TOKEN";
 const DEFAULT_TPCH_QUERY_IDS: &[&str] = &["q01", "q03", "q06", "q10"];
 const DEFAULT_SMOKE_GLUE_CATALOG_NAME: &str = "glue";
 const DEFAULT_SMOKE_GLUE_DATABASE: &str = "tpch_sf1";
@@ -135,10 +135,7 @@ pub use cpu_baseline::{
     fingerprint_output_batches, smoke_parity_uses_ordered_rows,
 };
 pub(crate) use fixture::{iceberg_table_arrow_schema, load_iceberg_table};
-pub(crate) use metrics::{
-    format_aggregate_strategy_rows, format_join_strategy_rows, format_lakehouse_cache_fill_event_snapshot_rows,
-    format_source_read_runtime_rows, format_task_operator_rows, format_task_runtime_rows, metric_duration_ms_text,
-};
+pub(crate) use metrics::*;
 pub use report::{IcebergNativeSmokeReport, IcebergNativeSmokeReportRow, write_smoke_tsv_header, write_smoke_tsv_row};
 pub use runner::{run_from_env, run_report, run_report_streaming, run_single_tpch_query_report_with_execution_mode};
 pub use staging::{

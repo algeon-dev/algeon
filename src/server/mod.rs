@@ -21,40 +21,16 @@ mod flight;
 mod session;
 
 pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfig, TokenStore};
-#[cfg(feature = "cugraph")]
-pub use config::CugraphServerConfig;
-pub use config::{
-    DATAFUSION_NEXUS_ICEBERG_CATALOG_KIND_ENV, DATAFUSION_NEXUS_ICEBERG_CATALOG_NAME_ENV,
-    DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_ID_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_CATALOG_NAME_ENV,
-    DATAFUSION_NEXUS_ICEBERG_GLUE_DATABASE_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_TABLES_ENV,
-    DATAFUSION_NEXUS_ICEBERG_GLUE_URI_ENV, DATAFUSION_NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV,
-    DATAFUSION_NEXUS_ICEBERG_NAMESPACE_ENV, DATAFUSION_NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV,
-    DATAFUSION_NEXUS_ICEBERG_REST_PREFIX_ENV, DATAFUSION_NEXUS_ICEBERG_REST_TOKEN_ENV,
-    DATAFUSION_NEXUS_ICEBERG_REST_URI_ENV, DATAFUSION_NEXUS_ICEBERG_S3_ENDPOINT_ENV,
-    DATAFUSION_NEXUS_ICEBERG_S3_PATH_STYLE_ENV, DATAFUSION_NEXUS_ICEBERG_S3_REGION_ENV,
-    DATAFUSION_NEXUS_ICEBERG_TABLES_ENV, DATAFUSION_NEXUS_SERVER_BIND_ENV, DATAFUSION_NEXUS_SERVER_CONFIG_FILE_ENV,
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-    DATAFUSION_NEXUS_SERVER_CUGRAPH_RENUMBER_ENV, DATAFUSION_NEXUS_SERVER_LOG_ENV,
-    DATAFUSION_NEXUS_SERVER_MAX_IN_FLIGHT_ENV, DATAFUSION_NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    DATAFUSION_NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-    DATAFUSION_NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, DATAFUSION_NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-    DATAFUSION_NEXUS_SERVER_SESSION_PROFILE_ENV, DATAFUSION_NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
-    ServerSessionProfile,
-};
-#[cfg(feature = "iceberg")]
-pub use config::{
-    GlueServerBackendConfig, IcebergCatalogBackendConfig, IcebergServerConfig, IcebergTableRegistrationConfig,
-};
+pub use config::*;
 pub use diagnostics::{FlightSqlNativeRejectClass, log_leaf_guard_rejection, log_native_planning_report};
 pub use error::{Result, ServerError};
 pub use session::{apply_session_profile, build_session_config, build_session_context};
 
 #[cfg(feature = "iceberg")]
 pub use crate::{
-    CUDF_ICEBERG_PARQUET_READ_STRATEGY_ENV, CUDF_ICEBERG_REMOTE_DIRECT_ENV, CUDF_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV,
-    CUDF_ICEBERG_REMOTE_KVIKIO_EXPERIMENTAL_ENV, CUDF_LAKEHOUSE_CACHE_MAX_BYTES_ENV, CUDF_LAKEHOUSE_CACHE_POLICY_ENV,
-    CUDF_LAKEHOUSE_CACHE_ROOT_ENV,
+    NEXUS_ICEBERG_PARQUET_READ_STRATEGY_ENV, NEXUS_ICEBERG_REMOTE_DIRECT_ENV,
+    NEXUS_ICEBERG_REMOTE_DIRECT_READ_MODE_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
+    NEXUS_LAKEHOUSE_CACHE_ROOT_ENV,
 };
 
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
@@ -238,7 +214,7 @@ fn cugraph_enabled(_config: &ServerConfig) -> bool {
 
 /// Emit a one-shot startup WARN when this binary was built with the `cugraph`
 /// feature but cuGraph SQL functions were not enabled at runtime
-/// (`DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED` is not `true`). Without it the
+/// (`NEXUS_SERVER_CUGRAPH_ENABLED` is not `true`). Without it the
 /// `cugraph_*` table functions are never registered and queries fail with a
 /// not-found error, which is easy to misread as a build problem when the
 /// feature is actually compiled in. The cfg-gated definitions keep this a
@@ -252,7 +228,7 @@ fn warn_if_cugraph_built_but_disabled(config: &ServerConfig) {
         cugraph_enabled = false,
         "datafusion-nexus Flight SQL server was built with the `cugraph` feature \
          but cuGraph SQL functions are disabled at runtime, so they will not be \
-         registered. Set DATAFUSION_NEXUS_SERVER_CUGRAPH_ENABLED=true to register \
+         registered. Set NEXUS_SERVER_CUGRAPH_ENABLED=true to register \
          the cugraph_* table functions."
     );
 }
@@ -431,7 +407,7 @@ fn warn_if_testing_profile_active(config: &ServerConfig) {
          the GPU-only CudfTableFormatScanExec leaf and plain ORDER BY queries \
          will fail with a structured planning error. Either rebuild with \
          --features iceberg-cpu to enable the CPU Iceberg reader, or switch \
-         to DATAFUSION_NEXUS_SERVER_SESSION_PROFILE=native."
+         to NEXUS_SERVER_SESSION_PROFILE=native."
     );
 }
 
