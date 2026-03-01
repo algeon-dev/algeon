@@ -844,6 +844,25 @@ impl NativeCudfMetrics {
                         .map_or_else(|| "none".to_string(), |value| value.to_string()),
                 )
                 .with_new_label("device_read_support", row.parquet_read_evidence.device_read_support.clone())
+                .with_new_label(
+                    "parquet_pruning_input_row_groups",
+                    row.parquet_read_evidence
+                        .pruning_input_row_groups
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "parquet_row_groups_after_stats_filter",
+                    row.parquet_read_evidence
+                        .row_groups_after_stats_filter
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label(
+                    "parquet_row_groups_after_bloom_filter",
+                    row.parquet_read_evidence
+                        .row_groups_after_bloom_filter
+                        .map_or_else(|| "none".to_string(), |value| value.to_string()),
+                )
+                .with_new_label("parquet_bloom_pruning_status", row.parquet_read_evidence.bloom_pruning_status.clone())
                 .with_new_label("batch_index", row.batch_index.to_string())
                 .with_new_label("chunk_count", row.chunk_count.to_string())
                 .with_new_label("first_chunk_index", row.first_chunk_index.to_string())
@@ -1555,6 +1574,10 @@ mod tests {
                 remote_bytes: Some(4096),
                 remote_range_count: Some(3),
                 device_read_support: "not_reported_by_libcudf".to_string(),
+                pruning_input_row_groups: Some(9),
+                row_groups_after_stats_filter: Some(6),
+                row_groups_after_bloom_filter: Some(2),
+                bloom_pruning_status: "bloom_pruned".to_string(),
             },
             batch_index: 2,
             chunk_count: 3,
@@ -1606,6 +1629,10 @@ mod tests {
         assert_eq!(row.remote_read_bytes, Some(4096));
         assert_eq!(row.remote_read_range_count, Some(3));
         assert_eq!(row.device_read_support, "not_reported_by_libcudf");
+        assert_eq!(row.parquet_pruning_input_row_groups, Some(9));
+        assert_eq!(row.parquet_row_groups_after_stats_filter, Some(6));
+        assert_eq!(row.parquet_row_groups_after_bloom_filter, Some(2));
+        assert_eq!(row.parquet_bloom_pruning_status, "bloom_pruned");
         assert_eq!(row.output_rows, 42);
         assert!(row.reader_predicate);
         assert_eq!(row.reader_dynamic_filter_count, 1);

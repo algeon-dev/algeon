@@ -62,6 +62,10 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     assert_eq!(source_read_row.parquet_read_evidence.remote_read_mode, "none");
     assert_eq!(source_read_row.parquet_read_evidence.backend, "libcudf_path_reader");
     assert_eq!(source_read_row.parquet_read_evidence.fallback_reason, "not_applicable");
+    assert!(source_read_row.parquet_read_evidence.pruning_input_row_groups.is_some());
+    assert_eq!(source_read_row.parquet_read_evidence.row_groups_after_stats_filter, None);
+    assert_eq!(source_read_row.parquet_read_evidence.row_groups_after_bloom_filter, None);
+    assert_eq!(source_read_row.parquet_read_evidence.bloom_pruning_status, "no_reader_predicate");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
     assert_eq!(metrics.boundary.device_to_host_materialized_rows, 2);

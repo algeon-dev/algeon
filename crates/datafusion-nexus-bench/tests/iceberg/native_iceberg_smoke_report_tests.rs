@@ -311,6 +311,10 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
             remote_read_bytes: Some(2048),
             remote_read_range_count: Some(3),
             device_read_support: "supported".to_string(),
+            parquet_pruning_input_row_groups: Some(5),
+            parquet_row_groups_after_stats_filter: Some(5),
+            parquet_row_groups_after_bloom_filter: Some(2),
+            parquet_bloom_pruning_status: "bloom_pruned".to_string(),
             ..Default::default()
         }],
         lakehouse_cache_fill_event_snapshot_rows: vec![NativeLakehouseCacheFillEventMetricRow {
@@ -358,6 +362,7 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
     assert_eq!(tsv_field(&tsv, "source_fetch_bytes"), "1024");
     assert_eq!(tsv_field(&tsv, "source_fetch_count"), "2");
     assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("remote_read_bytes=2048"));
+    assert!(tsv_field(&tsv, "native_source_read_runtime_rows").contains("parquet_bloom_pruning_status=bloom_pruned"));
     assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("outcome=completed"));
     assert!(tsv_field(&tsv, "lakehouse_cache_fill_event_snapshot_rows").contains("bytes=4096"));
     assert_eq!(tsv_field(&tsv, "host_fetch_budget_wait_time_ms"), "5.000");

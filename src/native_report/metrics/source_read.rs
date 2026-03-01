@@ -43,6 +43,14 @@ pub struct NativeSourceReadRuntimeMetricRow {
     pub remote_read_range_count: Option<usize>,
     /// Direct device-read support evidence reported by the lower layer.
     pub device_read_support: String,
+    /// Row groups participating in this read after any caller row-group selection.
+    pub parquet_pruning_input_row_groups: Option<usize>,
+    /// Row groups surviving libcudf statistics pruning, when reported.
+    pub parquet_row_groups_after_stats_filter: Option<usize>,
+    /// Row groups surviving libcudf Bloom-filter pruning, when reported.
+    pub parquet_row_groups_after_bloom_filter: Option<usize>,
+    /// Stable status explaining Bloom-pruning evidence or known ineligibility.
+    pub parquet_bloom_pruning_status: String,
     /// Batch index within the source stream, or chunk index for singleton reads.
     pub batch_index: usize,
     /// Number of source chunks represented by this read.
@@ -97,7 +105,7 @@ impl NativeSourceReadRuntimeMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "source_node_id={},read_kind={},read_strategy={},host_buffer_fetch_mode={},host_buffer_payload_bytes={},host_buffer_requested_range_count={},host_buffer_requested_range_bytes={},host_buffer_original_file_bytes={},host_buffer_mini_parquet_footer_bytes={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},parquet_read_fallback_reason={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={}",
+            "source_node_id={},read_kind={},read_strategy={},host_buffer_fetch_mode={},host_buffer_payload_bytes={},host_buffer_requested_range_count={},host_buffer_requested_range_bytes={},host_buffer_original_file_bytes={},host_buffer_mini_parquet_footer_bytes={},batch_index={},chunk_count={},first_chunk_index={},last_chunk_index={},first_file_index={},last_file_index={},file_count={},row_group_count={},read_columns_per_file={},read_columns_total={},known_file_bytes={},estimated_source_read_bytes={},known_row_group_bytes={},known_projected_compressed_bytes={},known_projected_uncompressed_bytes={},known_pure_filter_compressed_bytes={},known_pure_filter_uncompressed_bytes={},output_rows={},reader_predicate={},reader_dynamic_filter_count={},source_batching_reason={},source_chunk_planning_mode={},source_chunk_planning_reason={},elapsed_ns={},parquet_read_input_kind={},remote_read_mode={},parquet_read_backend={},parquet_read_fallback_reason={},remote_backend_build_status={},remote_read_bytes={},remote_read_range_count={},device_read_support={},parquet_pruning_input_row_groups={},parquet_row_groups_after_stats_filter={},parquet_row_groups_after_bloom_filter={},parquet_bloom_pruning_status={}",
             self.source_node_id,
             self.read_kind,
             self.read_strategy,
@@ -139,6 +147,10 @@ impl NativeSourceReadRuntimeMetricRow {
             optional_usize(self.remote_read_bytes),
             optional_usize(self.remote_read_range_count),
             self.device_read_support,
+            optional_usize(self.parquet_pruning_input_row_groups),
+            optional_usize(self.parquet_row_groups_after_stats_filter),
+            optional_usize(self.parquet_row_groups_after_bloom_filter),
+            self.parquet_bloom_pruning_status,
         )
     }
 }
@@ -173,6 +185,10 @@ fn labels_to_source_read_runtime_row(labels: BTreeMap<&str, &str>) -> NativeSour
         remote_read_bytes: optional_usize_label(&labels, "remote_read_bytes"),
         remote_read_range_count: optional_usize_label(&labels, "remote_read_range_count"),
         device_read_support: optional_string_label_or_none(&labels, "device_read_support"),
+        parquet_pruning_input_row_groups: optional_usize_label(&labels, "parquet_pruning_input_row_groups"),
+        parquet_row_groups_after_stats_filter: optional_usize_label(&labels, "parquet_row_groups_after_stats_filter"),
+        parquet_row_groups_after_bloom_filter: optional_usize_label(&labels, "parquet_row_groups_after_bloom_filter"),
+        parquet_bloom_pruning_status: optional_string_label_or_none(&labels, "parquet_bloom_pruning_status"),
         batch_index: usize_label(&labels, "batch_index"),
         chunk_count: usize_label(&labels, "chunk_count"),
         first_chunk_index: usize_label(&labels, "first_chunk_index"),
