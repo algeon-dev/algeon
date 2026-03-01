@@ -48,7 +48,9 @@ pub use super::tpcds_queries::{TPCDS_QUERIES, TPCDS_QUERY_COUNT, TpcdsQuery, tpc
 /// a 256 MiB fallback if GPU memory cannot be detected. Invalid values panic
 /// during config construction.
 pub const CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_DEVICE_BUDGET_BYTES";
-/// Named native memory/source profile used by TPC-DS benchmark/report surfaces.
+/// Named native memory/source profile used by TPC-DS benchmark/report
+/// surfaces. Accepts `conservative` (default) or `sf100_gpu_throughput`;
+/// individual `CUDF_TPCDS_NATIVE_*` knobs may still override the profile.
 pub const CUDF_TPCDS_NATIVE_PROFILE_ENV: &str = "CUDF_TPCDS_NATIVE_PROFILE";
 /// Planning target, in bytes, for native Parquet source chunks.
 pub const CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_SOURCE_CHUNK_BYTES";
@@ -58,30 +60,42 @@ pub const CUDF_TPCDS_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "CUDF_TPCDS_NAT
 pub const CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "CUDF_TPCDS_NATIVE_MAX_RETRY_ATTEMPTS";
 /// Minimum row-group granularity used when retrying with smaller chunks.
 pub const CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "CUDF_TPCDS_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
-/// Source chunk planning mode used by bounded native TPC-DS execution.
+/// Source chunk planning mode used by bounded native TPC-DS execution. Accepts
+/// `conservative` or `local_parquet_throughput`; defaults to the selected
+/// profile.
 pub const CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
-/// Execution contract for native floating statistical aggregates.
+/// Execution contract for native floating statistical aggregates. Accepts
+/// `datafusion_exact_host_welford` or `gpu_native_tolerant`; defaults depend on
+/// the caller's workload surface.
 pub const CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
     "CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
-/// Migration alias for [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`].
+/// Migration alias for
+/// [`CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV`], with the
+/// same accepted values.
 pub const CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV: &str = "CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE";
 /// Temporarily ignored. Native planning must not prefer CPU for conservative
 /// small/selective shapes while SQL may include GPU-only `cugraph_*` table
 /// functions.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE";
-/// Row-group threshold for small/selective CPU preference.
+/// Reserved row-group threshold for small/selective CPU preference. Ignored by
+/// the current optimizer config while the CPU-preference surface is dormant.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_ROW_GROUPS";
-/// Source-read byte threshold for small/selective CPU preference.
+/// Dormant source-read byte threshold for small/selective CPU preference.
+/// Ignored by the current optimizer config while the CPU-preference surface is
+/// dormant.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_SMALL_SELECTIVE_SOURCE_BYTES";
-/// Row-group threshold for residual-join CPU preference.
+/// Reserved row-group threshold for residual-join CPU preference. Ignored by
+/// the current optimizer config while the CPU-preference surface is dormant.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_ROW_GROUPS";
-/// Source-read byte threshold for residual-join CPU preference.
+/// Dormant source-read byte threshold for residual-join CPU preference. Ignored
+/// by the current optimizer config while the CPU-preference surface is dormant.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES_ENV: &str =
     "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_RESIDUAL_JOIN_SOURCE_BYTES";
-/// Top-k fetch threshold for small/selective CPU preference.
+/// Reserved top-k fetch threshold for small/selective CPU preference. Ignored
+/// by the current optimizer config while the CPU-preference surface is dormant.
 pub const CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH_ENV: &str = "CUDF_TPCDS_NATIVE_CPU_PREFERENCE_MAX_TOPK_FETCH";
 
 /// Conservative bounded profile: current production-safe defaults.

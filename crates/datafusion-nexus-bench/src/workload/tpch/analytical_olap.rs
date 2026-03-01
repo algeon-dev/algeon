@@ -11,6 +11,7 @@ use datafusion_nexus::{
 
 use super::{TpchWorkloadResult, register_tpch_tables, tpch_native_optimizer_config};
 
+/// Number of curated analytical OLAP TPC-H-shaped queries.
 pub const ANALYTICAL_OLAP_QUERY_COUNT: usize = ANALYTICAL_OLAP_QUERIES.len();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +88,7 @@ impl AnalyticalOlapCapabilityFirstAdmission {
     }
 }
 
+/// Curated analytical OLAP query table in report order.
 pub const ANALYTICAL_OLAP_QUERIES: &[AnalyticalOlapQuery] = &[
     AnalyticalOlapQuery {
         id: "adhoc_olap_01_customer_order_lineitem_star",

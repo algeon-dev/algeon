@@ -16,14 +16,7 @@ mod remaining_topologies;
 #[path = "plans/resident_subplan.rs"]
 mod resident_subplan;
 
-pub(crate) use remaining_topologies::{
-    AggregateOverJoinSubplanTopKVariant, ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
-    RootTopKJoinAggregateVariant, aggregate_over_join_subplan_topk_plan, aggregate_over_join_subplan_topk_variant_plan,
-    resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
-    resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan,
-    resident_grouped_aggregate_subquery_filter_plan, root_topk_join_aggregate_plan,
-    root_topk_join_aggregate_variant_plan, shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan,
-};
+pub(crate) use remaining_topologies::*;
 pub(crate) use resident_subplan::{
     KeyedHashJoinResidentSubplanPipelineVariant, keyed_hash_join_resident_subplan_pipeline_plan,
 };

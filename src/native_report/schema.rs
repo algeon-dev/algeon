@@ -5,6 +5,7 @@
 
 /// Fallback-pressure TSV schema version.
 pub const NATIVE_FALLBACK_PRESSURE_TSV_SCHEMA_VERSION: u32 = 8;
+/// Fallback-pressure TSV column names in wire/report order.
 pub(crate) const NATIVE_FALLBACK_PRESSURE_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "physical_root",
@@ -24,6 +25,7 @@ pub const NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str = "query_id\tphysical_root\t
 
 /// Planning-report TSV schema version.
 pub const NATIVE_DATAFUSION_PLANNING_TSV_SCHEMA_VERSION: u32 = 13;
+/// Planning-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_PLANNING_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "physical_root",
@@ -51,6 +53,7 @@ pub const NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str = "query_id\tphysical_root
 
 /// Execution-report TSV schema version.
 pub const NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION: u32 = 42;
+/// Execution-report TSV column names in wire/report order.
 pub(crate) const NATIVE_DATAFUSION_EXECUTION_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "physical_root",

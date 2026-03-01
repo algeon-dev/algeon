@@ -5,10 +5,8 @@
 // hand-edit individual queries — re-run the extractor instead.
 //
 // Provenance:
-//   duckdb_version      : v1.5.2 (Variegata) 8a5851971f
+//   duckdb_version      : v1.5.2
 //   extraction_command  : duckdb <tmpdb> -c "INSTALL tpcds; LOAD tpcds; COPY (SELECT query FROM tpcds_queries() WHERE query_nr = N) TO 'qNN.sql' (HEADER false, QUOTE '', DELIMITER '');" for N in 1..99
-//   datafusion_nexus_rev : 00d7b03fd52c848c4f558ce37f324cda259d963f
-//   working_tree        : dirty
 //   rewrite_applied     : trailing semicolon and trailing whitespace stripped per query; otherwise vendored verbatim
 //
 // Surface mirrors `crates/datafusion-nexus-bench/src/workload/tpch_queries.rs`:
@@ -16,8 +14,10 @@
 //   - TPCDS_QUERIES: &[TpcdsQuery]
 //   - tpcds_query_ids()
 
+/// Number of vendored TPC-DS queries.
 pub const TPCDS_QUERY_COUNT: usize = 99;
 
+/// Canonical TPC-DS query table in query-id order.
 pub const TPCDS_QUERIES: &[TpcdsQuery] = &[
     TpcdsQuery {
         id: "q01",

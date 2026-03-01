@@ -7,6 +7,8 @@ use std::{
 use arrow::datatypes::Schema;
 use nexus_query_engine::{BinaryOp, Expr, LiteralValue};
 
+/// Arrow schema/field metadata key carrying comma-separated source unique-key
+/// column groups.
 pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "datafusion_nexus.source_unique_keys.v1";
 
 static SOURCE_UNIQUE_KEYS_BY_PATH: OnceLock<RwLock<BTreeMap<PathBuf, Vec<Vec<String>>>>> = OnceLock::new();

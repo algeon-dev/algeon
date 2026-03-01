@@ -38,6 +38,7 @@ use crate::{StatisticalAggregateExecutionMode, planner::NativePlanningDiagnostic
 /// Bump this when a column is added, removed, renamed, reordered, or given a
 /// new meaning that would change downstream parsing.
 pub const NATIVE_TPCDS_PARITY_TSV_SCHEMA_VERSION: u32 = 4;
+/// TPC-DS parity TSV column names in wire/report order.
 pub(crate) const NATIVE_TPCDS_PARITY_TSV_COLUMNS: &[&str] = &[
     "query_id",
     "cpu_planning_status",

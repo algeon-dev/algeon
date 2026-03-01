@@ -1,5 +1,7 @@
+/// Number of vendored TPC-H queries.
 pub const TPCH_QUERY_COUNT: usize = 22;
 
+/// Canonical TPC-H query table in query-id order.
 pub const TPCH_QUERIES: &[TpchQuery] = &[
     TpchQuery {
         id: "q01",

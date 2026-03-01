@@ -14,11 +14,17 @@ use crate::{
     plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows},
 };
 
+/// Build-side row count at or above which keyed hash joins are classified as large.
 pub(crate) const LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
+/// Build-side byte count at or above which keyed hash joins are classified as large.
 pub(crate) const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
+/// Probe-side byte count at or above which keyed hash joins are classified as large.
 pub(crate) const LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+/// Build-side row count at or below which reusable hash-table builds are treated as small.
 pub(crate) const SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
+/// Build-side byte count at or below which reusable hash-table builds are treated as small.
 pub(crate) const SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
+/// Probe-side byte count at or below which one-shot keyed hash joins are treated as small.
 pub(crate) const SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
 
 /// Node-local native join execution capability.
