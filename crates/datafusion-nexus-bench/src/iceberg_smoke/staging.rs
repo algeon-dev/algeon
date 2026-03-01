@@ -356,6 +356,27 @@ pub(crate) fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableForm
             .filter(|value| !value.is_empty() && *value != "unknown")
             .map(str::to_string),
     );
+    let lakehouse_cache_read_mode = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.lakehouse_cache_read_mode.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
+    let lakehouse_cache_fill_mode = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.lakehouse_cache_fill_mode.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
+    let source_fallback_reason = joined_values(
+        diagnostics
+            .iter()
+            .flat_map(|diagnostics| diagnostics.source_fallback_reason.split(','))
+            .filter(|value| !value.is_empty() && *value != "unknown")
+            .map(str::to_string),
+    );
     let snapshot_id =
         joined_optional_values(diagnostics.iter().filter_map(|diagnostics| diagnostics.snapshot_id.clone()));
     let catalog_type =
@@ -386,6 +407,9 @@ pub(crate) fn aggregate_scan_diagnostics(records: &[StagingRecord]) -> TableForm
         source_decode_input,
         credential_mode,
         lakehouse_cache_status,
+        lakehouse_cache_read_mode,
+        lakehouse_cache_fill_mode,
+        source_fallback_reason,
         direct_device_read_disposition,
     }
 }

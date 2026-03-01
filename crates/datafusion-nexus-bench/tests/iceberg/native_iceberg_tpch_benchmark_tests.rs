@@ -240,13 +240,18 @@ fn benchmark_report_tsv_exposes_runtime_timing_and_parity_fields() {
     };
 
     let tsv = report.to_tsv();
-    assert!(tsv.starts_with("# native_iceberg_tpch_benchmark_tsv_schema_version=3\n"));
+    assert!(tsv.starts_with("# native_iceberg_tpch_benchmark_tsv_schema_version=7\n"));
     assert!(tsv.contains("\tnative_runtime_elapsed_ms\t"));
     assert!(tsv.contains("\tcpu_runtime_elapsed_ms\t"));
     assert!(tsv.contains("\tsource_read_strategy\t"));
     assert!(tsv.contains("\tsource_decode_input\t"));
     assert!(tsv.contains("\tcredential_mode\t"));
     assert!(tsv.contains("\tlakehouse_cache_status\t"));
+    assert!(tsv.contains("\tlakehouse_cache_read_mode\t"));
+    assert!(tsv.contains("\tlakehouse_cache_fill_mode\t"));
+    assert!(tsv.contains("\tsource_fallback_reason\t"));
+    assert!(tsv.contains("\tnative_source_read_runtime_rows\t"));
+    assert!(tsv.contains("\tlakehouse_cache_fill_event_snapshot_rows\t"));
     assert!(tsv.contains("\ttimeout_category\t"));
     assert!(tsv.contains("\treport_elapsed_ms\t"));
     assert!(tsv.contains("q06\t1\tglue_s3\tglue\ttpch_sf1_all_tables\tsf1\ticeberg\t123\t"));
@@ -266,7 +271,7 @@ fn benchmark_stream_writer_flushes_header_and_each_completed_query_row() {
 
     assert_eq!(writer.flushes, 2);
     let output = String::from_utf8(writer.bytes).unwrap();
-    assert!(output.starts_with("# native_iceberg_tpch_benchmark_tsv_schema_version=3\n"));
+    assert!(output.starts_with("# native_iceberg_tpch_benchmark_tsv_schema_version=7\n"));
     assert_eq!(output.matches(REPORT_HEADER_FRAGMENT).count(), 1);
     assert!(output.contains("\nq01\t1\tglue_s3\tglue\ttpch_sf1_all_tables\tsf1\ticeberg\t123\t"));
 }

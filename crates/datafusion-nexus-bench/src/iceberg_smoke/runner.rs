@@ -64,7 +64,7 @@ pub(crate) async fn run_report_with_optional_stream(
             .with_catalog_type(catalog_type.clone()),
     );
     let (ctx, native_rule) =
-        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke)?;
+        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke).await?;
     ctx.register_table(config.table_alias.as_str(), provider)?;
     let mut row = run_query_with_registered_native_tables(
         config.query_id.clone(),
@@ -122,7 +122,15 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-tpch-stage-").tempdir()?);
     let (ctx, native_rule) =
-        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpchBenchmark)?;
+        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpchBenchmark).await?;
+    // Footer-pruning object-store registration is best-effort: a failure must
+    // leave queries running unpruned, never abort the run.
+    if let Err(error) = register_footer_pruning_object_store(&ctx, &config).await {
+        eprintln!(
+            "[lakehouse_pruning] event=register_object_store_skipped error={}",
+            stable_tsv_field(&error.to_string())
+        );
+    }
 
     for table_name in TPCH_TABLES {
         let table_fixture = config.fixture.with_tpch_table(table_name, &config.tpch_scale_factor)?;
@@ -227,7 +235,7 @@ pub(crate) async fn run_tpcds_subset_report(
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("datafusion-nexus-iceberg-tpcds-stage-").tempdir()?);
     let (ctx, native_rule) =
-        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark)?;
+        native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark).await?;
     // Footer-pruning object-store registration is best-effort: a failure must
     // leave queries running unpruned, never abort the run.
     if let Err(error) = register_footer_pruning_object_store(&ctx, &config).await {
@@ -350,7 +358,8 @@ pub(crate) async fn run_custom_subset_report(
         CustomWorkload::Tpch => NativeExecutionProfile::TpchBenchmark,
         CustomWorkload::Tpcds => NativeExecutionProfile::TpcdsBenchmark,
     };
-    let (ctx, native_rule) = native_session_context(config.fixture.source_storage_profile(), native_execution_profile)?;
+    let (ctx, native_rule) =
+        native_session_context(config.fixture.source_storage_profile(), native_execution_profile).await?;
 
     match workload {
         CustomWorkload::Tpch => {
@@ -544,6 +553,13 @@ pub(crate) async fn run_query_with_registered_native_tables(
     let task_ctx = df.task_ctx();
     let mut physical_plan = df.create_physical_plan().await?;
     if iceberg_footer_pruning_enabled() {
+        let scan_records = staging_records_snapshot(&staging_records);
+        if let Err(error) = register_footer_pruning_object_stores_for_scan_records(ctx, &scan_records).await {
+            eprintln!(
+                "[lakehouse_pruning] event=register_scan_object_stores_skipped error={}",
+                stable_tsv_field(&error.to_string())
+            );
+        }
         let unpruned_plan = Arc::clone(&physical_plan);
         physical_plan = datafusion_nexus::native::lakehouse_pruning::prune_table_format_native_plan(
             physical_plan,
@@ -645,7 +661,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
         if let Some(metrics) = physical_plan.metrics() {
             let native_metrics = NativeDataFusionExecutionMetrics::from_metrics(&metrics);
             eprintln!(
-                "[native_iceberg_smoke_report] stage=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} source_cache_hits={} source_cache_misses={} source_cache_inserts={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
+                "[native_iceberg_smoke_report] stage=native_runtime_metrics query_id={} parquet_files={} row_groups_selected={} read_columns={} source_chunks_planned={} source_chunks_committed={} source_cache_hits={} source_cache_misses={} source_cache_inserts={} hash_join_build_count={} one_shot_join_count={} task_runtime_row_count={} task_operator_row_count={} aggregate_strategy_row_count={} join_strategy_row_count={} source_metadata_load_time_ms={} source_read_queue_wait_time_ms={} parquet_read_time_ms={} source_read_time_ms={} operator_time_ms={} chunk_operator_time_ms={} final_merge_time_ms={} final_sort_time_ms={} materialization_time_ms={}",
                 row.query_id,
                 native_metrics.parquet_files,
                 native_metrics.row_groups_selected,
@@ -661,6 +677,8 @@ pub(crate) async fn run_query_with_registered_native_tables(
                 native_metrics.task_operator_rows.len(),
                 native_metrics.aggregate_strategy_rows.len(),
                 native_metrics.join_strategy_rows.len(),
+                metric_duration_ms_text(&metrics, "source_metadata_load_time"),
+                metric_duration_ms_text(&metrics, "source_read_queue_wait_time"),
                 metric_duration_ms_text(&metrics, "parquet_read_time"),
                 metric_duration_ms_text(&metrics, "source_read_time"),
                 metric_duration_ms_text(&metrics, "operator_time"),
@@ -683,6 +701,11 @@ pub(crate) async fn run_query_with_registered_native_tables(
                 "[native_iceberg_smoke_report] stage=native_source_read_runtime_rows query_id={} rows={}",
                 row.query_id,
                 format_source_read_runtime_rows(&native_metrics),
+            );
+            eprintln!(
+                "[native_iceberg_smoke_report] stage=lakehouse_cache_fill_event_snapshot_rows query_id={} rows={}",
+                row.query_id,
+                format_lakehouse_cache_fill_event_snapshot_rows(&native_metrics),
             );
             eprintln!(
                 "[native_iceberg_smoke_report] stage=native_aggregate_strategy_rows query_id={} rows={}",
@@ -816,7 +839,41 @@ async fn register_footer_pruning_object_store(
     let store_url = datafusion::datasource::listing::ListingTableUrl::parse(warehouse)
         .map_err(|error| smoke_error(format!("invalid warehouse url for footer pruning: {error}")))?
         .object_store();
-    ctx.register_object_store(store_url.as_ref(), std::sync::Arc::new(store));
-    eprintln!("[lakehouse_pruning] event=register_object_store warehouse={warehouse}");
+    ctx.register_object_store(store_url.as_ref(), store);
+    eprintln!("[lakehouse_pruning] event=register_object_store source=warehouse_configured count=1");
     Ok(())
+}
+
+async fn register_footer_pruning_object_stores_for_scan_records(
+    ctx: &SessionContext,
+    records: &[StagingRecord],
+) -> SmokeResult<()> {
+    if !iceberg_footer_pruning_enabled() {
+        return Ok(());
+    }
+    let mut store_urls = BTreeSet::new();
+    for record in records {
+        for file in &record.scan_plan.data_files {
+            if let Some(store_url) = s3_store_url_for_location(&file.location) {
+                store_urls.insert(store_url);
+            }
+        }
+    }
+    for store_url in &store_urls {
+        let store = super::cpu_baseline::build_cpu_s3_object_store(store_url).await?;
+        let object_store_url = ListingTableUrl::parse(store_url)
+            .map_err(|error| smoke_error(format!("invalid scan object-store url for footer pruning: {error}")))?
+            .object_store();
+        ctx.register_object_store(object_store_url.as_ref(), store);
+    }
+    if !store_urls.is_empty() {
+        eprintln!("[lakehouse_pruning] event=register_scan_object_stores count={}", store_urls.len());
+    }
+    Ok(())
+}
+
+fn s3_store_url_for_location(location: &str) -> Option<String> {
+    let rest = location.strip_prefix("s3://")?;
+    let bucket = rest.split('/').next()?.trim();
+    (!bucket.is_empty()).then(|| format!("s3://{bucket}"))
 }

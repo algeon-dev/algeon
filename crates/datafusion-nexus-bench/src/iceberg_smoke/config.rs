@@ -594,10 +594,15 @@ impl IcebergNativeSmokeFixture {
     }
 
     pub(crate) fn parquet_read_strategy_config(&self) -> TableFormatParquetReadStrategyConfig {
-        match self {
+        let config = match self {
             Self::LocalMetadata { .. } => TableFormatParquetReadStrategyConfig::from_env(),
             Self::GlueS3 { .. } => self.glue_catalog_config().expect("glue config").parquet_read_strategy_config(),
             Self::RestS3 { .. } => self.rest_config().expect("rest config").parquet_read_strategy_config(),
+        };
+        if let Some(profile) = self.source_storage_profile() {
+            config.with_source_storage_profile_remote_direct_capability(&profile)
+        } else {
+            config
         }
     }
 
@@ -622,13 +627,13 @@ pub fn tpcds_glue_table_name(table_name: &str, scale_factor: &str) -> String {
     table_name.to_string()
 }
 
-pub(crate) fn native_session_context(
+pub(crate) async fn native_session_context(
     source_storage_profile: Option<datafusion_nexus::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
 ) -> SmokeResult<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>)> {
     let mut execution_config =
         native_execution_config_for_profile_with_env(native_execution_profile, |name| std::env::var(name).ok())?;
-    if let Some(profile) = source_storage_profile {
+    if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
@@ -639,6 +644,56 @@ pub(crate) fn native_session_context(
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     Ok((SessionContext::new_with_state(state), native_rule))
+}
+
+async fn resolve_default_chain_source_storage_profile(
+    source_storage_profile: Option<datafusion_nexus::SourceStorageProfile>,
+) -> SmokeResult<Option<datafusion_nexus::SourceStorageProfile>> {
+    let Some(profile) = source_storage_profile else {
+        return Ok(None);
+    };
+    let s3 = profile.s3_profile();
+    if !matches!(s3.credential, datafusion_nexus::S3SourceStorageCredential::DefaultChain) {
+        return Ok(Some(profile));
+    }
+
+    let mut loader = aws_config::defaults(BehaviorVersion::latest());
+    if let Ok(profile_name) = std::env::var(AWS_PROFILE_ENV)
+        && !profile_name.trim().is_empty()
+    {
+        loader = loader.profile_name(profile_name);
+    }
+    let sdk_config = loader.load().await;
+    let Some(credentials_provider) = sdk_config.credentials_provider() else {
+        return Ok(Some(profile));
+    };
+    let credentials = credentials_provider.provide_credentials().await.map_err(|error| {
+        smoke_error(format!("failed to load AWS credentials for native remote-direct S3 reads: {error}"))
+    })?;
+    let mut resolved_s3 = datafusion_nexus::S3SourceStorageProfile::default_chain();
+    if let Some(region) = s3
+        .region
+        .as_deref()
+        .filter(|region| !region.trim().is_empty())
+        .or_else(|| sdk_config.region().map(|region| region.as_ref()))
+    {
+        resolved_s3 = resolved_s3.with_region(region.to_string());
+    }
+    if let Some(endpoint) = s3.endpoint.as_ref() {
+        resolved_s3 = resolved_s3.with_endpoint(endpoint.clone());
+    }
+    if let Some(virtual_hosted_style_request) = s3.virtual_hosted_style_request {
+        resolved_s3 = resolved_s3.with_path_style_access(!virtual_hosted_style_request);
+    }
+    if let Some(allow_http) = s3.allow_http {
+        resolved_s3 = resolved_s3.with_allow_http(allow_http);
+    }
+    resolved_s3 = resolved_s3.with_static_credentials(
+        credentials.access_key_id().to_string(),
+        credentials.secret_access_key().to_string(),
+        credentials.session_token().map(str::to_string),
+    );
+    Ok(Some(datafusion_nexus::SourceStorageProfile::s3(profile.id().to_string(), resolved_s3)))
 }
 
 pub fn native_execution_config_for_profile_with_env(
