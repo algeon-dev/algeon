@@ -2,6 +2,8 @@ use super::*;
 
 mod dynamic_filters;
 
+const MIN_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES: u64 = 8 * 1024;
+
 /// Compiled task interpreter for bounded GPU work.
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
@@ -90,7 +92,41 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
         })?;
         let operator_overlap = self.stream_consumer_operator_admission_bytes(task, state)?;
-        Ok(input_estimate.saturating_add(operator_overlap))
+        let join_materialize_floor = self.join_materialize_admission_floor_bytes(task)?;
+        Ok(input_estimate.saturating_add(operator_overlap).saturating_add(join_materialize_floor))
+    }
+
+    fn join_materialize_admission_floor_bytes(&self, task: &PipelineTask) -> Result<u64> {
+        if task.kind() != PipelineTaskKind::JoinMaterialize {
+            return Ok(0);
+        }
+        let node_id = plan_node(task)?;
+        let Some(probe) = self.join_probes.get(&node_id) else {
+            return Ok(0);
+        };
+        let Some(node) = self.plan.node(node_id) else {
+            return Err(invalid("compiled join materialize task references a missing plan node")
+                .with_fact("compiled_task_id", task.id())
+                .with_fact("plan_node_id", node_id));
+        };
+        let output_columns = node
+            .output_schema()
+            .fields()
+            .iter()
+            .map(|field| crate::JoinOutputColumnUpperBoundInput {
+                data_type: field.data_type().clone(),
+                input_max_string_length_bytes: string_floor_max_bytes(field.data_type()),
+                input_total_string_bytes: None,
+            })
+            .collect::<Vec<_>>();
+        let output_floor = crate::join_output_upper_bound_bytes(1, &output_columns)?;
+        let gather_map_floor =
+            cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(1).map(|bytes| bytes as u64).unwrap_or(64);
+        let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(self.context, &self.reservations);
+        Ok(output_floor
+            .saturating_add(gather_map_floor)
+            .max(MIN_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES)
+            .max(probe.materialize_admission_bytes(stream_target_bytes)))
     }
 
     fn stream_consumer_operator_admission_bytes(
@@ -1411,6 +1447,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 | PipelineEdgeKind::SinkInput => return None,
             }
         }
+    }
+}
+
+fn string_floor_max_bytes(data_type: &arrow::datatypes::DataType) -> Option<u64> {
+    match data_type {
+        arrow::datatypes::DataType::Utf8
+        | arrow::datatypes::DataType::LargeUtf8
+        | arrow::datatypes::DataType::Utf8View => Some(0),
+        _ => None,
     }
 }
 

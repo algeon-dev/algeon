@@ -230,18 +230,32 @@ fn lower_filter_binary_expr(
     // replayed as a FilterNode by `local_parquet_source_reuse` keeps the same row
     // set it would have had as a reader-side filter.
     match op {
-        BinaryOp::And => Ok(cudf_binary_expr(
-            lower_filter_predicate_expr(left)?,
-            BinaryOperator::NullLogicalAnd,
-            lower_filter_predicate_expr(right)?,
-        )),
-        BinaryOp::Or => Ok(cudf_binary_expr(
-            lower_filter_predicate_expr(left)?,
-            BinaryOperator::NullLogicalOr,
-            lower_filter_predicate_expr(right)?,
-        )),
+        BinaryOp::And | BinaryOp::Or => lower_filter_logical_expr(left, op, right),
         _ => lower_binary_expr(left, op, right, output_type),
     }
+}
+
+fn lower_filter_logical_expr(left: &Expr, op: BinaryOp, right: &Expr) -> Result<cudf::Expr> {
+    let combine_op = match op {
+        BinaryOp::And => BinaryOperator::NullLogicalAnd,
+        BinaryOp::Or => BinaryOperator::NullLogicalOr,
+        _ => unreachable!("filter logical lowering is only used for AND/OR"),
+    };
+    let mut operands = Vec::new();
+    let mut stack = vec![right, left];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expr::Binary { left, op: nested_op, right, output_type: None } if *nested_op == op => {
+                stack.push(right);
+                stack.push(left);
+            },
+            _ => operands.push(expr),
+        }
+    }
+
+    let mut lowered = operands.into_iter().map(lower_filter_predicate_expr);
+    let first = lowered.next().expect("filter logical expression always has at least two operands")?;
+    lowered.try_fold(first, |left, right| Ok(cudf_binary_expr(left, combine_op, right?)))
 }
 
 fn lower_binary_expr_with_expected_type(

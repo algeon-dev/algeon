@@ -21,6 +21,15 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
     );
     assert_eq!(facts.get("bounded_join_execution_families"), None);
 
+    let preaggregate_leaf_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+        AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf,
+    );
+    assert!(
+        preaggregate_leaf_plan
+            .capability_analysis()
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+    );
+
     for variant in [
         AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput,
         AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput,
@@ -35,6 +44,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort,
         AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight,
         AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
+        AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum,
     ] {
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
 
@@ -138,6 +148,8 @@ pub(crate) enum AggregateOverJoinSubplanInputsVariant {
     PostRootRepeatedSort,
     RootOutputIncludesRight,
     LimitAfterRoot,
+    PreAggregateLeaf,
+    PreAggregateLeafWithNonSum,
 }
 
 pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
@@ -159,6 +171,11 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
         Field::new("value", DataType::Int64, true),
         Field::new("threshold", DataType::Int64, true),
     ]));
+    let preaggregate_leaf_function = match variant {
+        AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf => Some(AggregateFunction::Sum),
+        AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum => Some(AggregateFunction::Min),
+        _ => None,
+    };
 
     let mut builder = QueryPlanBuilder::new();
     let left_join_input =
@@ -173,6 +190,7 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
                 &mut builder,
                 "left",
                 matches!(variant, AggregateOverJoinSubplanInputsVariant::NestedUnsupportedJoinInput),
+                preaggregate_leaf_function,
             )
         };
     let left_join_input = match variant {
@@ -198,6 +216,8 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
             Arc::clone(&left_aggregate_schema),
         ),
         AggregateOverJoinSubplanInputsVariant::Admitted
+        | AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf
+        | AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum
         | AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput
         | AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput
         | AggregateOverJoinSubplanInputsVariant::BareGroupedAggregateInput
@@ -241,7 +261,7 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
                 vec!["ps_partkey".into(), "ps_supplycost".into(), "ps_availqty".into()],
             )))
         } else {
-            build_aggregate_over_join_subplan_bounded_join_subtree(&mut builder, "right", false)
+            build_aggregate_over_join_subplan_bounded_join_subtree(&mut builder, "right", false, None)
         };
     let right_aggregate = builder.add_aggregate(
         right_join_input,
@@ -345,6 +365,8 @@ pub(crate) fn keyless_conditional_aggregate_over_join_subplan_inputs_plan(
             builder.add_limit(sort, LimitSpec::fetch(100), root_output_schema)
         },
         AggregateOverJoinSubplanInputsVariant::Admitted
+        | AggregateOverJoinSubplanInputsVariant::PreAggregateLeaf
+        | AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum
         | AggregateOverJoinSubplanInputsVariant::GroupedAggregateOverUnsupportedInput
         | AggregateOverJoinSubplanInputsVariant::ScalarAggregateOverUnsupportedInput
         | AggregateOverJoinSubplanInputsVariant::SortBelowAggregateInput
@@ -375,6 +397,7 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
     builder: &mut QueryPlanBuilder,
     label: &str,
     nested_unsupported_join: bool,
+    preaggregate_leaf_function: Option<AggregateFunction>,
 ) -> nexus_query_engine::NodeId {
     let partsupp_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
@@ -387,6 +410,10 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
         Field::new("s_nationkey", DataType::Int32, false),
     ]));
     let nation_schema = Arc::new(Schema::new(vec![Field::new("n_nationkey", DataType::Int32, false)]));
+    let nation_preaggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("n_nationkey", DataType::Int32, false),
+        Field::new("n_sum", DataType::Int64, true),
+    ]));
     let first_join_schema = Arc::new(Schema::new(vec![
         Field::new("ps_partkey", DataType::Int32, false),
         Field::new("ps_supplycost", DataType::Int64, false),
@@ -410,6 +437,18 @@ fn build_aggregate_over_join_subplan_bounded_join_subtree(
         nation_schema,
         vec!["n_nationkey".into()],
     )));
+    let nation = if let Some(function) = preaggregate_leaf_function {
+        builder.add_aggregate(
+            nation,
+            AggregateSpec::new(
+                vec![Expr::column("n_nationkey")],
+                vec![AggregateExpr::new(function, Expr::column("n_nationkey"), "n_sum")],
+            ),
+            nation_preaggregate_schema,
+        )
+    } else {
+        nation
+    };
 
     let first_join_spec = if nested_unsupported_join {
         JoinSpec::new(JoinType::Cross, Vec::new())

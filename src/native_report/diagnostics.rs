@@ -206,7 +206,8 @@ pub(super) fn unsupported_category(
         },
         FallbackReason::ExplicitCpuPolicy
         | FallbackReason::NativeSmallSelectiveTopkCpuPreferred
-        | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred => None,
+        | FallbackReason::NativeSmallSelectiveResidualJoinCpuPreferred
+        | FallbackReason::NativeSmallSelectiveFullSortCpuPreferred => None,
     }
 }
 

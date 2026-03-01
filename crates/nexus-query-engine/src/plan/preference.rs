@@ -17,6 +17,9 @@ pub enum NativePlanCpuPreferenceReason {
     /// Small, selective source work feeds a residual join, where native must
     /// pay residual materialization/evaluation overhead.
     SmallSelectiveResidualJoin,
+    /// Small, selective source work feeds a full-sort join/aggregate shape whose
+    /// native source/join/sort fixed costs are likely to dominate useful GPU work.
+    SmallSelectiveFullSort,
 }
 
 impl NativePlanCpuPreferenceReason {
@@ -25,6 +28,7 @@ impl NativePlanCpuPreferenceReason {
         match self {
             Self::SmallSelectiveTopK => "native_small_selective_topk_cpu_preferred",
             Self::SmallSelectiveResidualJoin => "native_small_selective_residual_join_cpu_preferred",
+            Self::SmallSelectiveFullSort => "native_small_selective_full_sort_cpu_preferred",
         }
     }
 }
@@ -275,6 +279,12 @@ pub fn native_plan_preference_decision(
     {
         return NativePlanPreferenceDecision::CpuPreferred {
             reason: NativePlanCpuPreferenceReason::SmallSelectiveTopK,
+            facts,
+        };
+    }
+    if facts.sort_count > 0 && (facts.join_count > 0 || facts.grouped_aggregate_count > 0) {
+        return NativePlanPreferenceDecision::CpuPreferred {
+            reason: NativePlanCpuPreferenceReason::SmallSelectiveFullSort,
             facts,
         };
     }

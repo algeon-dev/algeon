@@ -83,6 +83,25 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
     PartitionedLazyStream(PartitionedHashEquiJoinFrameStreamProbeState),
 }
 
+impl BoundedCompiledJoinProbeState {
+    pub(in crate::exec::bounded) fn materialize_admission_bytes(&self, stream_target_bytes: u64) -> u64 {
+        match self {
+            Self::Hash(probe) => probe.materialize_admission_bytes(stream_target_bytes),
+            Self::HashStreamed { outputs, .. }
+            | Self::FilteredStreamed { outputs, .. }
+            | Self::MixedStreamed { outputs, .. }
+            | Self::OneShotStreamed { outputs, .. }
+            | Self::PartitionedStreamed { outputs, .. } => {
+                outputs.iter().map(|output| output.reservation.bytes()).max().unwrap_or(0)
+            },
+            Self::HashLazyStream(probe) => probe.inputs.max_per_frame_reservation_bytes(),
+            Self::OneShotLazyStream(probe) => probe.inputs.max_per_frame_reservation_bytes(),
+            Self::PartitionedLazyStream(probe) => probe.partition_target_bytes,
+            Self::Filtered(_) | Self::Prepared(_) => 0,
+        }
+    }
+}
+
 pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinBuildState {
     strategy: CompiledJoinExecutionStrategy,
     side: JoinSide,
@@ -851,15 +870,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             release_bounded_root_hash_join_build_state(build, reservations, metrics);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
-        BoundedCompiledJoinProbeState::Hash(probe) => Ok(BoundedCompiledJoinMaterializeOutput::Stream(
-            execute_bounded_root_hash_join_materialize_preserving_stream(
-                context,
-                node_id,
-                node,
-                probe,
-                reservations,
-                metrics,
-            )?,
+        BoundedCompiledJoinProbeState::Hash(probe) => Ok(BoundedCompiledJoinMaterializeOutput::LazyStream(
+            execute_bounded_root_hash_join_materialize_preserving_stream(context, node_id, node, probe, reservations)?,
         )),
         BoundedCompiledJoinProbeState::HashLazyStream(probe) => Ok(BoundedCompiledJoinMaterializeOutput::LazyStream(
             root_hash_join_frame_stream_probe_to_payload(context, node_id, node, probe),

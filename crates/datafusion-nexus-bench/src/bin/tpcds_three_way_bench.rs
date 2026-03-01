@@ -9,6 +9,7 @@
 use std::{
     collections::BTreeMap,
     error::Error,
+    io::{self, Write},
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -25,12 +26,14 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NativeDataFusionExecutionMetrics,
+    CandidateOutcome, CudfNativePhysicalOptimizerRule, CudfSessionStateBuilderExt, NATIVE_CUDF_DATAFUSION_METRIC_NAMES,
+    NativeCudfComposedExec, NativeCudfExec, NativeCudfGpuProducerExec, NativeDataFusionExecutionMetrics,
     NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, StatisticalAggregateExecutionMode,
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, CUDF_TPCDS_NATIVE_STDDEV_SAMP_EXECUTION_MODE_ENV,
     TPCDS_QUERIES, TpcdsNativeProfileSettings, TpcdsQuery, register_tpcds_tables,
+    tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings,
     tpcds_native_analytics_optimizer_config_with_profile_settings, tpcds_native_profile_settings_from_env,
     tpcds_native_profile_settings_with_env, tpcds_native_report_session_config,
 };
@@ -184,12 +187,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("{TSV_HEADER}");
     for query in &cfg.queries {
         for warmup_index in 0..cfg.warmups {
+            print_progress(&cfg, query, warmup_index, true, "start");
             let outcome = run_once(&runtime, query).await;
             print_row(query, warmup_index, true, &outcome, cfg.engine);
+            print_progress(&cfg, query, warmup_index, true, outcome.outcome);
         }
         for iteration in 0..cfg.iterations {
+            print_progress(&cfg, query, iteration, false, "start");
             let outcome = run_once(&runtime, query).await;
             print_row(query, iteration, false, &outcome, cfg.engine);
+            print_progress(&cfg, query, iteration, false, outcome.outcome);
         }
     }
     Ok(())
@@ -294,6 +301,18 @@ fn print_metadata(cfg: &BenchConfig) {
     );
 }
 
+fn print_progress(cfg: &BenchConfig, query: &TpcdsQuery, iteration: usize, warmup: bool, stage: &str) {
+    eprintln!(
+        "[tpcds_three_way_bench] stage={} engine={} query_id={} iteration={} warmup={}",
+        stage,
+        cfg.engine.as_str(),
+        query.id,
+        iteration,
+        warmup
+    );
+    let _ = io::stderr().flush();
+}
+
 fn bench_queries_from_csv(queries_csv: &str) -> Result<Vec<&'static TpcdsQuery>, Box<dyn Error>> {
     if queries_csv.trim().eq_ignore_ascii_case("all") {
         return Ok(TPCDS_QUERIES.iter().collect());
@@ -356,7 +375,8 @@ async fn build_native_planning_context(
     root: &Path,
     native_profile: &TpcdsNativeProfileSettings,
 ) -> Result<(SessionContext, Arc<CudfNativePhysicalOptimizerRule>), Box<dyn Error>> {
-    let optimizer_config = tpcds_native_analytics_optimizer_config_with_profile_settings(native_profile);
+    let optimizer_config =
+        tpcds_native_analytics_optimizer_config_with_cpu_preference_and_profile_settings(native_profile);
     let rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(tpcds_native_report_session_config())
@@ -564,7 +584,8 @@ async fn run_query_collect(
     };
     let planning_summary = planning_summary(optimizer);
     let planning_outcome = planning_outcome_override.unwrap_or(planning_summary.planning_outcome);
-    let native_runtime_started = native_runtime_started_override.unwrap_or(planning_summary.native_runtime_started);
+    let physical_plan_contains_native_runtime = plan_contains_native_runtime(plan.as_ref());
+    let native_runtime_started = native_runtime_started_override.unwrap_or(physical_plan_contains_native_runtime);
     if skip_cpu_preferred && let Some(reason) = planning_summary.cpu_preferred_reason {
         return IterOutcome {
             wall: None,
@@ -582,7 +603,7 @@ async fn run_query_collect(
             failure: None,
         };
     }
-    if skip_cpu_preferred && !native_runtime_started {
+    if skip_cpu_preferred && !physical_plan_contains_native_runtime {
         return IterOutcome {
             wall: None,
             outcome: "native_rejected_not_run",
@@ -610,9 +631,9 @@ async fn run_query_collect(
             let output_batches = batches.len();
             let output_rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
             let output_bytes: usize = batches.iter().map(get_record_batch_memory_size).sum();
-            let metrics = plan.metrics();
-            let native_metrics = metrics.as_ref().map(NativeDataFusionExecutionMetrics::from_metrics);
-            let timing_metrics = NativeTimingMetrics::from_metrics(metrics.as_ref());
+            let metrics = plan_metrics_recursive(plan.as_ref());
+            let native_metrics = native_metrics_from_metrics(Some(&metrics));
+            let timing_metrics = NativeTimingMetrics::from_metrics(Some(&metrics));
             IterOutcome {
                 wall: Some(wall),
                 outcome: "succeeded",
@@ -620,9 +641,9 @@ async fn run_query_collect(
                 output_batches: Some(output_batches),
                 output_rows: Some(output_rows),
                 output_bytes: Some(output_bytes),
-                reservation_live_peak_bytes: metric_sum(&metrics, "reservation_live_peak_bytes"),
-                reservation_denied_count: metric_sum(&metrics, "reservation_denied_count"),
-                retry_count: metric_sum(&metrics, "retry_count"),
+                reservation_live_peak_bytes: metric_sum(Some(&metrics), "reservation_live_peak_bytes"),
+                reservation_denied_count: metric_sum(Some(&metrics), "reservation_denied_count"),
+                retry_count: metric_sum(Some(&metrics), "retry_count"),
                 native_runtime_started,
                 native_metrics,
                 timing_metrics,
@@ -645,6 +666,38 @@ async fn run_query_collect(
             failure: Some(err.to_string()),
         },
     }
+}
+
+fn plan_contains_native_runtime(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> bool {
+    plan.downcast_ref::<NativeCudfExec>().is_some()
+        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+        || plan.children().into_iter().any(|child| plan_contains_native_runtime(child.as_ref()))
+}
+
+fn plan_metrics_recursive(plan: &dyn datafusion::physical_plan::ExecutionPlan) -> MetricsSet {
+    let mut metrics = MetricsSet::new();
+    append_plan_metrics(&mut metrics, plan);
+    metrics
+}
+
+fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn datafusion::physical_plan::ExecutionPlan) {
+    if let Some(plan_metrics) = plan.metrics() {
+        for metric in plan_metrics.iter() {
+            metrics.push(Arc::clone(metric));
+        }
+    }
+    for child in plan.children() {
+        append_plan_metrics(metrics, child.as_ref());
+    }
+}
+
+fn native_metrics_from_metrics(metrics: Option<&MetricsSet>) -> Option<NativeDataFusionExecutionMetrics> {
+    let metrics = metrics?;
+    metrics
+        .iter()
+        .any(|metric| NATIVE_CUDF_DATAFUSION_METRIC_NAMES.contains(&metric.value().name()))
+        .then(|| NativeDataFusionExecutionMetrics::from_metrics(metrics))
 }
 
 fn planning_summary(optimizer: Option<&CudfNativePhysicalOptimizerRule>) -> PlanningSummary {
@@ -686,11 +739,16 @@ fn planning_summary(optimizer: Option<&CudfNativePhysicalOptimizerRule>) -> Plan
 }
 
 fn cpu_preferred_reason_code(reason: &str) -> bool {
-    matches!(reason, "native_small_selective_topk_cpu_preferred" | "native_small_selective_residual_join_cpu_preferred")
+    matches!(
+        reason,
+        "native_small_selective_topk_cpu_preferred"
+            | "native_small_selective_residual_join_cpu_preferred"
+            | "native_small_selective_full_sort_cpu_preferred"
+    )
 }
 
-fn metric_sum(metrics: &Option<MetricsSet>, name: &str) -> Option<u64> {
-    let metrics = metrics.as_ref()?;
+fn metric_sum(metrics: Option<&MetricsSet>, name: &str) -> Option<u64> {
+    let metrics = metrics?;
     let mut total: Option<u64> = None;
     for metric in metrics.iter() {
         if metric.value().name() == name {
@@ -1307,6 +1365,7 @@ mod tests {
     fn cpu_preferred_reason_codes_are_classified() {
         assert!(cpu_preferred_reason_code("native_small_selective_topk_cpu_preferred"));
         assert!(cpu_preferred_reason_code("native_small_selective_residual_join_cpu_preferred"));
+        assert!(cpu_preferred_reason_code("native_small_selective_full_sort_cpu_preferred"));
         assert!(!cpu_preferred_reason_code("native_bounded_join_unsupported"));
     }
 }

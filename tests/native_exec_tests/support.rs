@@ -132,6 +132,18 @@ pub(super) fn join_aggregate_sort_limit_sql_plan(
     left: &std::path::Path,
     right: &std::path::Path,
 ) -> Arc<dyn ExecutionPlan> {
+    join_aggregate_sort_sql_plan_with_limit(left, right, true)
+}
+
+pub(super) fn join_aggregate_sort_sql_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
+    join_aggregate_sort_sql_plan_with_limit(left, right, false)
+}
+
+fn join_aggregate_sort_sql_plan_with_limit(
+    left: &std::path::Path,
+    right: &std::path::Path,
+    limit: bool,
+) -> Arc<dyn ExecutionPlan> {
     let ctx = SessionContext::new_with_config(
         SessionConfig::new()
             .with_repartition_file_scans(false)
@@ -151,16 +163,19 @@ pub(super) fn join_aggregate_sort_limit_sql_plan(
         ParquetReadOptions::default(),
     ))
     .unwrap();
-    let sql = "
+    let limit_clause = if limit { "LIMIT 2" } else { "" };
+    let sql = format!(
+        "
 SELECT l.key, SUM(l.m00 + r.m01) AS sum_x00
 FROM left_input l
 JOIN right_input r ON l.key = r.key
 WHERE l.payload >= 10 AND r.payload >= 10
 GROUP BY l.key
 ORDER BY sum_x00 DESC, l.key ASC
-LIMIT 2
-";
-    let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
+ {limit_clause}
+"
+    );
+    let df = futures::executor::block_on(ctx.sql(&sql)).unwrap();
     futures::executor::block_on(df.create_physical_plan()).unwrap()
 }
 

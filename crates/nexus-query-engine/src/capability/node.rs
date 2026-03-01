@@ -214,6 +214,15 @@ fn window_node_executable_decision(node_id: NodeId, window: &crate::plan::Window
             crate::plan::WindowFunction::Aggregate { function, expr, frame, .. } => {
                 match frame {
                     crate::plan::WindowFrame::WholePartition => {
+                        if window.spec.partition_by.is_empty() {
+                            return CapabilityDecision::rejected(
+                                "unsupported_window_node_capability",
+                                [
+                                    ("node_id", node_id.to_string()),
+                                    ("reason", "whole_partition_aggregate_window_requires_partition_by".to_string()),
+                                ],
+                            );
+                        }
                         if !window.spec.order_by.is_empty() {
                             return CapabilityDecision::rejected(
                                 "unsupported_window_node_capability",

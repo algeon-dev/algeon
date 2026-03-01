@@ -52,6 +52,9 @@ pub enum FallbackReason {
     /// Native GPU execution is supported, but conservative plan-preference
     /// facts predict CPU will be better for a small selective residual join.
     NativeSmallSelectiveResidualJoinCpuPreferred,
+    /// Native GPU execution is supported, but conservative plan-preference
+    /// facts predict CPU will be better for a small selective full-sort shape.
+    NativeSmallSelectiveFullSortCpuPreferred,
     /// Source uses a non-local object store unsupported by native local reads.
     NativeSourceNonLocalObjectStore,
     /// Source partition columns cannot be mapped to native source columns.
@@ -126,6 +129,7 @@ impl FallbackReason {
             Self::NativeAdaptivePipelineUnsupported => "native_adaptive_pipeline_unsupported",
             Self::NativeSmallSelectiveTopkCpuPreferred => "native_small_selective_topk_cpu_preferred",
             Self::NativeSmallSelectiveResidualJoinCpuPreferred => "native_small_selective_residual_join_cpu_preferred",
+            Self::NativeSmallSelectiveFullSortCpuPreferred => "native_small_selective_full_sort_cpu_preferred",
             Self::NativeSourceNonLocalObjectStore => "native_source_non_local_object_store",
             Self::NativeSourcePartitionColumns => "native_source_partition_columns",
             Self::NativeSourceExprAdapter => "native_source_expr_adapter",

@@ -1,13 +1,18 @@
+use std::collections::VecDeque;
+
 use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
-        prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-        projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
-        release_bounded_join_side_frame,
+        join_side_output_upper_bound_bytes_for_row_counts, prepare_bounded_join_side_input_from_resident_frame,
+        prepare_bounded_join_side_input_from_shared_frame, projected_output_columns_for_retained_sizing,
+        reconcile_join_output_upper_bound, release_bounded_join_side_frame,
     },
     *,
 };
-use crate::capability::keyed_hash_join_capable;
+use crate::{
+    capability::keyed_hash_join_capable,
+    exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+};
 
 pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
     build_side: JoinSide,
@@ -31,6 +36,29 @@ pub(in crate::exec::bounded) struct BoundedRootHashJoinProbeState {
     indices: cudf::DataFrameHashJoinPairIndices,
     gather_map_reservation: ActiveReservation,
     gather_map_bytes: u64,
+    output_reservation_bytes: u64,
+    minimum_output_reservation_bytes: u64,
+}
+
+impl BoundedRootHashJoinProbeState {
+    pub(in crate::exec::bounded) fn materialize_admission_bytes(&self, stream_target_bytes: u64) -> u64 {
+        let output_rows = self.indices.build().len() as u64;
+        if output_rows == 0 {
+            return 0;
+        }
+        let chunk_rows = reusable_hash_join_stream_chunk_rows(
+            output_rows,
+            self.output_reservation_bytes,
+            stream_target_bytes.max(1),
+        );
+        let chunk_output_bytes =
+            proportional_join_stream_bytes(self.output_reservation_bytes, chunk_rows as u64, output_rows)
+                .saturating_add(self.minimum_output_reservation_bytes);
+        let slice_gather_map_bytes = cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(chunk_rows)
+            .map(|bytes| bytes as u64)
+            .unwrap_or(64);
+        chunk_output_bytes.saturating_add(slice_gather_map_bytes)
+    }
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_build_from_frame(
@@ -207,7 +235,33 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
                 metrics,
                 &overrides,
             )?;
-        return Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes });
+        let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
+            context,
+            node_id,
+            node,
+            &build,
+            &probe,
+            &indices,
+            reservations,
+            metrics,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(indices);
+                reservations.release(gather_map_reservation, metrics);
+                release_bounded_join_side_frame(probe, reservations, metrics);
+                return Err(error);
+            },
+        };
+        return Ok(BoundedRootHashJoinProbeState {
+            build,
+            probe,
+            indices,
+            gather_map_reservation,
+            gather_map_bytes,
+            output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
+            minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
+        });
     }
 
     let output_size_result = match node.spec.join_type {
@@ -299,7 +353,33 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
             ));
         },
     };
-    Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes })
+    let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
+        context,
+        node_id,
+        node,
+        &build,
+        &probe,
+        &indices,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(error);
+        },
+    };
+    Ok(BoundedRootHashJoinProbeState {
+        build,
+        probe,
+        indices,
+        gather_map_reservation,
+        gather_map_bytes,
+        output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
+        minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
+    })
 }
 
 fn execute_bounded_root_hash_join_single_pass_inner_probe_indices(
@@ -409,6 +489,55 @@ fn reusable_hash_join_execution_strategy(node: &JoinNode, build: &BoundedRootHas
     }
 }
 
+struct RootHashJoinOutputReservationBounds {
+    output_reservation_bytes: u64,
+    minimum_output_reservation_bytes: u64,
+}
+
+fn root_hash_join_output_reservation_bounds(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    node: &JoinNode,
+    build: &BoundedRootHashJoinBuildState,
+    probe: &BoundedJoinSideFrame,
+    indices: &cudf::DataFrameHashJoinPairIndices,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<RootHashJoinOutputReservationBounds> {
+    let (left, right) = match build.build_side {
+        JoinSide::Left => (&build.build, probe),
+        JoinSide::Right => (probe, &build.build),
+    };
+    let expected_output_rows = indices.build().len() as u64;
+    let row_counts = if expected_output_rows == 0 { vec![0] } else { vec![expected_output_rows, 1] };
+    let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
+    let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
+    let left_output_bytes = join_side_output_upper_bound_bytes_for_row_counts(
+        context,
+        node_id,
+        &left.frame,
+        &row_counts,
+        &left_projection,
+        JoinSide::Left,
+        reservations,
+        metrics,
+    )?;
+    let right_output_bytes = join_side_output_upper_bound_bytes_for_row_counts(
+        context,
+        node_id,
+        &right.frame,
+        &row_counts,
+        &right_projection,
+        JoinSide::Right,
+        reservations,
+        metrics,
+    )?;
+    let output_reservation_bytes = left_output_bytes[0].saturating_add(right_output_bytes[0]);
+    let minimum_output_reservation_bytes =
+        if expected_output_rows == 0 { 0 } else { left_output_bytes[1].saturating_add(right_output_bytes[1]) };
+    Ok(RootHashJoinOutputReservationBounds { output_reservation_bytes, minimum_output_reservation_bytes })
+}
+
 fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], overrides: &ExecutionOverrides<'_>) -> bool {
     let [key] = build_keys else {
         return false;
@@ -459,7 +588,33 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
                 metrics,
                 &overrides,
             )?;
-        return Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes });
+        let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
+            context,
+            node_id,
+            node,
+            &build,
+            &probe,
+            &indices,
+            reservations,
+            metrics,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(indices);
+                reservations.release(gather_map_reservation, metrics);
+                release_bounded_join_side_frame(probe, reservations, metrics);
+                return Err(error);
+            },
+        };
+        return Ok(BoundedRootHashJoinProbeState {
+            build,
+            probe,
+            indices,
+            gather_map_reservation,
+            gather_map_bytes,
+            output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
+            minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
+        });
     }
 
     let output_size = match node.spec.join_type {
@@ -526,7 +681,33 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
             error,
         )
     })?;
-    Ok(BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes })
+    let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
+        context,
+        node_id,
+        node,
+        &build,
+        &probe,
+        &indices,
+        reservations,
+        metrics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(error);
+        },
+    };
+    Ok(BoundedRootHashJoinProbeState {
+        build,
+        probe,
+        indices,
+        gather_map_reservation,
+        gather_map_bytes,
+        output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
+        minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
+    })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame(
@@ -675,7 +856,7 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
 ) -> Result<CommittedPartial> {
     validate_root_hash_join(node)?;
     let timer = state.build.timer;
-    let BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes } = state;
+    let BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes, .. } = state;
     let output = materialize_bounded_root_hash_join_probe_chunk(
         context,
         node_id,
@@ -698,34 +879,22 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize_prese
     node_id: NodeId,
     node: &JoinNode,
     state: BoundedRootHashJoinProbeState,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) -> Result<Vec<ResidentGpuFrame>> {
+    reservations: &ReservationTracker,
+) -> Result<ResidentFrameStreamPayload> {
     validate_root_hash_join(node)?;
-    let timer = state.build.timer;
-    let BoundedRootHashJoinProbeState { build, probe, indices, gather_map_reservation, gather_map_bytes } = state;
-    match materialize_bounded_root_hash_join_probe_stream(
-        context,
-        node_id,
-        node,
-        &build,
-        probe,
-        indices,
-        gather_map_reservation,
-        gather_map_bytes,
-        timer,
-        reservations,
-        metrics,
-    ) {
-        Ok(outputs) => {
-            release_bounded_root_hash_join_build_state(build, reservations, metrics);
-            Ok(outputs)
-        },
-        Err(error) => {
-            release_bounded_root_hash_join_build_state(build, reservations, metrics);
-            Err(error)
-        },
-    }
+    let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(context, reservations);
+    let max_per_frame_reservation_bytes = state.materialize_admission_bytes(stream_target_bytes);
+    let aggregate_reservation_bytes = state.output_reservation_bytes;
+    let aggregate_num_rows = state.indices.build().len() as u64;
+    let num_columns = node.spec.output_projection.len();
+    Ok(ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Vec::new(),
+        Box::new(RootHashJoinMaterializeStreamSource::new(context, node_id, node, state)),
+    ))
 }
 
 pub(in crate::exec::bounded) fn release_bounded_root_hash_join_build_state(
@@ -1154,6 +1323,208 @@ fn materialize_bounded_root_hash_join_probe_stream(
     Ok(outputs)
 }
 
+struct RootHashJoinMaterializeStreamSource {
+    context: ExecutionContext,
+    node_id: NodeId,
+    node: JoinNode,
+    build: Option<BoundedRootHashJoinBuildState>,
+    probe: Option<BoundedJoinSideFrame>,
+    indices: Option<cudf::DataFrameHashJoinPairIndices>,
+    left_indices: Option<cudf::DataFrameJoinIndices>,
+    right_indices: Option<cudf::DataFrameJoinIndices>,
+    gather_map_reservation: Option<ActiveReservation>,
+    gather_map_bytes: u64,
+    output_reservation_bytes: u64,
+    timer: Option<Instant>,
+    pending_outputs: VecDeque<ResidentGpuFrame>,
+    offset: usize,
+    output_len: usize,
+    emitted_empty_output: bool,
+    cumulative_output_reservation_bytes: u64,
+    cumulative_output_bytes: u64,
+    emitted_rows: u64,
+}
+
+impl RootHashJoinMaterializeStreamSource {
+    fn new(context: &ExecutionContext, node_id: NodeId, node: &JoinNode, state: BoundedRootHashJoinProbeState) -> Self {
+        let output_len = state.indices.build().len();
+        let (left_indices, right_indices) = if state.build.left_indices_from_probe {
+            (state.indices.probe().clone(), state.indices.build().clone())
+        } else {
+            (state.indices.build().clone(), state.indices.probe().clone())
+        };
+        Self {
+            context: context.clone(),
+            node_id,
+            node: node.clone(),
+            timer: Some(state.build.timer),
+            build: Some(state.build),
+            probe: Some(state.probe),
+            indices: Some(state.indices),
+            left_indices: Some(left_indices),
+            right_indices: Some(right_indices),
+            gather_map_reservation: Some(state.gather_map_reservation),
+            gather_map_bytes: state.gather_map_bytes,
+            output_reservation_bytes: state.output_reservation_bytes,
+            pending_outputs: VecDeque::new(),
+            offset: 0,
+            output_len,
+            emitted_empty_output: false,
+            cumulative_output_reservation_bytes: 0,
+            cumulative_output_bytes: 0,
+            emitted_rows: 0,
+        }
+    }
+
+    fn materialize_slice(
+        &mut self,
+        offset: usize,
+        take: usize,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Result<()> {
+        let build = self.build.as_ref().expect("root hash join build state released before stream end");
+        let probe = self.probe.as_ref().expect("root hash join probe frame released before stream end");
+        let left_indices = self.left_indices.as_ref().expect("root hash join left indices released before stream end");
+        let right_indices =
+            self.right_indices.as_ref().expect("root hash join right indices released before stream end");
+        let (left, right) = match build.build_side {
+            JoinSide::Left => (&build.build, probe),
+            JoinSide::Right => (probe, &build.build),
+        };
+        let overrides = execution_overrides(&self.context);
+        let slice_outputs = materialize_bounded_root_hash_join_index_slice(
+            &self.context,
+            self.node_id,
+            &self.node,
+            left,
+            right,
+            left_indices,
+            right_indices,
+            offset,
+            take,
+            &overrides,
+            reservations,
+            metrics,
+        )?;
+        for output in slice_outputs {
+            self.cumulative_output_reservation_bytes =
+                self.cumulative_output_reservation_bytes.saturating_add(output.output_reservation_bytes);
+            self.cumulative_output_bytes = self.cumulative_output_bytes.saturating_add(output.output_bytes);
+            self.emitted_rows = self.emitted_rows.saturating_add(output.output_rows);
+            self.pending_outputs.push_back(output.frame);
+        }
+        Ok(())
+    }
+
+    fn finish_success(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        if let (Some(timer), Some(build), Some(probe)) = (self.timer.take(), self.build.as_ref(), self.probe.as_ref()) {
+            let build_side = build.build_side;
+            let probe_side = build.probe_side;
+            let (left, right) = match build_side {
+                JoinSide::Left => (&build.build, probe),
+                JoinSide::Right => (probe, &build.build),
+            };
+            let original_left_rows = left.rows;
+            let original_right_rows = right.rows;
+            let left_bytes = left.bytes;
+            let right_bytes = right.bytes;
+            metrics.operator_time += timer.elapsed();
+            metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+                self.node_id,
+                crate::metrics::JoinOperatorMetrics {
+                    join_type: self.node.spec.join_type.to_string(),
+                    execution_strategy: reusable_hash_join_execution_strategy(&self.node, build).to_string(),
+                    key_count: self.node.spec.keys.len(),
+                    residual_predicate: false,
+                    null_equality: self.node.spec.null_equality.to_string(),
+                    build_side: build_side.to_string(),
+                    probe_side: probe_side.to_string(),
+                    build_rows: side_metric(build_side, original_left_rows, original_right_rows),
+                    build_bytes: side_metric(build_side, left_bytes, right_bytes),
+                    probe_rows: side_metric(probe_side, original_left_rows, original_right_rows),
+                    probe_bytes: side_metric(probe_side, left_bytes, right_bytes),
+                    hash_table_bytes: build.hash_table_bytes,
+                    filtered_probe_state_bytes: 0,
+                    mixed_size_data_bytes: 0,
+                    gather_map_bytes: self.gather_map_bytes,
+                    output_reservation_bytes: self.cumulative_output_reservation_bytes,
+                    output_rows: self.emitted_rows,
+                    output_bytes: self.cumulative_output_bytes,
+                },
+            ));
+        }
+        self.release_owned(reservations, metrics);
+    }
+
+    fn release_owned(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        while let Some(output) = self.pending_outputs.pop_back() {
+            reservations.release(output.reservation, metrics);
+            drop(output.frame);
+        }
+        drop(self.left_indices.take());
+        drop(self.right_indices.take());
+        drop(self.indices.take());
+        if let Some(reservation) = self.gather_map_reservation.take() {
+            reservations.release(reservation, metrics);
+        }
+        if let Some(probe) = self.probe.take() {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+        }
+        if let Some(build) = self.build.take() {
+            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+        }
+    }
+}
+
+impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
+    fn next_frame(
+        &mut self,
+        reservations: &mut ReservationTracker,
+        metrics: &mut QueryMetrics,
+    ) -> Option<Result<ResidentGpuFrame>> {
+        loop {
+            if let Some(output) = self.pending_outputs.pop_front() {
+                return Some(Ok(output));
+            }
+            if self.output_len == 0 {
+                if self.emitted_empty_output {
+                    self.finish_success(reservations, metrics);
+                    return None;
+                }
+                self.emitted_empty_output = true;
+                return match self.materialize_slice(0, 0, reservations, metrics) {
+                    Ok(()) => continue,
+                    Err(error) => Some(Err(error)),
+                };
+            }
+            if self.offset >= self.output_len {
+                self.finish_success(reservations, metrics);
+                return None;
+            }
+            let remaining_rows = u64::try_from(self.output_len - self.offset).unwrap_or(u64::MAX);
+            let remaining_output_reservation_bytes =
+                proportional_join_stream_bytes(self.output_reservation_bytes, remaining_rows, self.output_len as u64);
+            let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(&self.context, reservations);
+            let chunk_rows = reusable_hash_join_stream_chunk_rows(
+                remaining_rows,
+                remaining_output_reservation_bytes,
+                chunk_target_bytes,
+            );
+            let take = chunk_rows.min(self.output_len - self.offset);
+            let offset = self.offset;
+            match self.materialize_slice(offset, take, reservations, metrics) {
+                Ok(()) => self.offset += take,
+                Err(error) => return Some(Err(error)),
+            }
+        }
+    }
+
+    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+        self.release_owned(reservations, metrics);
+    }
+}
+
 struct RootHashJoinStreamChunkOutput {
     frame: ResidentGpuFrame,
     output_reservation_bytes: u64,
@@ -1415,7 +1786,10 @@ fn proportional_join_stream_bytes(total_bytes: u64, rows: u64, total_rows: u64) 
     ((u128::from(total_bytes) * u128::from(rows)).div_ceil(u128::from(total_rows))).min(u128::from(u64::MAX)) as u64
 }
 
-fn reusable_hash_join_stream_target_output_bytes(context: &ExecutionContext, reservations: &ReservationTracker) -> u64 {
+pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
+    context: &ExecutionContext,
+    reservations: &ReservationTracker,
+) -> u64 {
     const MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
     const MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
     let policy_target = match context.memory_control_policy() {

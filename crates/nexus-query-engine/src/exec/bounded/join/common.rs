@@ -322,10 +322,33 @@ pub(super) fn join_side_output_upper_bound_bytes(
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
 ) -> Result<u64> {
+    let bounds = join_side_output_upper_bound_bytes_for_row_counts(
+        context,
+        node_id,
+        frame,
+        &[expected_output_rows],
+        columns,
+        side,
+        reservations,
+        metrics,
+    )?;
+    Ok(bounds.into_iter().next().unwrap_or(0))
+}
+
+pub(super) fn join_side_output_upper_bound_bytes_for_row_counts(
+    context: &ExecutionContext,
+    node_id: NodeId,
+    frame: &DataFrame,
+    expected_output_row_counts: &[u64],
+    columns: &[String],
+    side: JoinSide,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<Vec<u64>> {
     let mut columns = columns.to_vec();
     join_side_projection_with_order(frame, &mut columns);
     if columns.is_empty() {
-        return Ok(0);
+        return Ok(vec![0; expected_output_row_counts.len()]);
     }
 
     let mut upper_bound_columns = Vec::with_capacity(columns.len());
@@ -348,12 +371,17 @@ pub(super) fn join_side_output_upper_bound_bytes(
         };
         upper_bound_columns.push(upper_bound);
     }
-    join_output_upper_bound_bytes(expected_output_rows, &upper_bound_columns).map_err(|error| {
-        error
-            .with_fact_if_absent("node_id", node_id)
-            .with_fact_if_absent("side", side)
-            .with_fact_if_absent("expected_output_rows", expected_output_rows)
-    })
+    expected_output_row_counts
+        .iter()
+        .map(|expected_output_rows| {
+            join_output_upper_bound_bytes(*expected_output_rows, &upper_bound_columns).map_err(|error| {
+                error
+                    .with_fact_if_absent("node_id", node_id)
+                    .with_fact_if_absent("side", side)
+                    .with_fact_if_absent("expected_output_rows", *expected_output_rows)
+            })
+        })
+        .collect()
 }
 
 pub(super) fn projected_output_columns_for_retained_sizing(

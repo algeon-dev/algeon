@@ -122,6 +122,7 @@ impl NativeCudfGpuProducerExec {
         }
 
         let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
         let result = execute_query_plan(native_context, &self.plan).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
                 "datafusion_nexus.native_gpu_producer.execute_gpu",

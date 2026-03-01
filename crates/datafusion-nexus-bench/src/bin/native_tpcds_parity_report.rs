@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{self, Write},
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -9,8 +10,8 @@ use datafusion_nexus::{
     StatisticalAggregateExecutionMode,
 };
 use datafusion_nexus_bench::{
-    TpcdsDatasetMetadata, TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, prepare_tpcds_report_dataset,
-    tpcds_native_optimizer_config, tpcds_parity_workload_items_with_external_oracles, tpcds_report_session_config,
+    TpcdsExternalEngineConfig, TpcdsExternalOracleConfig, prepare_tpcds_report_dataset, tpcds_native_optimizer_config,
+    tpcds_parity_report_rows_with_external_oracles, tpcds_report_session_config,
 };
 
 const CUDF_TPCDS_PARITY_QUERY_IDS_ENV: &str = "CUDF_TPCDS_PARITY_QUERY_IDS";
@@ -23,12 +24,16 @@ const CUDF_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "CUDF_NATIVE_PIPELINE_EXEC
 #[tokio::main]
 async fn main() {
     let dir = unique_temp_dir("datafusion-nexus-native-tpcds-parity");
-    let TpcdsParityReport { report, metadata } = parity_report(&dir).await.unwrap();
-    print!("{}", report.with_workload_dataset_metadata(metadata.to_workload_dataset_metadata()).to_tsv());
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    write_parity_report(&dir, &mut output).await.unwrap();
     fs::remove_dir_all(dir).unwrap();
 }
 
-async fn parity_report(dir: &std::path::Path) -> datafusion_nexus_bench::TpcdsWorkloadResult<TpcdsParityReport> {
+async fn write_parity_report(
+    dir: &std::path::Path,
+    output: &mut impl Write,
+) -> datafusion_nexus_bench::TpcdsWorkloadResult<()> {
     let (root, metadata) = prepare_tpcds_report_dataset(dir)?;
     let optimizer_config = native_optimizer_config_from_env();
     let statistical_aggregate_execution_mode = optimizer_config.statistical_aggregate_execution_mode();
@@ -36,22 +41,31 @@ async fn parity_report(dir: &std::path::Path) -> datafusion_nexus_bench::TpcdsWo
     let external_oracles = external_oracle_config_from_env(dir.join("external_oracles"));
     let tolerance = parity_float_tolerance_from_env();
     validate_statistical_aggregate_parity_contract(statistical_aggregate_execution_mode, tolerance);
-    let items = tpcds_parity_workload_items_with_external_oracles(
+
+    let header = NativeTpcdsParityReport::from_rows(Vec::new(), tolerance)
+        .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode)
+        .with_workload_dataset_metadata(metadata.to_workload_dataset_metadata())
+        .to_tsv();
+    output.write_all(header.as_bytes())?;
+    output.flush()?;
+
+    let mut progress = |event: datafusion_nexus_bench::TpcdsParityProgressEvent<'_>| {
+        if let datafusion_nexus_bench::TpcdsParityProgressEvent::RowReady { row, .. } = event {
+            writeln!(output, "{}", row.to_tsv_line()).expect("failed to write TPC-DS parity TSV row");
+            output.flush().expect("failed to flush TPC-DS parity TSV row");
+        }
+    };
+    tpcds_parity_report_rows_with_external_oracles(
         &root,
         tpcds_report_session_config(),
         optimizer_config,
         query_filter.as_deref(),
         external_oracles,
+        tolerance,
+        Some(&mut progress),
     )
     .await?;
-    let report = NativeTpcdsParityReport::collect(items, tolerance)
-        .with_statistical_aggregate_execution_mode(statistical_aggregate_execution_mode);
-    Ok(TpcdsParityReport { report, metadata })
-}
-
-struct TpcdsParityReport {
-    report: NativeTpcdsParityReport,
-    metadata: TpcdsDatasetMetadata,
+    Ok(())
 }
 
 fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {

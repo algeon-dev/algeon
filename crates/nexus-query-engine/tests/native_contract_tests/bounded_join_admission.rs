@@ -2447,6 +2447,7 @@ fn bounded_root_topk_join_aggregate_allows_window_subcontracts_with_report_rows(
         RootTopKJoinAggregateVariant::BranchLocalWindow,
         RootTopKJoinAggregateVariant::KeylessOuterCrossWindow,
         RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin,
+        RootTopKJoinAggregateVariant::SortedAggregateWindow,
         RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
@@ -2558,6 +2559,7 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
         RootTopKJoinAggregateVariant::KeylessOuterCrossUnorderedWindow,
         RootTopKJoinAggregateVariant::WindowFullOuterLeftOnlyProjection,
         RootTopKJoinAggregateVariant::UnsortedRankWindow,
+        RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow,
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregate,
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan,
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan,
@@ -2606,6 +2608,9 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             RootTopKJoinAggregateVariant::UnsortedRankWindow => {
                 assert_eq!(*reason, "root_topk_join_aggregate_requires_ordered_window_input")
             },
+            RootTopKJoinAggregateVariant::SortedGlobalAggregateWindow => {
+                assert_eq!(*reason, "unsupported_window_node_capability")
+            },
             RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregate => {
                 assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_proof")
             },
@@ -2640,6 +2645,7 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             | RootTopKJoinAggregateVariant::KeylessOuterCrossWindow
             | RootTopKJoinAggregateVariant::BranchLocalWindow
             | RootTopKJoinAggregateVariant::WindowInputSortFullOuterJoin
+            | RootTopKJoinAggregateVariant::SortedAggregateWindow
             | RootTopKJoinAggregateVariant::RankFilterWindowFinalProjection
             | RootTopKJoinAggregateVariant::SortFetchHashJoinInput
             | RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput

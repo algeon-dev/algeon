@@ -17,7 +17,7 @@ use crate::{
 /// Stable rule name used in optimizer diagnostics.
 pub const AGGREGATE_JOIN_PUSHDOWN_RULE_NAME: &str = "aggregate_join_pushdown";
 
-/// Configuration for reducing rollup/grouping-set aggregates before joins.
+/// Configuration for reducing SUM aggregates before joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AggregateJoinPushdownOptions {
     /// Whether the pass is allowed to rewrite eligible aggregate-over-join shapes.
@@ -86,7 +86,7 @@ pub enum AggregateJoinPushdownRejectedReason {
     UnsupportedJoinType,
     /// The join has a residual predicate.
     JoinResidualUnsupported,
-    /// The aggregate is not a grouping-set/rollup aggregate.
+    /// Retired: the aggregate is not a grouping-set/rollup aggregate.
     GroupingSetsRequired,
     /// The aggregate contains a non-SUM, DISTINCT, filtered, or non-column expression.
     UnsupportedAggregateExpression,
@@ -211,9 +211,6 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         aggregate: &AggregateNode,
         aggregate_facts: &PlanFacts,
     ) -> Result<Option<NodeId>, AggregateJoinPushdownRejectedReason> {
-        if aggregate.spec.grouping_sets.is_none() {
-            return Ok(None);
-        }
         let (join, projection_chain) = self.resolve_aggregate_join_input(aggregate.input)?;
         if join.spec.residual_predicate.is_some() {
             return Err(AggregateJoinPushdownRejectedReason::JoinResidualUnsupported);

@@ -72,6 +72,7 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
             (ReservationKind::ProbeSide, "join_probe_side"),
             (ReservationKind::GatherMap, "join_gather_map"),
             (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
+            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
             (ReservationKind::JoinOutput, "join_output"),
             (ReservationKind::Materialization, "host_materialization"),
         ],

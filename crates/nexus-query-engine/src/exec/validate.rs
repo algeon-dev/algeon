@@ -40,7 +40,7 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 let input_available = available_columns(&available_columns_by_node, filter.input)?;
                 let predicate_type = validate_expr(&filter.predicate, input.output_schema(), input_available)?;
                 require_boolean(&predicate_type, "filter predicate")?;
-                lower_expr(&filter.predicate)?;
+                lower_filter_predicate_expr(&filter.predicate)?;
                 filter_available_columns(input_available, node.output_schema())
             },
             PlanNode::Projection(projection) => {
@@ -405,6 +405,75 @@ fn validate_edge_normalize_node(
         .with_fact("actual_columns", actual.join(",")));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
+
+    use super::*;
+    use crate::{
+        expr::{AggregateFunction, BinaryOp, LiteralValue},
+        plan::{QueryPlanBuilder, WindowFunction, WindowSpec},
+        source::{LiteralBatchSource, SourceNode},
+    };
+
+    #[test]
+    fn validate_filter_uses_filter_lowering_for_large_left_deep_boolean_predicates() {
+        let schema = Arc::new(Schema::new(vec![Field::new("ca_zip", ArrowDataType::Utf8, true)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
+        let filter = builder.add_filter(source, left_deep_zip_range_disjunction(384), Arc::clone(&schema));
+        let plan = builder.finish_with_host_sink(filter);
+
+        validate_query_plan(&plan).expect("large q08-class filter predicate should validate without generic lowering");
+    }
+
+    #[test]
+    fn validate_rejects_global_whole_partition_aggregate_window() {
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("k", ArrowDataType::Int32, false),
+            Field::new("v", ArrowDataType::Int64, true),
+        ]));
+        let window_schema = Arc::new(Schema::new(vec![
+            Field::new("k", ArrowDataType::Int32, false),
+            Field::new("v", ArrowDataType::Int64, true),
+            Field::new("window_v", ArrowDataType::Int64, true),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(input_schema)));
+        let window = builder.add_window(
+            source,
+            WindowSpec::new(
+                Vec::new(),
+                Vec::new(),
+                vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
+            ),
+            window_schema,
+        );
+        let plan = builder.finish_with_host_sink(window);
+
+        let error = validate_query_plan(&plan).expect_err("global whole-partition aggregate windows are unsupported");
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedOperator);
+        assert_eq!(error.operation(), "nexus_query_engine.window.validate");
+    }
+
+    fn left_deep_zip_range_disjunction(count: usize) -> Expr {
+        let mut ranges = (0..count).map(zip_range_predicate);
+        let first = ranges.next().expect("test predicate needs at least one range");
+        ranges.fold(first, |left, right| Expr::binary(left, BinaryOp::Or, right))
+    }
+
+    fn zip_range_predicate(index: usize) -> Expr {
+        let lower = format!("{:05}", 10000 + index);
+        let upper = format!("{:05}", 10001 + index);
+        let lower_bound =
+            Expr::binary(Expr::column("ca_zip"), BinaryOp::GtEq, Expr::literal(LiteralValue::Utf8(lower)));
+        let upper_bound = Expr::binary(Expr::column("ca_zip"), BinaryOp::Lt, Expr::literal(LiteralValue::Utf8(upper)));
+        Expr::binary(lower_bound, BinaryOp::And, upper_bound)
+    }
 }
 
 fn validate_graph_algorithm_node(
@@ -825,6 +894,13 @@ fn validate_window_capability(
             crate::plan::WindowFunction::Aggregate { function, frame, .. } => {
                 match frame {
                     crate::plan::WindowFrame::WholePartition => {
+                        if window.spec.partition_by.is_empty() {
+                            return Err(QueryError::new(
+                                QueryErrorCode::UnsupportedOperator,
+                                "nexus_query_engine.window.validate",
+                                "native whole-partition aggregate windows require at least one partition key",
+                            ));
+                        }
                         if !window.spec.order_by.is_empty() {
                             return Err(QueryError::new(
                                 QueryErrorCode::UnsupportedOperator,

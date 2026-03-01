@@ -201,6 +201,19 @@ impl TsvRow for NativeTpcdsParityRow {
     }
 }
 
+impl NativeTpcdsParityRow {
+    /// Converts one parity workload item into a stable report row, releasing any
+    /// retained Arrow batches once row-level fingerprints and counts are derived.
+    pub fn from_workload_item(item: NativeTpcdsParityWorkloadItem, float_tolerance: ParityFloatTolerance) -> Self {
+        parity_row_for_item(item, float_tolerance)
+    }
+
+    /// Serializes this row using the stable TPC-DS parity TSV schema.
+    pub fn to_tsv_line(&self) -> String {
+        <Self as TsvRow>::to_tsv_line(self)
+    }
+}
+
 /// Planning/runtime stage status used by the parity row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParityStageStatus {
@@ -336,7 +349,8 @@ impl NativeTpcdsParityReport {
         items: impl IntoIterator<Item = NativeTpcdsParityWorkloadItem>,
         float_tolerance: ParityFloatTolerance,
     ) -> Self {
-        let rows = items.into_iter().map(|item| parity_row_for_item(item, float_tolerance)).collect();
+        let rows =
+            items.into_iter().map(|item| NativeTpcdsParityRow::from_workload_item(item, float_tolerance)).collect();
         Self { rows, workload_dataset: None, float_tolerance, statistical_aggregate_execution_mode: None }
     }
 

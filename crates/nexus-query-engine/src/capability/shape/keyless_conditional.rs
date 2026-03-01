@@ -202,7 +202,7 @@ pub(in crate::capability) fn projection_wrapped_aggregate_over_join_subplan_root
 ) -> Result<(NodeId, NodeId), CapabilityDecision> {
     let (aggregate_id, projection_id) = projection_wrapped_aggregate_root(plan, node_id, grouping, reason_prefix)?;
     let aggregate = aggregate_node(plan, aggregate_id, reason_prefix)?;
-    validate_bounded_join_subtree_rooted_at_join_for_capability(plan, aggregate.input)?;
+    validate_bounded_join_subtree_with_preaggregate_leaves_rooted_at_join_for_capability(plan, aggregate.input)?;
     Ok((aggregate_id, projection_id))
 }
 
@@ -218,7 +218,7 @@ pub(in crate::capability) fn projection_wrapped_scalar_aggregate_over_join_or_sh
     if aggregate.input == grouped_aggregate_id {
         return Ok((aggregate_id, projection_id, Some(grouped_aggregate_id)));
     }
-    validate_bounded_join_subtree_rooted_at_join_for_capability(plan, aggregate.input)?;
+    validate_bounded_join_subtree_with_preaggregate_leaves_rooted_at_join_for_capability(plan, aggregate.input)?;
     Ok((aggregate_id, projection_id, None))
 }
 
