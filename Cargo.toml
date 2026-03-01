@@ -37,7 +37,7 @@ arrow = { version = "58.3.0", default-features = false, features = ["ipc"] }
 arrow-flight = { version = "58.3", features = ["flight-sql-experimental"] }
 aws-config = "1.8"
 aws-credential-types = "1.2"
-datafusion = "53.1"
+datafusion = "54"
 futures = "0.3"
 iceberg = { path = "../iceberg-rust/crates/iceberg" }
 iceberg-catalog-glue = { path = "../iceberg-rust/crates/catalog/glue" }

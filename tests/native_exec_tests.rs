@@ -186,11 +186,10 @@ fn native_optimizer_composes_feature_neutral_gpu_resident_producer_child() {
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let composed = optimized
-        .as_any()
         .downcast_ref::<NativeCudfComposedExec>()
         .expect("GPU-resident producer children should lower through composed native execution");
     assert_eq!(composed.children().len(), 1);
-    assert!(composed.children()[0].as_any().downcast_ref::<NativeCudfGpuProducerExec>().is_some());
+    assert!(composed.children()[0].downcast_ref::<NativeCudfGpuProducerExec>().is_some());
     assert!(composed.native_plan().to_string().contains("GpuResidentSource input_name=fragment_input"));
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
@@ -206,7 +205,7 @@ fn native_optimizer_rule_rewrites_supported_physical_plan() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert!(matches!(report.outcomes()[0], CandidateOutcome::Rewritten { .. }));
@@ -233,7 +232,7 @@ fn native_optimizer_rule_preserves_rejected_plan_for_downstream_fallback() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<LocalLimitExec>().is_some());
+    assert!(optimized.downcast_ref::<LocalLimitExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 0);
     assert_eq!(report.rejected_count(), 1);
@@ -256,7 +255,7 @@ fn native_optimizer_rule_obeys_cpu_only_policy_for_supported_plan() {
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<LocalLimitExec>().is_some());
+    assert!(optimized.downcast_ref::<LocalLimitExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 0);
     assert_eq!(report.rejected_count(), 1);
@@ -282,7 +281,7 @@ fn native_optimizer_rule_prefers_cpu_for_small_selective_topk_join_when_enabled(
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     assert!(
-        optimized.as_any().downcast_ref::<NativeCudfExec>().is_none(),
+        optimized.downcast_ref::<NativeCudfExec>().is_none(),
         "CPU-preferred plan should not be replaced by a native execution boundary"
     );
     let report = rule.last_report().expect("native optimizer should record a planning report");
@@ -363,10 +362,9 @@ fn native_optimizer_rule_rewrites_supported_child_under_host_arrow_cpu_parent() 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
     let projection = optimized
-        .as_any()
         .downcast_ref::<ProjectionExec>()
         .expect("unsupported CPU parent should remain above the host-arrow native boundary");
-    assert!(projection.input().as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(projection.input().downcast_ref::<NativeCudfExec>().is_some());
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert_eq!(report.rewritten_count(), 1);
     assert_eq!(report.rejected_count(), 1);
@@ -390,7 +388,7 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
 
     let optimized = rule.optimize(plan, &ConfigOptions::default()).unwrap();
 
-    assert!(optimized.as_any().downcast_ref::<NativeCudfExec>().is_some());
+    assert!(optimized.downcast_ref::<NativeCudfExec>().is_some());
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
         optimized_tree.contains("NativeCudfExec"),

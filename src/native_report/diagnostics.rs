@@ -33,14 +33,13 @@ fn contains_native_exec(plan: &dyn ExecutionPlan) -> bool {
 }
 
 fn native_plan_root_is_whole_native(plan: &dyn ExecutionPlan) -> bool {
-    plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
-        || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
+    plan.downcast_ref::<NativeCudfExec>().is_some() || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
 }
 
 fn is_native_fragment(plan: &dyn ExecutionPlan) -> bool {
-    plan.as_any().downcast_ref::<NativeCudfExec>().is_some()
-        || plan.as_any().downcast_ref::<NativeCudfComposedExec>().is_some()
-        || plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>().is_some()
+    plan.downcast_ref::<NativeCudfExec>().is_some()
+        || plan.downcast_ref::<NativeCudfComposedExec>().is_some()
+        || plan.downcast_ref::<NativeCudfGpuProducerExec>().is_some()
 }
 
 fn count_native_fragments(plan: &dyn ExecutionPlan) -> usize {
@@ -63,7 +62,7 @@ pub(crate) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagno
 }
 
 fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<NativeJoinDiagnosticSummary>) {
-    if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+    if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
         diagnostics.push(NativeJoinDiagnosticSummary {
             operator: "HashJoinExec".to_string(),
             join_type: stable_debug_value(hash_join.join_type()),
@@ -79,7 +78,7 @@ fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<Nati
             build_side: "left".to_string(),
             probe_side: "right".to_string(),
         });
-    } else if let Some(nested_loop_join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>() {
+    } else if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>() {
         diagnostics.push(NativeJoinDiagnosticSummary {
             operator: "NestedLoopJoinExec".to_string(),
             join_type: stable_debug_value(nested_loop_join.join_type()),
@@ -90,7 +89,7 @@ fn collect_join_diagnostics(plan: &dyn ExecutionPlan, diagnostics: &mut Vec<Nati
             build_side: "left".to_string(),
             probe_side: "right".to_string(),
         });
-    } else if plan.as_any().downcast_ref::<CrossJoinExec>().is_some() {
+    } else if plan.downcast_ref::<CrossJoinExec>().is_some() {
         diagnostics.push(NativeJoinDiagnosticSummary {
             operator: "CrossJoinExec".to_string(),
             join_type: "cross".to_string(),
@@ -225,10 +224,10 @@ fn first_unsupported_operator_category(plan: &dyn ExecutionPlan, candidate_shape
 }
 
 fn first_join_operator_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if plan.as_any().downcast_ref::<HashJoinExec>().is_some() {
+    if plan.downcast_ref::<HashJoinExec>().is_some() {
         return Some("operator_hashjoin".to_string());
     }
-    if plan.as_any().downcast_ref::<NestedLoopJoinExec>().is_some() {
+    if plan.downcast_ref::<NestedLoopJoinExec>().is_some() {
         return Some("operator_nestedloopjoin".to_string());
     }
     for child in plan.children() {
@@ -267,7 +266,7 @@ fn stable_operator_identifier(name: &str) -> String {
 }
 
 fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
+    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
         && let Some(category) = aggregate_semantic_modifier_category(aggregate)
     {
         return Some(category);
@@ -281,7 +280,7 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
         }
     }
 
-    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>() {
+    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
         for (expr, _alias) in aggregate.group_expr().expr() {
             if let Some(category) = expression_category_with_schema(expr, Some(aggregate.input().schema().as_ref())) {
                 return Some(category);
@@ -327,7 +326,7 @@ fn first_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
 }
 
 fn first_global_aggregate_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(aggregate) = plan.as_any().downcast_ref::<AggregateExec>()
+    if let Some(aggregate) = plan.downcast_ref::<AggregateExec>()
         && aggregate.group_expr().expr().is_empty()
     {
         return Some("aggregate_global".to_string());
@@ -359,12 +358,12 @@ fn aggregate_semantic_modifier_category(aggregate: &AggregateExec) -> Option<Str
 }
 
 fn first_window_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(window) = plan.as_any().downcast_ref::<WindowAggExec>()
+    if let Some(window) = plan.downcast_ref::<WindowAggExec>()
         && let Some(category) = window_expr_category(window.window_expr())
     {
         return Some(category);
     }
-    if let Some(window) = plan.as_any().downcast_ref::<BoundedWindowAggExec>()
+    if let Some(window) = plan.downcast_ref::<BoundedWindowAggExec>()
         && let Some(category) = window_expr_category(window.window_expr())
     {
         return Some(category);
@@ -513,23 +512,22 @@ fn first_literal_source_type_category(plan: &dyn ExecutionPlan) -> Option<String
 }
 
 fn literal_source_plan(plan: &dyn ExecutionPlan) -> bool {
-    plan.as_any().downcast_ref::<PlaceholderRowExec>().is_some()
-        || plan.as_any().downcast_ref::<EmptyExec>().is_some()
+    plan.downcast_ref::<PlaceholderRowExec>().is_some()
+        || plan.downcast_ref::<EmptyExec>().is_some()
         || plan
-            .as_any()
             .downcast_ref::<DataSourceExec>()
-            .is_some_and(|source| source.data_source().as_any().downcast_ref::<MemorySourceConfig>().is_some())
+            .is_some_and(|source| source.data_source().downcast_ref::<MemorySourceConfig>().is_some())
 }
 
 fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<String> {
-    if let Some(filter) = plan.as_any().downcast_ref::<FilterExec>()
+    if let Some(filter) = plan.downcast_ref::<FilterExec>()
         && let Some(category) =
             expression_category_with_schema(filter.predicate(), Some(filter.input().schema().as_ref()))
     {
         return Some(category);
     }
 
-    if let Some(projection) = plan.as_any().downcast_ref::<ProjectionExec>() {
+    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
         for expr in projection.expr() {
             if let Some(category) =
                 expression_category_with_schema(&expr.expr, Some(projection.input().schema().as_ref()))
@@ -539,7 +537,7 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
         }
     }
 
-    if let Some(sort) = plan.as_any().downcast_ref::<SortExec>() {
+    if let Some(sort) = plan.downcast_ref::<SortExec>() {
         for expr in sort.expr() {
             if let Some(category) = expression_category_with_schema(&expr.expr, Some(sort.input().schema().as_ref())) {
                 return Some(category);
@@ -547,7 +545,7 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
         }
     }
 
-    if let Some(merge) = plan.as_any().downcast_ref::<SortPreservingMergeExec>() {
+    if let Some(merge) = plan.downcast_ref::<SortPreservingMergeExec>() {
         for expr in merge.expr() {
             if let Some(category) = expression_category(&expr.expr) {
                 return Some(category);
@@ -559,7 +557,7 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
         return Some(category);
     }
 
-    if let Some(source) = plan.as_any().downcast_ref::<DataSourceExec>()
+    if let Some(source) = plan.downcast_ref::<DataSourceExec>()
         && let Some((file_scan, parquet_source)) = source.downcast_to_file_source::<ParquetSource>()
     {
         // DataFusion projection pushdown can absorb scalar expressions such as
@@ -584,7 +582,7 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
         }
     }
 
-    if let Some(hash_join) = plan.as_any().downcast_ref::<HashJoinExec>() {
+    if let Some(hash_join) = plan.downcast_ref::<HashJoinExec>() {
         for (left, right) in hash_join.on() {
             if let Some(category) = expression_category(left).or_else(|| expression_category(right)) {
                 return Some(category);
@@ -597,7 +595,7 @@ fn first_unsupported_expression_category(plan: &dyn ExecutionPlan) -> Option<Str
         }
     }
 
-    if let Some(nested_loop_join) = plan.as_any().downcast_ref::<NestedLoopJoinExec>()
+    if let Some(nested_loop_join) = plan.downcast_ref::<NestedLoopJoinExec>()
         && let Some(filter) = nested_loop_join.filter()
         && let Some(category) = join_residual_expression_category(filter.expression(), filter.schema())
     {

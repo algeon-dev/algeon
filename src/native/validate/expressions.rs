@@ -23,25 +23,25 @@ pub(in crate::native) fn validate_physical_expr(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
 ) -> Result<(), FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         return validate_column_type(column, input_schema);
     }
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return validate_literal(literal.value());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return validate_binary_expr(binary, input_schema);
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return validate_physical_expr(not.arg(), input_schema);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return validate_physical_expr(is_null.arg(), input_schema);
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return validate_physical_expr(is_not_null.arg(), input_schema);
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type =
             cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
         if !is_supported_native_cast(&source_type, cast.cast_type())
@@ -52,23 +52,23 @@ pub(in crate::native) fn validate_physical_expr(
         }
         return validate_physical_expr(cast.expr(), input_schema);
     }
-    if let Some(like) = expr.as_any().downcast_ref::<LikeExpr>() {
+    if let Some(like) = expr.downcast_ref::<LikeExpr>() {
         return validate_like_expr(like, input_schema);
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         return validate_in_list_expr(in_list, input_schema);
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         return validate_case_expr(case, input_schema);
     }
-    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
         return validate_physical_expr(&current, input_schema);
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         return validate_scalar_function_expr(function, input_schema);
     }
-    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         return validate_try_cast_expr(try_cast, input_schema);
     }
     Err(FallbackReason::UnsupportedExpression)
@@ -111,7 +111,6 @@ fn is_integer_data_type(data_type: &DataType) -> bool {
 fn literal_string_date32_cast_is_supported(expr: &Arc<dyn PhysicalExpr>, target_type: &DataType) -> bool {
     matches!(target_type, DataType::Date32)
         && expr
-            .as_any()
             .downcast_ref::<Literal>()
             .and_then(|literal| match literal.value() {
                 ScalarValue::Utf8(Some(value))
@@ -138,7 +137,7 @@ fn validate_in_list_expr(in_list: &InListExpr, input_schema: &SchemaRef) -> Resu
     validate_physical_expr(in_list.expr(), input_schema)?;
     let expr_type = physical_expr_data_type(in_list.expr(), input_schema)?;
     for expr in in_list.list() {
-        let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+        let Some(literal) = expr.downcast_ref::<Literal>() else {
             return Err(FallbackReason::UnsupportedExpression);
         };
         if literal.value().is_null() {
@@ -457,8 +456,7 @@ fn validate_datetime_interval_operand(
 }
 
 fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.as_any()
-        .downcast_ref::<Literal>()
+    expr.downcast_ref::<Literal>()
         .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
 }
 
@@ -516,7 +514,7 @@ pub(super) fn validate_literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<()
 }
 
 pub(super) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason> {
-    let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
     match literal.value() {
@@ -528,7 +526,7 @@ pub(super) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, Fal
 }
 
 fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
-    let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
     match literal.value() {
@@ -629,13 +627,13 @@ pub(in crate::native) fn bounded_nonnegative_integral_cast_is_supported(
 }
 
 fn nonnegative_integral_expr_max(expr: &Arc<dyn PhysicalExpr>) -> Option<u128> {
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return nonnegative_integral_scalar_value(literal.value());
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         return nonnegative_integral_expr_max(cast.expr());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return match binary.op() {
             Operator::BitwiseAnd => {
                 nonnegative_integral_expr_max(binary.left()).or_else(|| nonnegative_integral_expr_max(binary.right()))
@@ -660,7 +658,7 @@ fn nonnegative_integral_expr_max(expr: &Arc<dyn PhysicalExpr>) -> Option<u128> {
 }
 
 fn nonnegative_integral_scalar_expr_value(expr: &Arc<dyn PhysicalExpr>) -> Option<u128> {
-    expr.as_any().downcast_ref::<Literal>().and_then(|literal| nonnegative_integral_scalar_value(literal.value()))
+    expr.downcast_ref::<Literal>().and_then(|literal| nonnegative_integral_scalar_value(literal.value()))
 }
 
 fn nonnegative_integral_scalar_value(value: &ScalarValue) -> Option<u128> {

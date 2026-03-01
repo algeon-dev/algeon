@@ -129,7 +129,10 @@ impl From<DataFusionError> for TpchWorkloadError {
 ///
 /// Uses one target partition and disables DataFusion repartitioning and
 /// dynamic filter pushdown so planning/execution reports are stable and easy
-/// to compare across native lowering changes.
+/// to compare across native lowering changes. DataFusion 54 defaults
+/// uncorrelated scalar subqueries to `ScalarSubqueryExec`; the native adapter's
+/// TPC-H contract is the relationalized join form because that is the shape the
+/// native IR can admit and execute as one plan.
 pub fn tpch_report_session_config() -> SessionConfig {
     let mut config = SessionConfig::new()
         .with_repartition_file_scans(false)
@@ -137,6 +140,7 @@ pub fn tpch_report_session_config() -> SessionConfig {
         .with_repartition_joins(false)
         .with_repartition_sorts(false)
         .with_target_partitions(1);
+    config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     config.options_mut().optimizer.enable_topk_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     config.options_mut().optimizer.enable_dynamic_filter_pushdown = false;

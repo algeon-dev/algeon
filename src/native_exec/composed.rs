@@ -4,7 +4,7 @@
 //! The consumer plan then uses those handles as GPU inputs and materializes the
 //! final result back to host Arrow for DataFusion.
 
-use std::{any::Any, collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::record_batch::RecordBatch;
 use datafusion::{
@@ -172,10 +172,6 @@ impl DisplayAs for NativeCudfComposedExec {
 impl ExecutionPlan for NativeCudfComposedExec {
     fn name(&self) -> &str {
         "NativeCudfComposedExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

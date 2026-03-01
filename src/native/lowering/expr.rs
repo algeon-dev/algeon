@@ -52,14 +52,14 @@ pub(super) fn lower_physical_expr_with_bindings(
     input_schema: &SchemaRef,
     bindings: Option<&[FieldBinding]>,
 ) -> Result<NativeExpr, FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         validate_column_type(column, input_schema)?;
         return Ok(NativeExpr::column(resolved_column_name(column, input_schema, bindings)?));
     }
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return lower_literal(literal.value());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         let left = lower_physical_expr_with_bindings(binary.left(), input_schema, bindings)?;
         let right = lower_physical_expr_with_bindings(binary.right(), input_schema, bindings)?;
         if matches!(binary.op(), Operator::StringConcat) {
@@ -95,20 +95,20 @@ pub(super) fn lower_physical_expr_with_bindings(
         }
         return Ok(NativeExpr::binary(left, op, right));
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return Ok(!lower_physical_expr_with_bindings(not.arg(), input_schema, bindings)?);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return Ok(NativeExpr::is_null(lower_physical_expr_with_bindings(is_null.arg(), input_schema, bindings)?));
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return Ok(NativeExpr::is_not_null(lower_physical_expr_with_bindings(
             is_not_null.arg(),
             input_schema,
             bindings,
         )?));
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         let source_type =
             cast.expr().data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
         if let Some(value) = lower_literal_string_date32_cast(cast.expr(), cast.cast_type()) {
@@ -124,23 +124,23 @@ pub(super) fn lower_physical_expr_with_bindings(
             cast.cast_type().clone(),
         ));
     }
-    if let Some(like) = expr.as_any().downcast_ref::<LikeExpr>() {
+    if let Some(like) = expr.downcast_ref::<LikeExpr>() {
         return lower_like_expr(like, input_schema, bindings);
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         return lower_in_list_expr(in_list, input_schema, bindings);
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         return lower_case_expr(case, input_schema, bindings);
     }
-    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
         return lower_physical_expr_with_bindings(&current, input_schema, bindings);
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         return lower_scalar_function_expr(function, input_schema, bindings);
     }
-    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         return lower_try_cast_expr(try_cast, input_schema, bindings);
     }
     Err(FallbackReason::UnsupportedExpression)
@@ -182,7 +182,7 @@ fn lower_literal_string_date32_cast(
     if !matches!(target_type, ArrowDataType::Date32) {
         return None;
     }
-    expr.as_any().downcast_ref::<Literal>().and_then(|literal| match literal.value() {
+    expr.downcast_ref::<Literal>().and_then(|literal| match literal.value() {
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
             parse_yyyy_mm_dd_date32(value).map(nexus_query_engine::LiteralValue::Date32)
         },
@@ -223,7 +223,7 @@ fn lower_in_list_expr(
         .list()
         .iter()
         .map(|expr| {
-            let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+            let Some(literal) = expr.downcast_ref::<Literal>() else {
                 return Err(FallbackReason::UnsupportedExpression);
             };
             if literal.value().is_null() {
@@ -526,44 +526,44 @@ pub(super) fn collect_required_field_indices(
     input_schema: &SchemaRef,
     required: &mut std::collections::BTreeSet<usize>,
 ) -> Result<(), FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         if input_schema.fields().get(column.index()).is_none() {
             return Err(FallbackReason::UnsupportedExpression);
         }
         required.insert(column.index());
         return Ok(());
     }
-    if expr.as_any().downcast_ref::<Literal>().is_some() {
+    if expr.downcast_ref::<Literal>().is_some() {
         return Ok(());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         collect_required_field_indices(binary.left(), input_schema, required)?;
         collect_required_field_indices(binary.right(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return collect_required_field_indices(not.arg(), input_schema, required);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return collect_required_field_indices(is_null.arg(), input_schema, required);
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return collect_required_field_indices(is_not_null.arg(), input_schema, required);
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         return collect_required_field_indices(cast.expr(), input_schema, required);
     }
-    if let Some(like) = expr.as_any().downcast_ref::<LikeExpr>() {
+    if let Some(like) = expr.downcast_ref::<LikeExpr>() {
         literal_string(like.pattern())?;
         return collect_required_field_indices(like.expr(), input_schema, required);
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
         collect_required_field_indices(in_list.expr(), input_schema, required)?;
         for expr in in_list.list() {
-            let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+            let Some(literal) = expr.downcast_ref::<Literal>() else {
                 return Err(FallbackReason::UnsupportedExpression);
             };
             if literal.value().is_null() {
@@ -573,7 +573,7 @@ pub(super) fn collect_required_field_indices(
         }
         return Ok(());
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         if let Some(expr) = case.expr() {
             collect_required_field_indices(expr, input_schema, required)?;
         }
@@ -586,11 +586,11 @@ pub(super) fn collect_required_field_indices(
         }
         return Ok(());
     }
-    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
         return collect_required_field_indices(&current, input_schema, required);
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         match function.name().to_ascii_lowercase().as_str() {
             "substring" | "substr" => {
                 let args = function.args();
@@ -674,7 +674,7 @@ pub(super) fn collect_required_field_indices(
         }?;
         return Ok(());
     }
-    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         return collect_required_field_indices(try_cast.expr(), input_schema, required);
     }
     Err(FallbackReason::UnsupportedExpression)
@@ -731,7 +731,7 @@ pub(super) fn lower_binary_operator(op: &Operator) -> Result<NativeBinaryOp, Fal
 }
 
 fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason> {
-    let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
     match literal.value() {
@@ -743,7 +743,7 @@ fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason
 }
 
 fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
-    let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
         return Err(FallbackReason::UnsupportedExpression);
     };
     match literal.value() {

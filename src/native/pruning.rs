@@ -153,10 +153,10 @@ fn ranges_cover_full_file(coverage: &mut FileCoverage<'_>) -> Result<bool, Fallb
 }
 
 fn range_extensions_are_supported(file: &PartitionedFile) -> Result<bool, FallbackReason> {
-    let Some(extension) = &file.extensions else {
+    if file.extensions.is_empty() {
         return Ok(true);
-    };
-    if extension.downcast_ref::<ParquetAccessPlan>().is_none() {
+    }
+    if file.extensions.len() != 1 || file.extensions.get::<ParquetAccessPlan>().is_none() {
         return Ok(false);
     }
     explicit_row_group_selection(file).map(|row_groups| row_groups.is_some())
@@ -222,10 +222,10 @@ pub(super) fn scan_predicate_exactly_matches_filter(
 }
 
 pub(in crate::native) fn scan_predicate_is_dynamic_filter_hint(expr: &dyn PhysicalExpr) -> bool {
-    if expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>().is_some() {
+    if expr.downcast_ref::<DynamicFilterPhysicalExpr>().is_some() {
         return true;
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return matches!(binary.op(), Operator::And | Operator::Or)
             && scan_predicate_is_dynamic_filter_hint(binary.left().as_ref())
             && scan_predicate_is_dynamic_filter_hint(binary.right().as_ref());
@@ -239,7 +239,7 @@ pub(in crate::native) fn scan_predicate_without_dynamic_filter_hints(
     if scan_predicate_is_dynamic_filter_hint(expr.as_ref()) {
         return None;
     }
-    let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() else {
+    let Some(binary) = expr.downcast_ref::<BinaryExpr>() else {
         return Some(Arc::clone(expr));
     };
     if !matches!(binary.op(), Operator::And) {
@@ -262,7 +262,7 @@ fn scan_predicate_matches_filter(scan_predicate: &dyn PhysicalExpr, filter_predi
     if physical_expr_eq(scan_predicate, filter_predicate) {
         return true;
     }
-    let Some(scan_binary) = scan_predicate.as_any().downcast_ref::<BinaryExpr>() else {
+    let Some(scan_binary) = scan_predicate.downcast_ref::<BinaryExpr>() else {
         return filter_conjunction_contains(filter_predicate, scan_predicate);
     };
     if !matches!(scan_binary.op(), Operator::And) {
@@ -282,7 +282,7 @@ fn filter_conjunction_contains(filter_predicate: &dyn PhysicalExpr, scan_predica
     if physical_expr_eq(filter_predicate, scan_predicate) {
         return true;
     }
-    let Some(filter_binary) = filter_predicate.as_any().downcast_ref::<BinaryExpr>() else {
+    let Some(filter_binary) = filter_predicate.downcast_ref::<BinaryExpr>() else {
         return false;
     };
     matches!(filter_binary.op(), Operator::And)
@@ -291,60 +291,41 @@ fn filter_conjunction_contains(filter_predicate: &dyn PhysicalExpr, scan_predica
 }
 
 fn physical_expr_eq(left: &dyn PhysicalExpr, right: &dyn PhysicalExpr) -> bool {
-    if let (Some(left), Some(right)) = (left.as_any().downcast_ref::<Column>(), right.as_any().downcast_ref::<Column>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<Column>(), right.downcast_ref::<Column>()) {
         return left.name() == right.name();
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<Literal>(), right.as_any().downcast_ref::<Literal>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<Literal>(), right.downcast_ref::<Literal>()) {
         return left.value() == right.value();
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<BinaryExpr>(), right.as_any().downcast_ref::<BinaryExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<BinaryExpr>(), right.downcast_ref::<BinaryExpr>()) {
         return left.op() == right.op()
             && physical_expr_eq(left.left().as_ref(), right.left().as_ref())
             && physical_expr_eq(left.right().as_ref(), right.right().as_ref());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<NotExpr>(), right.as_any().downcast_ref::<NotExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<NotExpr>(), right.downcast_ref::<NotExpr>()) {
         return physical_expr_eq(left.arg().as_ref(), right.arg().as_ref());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<IsNullExpr>(), right.as_any().downcast_ref::<IsNullExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<IsNullExpr>(), right.downcast_ref::<IsNullExpr>()) {
         return physical_expr_eq(left.arg().as_ref(), right.arg().as_ref());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<IsNotNullExpr>(), right.as_any().downcast_ref::<IsNotNullExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<IsNotNullExpr>(), right.downcast_ref::<IsNotNullExpr>()) {
         return physical_expr_eq(left.arg().as_ref(), right.arg().as_ref());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<CastExpr>(), right.as_any().downcast_ref::<CastExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<CastExpr>(), right.downcast_ref::<CastExpr>()) {
         return left.cast_type() == right.cast_type() && physical_expr_eq(left.expr().as_ref(), right.expr().as_ref());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<LikeExpr>(), right.as_any().downcast_ref::<LikeExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<LikeExpr>(), right.downcast_ref::<LikeExpr>()) {
         return left.negated() == right.negated()
             && left.case_insensitive() == right.case_insensitive()
             && physical_expr_eq(left.expr().as_ref(), right.expr().as_ref())
             && physical_expr_eq(left.pattern().as_ref(), right.pattern().as_ref());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<InListExpr>(), right.as_any().downcast_ref::<InListExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<InListExpr>(), right.downcast_ref::<InListExpr>()) {
         return left.negated() == right.negated()
             && physical_expr_eq(left.expr().as_ref(), right.expr().as_ref())
             && physical_expr_slices_eq(left.list(), right.list());
     }
-    if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<CaseExpr>(), right.as_any().downcast_ref::<CaseExpr>())
-    {
+    if let (Some(left), Some(right)) = (left.downcast_ref::<CaseExpr>(), right.downcast_ref::<CaseExpr>()) {
         return optional_physical_expr_eq(left.expr(), right.expr())
             && left.when_then_expr().len() == right.when_then_expr().len()
             && left.when_then_expr().iter().zip(right.when_then_expr()).all(|(left, right)| {
@@ -354,7 +335,7 @@ fn physical_expr_eq(left: &dyn PhysicalExpr, right: &dyn PhysicalExpr) -> bool {
             && optional_physical_expr_eq(left.else_expr(), right.else_expr());
     }
     if let (Some(left), Some(right)) =
-        (left.as_any().downcast_ref::<ScalarFunctionExpr>(), right.as_any().downcast_ref::<ScalarFunctionExpr>())
+        (left.downcast_ref::<ScalarFunctionExpr>(), right.downcast_ref::<ScalarFunctionExpr>())
     {
         return left.name().eq_ignore_ascii_case(right.name()) && physical_expr_slices_eq(left.args(), right.args());
     }
@@ -375,10 +356,7 @@ fn physical_expr_slices_eq(left: &[Arc<dyn PhysicalExpr>], right: &[Arc<dyn Phys
 }
 
 pub(super) fn explicit_row_group_selection(file: &PartitionedFile) -> Result<Option<Vec<usize>>, FallbackReason> {
-    let Some(extension) = &file.extensions else {
-        return Ok(None);
-    };
-    let Some(access_plan) = extension.downcast_ref::<ParquetAccessPlan>() else {
+    let Some(access_plan) = file.extensions.get::<ParquetAccessPlan>() else {
         return Ok(None);
     };
 
@@ -403,16 +381,12 @@ pub(super) fn selected_row_groups_from_access_plans(files: &[&PartitionedFile]) 
 }
 
 fn explicit_row_group_selection_count(file: &PartitionedFile) -> Option<usize> {
-    let extension = file.extensions.as_ref()?;
-    let access_plan = extension.downcast_ref::<ParquetAccessPlan>()?;
+    let access_plan = file.extensions.get::<ParquetAccessPlan>()?;
     Some(access_plan.inner().iter().filter(|access| !matches!(access, RowGroupAccess::Skip)).count())
 }
 
 pub(super) fn has_row_level_selection(file: &PartitionedFile) -> bool {
-    let Some(extension) = &file.extensions else {
-        return false;
-    };
-    let Some(access_plan) = extension.downcast_ref::<ParquetAccessPlan>() else {
+    let Some(access_plan) = file.extensions.get::<ParquetAccessPlan>() else {
         return false;
     };
     access_plan.inner().iter().any(|access| matches!(access, RowGroupAccess::Selection(_)))

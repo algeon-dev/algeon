@@ -85,14 +85,11 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
     input: &LoweredNativeInput,
 ) -> Result<Option<SyntheticAggregateInputProjection>, FallbackReason> {
     let frontend_schema = aggregate.input().schema();
-    let needs_group_projection = aggregate
-        .group_expr()
-        .expr()
-        .iter()
-        .any(|(group_expr, _alias)| group_expr.as_any().downcast_ref::<Column>().is_none());
+    let needs_group_projection =
+        aggregate.group_expr().expr().iter().any(|(group_expr, _alias)| group_expr.downcast_ref::<Column>().is_none());
     let needs_aggregate_arg_projection = aggregate.aggr_expr().iter().any(|aggregate_expr| {
         let expressions = aggregate_expr.expressions();
-        !matches!(expressions.as_slice(), [arg] if arg.as_any().downcast_ref::<Column>().is_some())
+        !matches!(expressions.as_slice(), [arg] if arg.downcast_ref::<Column>().is_some())
     });
     let needs_filter_projection = aggregate.filter_expr().iter().any(Option::is_some);
     let needs_projection = needs_group_projection || needs_aggregate_arg_projection || needs_filter_projection;

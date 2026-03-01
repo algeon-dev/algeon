@@ -48,7 +48,7 @@ fn materialize_sort_expressions(
     let mut temp_exprs = Vec::new();
     let mut used_names = input.schema.fields().iter().map(|field| field.name().clone()).collect::<BTreeSet<_>>();
     for (index, sort_expr) in sort.expr().iter().enumerate() {
-        if let Some(column) = sort_expr.expr.as_any().downcast_ref::<Column>() {
+        if let Some(column) = sort_expr.expr.downcast_ref::<Column>() {
             sort_columns.push(input.binding_for_column(column)?.native_name.clone());
             continue;
         }

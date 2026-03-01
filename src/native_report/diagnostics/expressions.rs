@@ -7,7 +7,7 @@ pub(super) fn join_residual_expression_category(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
 ) -> Option<String> {
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         if matches!(binary.op(), Operator::Or)
             && binary.nullable(input_schema.as_ref()).unwrap_or(true)
             && expression_contains_scalar_function(expr)
@@ -17,23 +17,23 @@ pub(super) fn join_residual_expression_category(
         return join_residual_expression_category(binary.left(), input_schema)
             .or_else(|| join_residual_expression_category(binary.right(), input_schema));
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return join_residual_expression_category(not.arg(), input_schema);
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return join_residual_expression_category(is_null.arg(), input_schema);
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return join_residual_expression_category(is_not_null.arg(), input_schema);
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         return join_residual_expression_category(cast.expr(), input_schema);
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         return join_residual_expression_category(in_list.expr(), input_schema)
             .or_else(|| in_list.list().iter().find_map(|expr| join_residual_expression_category(expr, input_schema)));
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         if let Some(expr) = case.expr()
             && let Some(category) = join_residual_expression_category(expr, input_schema)
         {
@@ -52,7 +52,7 @@ pub(super) fn join_residual_expression_category(
 }
 
 fn expression_contains_scalar_function(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.as_any().downcast_ref::<ScalarFunctionExpr>().is_some()
+    expr.downcast_ref::<ScalarFunctionExpr>().is_some()
         || expr.children().into_iter().any(expression_contains_scalar_function)
 }
 
@@ -64,13 +64,13 @@ pub(super) fn expression_category_with_schema(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: Option<&Schema>,
 ) -> Option<String> {
-    if expr.as_any().downcast_ref::<Column>().is_some() {
+    if expr.downcast_ref::<Column>().is_some() {
         return None;
     }
-    if let Some(literal) = expr.as_any().downcast_ref::<Literal>() {
+    if let Some(literal) = expr.downcast_ref::<Literal>() {
         return (!literal_is_supported(literal.value())).then(|| "expression_literal".to_string());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         if expression_contains_interval_literal(binary.left()) || expression_contains_interval_literal(binary.right()) {
             return interval_arithmetic_category(binary);
         }
@@ -80,32 +80,32 @@ pub(super) fn expression_category_with_schema(
         return expression_category_with_schema(binary.left(), input_schema)
             .or_else(|| expression_category_with_schema(binary.right(), input_schema));
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         return expression_category_with_schema(not.arg(), input_schema);
     }
-    if let Some(negative) = expr.as_any().downcast_ref::<NegativeExpr>() {
+    if let Some(negative) = expr.downcast_ref::<NegativeExpr>() {
         return expression_category_with_schema(negative.arg(), input_schema)
             .or_else(|| Some("expression_unary_negative".to_string()));
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         return expression_category_with_schema(is_null.arg(), input_schema);
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         return expression_category_with_schema(is_not_null.arg(), input_schema);
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         return expression_category_with_schema(cast.expr(), input_schema).or_else(|| {
             cast.cast_options()
                 .safe
                 .then(|| cast_type_pair_category("expression_try_cast", cast.expr(), cast.cast_type(), input_schema))
         });
     }
-    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         return expression_category_with_schema(try_cast.expr(), input_schema).or_else(|| {
             Some(cast_type_pair_category("expression_try_cast", try_cast.expr(), try_cast.cast_type(), input_schema))
         });
     }
-    if let Some(like) = expr.as_any().downcast_ref::<LikeExpr>() {
+    if let Some(like) = expr.downcast_ref::<LikeExpr>() {
         if like.case_insensitive() {
             return Some("expression_like_case_insensitive".to_string());
         }
@@ -114,21 +114,21 @@ pub(super) fn expression_category_with_schema(
                 .or_else(|| literal_string(like.pattern()).is_none().then(|| "expression_like_pattern".to_string()))
         });
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.is_empty() {
             return Some("expression_in_list".to_string());
         }
         if in_list
             .list()
             .iter()
-            .any(|expr| expr.as_any().downcast_ref::<Literal>().is_none_or(|literal| literal.value().is_null()))
+            .any(|expr| expr.downcast_ref::<Literal>().is_none_or(|literal| literal.value().is_null()))
         {
             return Some("expression_in_list".to_string());
         }
         return expression_category_with_schema(in_list.expr(), input_schema)
             .or_else(|| in_list.list().iter().find_map(|expr| expression_category_with_schema(expr, input_schema)));
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         if let Some(expr) = case.expr()
             && let Some(category) = expression_category_with_schema(expr, input_schema)
         {
@@ -143,13 +143,13 @@ pub(super) fn expression_category_with_schema(
         }
         return case.else_expr().and_then(|expr| expression_category_with_schema(expr, input_schema));
     }
-    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         return match dynamic_filter.current() {
             Ok(current) => expression_category_with_schema(&current, input_schema),
             Err(_error) => Some("expression_dynamic_filter".to_string()),
         };
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         let function_name = stable_identifier(function.name());
         match function_name.as_str() {
             "substr" | "substring" => {
@@ -197,13 +197,12 @@ fn literal_is_supported(value: &ScalarValue) -> bool {
 
 fn expression_contains_interval_literal(expr: &Arc<dyn PhysicalExpr>) -> bool {
     if expr
-        .as_any()
         .downcast_ref::<Literal>()
         .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
     {
         return true;
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         return expression_contains_interval_literal(binary.left())
             || expression_contains_interval_literal(binary.right());
     }
@@ -224,8 +223,7 @@ fn interval_arithmetic_category(binary: &BinaryExpr) -> Option<String> {
 }
 
 fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.as_any()
-        .downcast_ref::<Literal>()
+    expr.downcast_ref::<Literal>()
         .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
 }
 
@@ -252,7 +250,7 @@ fn cast_type_pair_category(
 }
 
 fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Option<String> {
-    let literal = expr.as_any().downcast_ref::<Literal>()?;
+    let literal = expr.downcast_ref::<Literal>()?;
     match literal.value() {
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
             Some(value.clone())
@@ -296,7 +294,7 @@ fn extract_field_is_supported(function: &ScalarFunctionExpr) -> bool {
 }
 
 fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Option<i32> {
-    let literal = expr.as_any().downcast_ref::<Literal>()?;
+    let literal = expr.downcast_ref::<Literal>()?;
     match literal.value() {
         ScalarValue::Int8(Some(value)) => Some(i32::from(*value)),
         ScalarValue::Int16(Some(value)) => Some(i32::from(*value)),

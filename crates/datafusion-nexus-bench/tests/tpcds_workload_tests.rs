@@ -62,6 +62,14 @@ fn tpcds_native_report_session_config_avoids_datafusion_statistics_estimates() {
         !native_config.options().execution.collect_statistics,
         "native TPC-DS report planning reads source metadata directly and must not depend on DataFusion join statistics"
     );
+    assert!(
+        report_config.options().optimizer.enable_physical_uncorrelated_scalar_subquery,
+        "shared TPC-DS report config must preserve DataFusion's CPU scalar-subquery default"
+    );
+    assert!(
+        !native_config.options().optimizer.enable_physical_uncorrelated_scalar_subquery,
+        "native TPC-DS report contexts must preserve the relationalized scalar subquery contract"
+    );
     assert!(!native_config.options().optimizer.repartition_joins);
     assert_eq!(native_config.options().execution.target_partitions, 1);
 }

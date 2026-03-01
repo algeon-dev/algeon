@@ -12,7 +12,7 @@ use nexus_query_engine::{ExecutionBoundaryPolicy, JoinOperatorMetrics, Lakehouse
 
 /// Stable public DataFusion metric-name contract exposed by native cuDF execution plans.
 ///
-/// Every name in this list is registered as a DataFusion `MetricType::SUMMARY` metric by
+/// Every name in this list is registered as a DataFusion `MetricType::Summary` metric by
 /// `NativeCudfMetrics`. Timer names are DataFusion `Time` metrics stored in nanoseconds and
 /// populated from native query `Duration` values. Keep this list, the `NativeCudfMetrics` fields,
 /// and `NativeCudfMetrics::new` in exact sync because adapter consumers assert and parse these
@@ -620,7 +620,7 @@ impl NativeCudfMetrics {
     pub(crate) fn record_lakehouse_cache_fill_events(&self, events: &[LakehouseCacheFillEventSnapshot]) {
         for event in events {
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("outcome", event.outcome.to_string())
                 .with_new_label("bytes", event.bytes.map_or_else(|| "none".to_string(), |value| value.to_string()))
                 .with_new_label("elapsed_ns", event.elapsed.as_nanos().min(u128::from(u64::MAX)).to_string())
@@ -646,7 +646,7 @@ impl NativeCudfMetrics {
     fn record_graph_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.graph_algorithm_runtime_rows {
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("node_id", row.node_id.clone())
                 .with_new_label("algorithm", row.algorithm.clone())
                 .with_new_label("runtime_outcome", row.runtime_outcome.clone())
@@ -683,7 +683,7 @@ impl NativeCudfMetrics {
     fn record_task_operator_rows(&self, metrics: &QueryMetrics) {
         for row in metrics.task_operator_metrics.values() {
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("operator_kind", row.operator_kind.clone())
                 .with_new_label("task_count", row.task_count.to_string())
                 .with_new_label("elapsed_ns", row.elapsed_time.as_nanos().min(u128::from(u64::MAX)).to_string())
@@ -707,7 +707,7 @@ impl NativeCudfMetrics {
     fn record_task_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in metrics.task_runtime_metrics.values() {
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("compiled_task_id", row.compiled_task_id.clone())
                 .with_new_label("operator_kind", row.operator_kind.clone())
                 .with_new_label("elapsed_ns", row.elapsed_time.as_nanos().min(u128::from(u64::MAX)).to_string())
@@ -731,7 +731,7 @@ impl NativeCudfMetrics {
     fn record_dynamic_filter_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.dynamic_filter_runtime_rows {
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("dynamic_filter_id", row.dynamic_filter_id.clone())
                 .with_new_label("event", row.event.clone())
                 .with_new_label("producer_kind", row.producer_kind.clone())
@@ -813,7 +813,7 @@ impl NativeCudfMetrics {
     fn record_source_read_runtime_rows(&self, metrics: &QueryMetrics) {
         for row in &metrics.source_read_runtime_rows {
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("source_node_id", row.source_node_id.clone())
                 .with_new_label("read_kind", row.read_kind.clone())
                 .with_new_label("read_strategy", row.read_strategy.clone())
@@ -919,7 +919,7 @@ impl NativeCudfMetrics {
                 .unwrap_or_else(|| join_strategy_label(join));
             let runtime = join_runtime_counters(join_strategy, join);
             let builder = MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("node_id", operator.node_id.clone())
                 .with_new_label("join_strategy", join_strategy.to_string())
                 .with_new_label("execution_strategy", join.execution_strategy.clone())
@@ -982,7 +982,7 @@ impl NativeCudfMetrics {
         for decision in &metrics.aggregate_strategy_decisions {
             let facts = &decision.facts;
             MetricBuilder::new(&self.metrics_set)
-                .with_type(MetricType::SUMMARY)
+                .with_type(MetricType::Summary)
                 .with_new_label("node_id", decision.node_id.clone())
                 .with_new_label("selected_strategy", aggregate_fact(facts, "selected_strategy"))
                 .with_new_label("execution_stage", aggregate_fact(facts, "execution_stage"))
@@ -1383,11 +1383,11 @@ fn add_optional_count(metric: &Count, observed: Option<&Count>, value: Option<u6
 }
 
 fn summary_counter(metrics: &ExecutionPlanMetricsSet, name: &'static str, partition: usize) -> Count {
-    MetricBuilder::new(metrics).with_type(MetricType::SUMMARY).counter(name, partition)
+    MetricBuilder::new(metrics).with_type(MetricType::Summary).counter(name, partition)
 }
 
 fn summary_timer(metrics: &ExecutionPlanMetricsSet, name: &'static str, partition: usize) -> Time {
-    MetricBuilder::new(metrics).with_type(MetricType::SUMMARY).subset_time(name, partition)
+    MetricBuilder::new(metrics).with_type(MetricType::Summary).subset_time(name, partition)
 }
 
 #[cfg(test)]

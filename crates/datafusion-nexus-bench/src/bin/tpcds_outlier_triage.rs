@@ -660,10 +660,10 @@ fn collect_native_exec_plans_inner<'a>(
     plan: &'a dyn ExecutionPlan,
     plans: &mut Vec<&'a nexus_query_engine::QueryPlan>,
 ) {
-    if let Some(native) = plan.as_any().downcast_ref::<datafusion_nexus::NativeCudfExec>() {
+    if let Some(native) = plan.downcast_ref::<datafusion_nexus::NativeCudfExec>() {
         plans.push(native.native_plan());
     }
-    if let Some(native) = plan.as_any().downcast_ref::<datafusion_nexus::NativeCudfComposedExec>() {
+    if let Some(native) = plan.downcast_ref::<datafusion_nexus::NativeCudfComposedExec>() {
         plans.push(native.native_plan());
     }
     for child in plan.children() {

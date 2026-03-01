@@ -812,7 +812,10 @@ pub(super) fn append_multi_join_aggregate_over_join_subplan_topk_post_root_stage
         nodes: {
             let mut nodes = vec![shape.root_join_id];
             nodes.extend(shape.post_root_join_ids);
-            nodes.extend([shape.post_root_projection_id, shape.final_sort_id, shape.final_limit_id]);
+            if shape.post_root_projection_id != shape.root_join_id {
+                nodes.push(shape.post_root_projection_id);
+            }
+            nodes.extend([shape.final_sort_id, shape.final_limit_id]);
             nodes
         },
         required_schedule: ScheduleConstraint::Barrier,

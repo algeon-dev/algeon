@@ -14,7 +14,7 @@ use datafusion_nexus::{
 };
 use datafusion_nexus_bench::{
     CUDF_TPCDS_PARQUET_DIR_ENV, TPCDS_QUERIES, TPCDS_TABLES, TpcdsWorkloadResult, default_tpcds_sf1_parquet_root,
-    discover_tpcds_table_layout, register_tpcds_tables,
+    discover_tpcds_table_layout, register_tpcds_tables, tpcds_native_report_session_config,
     tpcds_parity_workload_items_with_session_configs as raw_tpcds_parity_workload_items, tpcds_report_session_config,
 };
 
@@ -83,7 +83,7 @@ pub(super) async fn tpcds_parity_workload_items(
     raw_tpcds_parity_workload_items(
         root,
         cpu_session_config,
-        tpcds_report_session_config(),
+        tpcds_native_report_session_config(),
         optimizer_config,
         query_filter,
     )
@@ -91,7 +91,7 @@ pub(super) async fn tpcds_parity_workload_items(
 }
 
 pub(super) async fn plain_tpcds_physical_plan(root: &Path, query_id: &str) -> Arc<dyn ExecutionPlan> {
-    let ctx = SessionContext::new_with_config(tpcds_report_session_config());
+    let ctx = SessionContext::new_with_config(tpcds_native_report_session_config());
     register_tpcds_tables(&ctx, root).await.unwrap();
     let query = TPCDS_QUERIES.iter().find(|query| query.id == query_id).unwrap();
     let df = ctx.sql(query.sql).await.unwrap();

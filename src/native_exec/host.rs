@@ -4,7 +4,7 @@
 //! executes a DataFusion-free native plan and streams the final result as host
 //! Arrow batches.
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use arrow::record_batch::RecordBatch;
 use datafusion::{
@@ -104,10 +104,6 @@ impl DisplayAs for NativeCudfExec {
 impl ExecutionPlan for NativeCudfExec {
     fn name(&self) -> &str {
         "NativeCudfExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

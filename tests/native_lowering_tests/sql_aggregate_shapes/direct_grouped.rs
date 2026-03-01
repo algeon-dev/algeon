@@ -88,12 +88,11 @@ async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
     let path = dir.join("input.parquet");
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
-    let sort = plan.as_any().downcast_ref::<SortExec>().expect("direct SQL root should be SortExec");
+    let sort = plan.downcast_ref::<SortExec>().expect("direct SQL root should be SortExec");
     let projection =
-        sort.input().as_any().downcast_ref::<ProjectionExec>().expect("direct SQL sort input should be ProjectionExec");
+        sort.input().downcast_ref::<ProjectionExec>().expect("direct SQL sort input should be ProjectionExec");
     let aggregate = projection
         .input()
-        .as_any()
         .downcast_ref::<AggregateExec>()
         .expect("direct SQL projection input should be AggregateExec");
     let m01_index = aggregate.input().schema().index_of("m01").expect("aggregate input should include m01");

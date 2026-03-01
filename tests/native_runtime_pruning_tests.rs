@@ -630,7 +630,7 @@ async fn parquet_scan(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
 }
 
 fn parquet_scan_with_order_sensitive_limit(scan: Arc<dyn ExecutionPlan>, limit: usize) -> Arc<dyn ExecutionPlan> {
-    let data_source = scan.as_any().downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let file_scan =

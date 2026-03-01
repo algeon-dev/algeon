@@ -3,7 +3,7 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
-use std::{any::Any, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UnionFields};
 use async_trait::async_trait;
@@ -104,10 +104,6 @@ impl fmt::Debug for CudfIcebergTableProvider {
 
 #[async_trait]
 impl TableProvider for CudfIcebergTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         Arc::clone(&self.schema)
     }

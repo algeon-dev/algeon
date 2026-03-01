@@ -220,7 +220,7 @@ fn parse_lag_lead_args(standard: &StandardWindowExpr, input_schema: &SchemaRef) 
 }
 
 fn parse_lag_lead_offset(expr: &Arc<dyn PhysicalExpr>) -> Result<u32, FallbackReason> {
-    let literal = expr.as_any().downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
+    let literal = expr.downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
     match literal.value() {
         ScalarValue::Null => Ok(1u32),
         ScalarValue::Int8(None)
@@ -274,7 +274,7 @@ fn parse_lag_lead_default(
     expr: &Arc<dyn PhysicalExpr>,
     value_type: &arrow::datatypes::DataType,
 ) -> Result<Option<NativeLiteralValue>, FallbackReason> {
-    let literal = expr.as_any().downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
+    let literal = expr.downcast_ref::<Literal>().ok_or(FallbackReason::UnsupportedExpression)?;
     let scalar = literal.value();
     // Match DataFusion's lag/lead constructor, which encodes the missing
     // `default` argument as `ScalarValue::Null`. Treat that as the no-default
@@ -438,7 +438,7 @@ fn window_key_expr(
     used_names: &mut BTreeSet<String>,
     materialized_keys: &mut Vec<MaterializedWindowKey>,
 ) -> Result<NativeExpr, FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         let binding = input.binding_for_column(column)?;
         return Ok(NativeExpr::column(binding.native_name.as_str()));
     }

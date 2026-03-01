@@ -306,7 +306,7 @@ fn find_native_cudf_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDesc
 }
 
 fn find_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
-    if let Some(scan) = plan.as_any().downcast_ref::<CudfTableFormatScanExec>() {
+    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
         return Some(scan);
     }
     plan.children().into_iter().find_map(|child| find_table_format_scan(child.as_ref()))

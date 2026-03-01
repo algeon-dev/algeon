@@ -13,7 +13,7 @@ pub(super) fn expected_tpch_native_candidate_shape(query_id: &str) -> &'static s
     match query_id {
         "q01" => "SortExec(ProjectionExec(AggregateExec(ProjectionExec(FilterExec(LocalParquetScan)))))",
         "q02" => {
-            "SortExec(fetch)(ProjectionExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan)),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))))))))"
+            "SortExec(fetch)(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan)),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,HashJoinExec(LocalParquetScan,LocalParquetScan)))))))"
         },
         "q03" => {
             "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan)),FilterExec(LocalParquetScan)))))"
@@ -22,35 +22,33 @@ pub(super) fn expected_tpch_native_candidate_shape(query_id: &str) -> &'static s
             "SortExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan)))))"
         },
         "q05" => {
-            "SortExec(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),LocalParquetScan),LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan)))))"
+            "SortExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(HashJoinExec(LocalParquetScan,HashJoinExec(HashJoinExec(LocalParquetScan,FilterExec(LocalParquetScan)),LocalParquetScan)),LocalParquetScan)))))"
         },
         "q06" => "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))",
         "q07" => {
-            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(HashJoinExec(ProjectionExec(HashJoinExec(LocalParquetScan,ProjectionExec(HashJoinExec(LocalParquetScan,ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)))))),FilterExec(LocalParquetScan)),FilterExec(LocalParquetScan))))))"
+            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,HashJoinExec(LocalParquetScan,HashJoinExec(LocalParquetScan,FilterExec(LocalParquetScan))))),FilterExec(LocalParquetScan))))))"
         },
         "q08" => {
-            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(ProjectionExec(HashJoinExec(LocalParquetScan,ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),LocalParquetScan))))),LocalParquetScan)),LocalParquetScan)))))"
+            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(HashJoinExec(LocalParquetScan,HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),LocalParquetScan))),LocalParquetScan)),LocalParquetScan)))))"
         },
         "q09" => {
-            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(ProjectionExec(HashJoinExec(LocalParquetScan,ProjectionExec(HashJoinExec(LocalParquetScan,HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),LocalParquetScan))))),LocalParquetScan)))))"
+            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(HashJoinExec(LocalParquetScan,HashJoinExec(LocalParquetScan,HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),LocalParquetScan))),LocalParquetScan)))))"
         },
         "q10" => {
-            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),FilterExec(LocalParquetScan)),LocalParquetScan))))"
+            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan)),LocalParquetScan))))"
         },
-        "q12" => {
-            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)))))"
-        },
+        "q12" => "SortExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan))))",
         "q14" => {
             "ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan))))"
         },
         "q13" => {
-            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(AggregateExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)))))))"
+            "SortExec(ProjectionExec(AggregateExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan))))))"
         },
         "q16" => {
-            "SortExec(ProjectionExec(AggregateExec(AggregateExec(HashJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),FilterExec(LocalParquetScan))))))"
+            "SortExec(ProjectionExec(AggregateExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),FilterExec(LocalParquetScan))))))"
         },
         "q17" => {
-            "ProjectionExec(AggregateExec(HashJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),ProjectionExec(AggregateExec(LocalParquetScan)))))"
+            "ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),ProjectionExec(AggregateExec(LocalParquetScan)))))"
         },
         "q18" => {
             "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(AggregateExec(LocalParquetScan)),HashJoinExec(HashJoinExec(LocalParquetScan,LocalParquetScan),LocalParquetScan)))))"
@@ -59,16 +57,16 @@ pub(super) fn expected_tpch_native_candidate_shape(query_id: &str) -> &'static s
             "ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),FilterExec(LocalParquetScan))))"
         },
         "q11" => {
-            "SortExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),ProjectionExec(HashJoinExec(LocalParquetScan,LocalParquetScan))))))))"
+            "SortExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,LocalParquetScan)))),ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,LocalParquetScan)))))))"
         },
         "q15" => {
-            "SortExec(HashJoinExec(ProjectionExec(HashJoinExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))),LocalParquetScan)),AggregateExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))))"
+            "SortExec(HashJoinExec(HashJoinExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))),LocalParquetScan),AggregateExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))))"
         },
         "q20" => {
-            "SortExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),HashJoinExec(ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))),HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan))))"
+            "SortExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))))"
         },
         "q21" => {
-            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),FilterExec(LocalParquetScan)),FilterExec(LocalParquetScan)),LocalParquetScan),FilterExec(LocalParquetScan)))))"
+            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,FilterExec(LocalParquetScan))),FilterExec(LocalParquetScan)),LocalParquetScan),FilterExec(LocalParquetScan)))))"
         },
         "q22" => {
             "SortExec(ProjectionExec(AggregateExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),AggregateExec(FilterExec(LocalParquetScan)))))))"

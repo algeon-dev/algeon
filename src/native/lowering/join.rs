@@ -157,7 +157,7 @@ fn prepare_join_key_expr(
     required: &mut BTreeSet<usize>,
     materializations: &mut Vec<JoinKeyMaterialization>,
 ) -> Result<PreparedJoinKeyExpr, FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         input_schema.fields().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
         required.insert(column.index());
         return Ok(PreparedJoinKeyExpr { column_index: Some(column.index()), synthetic_alias: None });

@@ -103,7 +103,7 @@ pub(super) fn adapter_error(error: &DataFusionError) -> &Error {
 
 pub(super) fn assert_native_cudf_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {
     assert_eq!(plan.name(), "NativeCudfExec", "{context}");
-    assert!(plan.as_any().downcast_ref::<NativeCudfExec>().is_some(), "{context}");
+    assert!(plan.downcast_ref::<NativeCudfExec>().is_some(), "{context}");
 }
 
 pub(super) fn assert_batches_equal(left: &[RecordBatch], right: &[RecordBatch]) {

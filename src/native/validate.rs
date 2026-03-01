@@ -239,46 +239,46 @@ pub(super) fn collect_required_columns(
     input_schema: &SchemaRef,
     required: &mut BTreeSet<String>,
 ) -> Result<(), FallbackReason> {
-    if let Some(column) = expr.as_any().downcast_ref::<Column>() {
+    if let Some(column) = expr.downcast_ref::<Column>() {
         required.insert(resolved_column_name(column, input_schema)?.to_string());
         return Ok(());
     }
-    if expr.as_any().downcast_ref::<Literal>().is_some() {
+    if expr.downcast_ref::<Literal>().is_some() {
         return Ok(());
     }
-    if let Some(binary) = expr.as_any().downcast_ref::<BinaryExpr>() {
+    if let Some(binary) = expr.downcast_ref::<BinaryExpr>() {
         collect_required_columns(binary.left(), input_schema, required)?;
         collect_required_columns(binary.right(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(not) = expr.as_any().downcast_ref::<NotExpr>() {
+    if let Some(not) = expr.downcast_ref::<NotExpr>() {
         collect_required_columns(not.arg(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(is_null) = expr.as_any().downcast_ref::<IsNullExpr>() {
+    if let Some(is_null) = expr.downcast_ref::<IsNullExpr>() {
         collect_required_columns(is_null.arg(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(is_not_null) = expr.as_any().downcast_ref::<IsNotNullExpr>() {
+    if let Some(is_not_null) = expr.downcast_ref::<IsNotNullExpr>() {
         collect_required_columns(is_not_null.arg(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(cast) = expr.as_any().downcast_ref::<CastExpr>() {
+    if let Some(cast) = expr.downcast_ref::<CastExpr>() {
         collect_required_columns(cast.expr(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(like) = expr.as_any().downcast_ref::<LikeExpr>() {
+    if let Some(like) = expr.downcast_ref::<LikeExpr>() {
         validate_literal_string(like.pattern())?;
         collect_required_columns(like.expr(), input_schema, required)?;
         return Ok(());
     }
-    if let Some(in_list) = expr.as_any().downcast_ref::<InListExpr>() {
+    if let Some(in_list) = expr.downcast_ref::<InListExpr>() {
         if in_list.is_empty() {
             return Err(FallbackReason::UnsupportedExpression);
         }
         collect_required_columns(in_list.expr(), input_schema, required)?;
         for expr in in_list.list() {
-            let Some(literal) = expr.as_any().downcast_ref::<Literal>() else {
+            let Some(literal) = expr.downcast_ref::<Literal>() else {
                 return Err(FallbackReason::UnsupportedExpression);
             };
             if literal.value().is_null() {
@@ -288,7 +288,7 @@ pub(super) fn collect_required_columns(
         }
         return Ok(());
     }
-    if let Some(case) = expr.as_any().downcast_ref::<CaseExpr>() {
+    if let Some(case) = expr.downcast_ref::<CaseExpr>() {
         if let Some(expr) = case.expr() {
             collect_required_columns(expr, input_schema, required)?;
         }
@@ -301,15 +301,15 @@ pub(super) fn collect_required_columns(
         }
         return Ok(());
     }
-    if let Some(dynamic_filter) = expr.as_any().downcast_ref::<DynamicFilterPhysicalExpr>() {
+    if let Some(dynamic_filter) = expr.downcast_ref::<DynamicFilterPhysicalExpr>() {
         let current = dynamic_filter.current().map_err(|_error| FallbackReason::UnsupportedExpression)?;
         return collect_required_columns(&current, input_schema, required);
     }
-    if let Some(function) = expr.as_any().downcast_ref::<ScalarFunctionExpr>() {
+    if let Some(function) = expr.downcast_ref::<ScalarFunctionExpr>() {
         collect_required_columns_for_scalar_function(function, input_schema, required)?;
         return Ok(());
     }
-    if let Some(try_cast) = expr.as_any().downcast_ref::<TryCastExpr>() {
+    if let Some(try_cast) = expr.downcast_ref::<TryCastExpr>() {
         collect_required_columns(try_cast.expr(), input_schema, required)?;
         return Ok(());
     }

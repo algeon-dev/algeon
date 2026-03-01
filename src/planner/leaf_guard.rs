@@ -90,7 +90,7 @@ impl PhysicalOptimizerRule for CudfTableFormatGpuOnlyLeafGuardRule {
 }
 
 fn find_leftover_table_format_scan(plan: &dyn ExecutionPlan) -> Option<&CudfTableFormatScanExec> {
-    if let Some(scan) = plan.as_any().downcast_ref::<CudfTableFormatScanExec>() {
+    if let Some(scan) = plan.downcast_ref::<CudfTableFormatScanExec>() {
         return Some(scan);
     }
     for child in plan.children() {

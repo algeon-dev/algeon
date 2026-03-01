@@ -4,7 +4,7 @@
 //! wrapper type is exposed for diagnostics and plan inspection, but executing
 //! them through the ordinary DataFusion streaming path is invalid.
 
-use std::{any::Any, sync::Arc};
+use std::sync::Arc;
 
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
@@ -165,7 +165,7 @@ impl GpuResidentProducerExec for NativeCudfGpuProducerExec {
 }
 
 pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducerExec> {
-    if let Some(producer) = plan.as_any().downcast_ref::<NativeCudfGpuProducerExec>() {
+    if let Some(producer) = plan.downcast_ref::<NativeCudfGpuProducerExec>() {
         return Some(producer);
     }
     #[cfg(feature = "cugraph")]
@@ -221,10 +221,6 @@ impl DisplayAs for NativeCudfGpuProducerExec {
 impl ExecutionPlan for NativeCudfGpuProducerExec {
     fn name(&self) -> &str {
         "NativeCudfGpuProducerExec"
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
     }
 
     fn properties(&self) -> &Arc<PlanProperties> {

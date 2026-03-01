@@ -27,7 +27,7 @@ pub(super) fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
 pub(super) fn find_composed_exec(
     plan: &dyn datafusion::physical_plan::ExecutionPlan,
 ) -> Option<&NativeCudfComposedExec> {
-    if let Some(composed) = plan.as_any().downcast_ref::<NativeCudfComposedExec>() {
+    if let Some(composed) = plan.downcast_ref::<NativeCudfComposedExec>() {
         return Some(composed);
     }
     plan.children().into_iter().find_map(|child| find_composed_exec(child.as_ref()))
