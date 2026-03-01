@@ -12,11 +12,10 @@ use std::{
 
 use super::{
     DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionCancellation,
-    ExecutionContext, GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy, MemoryResourcePolicy,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
-    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, StreamLease,
-    default_host_fetch_budget_bytes, default_lakehouse_cache_fill_runtime, default_source_fetch_runtime,
-    validate_service_stream_pool_device,
+    ExecutionContext, ExecutionContextParts, GdsConcurrencyGate, HostFetchBudget, MemoryControlPolicy,
+    MemoryResourcePolicy, ServiceStreamPool, SourceChunkPlanningMode, SourceFetchConcurrencyGate, SourceFetchConfig,
+    SourceObjectStoreRegistry, SourceSchedulerPolicy, SourceStorageProfile, default_host_fetch_budget_bytes,
+    default_lakehouse_cache_fill_runtime, default_source_fetch_runtime, validate_service_stream_pool_device,
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
@@ -675,8 +674,9 @@ impl QueryHandle {
         };
         let stream_lease = resources.service_stream_pool.acquire()?;
         validate_service_stream_pool_device(&resources.service_stream_pool, stream_lease.runtime().device())?;
-        let context = ExecutionContext {
-            runtime: stream_lease.shared_runtime(),
+        let stream_lease_guard = Arc::new(stream_lease);
+        let context = ExecutionContext::from_parts(ExecutionContextParts {
+            runtime: stream_lease_guard.shared_runtime(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy(),
             boundary_policy: self.service.config.boundary_policy,
@@ -700,8 +700,9 @@ impl QueryHandle {
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
-        };
-        Ok(TenantQueryContext { context, _stream_lease: stream_lease })
+            stream_lease_guard: Some(stream_lease_guard),
+        });
+        Ok(TenantQueryContext { context })
     }
 
     /// Releases the admission slot before dropping the handle.
@@ -735,7 +736,6 @@ impl Drop for QueryHandle {
 #[derive(Debug)]
 pub struct TenantQueryContext {
     context: ExecutionContext,
-    _stream_lease: StreamLease,
 }
 
 impl TenantQueryContext {

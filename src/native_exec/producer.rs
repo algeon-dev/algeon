@@ -132,7 +132,6 @@ impl NativeCudfGpuProducerExec {
         })?;
         let (output, query_metrics) = result.into_parts();
         metrics.record_query_metrics(&query_metrics);
-        metrics.record_lakehouse_cache_fill_events(&native_context.lakehouse_cache_fill_event_snapshots());
         let QueryOutput::GpuResident(handle) = output else {
             return Err(DataFusionError::from(
                 Error::new(

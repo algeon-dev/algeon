@@ -238,7 +238,7 @@ impl ExecutionPlan for NativeCudfComposedExec {
             })?;
             let (output, query_metrics) = result.into_parts();
             metrics.record_query_metrics(&query_metrics);
-            metrics.record_lakehouse_cache_fill_events(&context.lakehouse_cache_fill_event_snapshots());
+            metrics.record_lakehouse_cache_fill_events(&context.drain_lakehouse_cache_fill_event_snapshots());
             let QueryOutput::HostArrow(batch) = output else {
                 return Err(DataFusionError::from(
                     Error::new(
