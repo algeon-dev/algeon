@@ -28,8 +28,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
 ///
 /// Empty keys panic, and inserting the same key twice panics. The adapter
-/// uses `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation` for cuDF
-/// source classification. Those keys may come from direct adapter cuDF calls or
+/// uses `cudf_code`, `cudf_kind`, `cudf_status`, `cudf_operation`, and
+/// `cudf_message` for cuDF source classification. Those keys may come from
+/// direct adapter cuDF calls or
 /// from non-colliding native facts copied by [`Error::from_native`]. The
 /// `native_code`, `native_kind`, `native_status`, and `native_operation` keys
 /// describe errors wrapped from `nexus-query-engine`; colliding native facts
@@ -107,16 +108,21 @@ impl Error {
     ///
     /// `operation` should be the stable dotted id for the adapter operation that
     /// called cuDF, and `message` should describe the failure for humans. The
-    /// cuDF code, kind, status, and operation are preserved as reserved facts:
-    /// `cudf_code`, `cudf_kind`, `cudf_status`, and `cudf_operation`.
+    /// cuDF code, kind, status, operation, and (URI-redacted) message are
+    /// preserved as reserved facts: `cudf_code`, `cudf_kind`, `cudf_status`,
+    /// `cudf_operation`, and `cudf_message`.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
-        Self::new(code, operation, message)
+        let error = Self::new(code, operation, message)
             .with_fact("cudf_code", source.code())
             .with_fact("cudf_kind", source.kind())
             .with_fact("cudf_status", source.status())
-            .with_fact("cudf_operation", source.operation())
-            .with_source(source)
+            .with_fact("cudf_operation", source.operation());
+        match cudf_message_fact(&source) {
+            Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
+            None => error,
+        }
+        .with_source(source)
     }
 
     /// Wraps a native-engine error at the DataFusion adapter boundary.
@@ -264,6 +270,29 @@ impl From<Error> for DataFusionError {
 // permanent mappings: `NotFound` is treated as invalid input,
 // `ExecutionContext` is treated as an invariant violation, and unknown kinds
 // fall back to dependency failure.
+/// Builds the `cudf_message` fact value for a wrapped `cudf::Error`.
+///
+/// The foreign (libcudf/KvikIO) exception text is the most direct evidence of
+/// what a lower layer rejected, so it is preserved as a fact. URI-like tokens
+/// are redacted so reader locations never leak through diagnostics.
+fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
+    let message = source.message().trim();
+    if message.is_empty() {
+        return None;
+    }
+    Some(redact_uri_tokens(message))
+}
+
+/// Replaces whitespace-delimited URI-like tokens (`scheme://...`) with a
+/// stable placeholder. Whitespace is normalized to single spaces.
+fn redact_uri_tokens(message: &str) -> String {
+    message
+        .split_whitespace()
+        .map(|token| if token.contains("://") { "<redacted-uri>" } else { token })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
     if error.kind() == cudf::ErrorKind::ResourceExhausted {
         return ErrorCode::CudfResourceExhausted;

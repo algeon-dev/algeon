@@ -46,7 +46,8 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
     assert_eq!(error.fact_value("budget_bytes"), Some("1"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
+    assert_eq!(error.fact_value("row_group_count"), Some("1"));
     assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
@@ -172,7 +173,8 @@ fn bounded_native_query_reports_retry_facts_when_chunk_retry_exhausts() {
     assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
+    assert_eq!(error.fact_value("row_group_count"), Some("1"));
     assert_eq!(error.fact_value("attempt"), Some("2"));
     assert_eq!(error.fact_value("max_attempts"), Some("2"));
     assert_eq!(error.fact_value("retry_action"), Some("fail_min_chunk"));
@@ -238,7 +240,8 @@ fn bounded_native_query_reports_exact_source_preflight_reservation_failure_befor
     assert_eq!(error.fact_value("source_read_planning_bytes"), Some(exact_source_read_bytes.as_str()));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
+    assert_eq!(error.fact_value("row_group_count"), Some("1"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
 
@@ -342,7 +345,8 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
     assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
     assert_eq!(error.fact_value("chunk_index"), Some("0"));
     assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_groups"), Some("0"));
+    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
+    assert_eq!(error.fact_value("row_group_count"), Some("1"));
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
 

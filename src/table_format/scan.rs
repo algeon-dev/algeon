@@ -422,7 +422,7 @@ impl TableFormatParquetReadStrategyConfig {
             self.storage_profile_id = Some(profile.id().to_string());
         }
         if profile.requires_scoped_remote_direct_profile() {
-            self.credential_mode = CredentialMode::FutureTenantScoped;
+            self.credential_mode = CredentialMode::ScopedResolved;
         }
         self.remote_direct_profile_unsupported_reason = profile.remote_direct_profile_unsupported_reason();
         self
@@ -482,7 +482,7 @@ fn table_format_parquet_read_strategy_config_from_env(
         || env_nonempty(&mut get, "NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY").is_some()
         || env_nonempty(&mut get, "NEXUS_ICEBERG_S3_SESSION_TOKEN").is_some();
     let credential_mode = if storage_endpoint.is_some() || has_storage_region || has_explicit_s3_credentials {
-        CredentialMode::FutureTenantScoped
+        CredentialMode::ScopedResolved
     } else {
         CredentialMode::SharedProcessEnv
     };
@@ -1047,7 +1047,7 @@ mod tests {
 
         assert_eq!(config.storage_endpoint.as_deref(), Some("http://rustfs.local:9000/minio"));
         assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(config.credential_mode, CredentialMode::FutureTenantScoped);
+        assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
     }
 
     #[test]
@@ -1060,7 +1060,7 @@ mod tests {
             table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
 
         assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(config.credential_mode, CredentialMode::FutureTenantScoped);
+        assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
     }
 
     #[test]
@@ -1070,7 +1070,7 @@ mod tests {
             table_format_parquet_read_strategy_config_from_env(|name| env.get(name).map(|value| (*value).to_string()));
 
         assert_eq!(config.storage_profile_id.as_deref(), Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID));
-        assert_eq!(config.credential_mode, CredentialMode::FutureTenantScoped);
+        assert_eq!(config.credential_mode, CredentialMode::ScopedResolved);
 
         let source = resolve_table_format_parquet_source(
             "s3://bucket/table/part-0.parquet",
@@ -1097,7 +1097,7 @@ mod tests {
         );
         let region_config = TableFormatParquetReadStrategyConfig::default()
             .with_source_storage_profile_remote_direct_capability(&region_profile);
-        assert_eq!(region_config.credential_mode, CredentialMode::FutureTenantScoped);
+        assert_eq!(region_config.credential_mode, CredentialMode::ScopedResolved);
 
         let scoped_profile = SourceStorageProfile::s3(
             DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
@@ -1107,7 +1107,7 @@ mod tests {
         );
         let scoped_config = TableFormatParquetReadStrategyConfig::default()
             .with_source_storage_profile_remote_direct_capability(&scoped_profile);
-        assert_eq!(scoped_config.credential_mode, CredentialMode::FutureTenantScoped);
+        assert_eq!(scoped_config.credential_mode, CredentialMode::ScopedResolved);
     }
 
     #[test]
@@ -1302,7 +1302,7 @@ mod tests {
     #[test]
     fn scoped_profile_remote_direct_reaches_direct_path_when_backend_available() {
         let config = TableFormatParquetReadStrategyConfig {
-            credential_mode: CredentialMode::FutureTenantScoped,
+            credential_mode: CredentialMode::ScopedResolved,
             remote_host_buffer_ranged_enabled: true,
             ..Default::default()
         };
@@ -1322,14 +1322,14 @@ mod tests {
         } else {
             assert_eq!(source.read_strategy.as_str(), "remote_direct");
             assert_eq!(source.decode_input.as_str(), "filepath");
-            assert_eq!(source.credential_mode, CredentialMode::FutureTenantScoped);
+            assert_eq!(source.credential_mode, CredentialMode::ScopedResolved);
         }
     }
 
     #[test]
     fn require_direct_scoped_profile_reaches_direct_path_when_backend_available() {
         let config = TableFormatParquetReadStrategyConfig {
-            credential_mode: CredentialMode::FutureTenantScoped,
+            credential_mode: CredentialMode::ScopedResolved,
             remote_direct_read_mode: RemoteParquetReadMode::RequireDirect,
             ..Default::default()
         };
@@ -1349,7 +1349,7 @@ mod tests {
             let source = result.unwrap();
             assert_eq!(source.read_strategy.as_str(), "remote_direct");
             assert_eq!(source.remote_read_mode, RemoteParquetReadMode::RequireDirect);
-            assert_eq!(source.credential_mode, CredentialMode::FutureTenantScoped);
+            assert_eq!(source.credential_mode, CredentialMode::ScopedResolved);
         }
     }
 

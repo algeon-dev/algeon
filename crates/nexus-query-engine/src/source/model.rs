@@ -240,8 +240,10 @@ pub enum CredentialMode {
     None,
     /// Reader uses credentials already configured for the running process.
     SharedProcessEnv,
-    /// Placeholder for future per-tenant credential plumbing.
-    FutureTenantScoped,
+    /// Per-profile settings/credentials are resolved by the engine and passed
+    /// scoped into the reader contract. Default-chain credentials are resolved
+    /// through the profile's object-store provider at read time.
+    ScopedResolved,
 }
 
 impl CredentialMode {
@@ -250,7 +252,7 @@ impl CredentialMode {
         match self {
             Self::None => "none",
             Self::SharedProcessEnv => "shared_process_env",
-            Self::FutureTenantScoped => "future_tenant_scoped",
+            Self::ScopedResolved => "scoped_resolved",
         }
     }
 }

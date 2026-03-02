@@ -3,11 +3,11 @@ use crate::{
     source::{ParquetSourceLocation, ResolvedParquetSource},
 };
 
-pub(super) struct SourceFetchLocation {
-    pub(super) bucket: String,
-    pub(super) region: String,
-    pub(super) key: ::object_store::path::Path,
-    pub(super) storage_profile_id: Option<String>,
+pub(in crate::exec::source) struct SourceFetchLocation {
+    pub(in crate::exec::source) bucket: String,
+    pub(in crate::exec::source) region: String,
+    pub(in crate::exec::source) key: ::object_store::path::Path,
+    pub(in crate::exec::source) storage_profile_id: Option<String>,
 }
 
 pub(super) fn source_fetch_location(
@@ -33,7 +33,10 @@ pub(super) fn source_fetch_location(
     parse_s3_source_uri(uri, resolved_source.storage_profile_id.clone())
 }
 
-pub(super) fn parse_s3_source_uri(uri: &str, storage_profile_id: Option<String>) -> Result<SourceFetchLocation> {
+pub(in crate::exec::source) fn parse_s3_source_uri(
+    uri: &str,
+    storage_profile_id: Option<String>,
+) -> Result<SourceFetchLocation> {
     let rest = uri.strip_prefix("s3://").ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,

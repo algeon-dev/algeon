@@ -726,7 +726,7 @@ fn server_iceberg_config_owns_table_format_parquet_strategy() {
     assert_eq!(strategy.lakehouse_cache_max_bytes, Some(4096));
     assert_eq!(strategy.storage_profile_id.as_deref(), Some("table_format_s3"));
     assert_eq!(strategy.storage_endpoint.as_deref(), Some("http://localhost:9000/rustfs"));
-    assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::FutureTenantScoped);
+    assert_eq!(strategy.credential_mode, nexus_query_engine::CredentialMode::ScopedResolved);
 }
 
 #[cfg(feature = "iceberg")]

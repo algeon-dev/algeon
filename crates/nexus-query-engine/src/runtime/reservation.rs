@@ -220,7 +220,9 @@ impl MemoryReservationRequest {
             error = error.with_fact("path", path);
         }
         if let Some(row_groups) = &self.row_groups {
-            error = error.with_fact("row_groups", comma_separated_usize(row_groups));
+            error = error
+                .with_fact("row_group_indexes", comma_separated_usize(row_groups))
+                .with_fact("row_group_count", row_groups.len());
         }
         if let Some(attempt) = self.attempt {
             error = error.with_fact("attempt", attempt);
