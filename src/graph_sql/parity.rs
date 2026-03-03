@@ -1,22 +1,4 @@
-//! Shared registry-driven harness for cuGraph parity testing.
-//!
-//! This module is the single source of truth for which (algorithm,
-//! dataset, params) triples the cuGraph parity harness covers. It is
-//! consumed by:
-//!
-//! - `tests/cugraph/cugraph_parity.rs`: CPU-only manifest / spec / local oracle
-//!   JSON validation plus GPU execution rows.
-//! - `tests/cugraph/cugraph_contract.rs`: schema / capability / strict-bounded
-//!   contract rows iterated off the same algorithm list.
-//! - `crates/datafusion-nexus-tools/src/bin/refresh_cugraph_oracle.rs`:
-//!   drives [`fixture/scripts/cugraph_oracle.py`](../../fixture/scripts/cugraph_oracle.py)
-//!   to regenerate local oracle JSON after `fixture/scripts/run_gen.sh cugraph`.
-//!
-//! Not part of the public adapter API — `#[doc(hidden)]` and gated behind
-//! `--features cugraph`. The plan
-//! [`docs/plan/2026-05-20-cugraph-rs-full-api-support-plan.md`](
-//! ../../docs/plan/2026-05-20-cugraph-rs-full-api-support-plan.md) calls
-//! this surface "the parity spec registry".
+//! Registry of cuGraph parity specs shared by tests and oracle-refresh tooling.
 
 use std::{
     fs,
@@ -238,12 +220,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         // vertex list; tolerance fields are unused for `TopKVertices`.
         tolerance: ParityTolerance::exact(),
     },
-    // ──────────────────────────────────────────────────────────────────────
-    // Milestone 1 batch 2: SSSP, degrees, WCC, SCC, triangle count, core,
-    // k-core, MST. Oracle JSON files are generated locally on a RAPIDS host via
-    // `refresh_cugraph_oracle`; the harness reports each missing file as
-    // "needs refresh" until then.
-    // ──────────────────────────────────────────────────────────────────────
+    // Oracle-backed parity specs for additional algorithms.
     ParitySpec {
         label: "sssp/karate@source=0",
         algorithm: CugraphAlgorithm::Sssp,
@@ -366,13 +343,7 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         comparator: ParityComparator::EdgeSubgraph,
         tolerance: ParityTolerance::exact(),
     },
-    // ──────────────────────────────────────────────────────────────────────
-    // Milestone 1 batch 3: PageRank strict, Leiden, ECG,
-    // SpectralModularityMaximization, BalancedCutClustering.
-    // Oracle JSON files are generated on a RAPIDS host via
-    // `refresh_cugraph_oracle`; the harness reports each missing file as
-    // "needs refresh" until then.
-    // ──────────────────────────────────────────────────────────────────────
+    // Additional oracle-backed cuGraph parity specs.
     ParitySpec {
         label: "pagerank_strict/karate@alpha=0.85",
         algorithm: CugraphAlgorithm::PageRankStrict,

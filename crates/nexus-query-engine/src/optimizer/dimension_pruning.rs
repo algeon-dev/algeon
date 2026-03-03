@@ -568,24 +568,15 @@ fn aggregate_group_output_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-/// A dimension-derived fact row-group pruning opportunity discovered by plan
-/// shape alone, without reading any Parquet data.
+/// Plan-shape candidate for dimension-derived fact row-group pruning.
 ///
-/// [`optimize_dimension_derived_row_group_pruning`] both discovers and applies
-/// these for local-path Parquet fact sources. Table-format (Iceberg/Delta) fact
-/// sources resolve to object-store locations that the in-engine pass cannot
-/// read, so the DataFusion adapter discovers requests with
-/// [`discover_dimension_derived_pruning_requests`] and applies them with its own
-/// object-store footer reads — keeping `nexus-query-engine` free of object-store
-/// and catalog dependencies.
+/// Local-path sources are discovered and applied by
+/// [`optimize_dimension_derived_row_group_pruning`]. Object-store/table-format
+/// sources are discovered here and resolved by the DataFusion adapter, keeping
+/// this crate free of catalog/object-store dependencies.
 ///
-/// A request only records that the plan SHAPE is eligible (the dimension source
-/// carries a reader predicate); it does not guarantee the range can be derived
-/// or that any row group will be pruned. The resolver must apply the same
-/// conservative checks the local pass applies after discovery (scan-row limit,
-/// supported predicate/key evaluation, non-empty derived range, target key
-/// statistics present, and an actual row-group reduction) before narrowing the
-/// fact source, and fall back to the unpruned scan otherwise.
+/// A request is only eligibility evidence. The resolver must still derive a
+/// non-empty key range, find target stats, and prove a real row-group reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionDerivedPruningRequest {
     /// Source node whose reader predicate, once evaluated, yields the join-key range.
@@ -598,17 +589,11 @@ pub struct DimensionDerivedPruningRequest {
     pub target_key_column: String,
 }
 
-/// Discovers dimension-derived fact row-group pruning opportunities by plan
-/// shape only, without reading any Parquet data.
+/// Discovers dimension-derived pruning requests without reading Parquet data.
 ///
-/// This mirrors the candidate-discovery half of
-/// [`optimize_dimension_derived_row_group_pruning`]: inner single-key joins
-/// whose dimension and fact join keys each resolve to a unique local-Parquet
-/// source lineage, where the two sources differ, the fact lineage is not reused
-/// elsewhere in the plan, and the dimension source carries a reader predicate
-/// that can bound the key. Admission limits and the actual key-range derivation
-/// are intentionally left to the caller, which supplies the per-source key
-/// range and footer statistics (for object-store sources, via its own IO).
+/// Mirrors the candidate-discovery half of
+/// [`optimize_dimension_derived_row_group_pruning`]. The caller supplies
+/// admission checks, key-range derivation, and footer statistics.
 pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<DimensionDerivedPruningRequest> {
     let parent_counts = rewrite::parent_counts(plan);
     let mut requests = Vec::new();
@@ -840,11 +825,9 @@ fn selected_or_all_row_groups(file: &LocalParquetFile, row_group_count: usize) -
     (0..row_group_count).collect()
 }
 
-/// Inclusive integer key range derived from a filtered dimension, used to prune
-/// joined fact row groups. Exposed so an out-of-engine resolver (the
-/// DataFusion/object-store adapter) can apply the same pruning semantics to
-/// object-store table-format fact sources that this in-engine pass can only
-/// apply to local-path sources.
+/// Inclusive dimension key range used to prune joined fact row groups.
+///
+/// Exposed so the DataFusion/object-store adapter can share pruning semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyRange {
     /// Inclusive minimum key value among rows matching the dimension predicate.
@@ -853,23 +836,15 @@ pub struct KeyRange {
     pub max: i64,
 }
 
-/// Maximum coalesced runs a [`DimensionKeyFilter`] keeps before collapsing back
-/// to a single bounding run. Bounds the filter's memory and per-row-group overlap
-/// cost, and guarantees the derived filter is never coarser than the legacy
-/// single-`[min,max]` behavior. Shared by the in-engine pass and the out-of-engine
-/// resolver so both derive identical filters.
+/// Maximum coalesced runs before falling back to one bounding range.
+///
+/// Bounds memory/overlap cost while preserving legacy single-range behavior.
 pub const DIMENSION_KEY_FILTER_MAX_RUNS: usize = 4096;
 
-/// The set of dimension key values satisfying a dimension predicate, kept as a
-/// sorted list of disjoint, non-adjacent inclusive runs. A fact row group is
-/// retained only when at least one run overlaps its key statistics, so a
-/// scattered predicate (e.g. `d_moy = 11` across years, whose `[min,max]` spans
-/// the whole date-sorted fact) prunes the gaps between qualifying runs instead of
-/// collapsing to a single table-spanning range.
+/// Dimension keys satisfying a predicate, stored as disjoint inclusive runs.
 ///
-/// A contiguous predicate yields a one-run filter, which is exactly the legacy
-/// `[min,max]` behavior. Exposed so an out-of-engine resolver (the
-/// DataFusion/object-store adapter) applies identical pruning semantics.
+/// Row groups are retained only when a run overlaps their key stats. Contiguous
+/// predicates collapse to the legacy single `[min,max]` behavior.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionKeyFilter {
     /// Sorted by `min`, disjoint, non-adjacent, non-empty.
@@ -958,10 +933,8 @@ pub struct DimensionKeyAccumulator {
 }
 
 impl DimensionKeyAccumulator {
-    /// Folds one decoded dimension batch into the running key set, counting only
-    /// rows that satisfy `predicate`. Returns `None` if the predicate or key
-    /// column cannot be evaluated against the batch (the caller must then abandon
-    /// pruning), matching the legacy per-batch primitive's contract.
+    /// Adds one decoded batch to the key set, or returns `None` when predicate
+    /// or key evaluation fails.
     pub fn observe_batch(&mut self, batch: &RecordBatch, key_column: &str, predicate: &Expr) -> Option<()> {
         let key = batch.column(batch.schema().index_of(key_column).ok()?);
         for row in 0..batch.num_rows() {
@@ -984,14 +957,10 @@ impl DimensionKeyAccumulator {
     }
 }
 
-/// Folds one decoded dimension batch into a fresh [`DimensionKeyAccumulator`],
-/// preserving the legacy `Option<Option<_>>` shape for callers that thread a
-/// single accumulator across batches. Returns `None` on an unevaluable
-/// predicate/key, `Some(None)` when the batch is empty of the accumulator's
-/// prior state and no key qualified, or `Some(Some(filter))` otherwise.
+/// Single-batch wrapper around [`DimensionKeyAccumulator`].
 ///
-/// Most callers should use [`DimensionKeyAccumulator`] directly; this exists for
-/// single-batch derivations and tests.
+/// Returns `None` when predicate/key evaluation fails; otherwise returns the
+/// optional filter built from qualifying keys.
 pub fn dimension_key_filter_from_batch(
     batch: &RecordBatch,
     key_column: &str,
@@ -1543,29 +1512,14 @@ pub fn apply_local_parquet_row_group_selections(
     }
 }
 
-/// Applies an externally-derived dimension key filter to a fact `LocalParquetSource`
-/// using caller-supplied per-row-group key statistics, returning a patched plan.
+/// Applies an externally-derived dimension key filter to a fact source.
 ///
-/// This is the object-store-free counterpart of the in-engine
-/// [`prune_target_source`] local-footer path: an out-of-engine resolver (the
-/// DataFusion/object-store adapter) reads the fact Parquet footers itself and
-/// passes one `Vec<Option<KeyRange>>` per source file (aligned with
-/// `source.files`). Within each file the stats are in the file's
-/// CURRENTLY-SELECTED row-group order — i.e. aligned with `file.row_groups`, or
-/// all physical row groups when no selection is set — and `None` marks a row
-/// group whose key statistics are absent. Kept positions are mapped back to
-/// physical row-group ids through that existing selection, so a pre-existing
-/// `row_groups` is narrowed, never replaced by raw positions.
+/// The caller supplies one `Vec<Option<KeyRange>>` per source file, aligned with
+/// the file's current row-group selection. Kept positions are mapped back
+/// through that selection, so existing `row_groups` are narrowed, not replaced.
 ///
-/// `filter` is the set-aware [`DimensionKeyFilter`] the resolver builds with the
-/// same [`DimensionKeyAccumulator`] the in-engine pass uses, so a row group is
-/// retained iff one of the filter's runs overlaps its key statistics.
-///
-/// The selection rule is identical to [`prune_target_source`] and conservative —
-/// row groups with unknown stats are retained, pruning never empties a
-/// selection, and the plan is only changed when pruning strictly narrows a
-/// non-empty selection. On any mismatch (missing source, wrong file/stat arity,
-/// no usable statistics, or no reduction) the plan is returned unchanged with
+/// The rule matches [`prune_target_source`]: unknown stats are retained, pruning
+/// never empties a selection, and mismatches return the original plan with
 /// `applied = false`.
 pub fn apply_dimension_derived_pruning_with_stats(
     plan: QueryPlan,

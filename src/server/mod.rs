@@ -45,6 +45,7 @@ pub use crate::{
 /// 3. Let tonic stop accepting new connections and drain existing RPCs; the
 ///    `serve_with_shutdown` future returns once the last RPC finishes.
 pub async fn serve(config: ServerConfig) -> Result<()> {
+    ensure_single_librmm_runtime_mapping()?;
     let addr = config.bind_addr;
     log_server_config_snapshot(&config);
     warn_if_testing_profile_active(&config);
@@ -385,16 +386,7 @@ fn log_auth_mode_snapshot(mode: &auth::AuthMode) {
     }
 }
 
-/// Emit a one-shot startup warning when the operator selected the
-/// [`ServerSessionProfile::CpuFallback`] profile against an Iceberg
-/// deployment **without** the `iceberg-cpu` feature compiled in.
-///
-/// With `iceberg-cpu` enabled the dynamic catalog routes Iceberg tables
-/// through `iceberg_datafusion::IcebergStaticTableProvider`, which has a real
-/// CPU Arrow reader, so the combination is production-supported. Without it
-/// the catalog still hands out the GPU-only `CudfIcebergTableProvider`, plain
-/// `ORDER BY` queries hit the Milestone 1 leaf guard, and the warning is the only
-/// surface that flags the misconfiguration.
+/// Warn when Iceberg uses `CpuFallback` without the CPU Iceberg reader.
 fn warn_if_testing_profile_active(config: &ServerConfig) {
     if !is_testing_profile_active(config) {
         return;
@@ -463,6 +455,62 @@ async fn wait_for_shutdown_signal() {
     }
 }
 
+/// Refuse to serve when more than one distinct `librmm.so` build is mapped
+/// into this process. RMM holds process-global device-resource state, and the
+/// dynamic loader binds every exported rmm symbol to a single copy for the
+/// whole process, so a second mapping (e.g. a stale copy resolved through
+/// `LD_LIBRARY_PATH` next to the one libcugraph links) executes some consumers
+/// against the wrong object layout and globals. The known failure mode is a
+/// SIGSEGV inside `rmm::device_buffer::allocate_async` during the first
+/// `DoGet` (see
+/// docs/issue/2026-06-09-flight-sql-glue-credentialless-remote-direct.md).
+/// The build-time guard in `build.rs` pins what the link graph resolves; this
+/// backstop catches what the loader actually mapped.
+fn ensure_single_librmm_runtime_mapping() -> Result<()> {
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(maps) => maps,
+        Err(error) => {
+            tracing::warn!(%error, "could not read /proc/self/maps; skipping the single-librmm runtime check");
+            return Ok(());
+        },
+    };
+    let mappings = distinct_librmm_mappings(&maps);
+    if mappings.len() <= 1 {
+        return Ok(());
+    }
+    Err(ServerError::startup(format!(
+        "{} distinct librmm.so files are mapped into this process: {}. Every RAPIDS consumer in one process must \
+         bind the same RMM build; a second mapping means some consumer executes against the wrong rmm object \
+         layout and device-resource state. Rebuild the cugraph C++ tree against the cudf install prefix \
+         (cmake -Drmm_ROOT=<cudf-install>) and remove stale librmm.so copies from every library search path \
+         (rpaths, LD_LIBRARY_PATH).",
+        mappings.len(),
+        mappings.join(", ")
+    )))
+}
+
+/// Distinct file paths in `/proc/self/maps` content whose file name is
+/// `librmm.so` or a versioned `librmm.so.*`. Deleted mappings still count:
+/// an unlinked stale copy keeps executing for the life of the process.
+fn distinct_librmm_mappings(maps: &str) -> Vec<String> {
+    let mut mappings = Vec::new();
+    for line in maps.lines() {
+        let Some(path_start) = line.find('/') else { continue };
+        let path = line[path_start..].trim_end();
+        let path = path.strip_suffix(" (deleted)").unwrap_or(path);
+        let Some(file_name) = std::path::Path::new(path).file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if file_name != "librmm.so" && !file_name.starts_with("librmm.so.") {
+            continue;
+        }
+        if !mappings.iter().any(|existing| existing == path) {
+            mappings.push(path.to_string());
+        }
+    }
+    mappings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +530,35 @@ mod tests {
             #[cfg(feature = "cugraph")]
             cugraph: None,
         }
+    }
+
+    #[test]
+    fn distinct_librmm_mappings_dedupes_segments_and_matches_versioned_sonames() {
+        let maps = "7f0a1c000000-7f0a1c2bc000 r-xp 00000000 103:07 4584938  /opt/rapids/lib/librmm.so\n\
+                    7f0a1c2bc000-7f0a1c2c0000 rw-p 002bb000 103:07 4584938  /opt/rapids/lib/librmm.so\n\
+                    7f0a1d000000-7f0a1d100000 r-xp 00000000 103:07 4584939  /opt/other/librmm.so.26.06\n\
+                    7f0a1e000000-7f0a1e100000 r-xp 00000000 103:07 4584940  /usr/lib/libstdc++.so.6\n";
+
+        let mappings = distinct_librmm_mappings(maps);
+
+        assert_eq!(mappings, vec!["/opt/rapids/lib/librmm.so".to_string(), "/opt/other/librmm.so.26.06".to_string()]);
+    }
+
+    #[test]
+    fn distinct_librmm_mappings_counts_deleted_and_ignores_lookalikes() {
+        let maps = "7f0a1c000000-7f0a1c2bc000 r-xp 00000000 103:07 4584938  /opt/rapids/lib/librmm.so (deleted)\n\
+                    7f0a1d000000-7f0a1d100000 r-xp 00000000 103:07 4584939  /opt/other/librmm_helpers.so\n\
+                    7f0a1e000000-7f0a1e100000 rw-p 00000000 00:00 0\n";
+
+        let mappings = distinct_librmm_mappings(maps);
+
+        assert_eq!(mappings, vec!["/opt/rapids/lib/librmm.so".to_string()]);
+    }
+
+    #[test]
+    fn single_librmm_runtime_mapping_check_passes_in_this_process() {
+        ensure_single_librmm_runtime_mapping()
+            .expect("this test process must not map two librmm.so builds; a failure here is a real regression");
     }
 
     #[test]
@@ -544,7 +621,7 @@ mod tests {
     #[test]
     fn iceberg_backend_snapshot_sanitizes_rest_urls_for_logs() {
         let backend = config::IcebergCatalogBackendConfig::Rest(
-            crate::iceberg::catalog::RestIcebergCatalogConfig::new(
+            crate::table_format::iceberg::catalog::RestIcebergCatalogConfig::new(
                 "lake",
                 "https://user:rest-secret@rest.local:8181/catalog?token=secret#frag",
                 "s3://lakehouse/warehouse",

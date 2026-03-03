@@ -815,15 +815,10 @@ fn cudf_remote_parquet_profile(
     ))
 }
 
-/// Resolves short-lived default-chain AWS credentials for a remote-direct read.
+/// Resolves default-chain AWS credentials for remote-direct reads.
 ///
-/// KvikIO supports only static credentials, so when the storage profile defers
-/// to the default chain the engine resolves a credential through the same
-/// object-store provider host-buffer fetches use and passes it into the typed
-/// remote contract. Resolution happens on every profile build (per chunk/file
-/// read); the provider caches and refreshes tokens internally, so instance-role
-/// rotation is handled by construction and the two read substrates cannot
-/// diverge on credential behavior.
+/// KvikIO requires static credentials; the object-store provider supplies the
+/// same identity used by host-buffer reads and owns cache/refresh behavior.
 fn resolve_remote_direct_default_chain_credential(
     context: &ExecutionContext,
     resolved_source: &crate::source::ResolvedParquetSource,

@@ -1,16 +1,9 @@
 //! Driver that regenerates local cuGraph oracle JSON fixtures.
 //!
-//! The binary iterates [`CUGRAPH_PARITY_SPECS`] and invokes
-//! `fixture/scripts/cugraph_oracle.py` for every row's `oracle_relpath` slot,
-//! regardless of
-//! [`ParityTruthSource`](datafusion_nexus::graph_sql::parity::ParityTruthSource).
-//! RefCsv-truth rows (e.g. Katz)
-//! still carry a secondary oracle JSON cross-check, so refreshing them as well
-//! keeps the local fixture root complete. Python
-//! cuGraph must be available (shared `~/code/datafusion-nexus/.venv`);
-//! when the Python script exits with code 77 we report the row as
-//! "oracle unavailable" and continue. Generated JSON lives under
-//! `fixture/data/cugraph/oracle/`, which is ignored by git.
+//! Iterates [`CUGRAPH_PARITY_SPECS`] and invokes
+//! `fixture/scripts/cugraph_oracle.py` for each `oracle_relpath`. Python cuGraph
+//! is optional per row: exit code 77 is reported as "oracle unavailable".
+//! Generated JSON lives under ignored `fixture/data/cugraph/oracle/`.
 //!
 //! Recommended invocation:
 //!
@@ -242,14 +235,8 @@ fn refresh_one(
 ) -> Result<RefreshOutcome, Box<dyn std::error::Error>> {
     let oracle_path = oracle_path(data_root, spec);
 
-    // In `--check` mode, "missing local artifact" must surface
-    // independent of whether Python cuGraph is available. Spawning the
-    // oracle first and short-circuiting on `OracleUnavailable` would
-    // let an absent file pass silently on hosts without RAPIDS Python.
-    // `--force` only controls drift overwrite semantics; it must NOT
-    // suppress this missing-file alarm, because `--check` also blocks
-    // writes downstream so a missing oracle would otherwise be
-    // reported as `Written` without ever creating the file.
+    // In `--check` mode, missing local JSON must fail even when Python cuGraph
+    // is unavailable. `--force` only controls drift overwrite semantics.
     if opts.check_only && !oracle_path.exists() {
         return Ok(RefreshOutcome::MissingInCheckMode { path: oracle_path });
     }

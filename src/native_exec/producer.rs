@@ -36,12 +36,8 @@ pub(crate) trait GpuResidentProducerExec {
 
 /// Internal GPU-resident native fragment producer.
 ///
-/// This plan is valid only as a child of composed native execution. It produces
-/// a device-resident `GpuResultHandle` for another native plan and is not
-/// directly streamable through [`ExecutionPlan::execute`]. The ordinary
-/// DataFusion execution path returns `InvalidExecutionPlan`; composed native
-/// execution consumes this wrapper through the internal GPU-resident producer
-/// path so the result can stay on device.
+/// Valid only under composed native execution; returns a device-resident handle,
+/// not a streamable DataFusion plan.
 #[derive(Debug, Clone)]
 pub struct NativeCudfGpuProducerExec {
     input_name: String,
@@ -53,11 +49,7 @@ pub struct NativeCudfGpuProducerExec {
 impl NativeCudfGpuProducerExec {
     /// Create a native producer fragment for composed execution.
     ///
-    /// The plan must use a GPU-resident result sink and must not itself depend
-    /// on external GPU-resident inputs. `input_name` is the local name the
-    /// composed consumer uses to look up the produced handle. The returned
-    /// execution plan is intended for composed native consumers, not for direct
-    /// `ExecutionPlan::execute` streaming.
+    /// Requires a GPU-resident sink and no external GPU-resident inputs.
     pub fn try_new(input_name: impl Into<String>, plan: QueryPlan) -> crate::error::Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {

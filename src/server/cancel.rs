@@ -2,33 +2,20 @@
 //!
 //! # Cancellation contract
 //!
-//! Each in-flight statement registers two coupled handles:
-//!
-//! - A tonic [`CancellationToken`] that terminates the Flight `DoGet` stream
-//!   and unblocks any `tokio::select!` arms guarding planning/execution
-//!   futures. This is the only handle the gRPC layer observes directly.
-//! - A native [`ExecutionCancellation`] flag (an `Arc<AtomicBool>`) observed
-//!   *cooperatively* by [`nexus_query_engine`] at native execution boundaries
-//!   (chunk loops, retries, source reads, compiled tasks, generic nodes,
-//!   top-level execute). Setting it prevents the next boundary from starting
-//!   but does **not** preempt a libcudf/CUDA call already in flight.
+//! Each in-flight statement registers a Flight [`CancellationToken`] and a
+//! native [`ExecutionCancellation`] flag. The token stops `DoGet`; the native
+//! flag is checked cooperatively at query-engine boundaries and does not preempt
+//! an in-flight libcudf/CUDA call.
 //!
 //! `cancel()` flips the **native flag first, then the Flight token**. The
-//! ordering matters: by the time the Flight stream wakes up from
-//! `token.cancelled()` and starts to tear down, the native side has already
-//! observed cancellation, so the next pipeline tick short-circuits with a
-//! `QueryErrorCode::Cancelled` instead of producing another batch the client
-//! will never read.
+//! ordering keeps the next native boundary from producing another batch after
+//! the Flight stream starts tearing down.
 //!
 //! # Lifetime
 //!
-//! Entries are inserted in `execute_statement_stream` after admission and
-//! removed by `QueryExecutionGuard::drop` (which also aborts the
-//! shutdown-token → native-cancellation bridge task). There is a small
-//! pre-ticket window in `statement_flight_info` during which a freshly
-//! constructed native cancellation flag is not yet reachable via
-//! `do_action_cancel_query` — shutdown still cancels it via the parent
-//! `shutdown_token` arm of the planning `select!`.
+//! Entries are inserted after admission and removed by
+//! `QueryExecutionGuard::drop`. Before a ticket is issued, shutdown still
+//! reaches the native flag through the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
 use nexus_query_engine::ExecutionCancellation;
@@ -64,13 +51,8 @@ impl QueryCancellation {
 
     /// Cancel the registered statement, if any.
     ///
-    /// Returns `true` if `query_id` was registered. The native cancellation
-    /// flag is flipped first so a subsequent native boundary check
-    /// short-circuits with [`nexus_query_engine::QueryErrorCode::Cancelled`];
-    /// the Flight stream token is then flipped so `DoGet`'s
-    /// `.take_until(token.cancelled_owned())` terminates the response stream.
-    /// Cancellation is cooperative — a libcudf/CUDA call already in flight is
-    /// not preempted.
+    /// Returns `true` when `query_id` was registered. Cancellation is
+    /// cooperative; an in-flight libcudf/CUDA call is not preempted.
     pub fn cancel(&self, query_id: &str) -> bool {
         self.tokens
             .get(query_id)

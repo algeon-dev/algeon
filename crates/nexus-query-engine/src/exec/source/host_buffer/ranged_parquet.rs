@@ -1,36 +1,25 @@
 //! Footer-first ranged Parquet fetch used when a source carries a `scan_limit`.
 //!
-//! For `SELECT ... LIMIT N` over remote S3 Iceberg/Parquet, the legacy fetch
-//! path issues a single full-object `GET`, transfers the entire file, and only
-//! then trims to `N` rows on the device. For multi-GiB single-file Parquet
-//! tables (e.g. SF100 `customer` ≈ 1.2 GiB) that pulls the whole file just to
-//! return a handful of rows.
+//! For limited remote S3 Iceberg/Parquet scans, this avoids fetching the whole
+//! object just to return the first few row groups.
 //!
 //! This module fetches only the selected row groups, at Parquet row-group
 //! granularity:
 //!
-//! 1. Two `ObjectStore::get_range` calls pull the tail of the file: the last
-//!    `FOOTER_SIZE` bytes give the metadata length, then the metadata range
-//!    itself is fetched.
-//! 2. The footer is parsed with the `parquet` crate to obtain row-group
-//!    counts, column-chunk byte ranges, and the file schema.
-//! 3. The minimum prefix of row groups that covers `scan_limit` rows, or an
+//! 1. Fetch and parse the footer with two `ObjectStore::get_range` calls.
+//! 2. The minimum prefix of row groups that covers `scan_limit` rows, or an
 //!    explicit row-group subset selected by bounded chunk planning, is selected.
-//! 4. The byte ranges spanning selected column chunks in those row groups are
+//! 3. The byte ranges spanning selected column chunks in those row groups are
 //!    fetched with `ObjectStore::get_ranges`.
-//! 5. A compact, legal Parquet file is rewritten in memory: magic header,
+//! 4. A compact, legal Parquet file is rewritten in memory: magic header,
 //!    selected row-group bytes laid out back-to-back, and a regenerated footer
 //!    whose column-chunk offsets point at the new buffer layout. Bloom filter,
 //!    column index, and offset index references are cleared because the
 //!    payload bytes for those structures are not fetched.
 //!
-//! libcudf's host-buffer reader requires a complete legal Parquet file
-//! (`cudf-rs/cudf-rs/src/frame/dataframe/io.rs` docstring + the libcudf C++
-//! reader parses the footer in-buffer to locate row-group offsets). Splicing
-//! "footer + sparse row-group bytes" into a zero-padded buffer does not work:
-//! libcudf would either read garbage or crash. The mini-Parquet rewrite is
-//! what makes the ranged fetch safe to feed back into the existing reader
-//! contract.
+//! libcudf's host-buffer reader needs a complete legal Parquet buffer; sparse
+//! row-group bytes with a footer are not enough. The mini-Parquet rewrite keeps
+//! ranged fetches inside the existing reader contract.
 
 use std::{sync::Arc, time::Instant};
 

@@ -37,14 +37,11 @@ pub(in crate::exec) fn format_row_groups(chunk: &SourceChunk) -> String {
     comma_separated_usize(&chunk.row_group_indexes)
 }
 
-/// Chainable row-group diagnostics for source-chunk errors.
+/// Chainable row-group facts for source-chunk errors.
 ///
-/// `row_group_indexes` is the selected row-group **index list** (`all` when
-/// the chunk reads every row group), and `row_group_count` is the number of
-/// selected row groups. Keeping the index list and the count as separate facts
-/// prevents a single-element index list such as `0` from reading as "zero row
-/// groups". `row_group_count` is omitted when the chunk reads all row groups
-/// because the total is unknown until file metadata is loaded.
+/// `row_group_indexes` is the selected index list (`all` for full-file chunks);
+/// `row_group_count` is emitted only when the selected count is known. Keeping
+/// them separate avoids confusing index `0` with a count.
 pub(in crate::exec) trait SourceChunkRowGroupFacts {
     #[must_use]
     fn with_row_group_facts(self, chunk: &SourceChunk) -> Self;

@@ -193,15 +193,11 @@ fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> GraphAlgo
 
 /// Thread-affine cuGraph execution session.
 ///
-/// Binds a single `cugraph::ResourceHandle` to a `cudf::Runtime` for the
-/// duration of one executor task. The retained handle allows a future
-/// multi-algorithm executor to call `enter` multiple times without rebuilding
-/// the RAFT wrapper on each call.
+/// Binds one `cugraph::ResourceHandle` to one `cudf::Runtime` for an executor
+/// task.
 ///
 /// **Do not store this in `ExecutionContext`.** `ResourceHandle` is `!Send +
-/// !Sync`; placing it in a shared context would break the thread-affinity
-/// contract. Create a session as a local variable, use it on the same thread,
-/// and let it drop at the end of the task.
+/// !Sync`; keep it local to the task thread.
 // Not yet used by any executor path; reserved for future multi-algorithm sequential tasks.
 #[cfg(feature = "cugraph")]
 #[allow(dead_code)]
@@ -259,16 +255,10 @@ enum GraphOrientation {
     Transposed,
 }
 
-/// Stable key over all dimensions that determine a materialised cuGraph graph.
-///
-/// Two plan nodes that produce the same key from the same edge source could
-/// share a single `cugraph::Graph` object. The type makes every reuse
-/// dimension explicit and is the intended key for a future thread-affine
-/// graph cache.
+/// Stable dimensions for a future thread-affine cuGraph graph cache.
 ///
 /// **Current executors do not cache on this key** — they rebuild the graph per
-/// node, which is conservative and correct until edge-buffer identity and
-/// GPU-resident graph lifetime management are implemented.
+/// node until edge-buffer identity and graph lifetimes are modeled.
 ///
 /// Graph reuse additionally requires:
 /// - Stable edge-buffer identity (a pointer/generation pair that survives
@@ -281,17 +271,10 @@ enum GraphOrientation {
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct GraphCacheKey {
-    /// `Arc<cudf::Runtime>` data-pointer cast to `usize`, identifying the CUDA
-    /// device and stream pair used to build the graph. Stored as `usize` so
-    /// the key does not retain the runtime.
+    /// Runtime data pointer used only to distinguish device/stream domains.
     ///
-    /// **ABA risk**: this pointer is *not* a stable identifier across runtime
-    /// drops. If the captured runtime is dropped and a new `Arc<cudf::Runtime>`
-    /// is allocated at the same heap address, a stale key could falsely match
-    /// the new runtime. A future cache must therefore scope its lifetime to the
-    /// owning `ExecutionContext`'s `Arc<cudf::Runtime>` (e.g. cache lives in a
-    /// thread-local on the executor task) so the captured pointer cannot be
-    /// recycled while the cache is alive.
+    /// ABA risk: a future cache must be scoped so the runtime cannot be dropped
+    /// while this pointer is used as a key.
     runtime_ptr: usize,
     source_column: String,
     destination_column: String,
@@ -332,10 +315,8 @@ impl GraphCacheKey {
 /// Prepares edges, creates a runtime-bound cuGraph handle, enters it, builds
 /// the graph, and runs `f` with the cudf runtime, entered context, and graph.
 ///
-/// All graph algorithm executors share this shape. Centralising it here keeps
-/// `context.runtime()` as the authoritative execution domain for ingress,
-/// cuGraph execution, and egress, and prevents the pattern from diverging as
-/// more algorithms are added.
+/// Centralizes the shared graph-algorithm execution shape and keeps
+/// `context.runtime()` as the ingress/execution/egress domain.
 ///
 /// If a future path routes graph results into a different `cudf::Runtime`
 /// stream, insert a device-side `cudaEventRecord` + `cudaStreamWaitEvent`

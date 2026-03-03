@@ -27,14 +27,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// by tests, reports, and callers. Values are stringified with [`ToString`].
 /// Iteration is sorted by key because facts are stored in a [`BTreeMap`].
 ///
-/// Empty keys panic, and inserting the same key twice panics. The adapter
-/// uses `cudf_code`, `cudf_kind`, `cudf_status`, `cudf_operation`, and
-/// `cudf_message` for cuDF source classification. Those keys may come from
-/// direct adapter cuDF calls or
-/// from non-colliding native facts copied by [`Error::from_native`]. The
-/// `native_code`, `native_kind`, `native_status`, and `native_operation` keys
-/// describe errors wrapped from `nexus-query-engine`; colliding native facts
-/// are skipped and reported under `native_fact_collision_keys`.
+/// Empty keys and duplicate inserts panic. The adapter reserves `cudf_*` for
+/// cuDF classification and `native_*` for wrapped `nexus-query-engine` errors;
+/// colliding native facts are reported under `native_fact_collision_keys`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Facts {
     values: BTreeMap<&'static str, String>,
@@ -107,10 +102,9 @@ impl Error {
     /// Wraps a `cudf::Error` at the adapter boundary.
     ///
     /// `operation` should be the stable dotted id for the adapter operation that
-    /// called cuDF, and `message` should describe the failure for humans. The
-    /// cuDF code, kind, status, operation, and (URI-redacted) message are
-    /// preserved as reserved facts: `cudf_code`, `cudf_kind`, `cudf_status`,
-    /// `cudf_operation`, and `cudf_message`.
+    /// called cuDF, and `message` should describe the failure for humans. cuDF
+    /// classification and a URI-redacted message are preserved as `cudf_*`
+    /// facts.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
         let error = Self::new(code, operation, message)
@@ -270,11 +264,7 @@ impl From<Error> for DataFusionError {
 // permanent mappings: `NotFound` is treated as invalid input,
 // `ExecutionContext` is treated as an invariant violation, and unknown kinds
 // fall back to dependency failure.
-/// Builds the `cudf_message` fact value for a wrapped `cudf::Error`.
-///
-/// The foreign (libcudf/KvikIO) exception text is the most direct evidence of
-/// what a lower layer rejected, so it is preserved as a fact. URI-like tokens
-/// are redacted so reader locations never leak through diagnostics.
+/// Returns the trimmed foreign cuDF message, redacting URI-like tokens.
 fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     let message = source.message().trim();
     if message.is_empty() {
@@ -283,8 +273,7 @@ fn cudf_message_fact(source: &cudf::Error) -> Option<String> {
     Some(redact_uri_tokens(message))
 }
 
-/// Replaces whitespace-delimited URI-like tokens (`scheme://...`) with a
-/// stable placeholder. Whitespace is normalized to single spaces.
+/// Redacts whitespace-delimited `scheme://...` tokens and normalizes spaces.
 fn redact_uri_tokens(message: &str) -> String {
     message
         .split_whitespace()

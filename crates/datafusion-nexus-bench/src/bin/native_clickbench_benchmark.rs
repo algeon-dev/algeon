@@ -53,13 +53,11 @@ const TSV_COLUMNS: &[&str] = &[
     "native_failure",
 ];
 
-/// Queries where byte-for-byte content fingerprint parity is waived for the
-/// ClickBench benchmark, with the reason kept explicit. The benchmark compares
-/// row counts only for these queries and emits
-/// `parity_status=row_count_matched_nondeterministic` when both engines
-/// succeed with the same row count. The measured-iteration consistency check is
-/// also disabled because several of these queries can return engine-defined
-/// rows across runs.
+/// ClickBench queries where byte-for-byte fingerprint parity is waived.
+///
+/// These compare row counts only and emit
+/// `parity_status=row_count_matched_nondeterministic`; measured-iteration
+/// consistency is also disabled for nondeterministic row selection.
 ///
 /// Reason categories:
 /// - `float_accumulation_variance`: deterministic result set, but different
@@ -71,14 +69,8 @@ const TSV_COLUMNS: &[&str] = &[
 ///   the SQL has `LIMIT`/`OFFSET` without a deterministic total ordering and
 ///   the ClickBench fixture has ties at the boundary.
 ///
-/// q23 is intentionally excluded: raw CPU/native dumps show the same
-/// `SearchPhrase` groups and string MIN values, but native over-counted
-/// `COUNT(DISTINCT "UserID")` for several groups when the source spanned
-/// multiple chunks. That correctness bug has been fixed; q23 now uses
-/// full-data concat before a single groupby and must report `matched`.
-/// q10 was previously waived under `float_accumulation_variance`, but the
-/// variance was entirely in `COUNT(DISTINCT "UserID")` (a correctness bug),
-/// not in AVG. After the fix, q10 must also report `matched`.
+/// q23 and q10 are intentionally excluded because their prior DISTINCT-count
+/// bugs are fixed and they must report `matched`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ParityWaiverReason {
     FloatAccumulationVariance,
@@ -592,20 +584,12 @@ fn dump_record_batches_to_tsv(batches: &[RecordBatch], path: PathBuf) -> Result<
     Ok(())
 }
 
-/// Order-insensitive row fingerprint: serialize each row to a `\u{1f}`-joined
-/// string, sort lexicographically, then hash. Used for parity comparisons
-/// because many ClickBench queries are GROUP BY ... LIMIT without an
-/// ORDER BY tiebreaker (e.g. q18), so CPU and native may legally return rows
-/// in different orders. The column index is included in each row's encoding
-/// so column reorderings would still register as a mismatch.
+/// Order-insensitive row fingerprint for parity comparisons.
 ///
-/// Null vs empty-string distinction: Arrow's `array_value_to_string` renders
-/// both `NULL` and `""` as an empty string, which would let one engine's
-/// `NULL` collide with the other engine's `""`. ClickBench string columns
-/// (e.g. `SearchPhrase`, `URL`, `Referer`) commonly mix the two, so we
-/// prefix each value with a one-byte tag: `\0` for null, `\u{1}` for a real
-/// value. The tag bytes are also separators so column reorderings still
-/// register as a mismatch.
+/// Rows are serialized, sorted, then hashed so untied `GROUP BY ... LIMIT`
+/// results may differ in row order. Column indexes remain encoded.
+///
+/// Values are tagged so `NULL` and `""` do not collide in Arrow string output.
 fn fingerprint_batches(batches: &[RecordBatch]) -> Result<String, arrow::error::ArrowError> {
     use std::{
         collections::hash_map::DefaultHasher,
