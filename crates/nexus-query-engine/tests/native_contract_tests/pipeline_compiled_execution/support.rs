@@ -57,6 +57,7 @@ pub(super) fn d5_test_owner_for_scope(scope: ReservationRequirementScope) -> Str
     }
 }
 
+// Expected support row for the D3.1 compiled-pipeline inventory tests.
 pub(super) struct D31InventoryCase {
     pub(super) label: &'static str,
     pub(super) plan: QueryPlan,
@@ -316,6 +317,7 @@ pub(super) const D5_FORBIDDEN_FAMILY_PATH_REPORT_TERMS: &[&str] = &[
 pub(super) const D5_FORBIDDEN_ADAPTIVE_REPORT_TERMS: &[&str] =
     &["retry", "spill", "downgrade", "memory_history", "memory-history", "memory history"];
 
+// Scheduler test double that records resource lifecycle and injected failures.
 pub(super) struct MockExecutor {
     pub(super) executed: Vec<PipelineTaskId>,
     pub(super) released: Vec<ResidentResourceId>,

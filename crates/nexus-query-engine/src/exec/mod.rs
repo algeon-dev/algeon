@@ -390,6 +390,7 @@ impl ExecutionScratch {
     }
 }
 
+// Per-query cache of reusable cuDF hash-join builds for repeated probes.
 pub(super) struct HashJoinBuildRepository {
     runtime: Arc<cudf::Runtime>,
     device_placement: crate::runtime::DevicePlacement,
@@ -418,6 +419,7 @@ impl HashJoinBuildRepository {
     }
 }
 
+// Hash-join build identity scoped to the build node and equality contract.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) struct HashJoinCacheKey {
     build_node: NodeId,

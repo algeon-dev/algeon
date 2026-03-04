@@ -5,6 +5,7 @@
 
 use super::{model::*, *};
 
+// Proves a dependency walk can be scheduled without cycles or missing nodes.
 pub(super) struct GraphScheduleProof<'a> {
     plan: &'a QueryPlan,
     state: Vec<VisitState>,
@@ -57,6 +58,7 @@ impl<'a> GraphScheduleProof<'a> {
     }
 }
 
+// Three-color DFS marker shared by graph proofs and reachability collection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VisitState {
     Unvisited,
@@ -77,6 +79,7 @@ pub(super) fn collect_reachable_node_ids_from(
     Ok(collector.reachable)
 }
 
+// Collects the sink-reachable subgraph while rejecting malformed cycles.
 pub(super) struct ReachableCollector<'a> {
     plan: &'a QueryPlan,
     state: Vec<VisitState>,

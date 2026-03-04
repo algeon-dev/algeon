@@ -21,6 +21,7 @@ use super::{
     json_schema::{data_type_label, normalized_options_json, schema_json},
 };
 
+/// Single-row diagnostic payload returned by graph SQL validation calls.
 #[derive(Debug, Clone)]
 pub(super) struct ValidationRow {
     pub(super) valid: bool,

@@ -12,6 +12,7 @@ pub(super) const PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY: PartitionedJoinStrat
     residual_predicate: true,
 };
 
+// Static labels that bind a partitioned join path to metrics and reports.
 #[derive(Clone, Copy)]
 pub(super) struct PartitionedJoinStrategy {
     strategy_label: &'static str,
@@ -19,6 +20,7 @@ pub(super) struct PartitionedJoinStrategy {
     residual_predicate: bool,
 }
 
+// Immutable inputs and strategy knobs for one partitioned join run.
 #[derive(Clone, Copy)]
 pub(super) struct PartitionedJoinDriverPlan<'a> {
     pub(super) context: &'a ExecutionContext,
@@ -29,12 +31,14 @@ pub(super) struct PartitionedJoinDriverPlan<'a> {
     pub(super) partition_target_bytes: u64,
 }
 
+// Buffered partition outputs before final concatenation and metric reporting.
 pub(super) struct PartitionedJoinBufferedOutput {
     pub(super) outputs: Vec<ResidentGpuFrame>,
     pub(super) original: PartitionedJoinInputStats,
     pub(super) summary: PartitionedJoinOutputSummary,
 }
 
+// Original side cardinalities retained after partitioning for join metrics.
 #[derive(Clone, Copy)]
 pub(super) struct PartitionedJoinInputStats {
     pub(super) left_rows: u64,
@@ -43,6 +47,7 @@ pub(super) struct PartitionedJoinInputStats {
     pub(super) right_bytes: u64,
 }
 
+// Accumulates per-partition output costs for the final join metric row.
 #[derive(Default)]
 pub(super) struct PartitionedJoinOutputSummary {
     pub(super) index_bytes: u64,
@@ -210,6 +215,7 @@ pub(super) fn partition_join_sides(
     Ok(PartitionedJoinSides { left: left_partitioned, right: right_partitioned })
 }
 
+// Owns both partitioned sides so error paths can release them together.
 pub(super) struct PartitionedJoinSides {
     pub(super) left: PartitionedJoinSide,
     pub(super) right: PartitionedJoinSide,

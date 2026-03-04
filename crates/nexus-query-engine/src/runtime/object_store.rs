@@ -228,6 +228,7 @@ struct ResolvedSourceCredential {
     credential: Arc<object_store::aws::AwsCredential>,
 }
 
+// Per-context S3 store and credential cache keyed by source storage profile.
 pub(super) struct SourceObjectStoreRegistry {
     profiles: HashMap<String, SourceStorageProfile>,
     stores: Mutex<HashMap<S3ObjectStoreKey, Arc<object_store::aws::AmazonS3>>>,

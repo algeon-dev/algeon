@@ -15,6 +15,7 @@ const TEST_SEGMENT_TARGET_TEMPORARY_BYTES_FACT: &str = "__nexus_filtered_global_
 const MIN_SEGMENT_ROWS: u64 = 1;
 const FILTER_PREDICATE_BYTES_PER_ROW: u64 = 2;
 
+// Admission decision plus segmentation plan for filtered global aggregates.
 #[derive(Debug, Clone)]
 pub(super) struct FilteredGlobalAggregateStrategyDecision {
     pub(super) use_segmented: bool,

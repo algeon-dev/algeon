@@ -495,6 +495,7 @@ struct SourceFetchConcurrencyGateState {
     in_flight_ops: usize,
 }
 
+// Cloneable permit gate for bounded object-store fetch concurrency.
 #[derive(Debug, Clone)]
 pub(super) struct SourceFetchConcurrencyGate {
     inner: Arc<SourceFetchConcurrencyGateInner>,
@@ -651,6 +652,7 @@ struct GdsConcurrencyGateState {
     in_flight_ops: usize,
 }
 
+// Cloneable permit gate reserved for future GDS operation concurrency.
 #[derive(Debug, Clone)]
 pub(super) struct GdsConcurrencyGate {
     inner: Arc<GdsConcurrencyGateInner>,

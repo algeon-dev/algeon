@@ -4,6 +4,7 @@ use nexus_query_engine::{LiteralValue as NativeLiteralValue, is_supported_arrow_
 
 use crate::policy::FallbackReason;
 
+/// Chooses the fallback category for literal lowering failures.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum NativeLiteralContext {
     Expression,

@@ -258,6 +258,7 @@ pub(super) fn read_object_store_parquet_chunk(
     Ok(ObjectStoreParquetChunkRead { outcome, observed_row_group_count, host_buffer_fetch })
 }
 
+// Decoded object-store chunk result with the fetch evidence needed for metrics.
 pub(super) struct ObjectStoreParquetChunkRead {
     pub(super) outcome: BudgetedExecutionOutcome<cudf::frame::dataframe::ParquetSourceChunkReadOutput>,
     pub(super) observed_row_group_count: Option<u64>,

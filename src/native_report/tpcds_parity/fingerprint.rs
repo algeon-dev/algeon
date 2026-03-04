@@ -131,6 +131,7 @@ pub(super) fn hash_field(hasher: &mut StableFnv1a64, field: &CanonicalField) {
     }
 }
 
+// Fixed FNV-1a implementation so fingerprints do not depend on std hasher choices.
 pub(super) struct StableFnv1a64 {
     state: u64,
 }

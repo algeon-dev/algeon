@@ -5,6 +5,7 @@ use arrow::datatypes::Field;
 use super::*;
 use crate::native::lowering::expr::physical_expr_field;
 
+// Projection that materializes aggregate inputs into executable native columns.
 pub(super) struct SyntheticAggregateInputProjection {
     pub(super) expressions: Vec<NativeExpr>,
     pub(super) schema: SchemaRef,

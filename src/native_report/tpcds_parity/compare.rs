@@ -41,6 +41,7 @@ pub fn compare_record_batches(
     )
 }
 
+/// Schema comparison switches for native-vs-native and cross-engine oracles.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ParityCompareOptions {
     pub(super) allow_decimal_precision_mismatch: bool,

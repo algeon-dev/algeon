@@ -1,5 +1,6 @@
 use super::*;
 
+// Ownership action selected for one output slot of a top-k merge level.
 pub(super) enum TopKLevelItem {
     Merged(Box<CommittedPartial>),
     Carry { partial_index: usize },

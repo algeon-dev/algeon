@@ -131,6 +131,7 @@ impl RangedParquetFetch {
     }
 }
 
+// Diagnostic projection of ranged-fetch metadata without retaining payload bytes.
 #[derive(Debug, Clone)]
 pub(super) struct RangedParquetFetchDiagnostics {
     pub(super) mini_payload_bytes: u64,

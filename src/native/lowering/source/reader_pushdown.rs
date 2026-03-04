@@ -92,6 +92,7 @@ pub(in crate::native::lowering) fn source_reader_pushdown_predicate(
     }
 }
 
+/// Reader-supported predicate plus whether it fully covers the original filter.
 #[derive(Debug)]
 pub(super) struct SupportedReaderPushdownPredicate {
     pub(super) expr: NativeExpr,

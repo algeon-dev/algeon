@@ -189,6 +189,7 @@ pub(super) fn validate_aggregate_root_operator_schemas(
     Ok(())
 }
 
+// Aggregate admission inputs whose scalar expressions must be validated together.
 pub(super) struct RequiredScalarExpressions<'a> {
     pub(super) scan_projection: Option<&'a ProjectionExprs>,
     pub(super) table_schema: &'a SchemaRef,

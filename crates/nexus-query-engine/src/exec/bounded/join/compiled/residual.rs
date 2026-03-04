@@ -200,6 +200,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: filtered_reservation })
 }
 
+// Candidate output layout that preserves columns needed to evaluate a residual predicate.
 pub(super) struct OneShotResidualCandidateProjection {
     projection: Vec<JoinOutputColumn>,
     predicate: Expr,

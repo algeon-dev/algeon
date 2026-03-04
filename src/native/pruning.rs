@@ -34,12 +34,14 @@ mod row_groups;
 
 pub(super) use row_groups::*;
 
+/// Partitioned file chosen for native local Parquet scan after range coalescing.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CoalescedLocalParquetFile<'a> {
     pub(super) file: &'a PartitionedFile,
     pub(super) byte_range_representation: LocalParquetByteRangeRepresentation,
 }
 
+/// Meaning assigned to DataFusion byte ranges after pruning analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LocalParquetByteRangeRepresentation {
     WholeFile,
