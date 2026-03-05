@@ -21,7 +21,6 @@ impl Default for SharedSubplanMaterializationOptions {
 }
 
 /// Diagnostics for shared-subplan materialization.
-
 pub(crate) struct SharedSubplanMaterializationResult {
     pub plan: QueryPlan,
     pub change: super::NativeOptimizerChange,
