@@ -20,6 +20,9 @@ mod iceberg_rest_local_e2e;
 #[cfg(all(feature = "server-iceberg-e2e", not(test)))]
 #[path = "../e2e/server_iceberg_glue_moto_e2e.rs"]
 mod server_iceberg_glue_moto_e2e;
+#[cfg(all(feature = "server-iceberg-e2e", not(test)))]
+#[path = "../e2e/server_iceberg_glue_remote_direct_e2e.rs"]
+mod server_iceberg_glue_remote_direct_e2e;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ToolResult<()> {
@@ -29,6 +32,7 @@ async fn main() -> ToolResult<()> {
         Some("iceberg-rest-local-e2e") => run_iceberg_rest_local_e2e().await,
         Some("iceberg-glue-moto-e2e") => run_iceberg_glue_moto_e2e().await,
         Some("server-iceberg-glue-moto-e2e") => run_server_iceberg_glue_moto_e2e().await,
+        Some("server-iceberg-glue-remote-direct-e2e") => run_server_iceberg_glue_remote_direct_e2e().await,
         Some("-h" | "--help") | None => {
             print_usage();
             if command.is_none() { Err("missing tool command".into()) } else { Ok(()) }
@@ -48,7 +52,8 @@ fn print_usage() {
            cargo run -p datafusion-nexus-tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-rest-local-e2e\n\
            cargo run -p datafusion-nexus-tools --features iceberg-e2e -- iceberg-glue-moto-e2e\n\
-           cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e"
+           cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-moto-e2e\n\
+           flock /tmp/cudf-gpu.lock cargo run -p datafusion-nexus-tools --features server-iceberg-e2e -- server-iceberg-glue-remote-direct-e2e"
     );
 }
 
@@ -90,4 +95,15 @@ async fn run_server_iceberg_glue_moto_e2e() -> ToolResult<()> {
 #[cfg(not(all(feature = "server-iceberg-e2e", not(test))))]
 async fn run_server_iceberg_glue_moto_e2e() -> ToolResult<()> {
     Err("server-iceberg-glue-moto-e2e requires --features server-iceberg-e2e and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "server-iceberg-e2e", not(test)))]
+async fn run_server_iceberg_glue_remote_direct_e2e() -> ToolResult<()> {
+    server_iceberg_glue_remote_direct_e2e::run().await
+}
+
+#[cfg(not(all(feature = "server-iceberg-e2e", not(test))))]
+async fn run_server_iceberg_glue_remote_direct_e2e() -> ToolResult<()> {
+    Err("server-iceberg-glue-remote-direct-e2e requires --features server-iceberg-e2e and normal cargo run execution"
+        .into())
 }
