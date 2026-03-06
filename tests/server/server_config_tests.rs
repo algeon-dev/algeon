@@ -145,6 +145,38 @@ fn server_config_rejects_cugraph_env_without_cugraph_feature() {
     assert!(error.to_string().contains("--features server,cugraph"));
 }
 
+#[cfg(not(feature = "cugraph"))]
+#[test]
+fn server_config_accepts_explicit_cugraph_disabled_without_cugraph_feature() {
+    // One env file must be able to serve both artifact flavors: an explicit
+    // `false` requests no capability, so a no-cugraph build accepts it.
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[test]
+fn server_config_rejects_cugraph_settings_alongside_disabled_env_without_cugraph_feature() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "false".to_string()),
+        (datafusion_nexus::server::NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, "cugraph_pagerank".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("--features server,cugraph"));
+}
+
+#[cfg(not(feature = "cugraph"))]
+#[test]
+fn server_config_rejects_malformed_cugraph_enabled_without_cugraph_feature() {
+    let env = BTreeMap::from([(NEXUS_SERVER_CUGRAPH_ENABLED_ENV, "maybe".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("must be a boolean"));
+}
+
 #[cfg(feature = "cugraph")]
 #[test]
 fn server_cugraph_config_accepts_enabled_env() {

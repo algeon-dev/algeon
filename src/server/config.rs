@@ -56,7 +56,10 @@ pub const NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_SERVER_N
 pub const NEXUS_SERVER_CONFIG_FILE_ENV: &str = "NEXUS_SERVER_CONFIG_FILE";
 
 /// Enables registration of cuGraph SQL functions. Must be `true` before any
-/// other cuGraph server setting is accepted.
+/// other cuGraph server setting is accepted. On a build without the `cugraph`
+/// feature an explicit `false` is accepted (it requests no capability), so one
+/// env file can serve both artifact flavors; `true` and every other cuGraph
+/// setting are still rejected there.
 pub const NEXUS_SERVER_CUGRAPH_ENABLED_ENV: &str = "NEXUS_SERVER_CUGRAPH_ENABLED";
 /// Optional comma-separated allowlist of cuGraph SQL function names, such as
 /// `cugraph_pagerank`. When unset, all registered cuGraph functions are enabled.
@@ -966,13 +969,15 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
 
 #[cfg(not(feature = "cugraph"))]
 fn reject_cugraph_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> {
+    // An explicit `NEXUS_SERVER_CUGRAPH_ENABLED=false` requests no capability
+    // and is accepted, so one env file can serve both artifact flavors.
     if values.any_present([
-        NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
         NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV,
         NEXUS_SERVER_CUGRAPH_DIRECTED_ENV,
         NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
         NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
-    ]) {
+    ]) || values.optional_bool(NEXUS_SERVER_CUGRAPH_ENABLED_ENV)? == Some(true)
+    {
         return Err(ServerError::invalid_config(
             NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
             "cuGraph server registration requires building with --features server,cugraph or --features server-cugraph",
@@ -1065,7 +1070,6 @@ impl<'a> EnvValues<'a> {
             .transpose()
     }
 
-    #[cfg(any(feature = "cugraph", feature = "iceberg"))]
     fn optional_bool(&mut self, name: &'static str) -> Result<Option<bool>> {
         self.string(name)
             .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
