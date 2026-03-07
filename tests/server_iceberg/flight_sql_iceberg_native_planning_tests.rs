@@ -39,6 +39,7 @@ use datafusion_nexus::{
     TableFormatScanRequest,
     iceberg::CudfIcebergTableProvider,
     server::{FlightSqlNativeRejectClass, ServerSessionProfile, apply_session_profile, log_leaf_guard_rejection},
+    table_format::scan::{TableFormatPredicate, TableFormatPredicateOp},
 };
 use futures::future::BoxFuture;
 
@@ -81,6 +82,218 @@ async fn native_profile_iceberg_join_group_by_order_by_rewrites_with_no_leftover
 }
 
 #[tokio::test]
+async fn native_profile_iceberg_wide_aggregate_order_limit_rewrites_as_native_root() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "SELECT value, COUNT(*) AS rows, SUM(id) AS total_id, MIN(id) AS min_id, MAX(id) AS max_id \
+         FROM iceberg_t \
+         GROUP BY value \
+         ORDER BY total_id DESC, value ASC \
+         LIMIT 5",
+    )
+    .await
+    .expect("native profile must rewrite wide aggregate ORDER BY LIMIT over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_root_is_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_q1_style_cast_round_aggregate_order_limit_rewrites_as_native_root() {
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", q1_style_wide_aggregate_scan_plan())],
+        "SELECT COALESCE(idp,'(none)') AS idp_key, \
+                COUNT(*) AS n, \
+                COUNT(website) AS n_web, \
+                CAST(ROUND(AVG(\"crsScore\")*10000) AS BIGINT) AS avg_score_e4, \
+                MIN(\"foundedYear\") AS min_year, \
+                MAX(\"foundedYear\") AS max_year, \
+                SUM(\"supportApi\") AS sum_api \
+         FROM iceberg_t \
+         WHERE \"foundedYear\" IS NOT NULL \
+         GROUP BY COALESCE(idp,'(none)') \
+         ORDER BY n DESC, idp_key \
+         LIMIT 15",
+    )
+    .await
+    .expect("native profile must rewrite Q1-style cast/round aggregate ORDER BY LIMIT over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_root_is_native(physical_plan.as_ref());
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "ProjectionExec");
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "SortExec");
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_cte_aggregate_join_back_rewrites_as_native_root() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "WITH c AS (SELECT value, COUNT(*) AS cnt FROM iceberg_t GROUP BY value) \
+         SELECT t.value, COUNT(*) AS rows, MAX(c.cnt) AS max_cnt \
+         FROM iceberg_t t JOIN c ON t.value = c.value \
+         WHERE c.cnt > 0 \
+         GROUP BY t.value \
+         ORDER BY max_cnt DESC, t.value ASC \
+         LIMIT 5",
+    )
+    .await
+    .expect("native profile must rewrite CTE aggregate joined back to Iceberg fact");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_root_is_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_not_in_count_distinct_keeps_safe_host_boundary() {
+    let schema = iceberg_test_schema();
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[
+            ("iceberg_t", native_admissible_scan_plan(Arc::clone(&schema))),
+            ("iceberg_u", native_admissible_scan_plan(Arc::clone(&schema))),
+        ],
+        "SELECT COUNT(DISTINCT t.value) AS distinct_values \
+         FROM iceberg_t t \
+         WHERE t.id NOT IN (SELECT u.id FROM iceberg_u u WHERE u.value IS NOT NULL)",
+    )
+    .await
+    .expect("native profile must plan NOT IN plus COUNT(DISTINCT) over Iceberg without a leftover GPU-only leaf");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "NativeCudfGpuProducerExec");
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_two_derived_aggregates_joined_to_fact_rewrites_as_native_root() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "WITH high AS (SELECT value, COUNT(*) AS high_cnt FROM iceberg_t WHERE id >= 0 GROUP BY value), \
+              low AS (SELECT value, SUM(id) AS low_sum FROM iceberg_t WHERE id < 100 GROUP BY value) \
+         SELECT t.value, COUNT(*) AS rows, MAX(high.high_cnt) AS high_cnt, MAX(low.low_sum) AS low_sum \
+         FROM iceberg_t t \
+         JOIN high ON t.value = high.value \
+         JOIN low ON t.value = low.value \
+         GROUP BY t.value \
+         ORDER BY rows DESC, t.value ASC \
+         LIMIT 5",
+    )
+    .await
+    .expect("native profile must rewrite fact joined to two derived aggregate branches");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_root_is_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_cross_table_in_semijoin_rewrites_as_native_root() {
+    let schema = iceberg_test_schema();
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[
+            ("iceberg_t", native_admissible_scan_plan(Arc::clone(&schema))),
+            ("iceberg_u", native_admissible_scan_plan(Arc::clone(&schema))),
+        ],
+        "SELECT t.id, t.value \
+         FROM iceberg_t t \
+         WHERE t.id IN (SELECT u.id FROM iceberg_u u WHERE u.value IS NOT NULL)",
+    )
+    .await
+    .expect("native profile must rewrite cross-table IN semijoin over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_root_is_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_not_exists_anti_join_rewrites_with_no_leftover_leaf() {
+    let schema = iceberg_test_schema();
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[
+            ("iceberg_t", native_admissible_scan_plan(Arc::clone(&schema))),
+            ("iceberg_u", native_admissible_scan_plan(Arc::clone(&schema))),
+        ],
+        "SELECT COUNT(*) AS n \
+         FROM iceberg_t t \
+         WHERE NOT EXISTS (SELECT 1 FROM iceberg_u u WHERE u.id = t.id)",
+    )
+    .await
+    .expect("native profile must rewrite NOT EXISTS anti-join over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_union_all_aggregate_branches_rewrites_with_no_leftover_leaf() {
+    let schema = iceberg_test_schema();
+    let plan = high_empty_low_nonempty_scan_plan(Arc::clone(&schema));
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "SELECT 'high' AS bucket, COUNT(*) AS n FROM iceberg_t WHERE id >= 80 \
+         UNION ALL \
+         SELECT 'low' AS bucket, COUNT(*) AS n FROM iceberg_t WHERE id < 50 \
+         ORDER BY bucket",
+    )
+    .await
+    .expect("native profile must rewrite UNION ALL aggregate branches over Iceberg with an empty branch");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_correlated_scalar_avg_rewrites_with_no_leftover_leaf() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "SELECT COUNT(*) AS n \
+         FROM iceberg_t s1 \
+         WHERE s1.value IS NOT NULL \
+           AND s1.id > (SELECT AVG(s2.id) FROM iceberg_t s2 WHERE s2.value = s1.value)",
+    )
+    .await
+    .expect("native profile must rewrite correlated scalar AVG over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_correlated_scalar_max_rewrites_with_no_leftover_leaf() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "SELECT COUNT(*) AS n \
+         FROM iceberg_t s \
+         WHERE s.value IS NOT NULL \
+           AND s.id = (SELECT MAX(s2.id) FROM iceberg_t s2 WHERE s2.value = s.value)",
+    )
+    .await
+    .expect("native profile must rewrite correlated scalar MAX over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_cte_aggregate_scalar_filter_plans_with_no_leftover_leaf() {
+    let plan = native_admissible_scan_plan(iceberg_test_schema());
+    let physical_plan = run_iceberg_sql_under_native_profile(
+        &[("iceberg_t", plan)],
+        "WITH c AS (SELECT value, COUNT(*) AS cnt FROM iceberg_t GROUP BY value) \
+         SELECT COUNT(*) AS n FROM c WHERE cnt > (SELECT AVG(cnt) FROM c)",
+    )
+    .await
+    .expect("native profile must rewrite CTE aggregate scalar filter over Iceberg");
+
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    assert_plan_does_not_contain_operator(physical_plan.as_ref(), "ScalarSubqueryExec");
+}
+
+#[tokio::test]
 async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
     // The CPU-style profile mirrors the pre-Milestone-2 audit scenario: DataFusion
     // is allowed to repartition sorts so an unbounded GROUP BY + ORDER BY plan
@@ -108,12 +321,12 @@ async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
     assert_eq!(facts.get("table_format").map(String::as_str), Some("iceberg"), "facts={facts:?}");
     assert_eq!(facts.get("cpu_arrow_reader_fallback").map(String::as_str), Some("false"), "facts={facts:?}");
 
-    // Milestone 1 quotes the first native rejection reason when the guard fires
+    // Milestone 1 quotes native rule rejection context when the guard fires
     // after a native rejection. Under the CPU-style profile the root is a full
-    // SortPreservingMergeExec which the native rule rejects with
+    // SortPreservingMergeExec, which the native rule rejects with
     // `native_sort_preserving_merge_unsupported`.
     assert_eq!(
-        facts.get("first_native_rejection").map(String::as_str),
+        facts.get("native_rule_blocking_rejection").map(String::as_str),
         Some(FallbackReason::NativeSortPreservingMergeUnsupported.code()),
         "the guard must quote the SPM rejection that triggered the CPU fallback shape; facts={facts:?}",
     );
@@ -228,9 +441,10 @@ async fn run_iceberg_sql_with_session_config(
     session_config: SessionConfig,
 ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
     let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
-        .with_cudf_native(optimizer_config)
+        .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     let ctx = SessionContext::new_with_state(state);
 
@@ -281,6 +495,35 @@ fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
 
 const CPU_PIPELINE_OPERATORS_ABSORBED_BY_NATIVE_REWRITE: &[&str] =
     &["AggregateExec", "SortExec", "HashJoinExec", "RepartitionExec", "SortPreservingMergeExec"];
+
+fn assert_plan_contains_native_cudf_exec(plan: &dyn ExecutionPlan) {
+    if !plan_contains_operator(plan, "NativeCudfExec") && !plan_contains_operator(plan, "NativeCudfComposedExec") {
+        let rendered = displayable(plan).indent(false).to_string();
+        panic!("native profile rewrite did not produce any native execution wrapper; plan:\n{rendered}");
+    }
+}
+
+fn assert_plan_does_not_contain_operator(plan: &dyn ExecutionPlan, operator: &str) {
+    if plan_contains_operator(plan, operator) {
+        let rendered = displayable(plan).indent(false).to_string();
+        panic!("native profile rewrite left `{operator}` in the plan; plan:\n{rendered}");
+    }
+}
+
+fn assert_query_root_is_native(plan: &dyn ExecutionPlan) {
+    if !matches!(plan.name(), "NativeCudfExec" | "NativeCudfComposedExec") {
+        let rendered = displayable(plan).indent(false).to_string();
+        panic!(
+            "native profile rewrite left a DataFusion host boundary above the native plan root; \
+             expected a native root wrapper, got `{}`. plan:\n{rendered}",
+            plan.name()
+        );
+    }
+}
+
+fn plan_contains_operator(plan: &dyn ExecutionPlan, operator: &str) -> bool {
+    plan.name() == operator || plan.children().into_iter().any(|child| plan_contains_operator(child.as_ref(), operator))
+}
 
 struct NativeRootDescent {
     ancestor_names: Vec<String>,
@@ -370,6 +613,99 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
         ))
 }
 
+fn q1_style_wide_aggregate_scan_plan() -> TableFormatScanPlan {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("idp", DataType::Utf8, true),
+        Field::new("website", DataType::Utf8, true),
+        Field::new("crsScore", DataType::Float64, true),
+        Field::new("foundedYear", DataType::Int32, true),
+        Field::new("supportApi", DataType::Int64, true),
+    ]));
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0001",
+                "/tmp/iceberg/rcg4-q1-style.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(11),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(1),
+            "idp",
+            Some("idp"),
+            DataType::Utf8,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(2),
+            "website",
+            Some("website"),
+            DataType::Utf8,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(3),
+            "crsScore",
+            Some("crsScore"),
+            DataType::Float64,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(4),
+            "foundedYear",
+            Some("foundedYear"),
+            DataType::Int32,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(5),
+            "supportApi",
+            Some("supportApi"),
+            DataType::Int64,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            TableFormatColumnRole::Projected,
+        ))
+}
+
+fn empty_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_snapshot_id("12345")
+        .with_catalog_type("local")
+        .with_logical_schema(Arc::clone(&schema))
+        .with_native_source_schema(schema)
+}
+
+fn high_empty_low_nonempty_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
+    native_admissible_scan_plan(schema)
+        .with_data_file(
+            TableFormatDataFile::new(
+                "data-0002",
+                "/tmp/iceberg/data-0002.parquet",
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_size_bytes(4096)
+            .with_row_count(7),
+        )
+        .with_snapshot_id("high-empty")
+}
+
 #[derive(Debug)]
 struct RecordingPlanner {
     plan: TableFormatScanPlan,
@@ -388,8 +724,18 @@ impl TableFormatPlanner for RecordingPlanner {
         request: TableFormatScanRequest,
     ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
+        let high_branch_pruned = self.plan.snapshot_id.as_deref() == Some("high-empty")
+            && matches!(
+                &request.predicate,
+                Some(TableFormatPredicate::Comparison {
+                    column,
+                    op: TableFormatPredicateOp::GtEq,
+                    ..
+                }) if column == "id"
+            );
+        let empty_plan = high_branch_pruned.then(|| empty_scan_plan(Arc::clone(&self.plan.logical_schema)));
         self.requests.lock().expect("request recorder mutex poisoned").push(request);
-        let plan = self.plan.clone().with_scan_limit(scan_limit);
+        let plan = empty_plan.unwrap_or_else(|| self.plan.clone()).with_scan_limit(scan_limit);
         Box::pin(async move { Ok(plan) })
     }
 }

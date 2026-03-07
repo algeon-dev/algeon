@@ -85,9 +85,9 @@ impl FlightSqlNativeRejectClass {
 /// report.
 ///
 /// The line carries the per-query identifier plus rewritten/rejected counts,
-/// the first rejection code (when any candidate was rejected), and the
-/// classifier bucket for that first rejection. No-op for an empty report so
-/// pure-CPU sessions do not generate noise.
+/// the first native-rule rejection as context (when any candidate was
+/// rejected), and the classifier bucket for that contextual rejection. No-op
+/// for an empty report so pure-CPU sessions do not generate noise.
 pub fn log_native_planning_report(query_id: &str, report: Option<&PlanningReport>) {
     let Some(report) = report else {
         return;
@@ -102,7 +102,7 @@ pub fn log_native_planning_report(query_id: &str, report: Option<&PlanningReport
         query_id,
         rewritten_count = report.rewritten_count(),
         rejected_count = report.rejected_count(),
-        first_native_rejection = first_rejection.map(FallbackReason::code).unwrap_or(""),
+        native_rule_first_rejection_context = first_rejection.map(FallbackReason::code).unwrap_or(""),
         rejection_class = rejection_class.map(FlightSqlNativeRejectClass::as_str).unwrap_or(""),
         "datafusion-nexus native planning report"
     );
@@ -123,7 +123,8 @@ pub fn log_leaf_guard_rejection(query_id: &str, error: &DataFusionError, profile
     tracing::warn!(
         query_id,
         fallback_reason = fields.fallback_reason,
-        first_native_rejection = fields.first_native_rejection,
+        native_rule_blocking_context = fields.native_rule_blocking_context,
+        native_rule_blocking_rejection = fields.native_rule_blocking_rejection,
         physical_plan_root = fields.physical_plan_root,
         physical_plan_shape = fields.physical_plan_shape,
         table_format = fields.table_format,
@@ -155,7 +156,8 @@ pub(crate) fn profile_hint(profile: ServerSessionProfile) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LeafGuardEventFields<'a> {
     pub fallback_reason: &'a str,
-    pub first_native_rejection: &'a str,
+    pub native_rule_blocking_context: &'a str,
+    pub native_rule_blocking_rejection: &'a str,
     pub physical_plan_root: &'a str,
     pub physical_plan_shape: &'a str,
     pub table_format: &'a str,
@@ -167,8 +169,9 @@ pub(crate) struct LeafGuardEventFields<'a> {
 ///
 /// Returns `None` for any other error shape so the caller knows to keep the
 /// generic planning-failure log line. Empty-string defaults are used for facts
-/// the guard didn't attach (for example `first_native_rejection` is absent
-/// when the leaf survives without a native rejection).
+/// the guard didn't attach (for example `native_rule_blocking_rejection` is absent
+/// when the leaf survives because of a structural mixed-plan context rather
+/// than a native-rule rejection).
 pub(crate) fn leaf_guard_event_fields(error: &DataFusionError) -> Option<LeafGuardEventFields<'_>> {
     let adapter = find_adapter_error(error)?;
     let facts = adapter.facts();
@@ -176,9 +179,11 @@ pub(crate) fn leaf_guard_event_fields(error: &DataFusionError) -> Option<LeafGua
     if fallback_reason != FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code() {
         return None;
     }
+    let native_rule_blocking_rejection = facts.get("native_rule_blocking_rejection").unwrap_or("");
     Some(LeafGuardEventFields {
         fallback_reason,
-        first_native_rejection: facts.get("first_native_rejection").unwrap_or(""),
+        native_rule_blocking_context: facts.get("native_rule_blocking_context").unwrap_or(""),
+        native_rule_blocking_rejection,
         physical_plan_root: facts.get("physical_plan_root").unwrap_or(""),
         physical_plan_shape: facts.get("physical_plan_shape").unwrap_or(""),
         table_format: facts.get("table_format").unwrap_or(""),
@@ -312,7 +317,7 @@ mod tests {
         );
     }
 
-    fn leaf_guard_error(first_native_rejection: Option<&str>) -> DataFusionError {
+    fn leaf_guard_error(native_rule_blocking_rejection: Option<&str>) -> DataFusionError {
         let mut error = Error::new(
             ErrorCode::NativeCandidateRejected,
             "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
@@ -327,8 +332,9 @@ mod tests {
             "physical_plan_shape",
             "SortPreservingMergeExec(SortExec(AggregateExec(RepartitionExec(CudfTableFormatScanExec))))",
         );
-        if let Some(reason) = first_native_rejection {
-            error = error.with_fact("first_native_rejection", reason);
+        if let Some(reason) = native_rule_blocking_rejection {
+            error = error.with_fact("native_rule_blocking_rejection", reason);
+            error = error.with_fact("native_rule_blocking_context", reason);
         }
         error.into()
     }
@@ -339,7 +345,8 @@ mod tests {
         let fields = leaf_guard_event_fields(&error).expect("leaf-guard error must produce structured fields");
 
         assert_eq!(fields.fallback_reason, FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code());
-        assert_eq!(fields.first_native_rejection, FallbackReason::NativeSortPreservingMergeUnsupported.code());
+        assert_eq!(fields.native_rule_blocking_context, FallbackReason::NativeSortPreservingMergeUnsupported.code());
+        assert_eq!(fields.native_rule_blocking_rejection, FallbackReason::NativeSortPreservingMergeUnsupported.code());
         assert_eq!(fields.physical_plan_root, "SortPreservingMergeExec");
         assert!(fields.physical_plan_shape.starts_with("SortPreservingMergeExec("));
         assert!(fields.physical_plan_shape.contains("CudfTableFormatScanExec"));
@@ -348,14 +355,37 @@ mod tests {
     }
 
     #[test]
-    fn leaf_guard_event_fields_defaults_missing_first_native_rejection_to_empty() {
-        // The Milestone 1 guard skips the `first_native_rejection` fact when the
-        // native rule did not produce a rejection — for example when the leaf
+    fn leaf_guard_event_fields_defaults_missing_blocking_rejection_to_empty() {
+        // The Milestone 1 guard skips the `native_rule_blocking_rejection` fact when the
+        // native rule did not produce a rejection - for example when the leaf
         // survives because an unrelated optimizer rule wrapped it without the
         // native rule ever being invoked.
         let error = leaf_guard_error(None);
         let fields = leaf_guard_event_fields(&error).expect("leaf-guard error must produce structured fields");
-        assert_eq!(fields.first_native_rejection, "");
+        assert_eq!(fields.native_rule_blocking_context, "");
+        assert_eq!(fields.native_rule_blocking_rejection, "");
+    }
+
+    #[test]
+    fn leaf_guard_event_fields_preserves_structural_context_without_native_rejection() {
+        let mut error = Error::new(
+            ErrorCode::NativeCandidateRejected,
+            "datafusion_nexus.planner.table_format_gpu_only_leaf_guard",
+            "table-format scan leaf was not rewritten to native",
+        )
+        .with_fact("fallback_reason", FallbackReason::TableFormatGpuOnlyLeafNotRewritten.code())
+        .with_fact("leftover_operator", "CudfTableFormatScanExec")
+        .with_fact("table_format", "iceberg")
+        .with_fact("cpu_arrow_reader_fallback", false)
+        .with_fact("physical_plan_root", "UnionExec")
+        .with_fact("physical_plan_shape", "UnionExec(CudfTableFormatScanExec,NativeCudfExec)");
+        error = error.with_fact("native_rule_blocking_context", "union_branch_not_rewritten");
+        let df_error: DataFusionError = error.into();
+
+        let fields = leaf_guard_event_fields(&df_error).expect("leaf-guard error must produce structured fields");
+        assert_eq!(fields.native_rule_blocking_context, "union_branch_not_rewritten");
+        assert_eq!(fields.native_rule_blocking_rejection, "");
+        assert_eq!(fields.physical_plan_root, "UnionExec");
     }
 
     #[test]
