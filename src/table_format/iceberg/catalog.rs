@@ -569,10 +569,14 @@ impl GlueIcebergCatalogConfig {
         );
         if let (Some(access_key_id), Some(secret_access_key), session_token) = explicit_s3_credentials {
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
+        } else if super::s3_credential_source_default_chain_opt_in(&mut get) {
+            // Explicit operator opt-in: keep the default chain even with a
+            // custom endpoint. See NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV.
         } else if has_s3_endpoint {
             // Local/S3-compatible endpoints must not silently reuse a
             // developer's ambient AWS credentials. Operators that need signed
-            // requests for such endpoints should set NEXUS_ICEBERG_S3_*.
+            // requests for such endpoints should set NEXUS_ICEBERG_S3_* or opt
+            // into the default chain via NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE.
             s3 = s3.with_unsigned_requests();
         } else if let (Some(access_key_id), Some(secret_access_key), session_token) = aws_credentials {
             // Preserve the existing real-AWS behavior while still allowing
@@ -608,8 +612,13 @@ fn glue_catalog_props(
     }
     if let Some(endpoint) = config.s3_endpoint.as_ref().filter(|v| !v.trim().is_empty()) {
         props.insert(S3_ENDPOINT.to_string(), endpoint.clone());
-        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
-        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+        // Custom endpoints default-deny ambient credential discovery unless
+        // the operator explicitly opted into the AWS default chain via
+        // NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain.
+        if !super::s3_credential_source_default_chain_opt_in(&mut get) {
+            props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+            props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+        }
     }
     if let Some(region) = config.s3_region.as_ref().filter(|v| !v.trim().is_empty()) {
         props.insert(S3_REGION.to_string(), region.clone());
@@ -937,6 +946,9 @@ impl RestIcebergCatalogConfig {
         ) {
             let session_token = super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV));
             s3 = s3.with_static_credentials(access_key_id, secret_access_key, session_token);
+        } else if super::s3_credential_source_default_chain_opt_in(&mut get) {
+            // Explicit operator opt-in: keep the default chain even with a
+            // custom endpoint. See NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV.
         } else if has_s3_endpoint {
             s3 = s3.with_unsigned_requests();
         }
@@ -959,12 +971,15 @@ impl RestIcebergCatalogConfig {
 /// optional values are omitted rather than inserted as empty strings.
 ///
 /// S3 credentials come ONLY from the explicit `NEXUS_ICEBERG_S3_*`
-/// environment variables read here. To enforce that, the prop map always sets
+/// environment variables read here. To enforce that, the prop map sets
 /// `s3.disable-config-load=true` and `s3.disable-ec2-metadata=true`, which turn
 /// off OpenDAL's ambient credential discovery (the `AWS_*` environment chain,
 /// `~/.aws/*` config files, and the EC2 IMDS endpoint). Without these flags
 /// OpenDAL would silently fall back to the ambient AWS chain when no explicit
 /// creds are provided — exactly the silent `AWS_*` pickup this project forbids.
+/// The single exception is an explicit operator opt-in via
+/// `NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain`, which deliberately
+/// selects that ambient chain and therefore skips the default-deny flags.
 ///
 /// Separated from [`RestIcebergCatalogBackend::from_config`] so it can be
 /// unit-tested without a live REST server.
@@ -975,10 +990,12 @@ fn rest_catalog_props(
     let mut props = HashMap::from([
         (REST_CATALOG_PROP_URI.to_string(), config.uri.clone()),
         (REST_CATALOG_PROP_WAREHOUSE.to_string(), config.warehouse.clone()),
-        // Default-deny ambient AWS credential discovery; see the doc comment.
-        (S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string()),
-        (S3_DISABLE_EC2_METADATA.to_string(), "true".to_string()),
     ]);
+    // Default-deny ambient AWS credential discovery; see the doc comment.
+    if !super::s3_credential_source_default_chain_opt_in(&mut get) {
+        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+    }
     if let Some(prefix) = config.prefix.as_ref().filter(|v| !v.trim().is_empty()) {
         props.insert("prefix".to_string(), prefix.clone());
     }

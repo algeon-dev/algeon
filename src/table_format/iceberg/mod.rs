@@ -79,6 +79,27 @@ pub const NEXUS_ICEBERG_S3_ENDPOINT_ENV: &str = "NEXUS_ICEBERG_S3_ENDPOINT";
 pub const NEXUS_ICEBERG_S3_REGION_ENV: &str = "NEXUS_ICEBERG_S3_REGION";
 /// Optional S3 path-style flag for Glue/REST FileIO.
 pub const NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str = "NEXUS_ICEBERG_S3_PATH_STYLE";
+/// Optional explicit S3 credential source for Glue/REST object storage.
+///
+/// The only accepted value is `default_chain`. Setting it is an explicit
+/// operator opt-in to the ambient AWS default credential chain (env vars,
+/// profile, IMDS instance role) for the configured object storage — including
+/// when a custom `NEXUS_ICEBERG_S3_ENDPOINT` is set, where the default is
+/// otherwise unsigned requests so a local S3-compatible stack never silently
+/// picks up developer AWS credentials. Mutually exclusive with the static
+/// `NEXUS_ICEBERG_S3_ACCESS_KEY_ID`/`NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY` pair.
+pub const NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV: &str = "NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE";
+/// Accepted value of [`NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV`] selecting the
+/// ambient AWS default credential chain.
+pub const NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN: &str = "default_chain";
+
+/// Whether the env explicitly opts object storage into the AWS default
+/// credential chain. Only the exact value `default_chain` (case-insensitive)
+/// opts in; validation of other values is the caller's responsibility.
+pub(crate) fn s3_credential_source_default_chain_opt_in(mut get: impl FnMut(&str) -> Option<String>) -> bool {
+    non_empty(get(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV))
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN))
+}
 
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.
