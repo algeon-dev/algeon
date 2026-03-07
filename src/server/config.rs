@@ -129,6 +129,9 @@ pub const NEXUS_ICEBERG_S3_PATH_STYLE_ENV: &str = "NEXUS_ICEBERG_S3_PATH_STYLE";
 /// custom `NEXUS_ICEBERG_S3_ENDPOINT` where the default is otherwise unsigned
 /// requests. Mutually exclusive with static `NEXUS_ICEBERG_S3_*` credentials.
 pub const NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV: &str = "NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE";
+/// Seconds allowed for Iceberg table-format scan planning before Flight SQL
+/// returns a structured `planning_timeout` error. Defaults to `60`.
+pub const NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS";
 
 const DEFAULT_BIND_ADDR: &str = "0.0.0.0:50051";
 const DEFAULT_LOG_FILTER: &str = "info";
@@ -138,6 +141,8 @@ const DEFAULT_STATEMENT_TICKET_TTL_SECS: u64 = 300;
 const DEFAULT_GLUE_CATALOG_NAME: &str = "glue";
 #[cfg(feature = "iceberg")]
 const DEFAULT_REST_CATALOG_HANDLE: &str = "rest";
+#[cfg(feature = "iceberg")]
+const DEFAULT_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS: u64 = 60;
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -240,6 +245,8 @@ pub struct IcebergServerConfig {
     /// Server-validated table-format Parquet strategy passed into catalog
     /// planning paths. Server mode must not let those paths reread process env.
     pub parquet_read_strategy_config: TableFormatParquetReadStrategyConfig,
+    /// Wall-clock budget applied to Iceberg scan planning.
+    pub scan_planning_timeout: Duration,
 }
 
 #[cfg(feature = "iceberg")]
@@ -251,6 +258,7 @@ impl fmt::Debug for IcebergServerConfig {
             .field("tables", &self.tables)
             .field("backend", &self.backend)
             .field("parquet_read_strategy_config", &"<redacted>")
+            .field("scan_planning_timeout", &self.scan_planning_timeout)
             .finish()
     }
 }
@@ -568,6 +576,7 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         NEXUS_LAKEHOUSE_CACHE_READ_ENV,
         NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
         NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
+        NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
     ]);
     if !requested {
         return Ok(None);
@@ -622,8 +631,19 @@ fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<IcebergServerConf
         IcebergCatalogKind::Rest => IcebergCatalogBackendConfig::Rest(rest_backend_config(values, warehouse.clone())?),
     };
     let parquet_read_strategy_config = iceberg_parquet_read_strategy_config(values, &backend)?;
+    let scan_planning_timeout = Duration::from_secs(
+        values
+            .positive_u64(NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, DEFAULT_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS)?,
+    );
 
-    Ok(Some(IcebergServerConfig { catalog_name, namespace, tables, backend, parquet_read_strategy_config }))
+    Ok(Some(IcebergServerConfig {
+        catalog_name,
+        namespace,
+        tables,
+        backend,
+        parquet_read_strategy_config,
+        scan_planning_timeout,
+    }))
 }
 
 #[cfg(feature = "iceberg")]
@@ -986,6 +1006,7 @@ fn reject_iceberg_env_without_feature(values: &mut EnvValues<'_>) -> Result<()> 
         crate::NEXUS_LAKEHOUSE_CACHE_READ_ENV,
         crate::NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
         crate::NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
+        NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV,
     ]) {
         return Err(ServerError::invalid_config(
             NEXUS_ICEBERG_NAMESPACE_ENV,

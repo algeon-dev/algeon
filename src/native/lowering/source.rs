@@ -17,7 +17,12 @@ pub(super) use reader_pushdown::{
     reader_predicate_proves_local_parquet_at_most_one_row, source_reader_pushdown_predicate,
 };
 use table_format::lower_table_format_source_input;
-pub(super) use table_format::{lower_table_format_zero_column_count_source, table_format_scan_rejection};
+pub(super) use table_format::{
+    lower_empty_table_format_count_star_source, lower_table_format_count_star_fallback_source,
+    lower_table_format_count_star_mixed_row_count_source, lower_table_format_zero_column_count_source,
+    table_format_count_star_mixed_row_count_metadata_can_split, table_format_count_star_probe_can_lower,
+    table_format_scan_rejection, table_format_zero_column_count_metadata_is_available,
+};
 
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,

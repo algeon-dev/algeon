@@ -1,12 +1,17 @@
 use std::sync::Arc;
 
+use arrow::datatypes::DataType;
 use datafusion_nexus::{
-    FallbackReason, TableFormatDataFileFormat, TableFormatDeleteFileContent, TableFormatDirectDeviceReadDisposition,
-    TableFormatReadCapability, iceberg::iceberg_file_scan_tasks_to_table_format_scan_plan,
+    FallbackReason, TableFormatColumnSource, TableFormatDataFileFormat, TableFormatDeleteFileContent,
+    TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
+    TableFormatScalarValue, iceberg::iceberg_file_scan_tasks_to_table_format_scan_plan,
 };
 use iceberg::{
     scan::{FileScanTask, FileScanTaskDeleteFile},
-    spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema, Struct, Type},
+    spec::{
+        DataContentType, DataFileFormat, Literal, NestedField, PartitionSpec, PrimitiveType, Schema, Struct, Transform,
+        Type,
+    },
 };
 
 fn iceberg_schema() -> Arc<Schema> {
@@ -39,6 +44,88 @@ fn file_scan_task(
         deletes,
         partition: Some(Struct::empty()),
         partition_spec: None,
+        name_mapping: None,
+        case_sensitive: true,
+    }
+}
+
+fn partitioned_iceberg_schema() -> Arc<Schema> {
+    Arc::new(
+        Schema::builder()
+            .with_fields([
+                Arc::new(NestedField::required(1, "customerId", Type::Primitive(PrimitiveType::String))),
+                Arc::new(NestedField::optional(2, "event_ts", Type::Primitive(PrimitiveType::Timestamp))),
+                Arc::new(NestedField::optional(3, "value", Type::Primitive(PrimitiveType::Long))),
+            ])
+            .build()
+            .unwrap(),
+    )
+}
+
+fn identity_and_day_partition_task(path: impl Into<String>) -> FileScanTask {
+    let schema = partitioned_iceberg_schema();
+    let partition_spec = PartitionSpec::builder(Arc::clone(&schema))
+        .add_partition_field("customerId", "customerId", Transform::Identity)
+        .unwrap()
+        .add_partition_field("event_ts", "event_ts_day", Transform::Day)
+        .unwrap()
+        .build()
+        .unwrap();
+    FileScanTask {
+        file_size_in_bytes: 4096,
+        start: 0,
+        length: 4096,
+        record_count: Some(17),
+        data_file_path: path.into(),
+        data_file_format: DataFileFormat::Parquet,
+        schema,
+        project_field_ids: vec![1, 2, 3],
+        predicate: None,
+        deletes: Vec::new(),
+        partition: Some(Struct::from_iter([Some(Literal::string("customer-1")), Some(Literal::int(19_000))])),
+        partition_spec: Some(Arc::new(partition_spec)),
+        name_mapping: None,
+        case_sensitive: true,
+    }
+}
+
+fn timestamp_decimal_partition_task(path: impl Into<String>) -> FileScanTask {
+    let schema = Arc::new(
+        Schema::builder()
+            .with_fields([
+                Arc::new(NestedField::optional(1, "event_ts", Type::Primitive(PrimitiveType::Timestamp))),
+                Arc::new(NestedField::required(
+                    2,
+                    "amount",
+                    Type::Primitive(PrimitiveType::Decimal { precision: 10, scale: 2 }),
+                )),
+            ])
+            .build()
+            .unwrap(),
+    );
+    let partition_spec = PartitionSpec::builder(Arc::clone(&schema))
+        .add_partition_field("event_ts", "event_ts", Transform::Identity)
+        .unwrap()
+        .add_partition_field("amount", "amount", Transform::Identity)
+        .unwrap()
+        .build()
+        .unwrap();
+    FileScanTask {
+        file_size_in_bytes: 4096,
+        start: 0,
+        length: 4096,
+        record_count: Some(17),
+        data_file_path: path.into(),
+        data_file_format: DataFileFormat::Parquet,
+        schema,
+        project_field_ids: vec![1, 2],
+        predicate: None,
+        deletes: Vec::new(),
+        partition: Some(Struct::from_iter([
+            Some(Literal::timestamp(1_700_000_000_123_456)),
+            Some(Literal::decimal(12_345)),
+        ])),
+        partition_spec: Some(Arc::new(partition_spec)),
         name_mapping: None,
         case_sensitive: true,
     }
@@ -100,6 +187,67 @@ fn no_delete_s3_parquet_iceberg_tasks_are_native_admissible_through_host_buffer_
     assert_eq!(diagnostics.admitted_native_source_file_count, 1);
     assert_eq!(diagnostics.direct_device_read_disposition, TableFormatDirectDeviceReadDisposition::Rejected);
     assert!(diagnostics.rejected_feature_list.is_empty());
+}
+
+#[test]
+fn non_identity_partition_transforms_are_retained_as_facts_without_rejecting_native_scan() {
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("34567".to_string()),
+        Some("aws_glue".to_string()),
+        [identity_and_day_partition_task("s3://lakehouse/warehouse/events/data-0001.parquet")],
+    )
+    .unwrap();
+
+    assert!(plan.is_native_admissible());
+    assert_eq!(plan.unsupported_fallback_reasons(), Vec::<FallbackReason>::new());
+    assert_eq!(plan.data_files.len(), 1);
+    assert_eq!(plan.data_files[0].partition_values.len(), 2);
+
+    let customer = &plan.data_files[0].partition_values[0];
+    assert_eq!(customer.column_name, "customerId");
+    assert_eq!(customer.transform, TableFormatPartitionTransform::Identity);
+    assert_eq!(customer.value, TableFormatScalarValue::Utf8("customer-1".to_string()));
+
+    let day = &plan.data_files[0].partition_values[1];
+    assert_eq!(day.column_name, "event_ts_day");
+    assert_eq!(day.transform, TableFormatPartitionTransform::Day);
+    assert_eq!(day.value, TableFormatScalarValue::Date32(19_000));
+
+    let customer_mapping = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "customerId").unwrap();
+    assert_eq!(customer_mapping.source, TableFormatColumnSource::IdentityPartitionValue);
+    let event_mapping = plan.projected_columns.iter().find(|mapping| mapping.logical_name == "event_ts").unwrap();
+    assert_eq!(event_mapping.source, TableFormatColumnSource::DirectTopLevelFileColumn);
+
+    let diagnostics = plan.diagnostics();
+    assert_eq!(diagnostics.admitted_native_source_file_count, 1);
+    assert!(diagnostics.rejected_feature_list.is_empty());
+}
+
+#[test]
+fn identity_timestamp_and_decimal_partition_values_keep_typed_metadata_literals() {
+    let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
+        Some("45678".to_string()),
+        Some("aws_glue".to_string()),
+        [timestamp_decimal_partition_task("s3://lakehouse/warehouse/events/data-0001.parquet")],
+    )
+    .unwrap();
+
+    assert!(plan.is_native_admissible());
+    let timestamp = &plan.data_files[0].partition_values[0];
+    assert_eq!(timestamp.column_name, "event_ts");
+    assert_eq!(timestamp.data_type, DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, None));
+    assert_eq!(timestamp.transform, TableFormatPartitionTransform::Identity);
+    assert_eq!(timestamp.value, TableFormatScalarValue::Int64(1_700_000_000_123_456));
+
+    let decimal = &plan.data_files[0].partition_values[1];
+    assert_eq!(decimal.column_name, "amount");
+    assert_eq!(decimal.data_type, DataType::Decimal128(10, 2));
+    assert_eq!(decimal.transform, TableFormatPartitionTransform::Identity);
+    assert_eq!(decimal.value, TableFormatScalarValue::Int128(12_345));
+
+    assert!(
+        plan.projected_columns.iter().all(|mapping| mapping.source == TableFormatColumnSource::IdentityPartitionValue)
+    );
 }
 
 #[test]

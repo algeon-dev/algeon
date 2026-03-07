@@ -387,6 +387,36 @@ fn server_iceberg_config_accepts_dynamic_catalog_without_explicit_tables() {
     let iceberg = config.iceberg.expect("iceberg config must be present");
 
     assert!(iceberg.tables.is_empty(), "dynamic catalog mode: tables must be empty when no tables env var is set");
+    assert_eq!(iceberg.scan_planning_timeout.as_secs(), 60);
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_accepts_scan_planning_timeout() {
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, "7".to_string()),
+        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let iceberg = config.iceberg.expect("iceberg config must be present");
+
+    assert_eq!(iceberg.scan_planning_timeout.as_secs(), 7);
+}
+
+#[cfg(feature = "iceberg")]
+#[test]
+fn server_iceberg_config_rejects_zero_scan_planning_timeout() {
+    let env = BTreeMap::from([
+        (NEXUS_ICEBERG_GLUE_DATABASE_ENV, "tpch_sf1".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_GLUE_WAREHOUSE_ENV, "s3://bucket/warehouse/".to_string()),
+        (datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, "0".to_string()),
+        (datafusion_nexus::iceberg::AWS_REGION_ENV, "us-east-1".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(datafusion_nexus::server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV));
 }
 
 #[cfg(feature = "iceberg")]

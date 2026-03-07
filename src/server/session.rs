@@ -85,6 +85,8 @@ pub fn apply_session_profile(base: SessionConfig, profile: ServerSessionProfile)
 /// - top-k, join, aggregate, and umbrella dynamic-filter pushdown all
 ///   disabled (DataFusion checks each per-operator flag directly, so the
 ///   umbrella alone does not suppress joins or top-k pushdown)
+/// - physical uncorrelated scalar subqueries disabled so scalar subquery
+///   shapes stay relationalized for native planning
 ///
 /// These overrides intentionally take precedence over `DATAFUSION_*` env
 /// vars; the env vars still apply to other settings (for example
@@ -101,6 +103,7 @@ fn apply_native_friendly_profile(config: SessionConfig) -> SessionConfig {
     optimizer.enable_join_dynamic_filter_pushdown = false;
     optimizer.enable_aggregate_dynamic_filter_pushdown = false;
     optimizer.enable_dynamic_filter_pushdown = false;
+    optimizer.enable_physical_uncorrelated_scalar_subquery = false;
     config
 }
 
@@ -175,14 +178,18 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
 
     // Discover only the configured namespace scope. Individual tables are
     // loaded lazily on first SQL access through the backend.
-    let catalog_provider = crate::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend(
-        Arc::clone(&backend),
-        catalog_type,
-        &iceberg.namespace,
-        provider_kind,
-    )
-    .await
-    .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from backend", error))?;
+    let provider_options = crate::table_format::iceberg::catalog::IcebergProviderOptions::default()
+        .with_scan_planning_timeout(Some(iceberg.scan_planning_timeout));
+    let catalog_provider =
+        crate::table_format::iceberg::catalog::build_scoped_catalog_provider_from_backend_with_options(
+            Arc::clone(&backend),
+            catalog_type,
+            &iceberg.namespace,
+            provider_kind,
+            provider_options,
+        )
+        .await
+        .map_err(|error| ServerError::session("failed to build Iceberg catalog provider from backend", error))?;
 
     // Seed pre-declared alias mappings before registering the catalog.
     // This makes catalog.namespace.alias resolve in addition to the real name.
@@ -196,9 +203,14 @@ async fn register_iceberg_catalog(ctx: &SessionContext, config: &ServerConfig) -
             .load_table(&table_ident)
             .await
             .map_err(|error| ServerError::session("failed to load Iceberg table for alias seeding", error))?;
-        let provider =
-            build_alias_provider(loaded_table, provider_kind, catalog_type, backend.parquet_read_strategy_config())
-                .await?;
+        let provider = build_alias_provider(
+            loaded_table,
+            provider_kind,
+            catalog_type,
+            backend.parquet_read_strategy_config(),
+            Some(iceberg.scan_planning_timeout),
+        )
+        .await?;
 
         // Seed both real name and alias before catalog registration so first
         // queries reuse this load and cannot race the seed.
@@ -294,6 +306,7 @@ async fn build_alias_provider(
     kind: crate::table_format::iceberg::catalog::IcebergProviderKind,
     catalog_type: &str,
     parquet_read_strategy_config: Option<crate::table_format::scan::TableFormatParquetReadStrategyConfig>,
+    scan_planning_timeout: Option<std::time::Duration>,
 ) -> super::error::Result<Arc<dyn datafusion::datasource::TableProvider>> {
     use crate::table_format::iceberg::catalog::IcebergProviderKind;
     match kind {
@@ -307,12 +320,13 @@ async fn build_alias_provider(
                 None => crate::table_format::iceberg::CudfIcebergTableProvider::try_new(table),
             }
             .map_err(|error| ServerError::session("failed to build CudfIcebergTableProvider", error))?
-            .with_catalog_type(catalog_type);
+            .with_catalog_type(catalog_type)
+            .with_scan_planning_timeout(scan_planning_timeout);
             Ok(Arc::new(provider))
         },
         #[cfg(feature = "iceberg-cpu")]
         IcebergProviderKind::Cpu => {
-            let _ = parquet_read_strategy_config;
+            let _ = (parquet_read_strategy_config, scan_planning_timeout);
             let provider =
                 iceberg_datafusion::IcebergStaticTableProvider::try_new_from_table(table).await.map_err(|error| {
                     ServerError::session("failed to build iceberg-datafusion CPU table provider", error)
