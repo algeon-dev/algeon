@@ -335,6 +335,7 @@ fn source_variant(source_node_id: NodeId, source: &LocalParquetSource) -> Option
 fn source_contract_supported(source: &LocalParquetSource) -> bool {
     source.scan_limit.is_none()
         && !source.is_zero_column_count_source()
+        && !source.is_count_star_probe_source()
         && source.partition_columns.is_empty()
         && source.missing_columns.is_empty()
         && source

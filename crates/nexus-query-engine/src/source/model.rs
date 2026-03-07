@@ -625,7 +625,7 @@ impl SourceNode {
     /// Returns the native output schema exposed by this source node.
     pub fn output_schema(&self) -> &SchemaRef {
         match self {
-            Self::LocalParquet(source) => &source.schema,
+            Self::LocalParquet(source) => source.output_schema(),
             Self::GpuResident(source) => &source.schema,
             Self::LiteralBatch(source) => &source.schema,
         }
@@ -808,6 +808,9 @@ pub struct LocalParquetSource {
     pub files: Vec<LocalParquetFile>,
     /// Emitted source schema: read file columns followed by partition columns.
     pub schema: SchemaRef,
+    /// Optional schema exposed to the query plan when execution transforms the
+    /// physical read frame before yielding source output.
+    pub output_schema_override: Option<SchemaRef>,
     /// Physical Parquet columns that the engine must read.
     ///
     /// These columns are emitted by the source. They include projected file
@@ -847,6 +850,8 @@ pub struct LocalParquetSource {
     pub max_rows: Option<usize>,
     /// Source capability and rejection details captured during lowering.
     pub diagnostics: SourceDiagnostics,
+    /// Read one physical row-presence column, then emit row-count weights.
+    pub count_star_probe: bool,
 }
 
 impl LocalParquetSource {
@@ -882,6 +887,7 @@ impl LocalParquetSource {
         Self {
             files,
             schema,
+            output_schema_override: None,
             read_columns,
             read_column_file_indices,
             file_column_count,
@@ -895,6 +901,7 @@ impl LocalParquetSource {
             reader_predicate: None,
             max_rows: None,
             diagnostics,
+            count_star_probe: false,
         }
     }
 
@@ -915,6 +922,16 @@ impl LocalParquetSource {
         let schema = Arc::new(Schema::new(vec![Field::new(ZERO_COLUMN_COUNT_COLUMN, DataType::Int64, false)]));
         let mut source = Self::from_files(files, schema, Vec::new());
         source.mark_zero_column_count_represented();
+        source
+    }
+
+    /// Builds a COUNT(*) fallback source that reads a physical row-presence
+    /// column but emits one Int64 row-count weight per read unit.
+    pub fn count_star_probe(files: Vec<LocalParquetFile>, read_schema: SchemaRef, read_columns: Vec<String>) -> Self {
+        let output_schema = Arc::new(Schema::new(vec![Field::new(ZERO_COLUMN_COUNT_COLUMN, DataType::Int64, false)]));
+        let mut source = Self::from_files(files, read_schema, read_columns);
+        source.output_schema_override = Some(output_schema);
+        source.count_star_probe = true;
         source
     }
 
@@ -1056,9 +1073,19 @@ impl LocalParquetSource {
         }
     }
 
+    /// Returns the schema this source exposes to the native plan graph.
+    pub fn output_schema(&self) -> &SchemaRef {
+        self.output_schema_override.as_ref().unwrap_or(&self.schema)
+    }
+
     /// Returns true when this source is the metadata-only zero-column count form.
     pub fn is_zero_column_count_source(&self) -> bool {
         self.diagnostics.zero_column_count_disposition == ZeroColumnCountDisposition::Represented
+    }
+
+    /// Returns true when this source reads a carrier column only to emit count weights.
+    pub fn is_count_star_probe_source(&self) -> bool {
+        self.count_star_probe
     }
 
     fn mark_zero_column_count_represented(&mut self) {

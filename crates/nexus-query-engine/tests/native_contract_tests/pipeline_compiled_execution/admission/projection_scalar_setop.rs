@@ -261,6 +261,62 @@ fn projection_scalar_setop_setop_input_candidate_is_owned_before_root_join() {
 }
 
 #[test]
+fn strict_admission_accepts_raw_left_anti_scalar_count_as_single_join_post_root() {
+    let plan = projection_root_left_anti_scalar_count_plan();
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        Some("projection_scalar_setop_requires_scalar_or_setop_contract"),
+        "raw NOT EXISTS-style anti joins are not SQL setop/dedup candidates"
+    );
+    assert!(
+        analysis.admits_single_join_post_root_pipeline(),
+        "left-anti scalar count should fall through to the generic single-join post-root envelope, got {:?}",
+        analysis.strict_bounded_envelope_admission()
+    );
+    assert!(
+        !analysis.admits_projection_scalar_setop_pipeline(),
+        "raw left-anti scalar count should not select the projection-scalar/setop envelope"
+    );
+    assert!(
+        analysis.first_rejection_projection().is_none(),
+        "admitted left-anti scalar count should not carry a strict rejection"
+    );
+
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("left-anti scalar count should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::SingleJoinPostRootPipeline);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled left-anti scalar count report should be valid");
+    assert_modeled_gate_row("left-anti scalar count", &report, ReservationKind::SourceRead, "source_contract");
+    assert_modeled_gate_row("left-anti scalar count", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        "left-anti scalar count",
+        &report,
+        ReservationKind::JoinOutput,
+        "dataframe_gather_output_reservation_size_bytes+projected_cross_join_reservation_size_bytes",
+    );
+    assert_modeled_gate_row(
+        "left-anti scalar count",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
 fn projection_scalar_setop_keyless_input_candidate_is_owned_before_root_join() {
     let plan = projection_root_keyless_grouped_aggregate_input_plan();
     let analysis = plan.capability_analysis();
@@ -315,6 +371,60 @@ fn strict_admission_accepts_projection_scalar_setop_scalar_join_aggregate_input_
     );
     assert_modeled_gate_row(
         "scalar join aggregate",
+        &report,
+        ReservationKind::Materialization,
+        "query_engine_explicit_sink_materialization_reservation",
+    );
+}
+
+#[test]
+fn strict_admission_accepts_projection_scalar_setop_scalar_join_grouped_aggregate_input_with_modeled_gates() {
+    let plan = projection_root_scalar_join_grouped_avg_input_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_projection_scalar_setop_pipeline(),
+        "scalar join with grouped aggregate input should admit through projection-scalar/setop, got {:?}",
+        analysis.strict_bounded_envelope_admission()
+    );
+    assert_eq!(
+        analysis.projection_scalar_setop_admission.rejection_reason(),
+        None,
+        "grouped aggregate input contract should be modeled locally"
+    );
+    let admission = strict_bounded_pipeline_admission(&plan)
+        .expect("strict admission should not fail")
+        .expect("scalar join grouped aggregate input should be admitted");
+    assert_eq!(admission.envelope(), StrictBoundedEnvelope::ProjectionScalarSetop);
+
+    let pipeline = admission.pipeline();
+    assert_task_kind_count(pipeline, PipelineTaskKind::SourceRead, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::Aggregate, 2);
+    assert_task_kind_count(pipeline, PipelineTaskKind::JoinMaterialize, 1);
+    assert_task_kind_count(pipeline, PipelineTaskKind::SinkMaterialize, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, pipeline).expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(admission.analysis(), pipeline)
+        .expect("compiled scalar join grouped aggregate report should be valid");
+    assert_modeled_gate_row("scalar join grouped aggregate", &report, ReservationKind::SourceRead, "source_contract");
+    assert_modeled_gate_row("scalar join grouped aggregate", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row(
+        "scalar join grouped aggregate",
+        &report,
+        ReservationKind::OperatorOutput,
+        "query_engine_projection_scalar_setop_final_projection_output_boundary",
+    );
+    assert_modeled_gate_row(
+        "scalar join grouped aggregate",
+        &report,
+        ReservationKind::JoinOutput,
+        "keyed_equality_join_output_size_preflight",
+    );
+    assert_modeled_gate_row(
+        "scalar join grouped aggregate",
         &report,
         ReservationKind::Materialization,
         "query_engine_explicit_sink_materialization_reservation",

@@ -212,6 +212,28 @@ fn native_optimizer_rejects_source_reuse_with_conflicting_column_name_file_indic
 }
 
 #[test]
+fn native_optimizer_rejects_count_star_probe_source_reuse() {
+    let plan = count_star_probe_source_reuse_plan();
+    let options = NativeOptimizerOptions {
+        local_parquet_source_reuse: LocalParquetSourceReuseOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan.clone(), &options);
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.local_parquet_source_reuse;
+    assert_eq!(diagnostics.considered_count, 1);
+    assert_eq!(diagnostics.applied_count, 0);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(nexus_query_engine::LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+    );
+    assert_eq!(count_star_probe_source_count(&result.plan), 2);
+}
+
+#[test]
 fn native_optimizer_does_not_lift_variant_max_rows_to_shared_local_parquet_source() {
     let plan = compatible_small_local_parquet_source_variants_with_max_rows_plan();
     let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
@@ -394,6 +416,19 @@ fn contract_mismatched_local_parquet_source_variants_plan() -> nexus_query_engin
         vec![ProjectionOutput::new(Expr::column("id"), Field::new("id", DataType::Int32, false))],
     );
     let union = builder.add_union(vec![direct_id, host_buffer_id], schema(&["id"]));
+    builder.finish_gpu_resident(union)
+}
+
+fn count_star_probe_source_reuse_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(count_star_probe_customer_address_source("id", 0));
+    let right = builder.add_source(count_star_probe_customer_address_source("zip", 2));
+    let output_schema = Arc::new(Schema::new(vec![Field::new(
+        ZERO_COLUMN_COUNT_COLUMN,
+        DataType::Int64,
+        false,
+    )]));
+    let union = builder.add_union(vec![left, right], output_schema);
     builder.finish_gpu_resident(union)
 }
 
@@ -830,6 +865,27 @@ fn customer_address_source_with_max_rows(
     }
     source = source.with_max_rows(max_rows);
     SourceNode::LocalParquet(source)
+}
+
+fn count_star_probe_customer_address_source(column: &str, file_index: usize) -> SourceNode {
+    let schema = Arc::new(Schema::new(vec![Field::new(column, DataType::Int32, false)]));
+    let file = LocalParquetFile::new("/tmp/customer_address.parquet").with_stable_id("customer_address");
+    let source = LocalParquetSource::count_star_probe(vec![file], schema, vec![column.to_string()])
+        .with_column_roles(Vec::new(), vec![column.to_string()])
+        .with_column_file_indices(vec![file_index], Vec::new(), vec![file_index]);
+    SourceNode::LocalParquet(source)
+}
+
+fn count_star_probe_source_count(plan: &nexus_query_engine::QueryPlan) -> usize {
+    plan.nodes()
+        .iter()
+        .filter(|node| match &node.kind {
+            PlanNode::Source(source) => {
+                matches!(source.as_ref(), SourceNode::LocalParquet(source) if source.is_count_star_probe_source())
+            },
+            _ => false,
+        })
+        .count()
 }
 
 fn gpu_source(name: &str, fields: &[&str]) -> SourceNode {

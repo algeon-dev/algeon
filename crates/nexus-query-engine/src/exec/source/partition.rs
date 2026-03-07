@@ -5,6 +5,7 @@ pub(super) fn inject_partition_columns(
     source: &LocalParquetSource,
     partition_values: &[LiteralValue],
     frame: DataFrame,
+    row_count_override: Option<usize>,
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     if source.partition_columns.is_empty() {
@@ -20,7 +21,7 @@ pub(super) fn inject_partition_columns(
         .with_fact("partition_values", partition_values.len()));
     }
 
-    let rows = frame.num_rows();
+    let rows = row_count_override.unwrap_or_else(|| frame.num_rows());
     let timer = Instant::now();
     let mut output = frame;
     for (partition_column, partition_value) in source.partition_columns.iter().zip(partition_values) {

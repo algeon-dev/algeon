@@ -246,6 +246,10 @@ fn validate_source_node(source: &crate::source::SourceNode) -> Result<BTreeSet<S
             if source.is_zero_column_count_source() {
                 available.insert(ZERO_COLUMN_COUNT_COLUMN.to_string());
             }
+            if source.is_count_star_probe_source() {
+                available.clear();
+                available.insert(ZERO_COLUMN_COUNT_COLUMN.to_string());
+            }
             Ok(available)
         },
         crate::source::SourceNode::GpuResident(source) => {

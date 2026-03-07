@@ -514,6 +514,7 @@ pub(super) fn analyze_projection_scalar_setop_admission(
     if projection_scalar_setop_scalar_fanout_has_cardinality_proof(plan, &shape)
         || projection_scalar_setop_setop_dedup_scalar_has_contract(plan, &shape)
         || projection_scalar_setop_scalar_join_aggregate_input_has_contract(plan, &shape)
+        || projection_scalar_setop_scalar_join_grouped_aggregate_input_has_contract(plan, &shape)
     {
         return CapabilityDecision::Satisfied;
     }
@@ -699,6 +700,109 @@ fn projection_scalar_setop_scalar_join_aggregate_input_has_contract(
                 )
         )
     })
+}
+
+fn projection_scalar_setop_scalar_join_grouped_aggregate_input_has_contract(
+    plan: &QueryPlan,
+    shape: &ProjectionScalarSetopShape,
+) -> bool {
+    if shape.kind != ProjectionScalarSetopKind::ScalarJoinGroupedAggregateInput {
+        return false;
+    }
+    let Some(final_scalar_aggregate_id) =
+        projection_scalar_setop_final_projection_input_scalar_aggregate_id(plan, shape.final_projection_id)
+    else {
+        return false;
+    };
+    let grouped_aggregate_ids = shape
+        .aggregate_ids
+        .iter()
+        .copied()
+        .filter(|aggregate_id| *aggregate_id != final_scalar_aggregate_id)
+        .collect::<Vec<_>>();
+    if grouped_aggregate_ids.is_empty() {
+        return false;
+    }
+    if !grouped_aggregate_ids.iter().all(|aggregate_id| {
+        matches!(
+            plan.node(*aggregate_id).map(|node| &node.kind),
+            Some(PlanNode::Aggregate(aggregate))
+                if !aggregate.spec.group_exprs.is_empty()
+                    && aggregate.spec.grouping_sets.is_none()
+                    && !aggregate.spec.aggr_exprs.is_empty()
+        )
+    }) {
+        return false;
+    }
+    if !grouped_aggregate_ids
+        .iter()
+        .all(|aggregate_id| projection_scalar_setop_grouped_aggregate_feeds_join(plan, *aggregate_id, &shape.join_ids))
+    {
+        return false;
+    }
+    shape.join_ids.iter().all(|join_id| {
+        matches!(
+            plan.node(*join_id).map(|node| &node.kind),
+            Some(PlanNode::Join(join))
+                if matches!(
+                    join_node_execution_capability(join),
+                    Some(JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
+                )
+        )
+    })
+}
+
+fn projection_scalar_setop_grouped_aggregate_feeds_join(
+    plan: &QueryPlan,
+    aggregate_id: NodeId,
+    join_ids: &[NodeId],
+) -> bool {
+    let Ok(reachable) = collect_reachable_node_ids(plan) else {
+        return false;
+    };
+    let consumers = consumer_nodes_for_reachable(plan, &reachable);
+    consumers.get(&aggregate_id).is_some_and(|consumer_ids| {
+        consumer_ids.iter().any(|consumer_id| {
+            projection_scalar_setop_consumer_chain_reaches_join(
+                plan,
+                &consumers,
+                *consumer_id,
+                join_ids,
+                &mut BTreeSet::new(),
+            )
+        })
+    })
+}
+
+fn projection_scalar_setop_consumer_chain_reaches_join(
+    plan: &QueryPlan,
+    consumers: &BTreeMap<NodeId, Vec<NodeId>>,
+    node_id: NodeId,
+    join_ids: &[NodeId],
+    visited: &mut BTreeSet<NodeId>,
+) -> bool {
+    if !visited.insert(node_id) {
+        return false;
+    }
+    match plan.node(node_id).map(|node| &node.kind) {
+        Some(PlanNode::Join(_)) => join_ids.contains(&node_id),
+        Some(PlanNode::Projection(_) | PlanNode::Filter(_)) => consumers.get(&node_id).is_some_and(|next| {
+            next.iter().any(|consumer_id| {
+                projection_scalar_setop_consumer_chain_reaches_join(plan, consumers, *consumer_id, join_ids, visited)
+            })
+        }),
+        Some(
+            PlanNode::Aggregate(_)
+            | PlanNode::Source(_)
+            | PlanNode::Window(_)
+            | PlanNode::Sort(_)
+            | PlanNode::Limit(_)
+            | PlanNode::Union(_)
+            | PlanNode::EdgeNormalize(_)
+            | PlanNode::GraphAlgorithm(_),
+        )
+        | None => false,
+    }
 }
 
 fn projection_scalar_setop_final_projection_input_scalar_aggregate_id(

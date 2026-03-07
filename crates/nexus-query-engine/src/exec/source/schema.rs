@@ -4,6 +4,9 @@ pub(in crate::exec) fn local_parquet_execution_frame_schema(source: &LocalParque
     if source.is_zero_column_count_source() {
         return Ok(Arc::clone(&source.schema));
     }
+    if source.is_count_star_probe_source() {
+        return Ok(Arc::clone(source.output_schema()));
+    }
 
     let mut fields = Vec::with_capacity(source.projected_output_columns.len() + source.pure_filter_columns.len());
     let mut seen = std::collections::HashSet::with_capacity(fields.capacity());
