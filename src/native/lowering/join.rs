@@ -10,7 +10,8 @@ use datafusion::{
 use nexus_query_engine::{
     ColumnRef as NativeColumnRef, Expr as NativeExpr, JoinKey as NativeJoinKey,
     JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec,
-    JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
+    JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder, is_supported_list_carry_type,
+    is_timestamp_with_timezone,
 };
 
 use super::{
@@ -158,7 +159,10 @@ fn prepare_join_key_expr(
     materializations: &mut Vec<JoinKeyMaterialization>,
 ) -> Result<PreparedJoinKeyExpr, FallbackReason> {
     if let Some(column) = expr.downcast_ref::<Column>() {
-        input_schema.fields().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+        let field = input_schema.fields().get(column.index()).ok_or(FallbackReason::UnsupportedExpression)?;
+        if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
+            return Err(FallbackReason::UnsupportedType);
+        }
         required.insert(column.index());
         return Ok(PreparedJoinKeyExpr { column_index: Some(column.index()), synthetic_alias: None });
     }
@@ -166,6 +170,9 @@ fn prepare_join_key_expr(
     collect_required_field_indices(expr, input_schema, required)?;
     let alias = unique_synthetic_join_key_alias(side, key_index, input_schema, materializations);
     let field = physical_expr_field(expr, input_schema, alias.as_str())?;
+    if is_timestamp_with_timezone(field.data_type()) || is_supported_list_carry_type(field.data_type()) {
+        return Err(FallbackReason::UnsupportedType);
+    }
     materializations.push(JoinKeyMaterialization { expr: Arc::clone(expr), alias: alias.clone(), field });
     Ok(PreparedJoinKeyExpr { column_index: None, synthetic_alias: Some(alias) })
 }

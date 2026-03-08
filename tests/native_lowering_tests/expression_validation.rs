@@ -198,6 +198,69 @@ fn in_list_with_null_literal_is_rejected_during_native_planning() {
 }
 
 #[test]
+fn list_utf8_is_null_filter_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-list-is-null");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+    let predicate: Arc<dyn PhysicalExpr> = Arc::new(IsNullExpr::new(col("tags", &scan_schema).unwrap()));
+    let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, scan).unwrap());
+    let filter_schema = filter.schema();
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            [
+                ProjectionExpr { expr: col("key", &filter_schema).unwrap(), alias: "key".to_string() },
+                ProjectionExpr { expr: col("m00", &filter_schema).unwrap(), alias: "m00".to_string() },
+            ],
+            filter,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn list_utf8_count_window_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-list-count-window");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT key, COUNT(tags) OVER (PARTITION BY key) AS tag_count FROM bench",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn list_utf8_lag_window_is_rejected_during_native_planning() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-list-lag-window");
+    let path = dir.join("input.parquet");
+    write_list_utf8_parquet_file(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "SELECT key, LAG(tags) OVER (PARTITION BY key ORDER BY key) AS prev_tags FROM bench",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn dynamic_filter_expression_lowers_as_current_inner_expression() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-dynamic-filter");
     let path = dir.join("input.parquet");

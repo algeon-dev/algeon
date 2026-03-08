@@ -1,5 +1,214 @@
 use super::*;
 
+fn timestamp_timezone_residual_hash_join_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+    include_in_list: bool,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let (filter_expr, filter_schema) =
+        timestamp_timezone_residual_filter_expr(&left_schema, &right_schema, include_in_list);
+    let filter =
+        timestamp_timezone_residual_join_filter(filter_expr, Arc::clone(&filter_schema), &left_schema, &right_schema);
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn list_null_residual_hash_join_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_tags").unwrap().clone(),
+        right_schema.field_with_name("r_tags").unwrap().clone(),
+    ]));
+    let filter_expr = binary(
+        is_null(col("l_tags", &filter_schema).unwrap()).unwrap(),
+        Operator::Or,
+        is_null(col("r_tags", &filter_schema).unwrap()).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    let filter = JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_tags").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_tags").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    );
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            false,
+        )
+        .unwrap(),
+    );
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn timestamp_timezone_residual_nested_loop_join_plan(
+    left: Arc<dyn ExecutionPlan>,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let (filter_expr, filter_schema) = timestamp_timezone_residual_filter_expr(&left_schema, &right_schema, false);
+    let filter =
+        timestamp_timezone_residual_join_filter(filter_expr, Arc::clone(&filter_schema), &left_schema, &right_schema);
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        NestedLoopJoinExec::try_new(
+            left,
+            right,
+            Some(filter),
+            &JoinType::Inner,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("r_m01").unwrap(),
+            ]),
+        )
+        .unwrap(),
+    );
+    aggregate_sort_limit_join_plan(join)
+}
+
+fn timestamp_timezone_residual_filter_expr(
+    left_schema: &SchemaRef,
+    right_schema: &SchemaRef,
+    include_in_list: bool,
+) -> (Arc<dyn PhysicalExpr>, SchemaRef) {
+    let filter_schema = Arc::new(Schema::new(vec![
+        left_schema.field_with_name("l_event_ts").unwrap().clone(),
+        right_schema.field_with_name("r_event_ts").unwrap().clone(),
+    ]));
+    let comparison = binary(
+        col("l_event_ts", &filter_schema).unwrap(),
+        Operator::Lt,
+        col("r_event_ts", &filter_schema).unwrap(),
+        &filter_schema,
+    )
+    .unwrap();
+    if !include_in_list {
+        return (comparison, filter_schema);
+    }
+    let in_list_expr = in_list(
+        col("l_event_ts", &filter_schema).unwrap(),
+        vec![lit(ScalarValue::TimestampMicrosecond(Some(100), Some("UTC".into())))],
+        &false,
+        filter_schema.as_ref(),
+    )
+    .unwrap();
+    (binary(in_list_expr, Operator::And, comparison, &filter_schema).unwrap(), filter_schema)
+}
+
+fn timestamp_timezone_residual_join_filter(
+    filter_expr: Arc<dyn PhysicalExpr>,
+    filter_schema: SchemaRef,
+    left_schema: &SchemaRef,
+    right_schema: &SchemaRef,
+) -> JoinFilter {
+    JoinFilter::new(
+        filter_expr,
+        vec![
+            ColumnIndex { index: left_schema.index_of("l_event_ts").unwrap(), side: JoinSide::Left },
+            ColumnIndex { index: right_schema.index_of("r_event_ts").unwrap(), side: JoinSide::Right },
+        ],
+        filter_schema,
+    )
+}
+
+#[test]
+fn hash_join_filter_rejects_timestamp_timezone_residual_comparison() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-timestamp-tz");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_timestamp_tz_parquet_file(&left_path);
+    write_join_right_timestamp_tz_parquet_file(&right_path);
+    let plan = timestamp_timezone_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path), false);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_rejects_timestamp_timezone_residual_in_list() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-timestamp-tz-in-list");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_timestamp_tz_parquet_file(&left_path);
+    write_join_right_timestamp_tz_parquet_file(&right_path);
+    let plan = timestamp_timezone_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path), true);
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn hash_join_filter_rejects_list_null_predicate_residual() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-list-null");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_list_parquet_file(&left_path);
+    write_join_right_list_parquet_file(&right_path);
+    let plan = list_null_residual_hash_join_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn nested_loop_join_filter_rejects_timestamp_timezone_residual_comparison() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nested-loop-filter-timestamp-tz");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_timestamp_tz_parquet_file(&left_path);
+    write_join_right_timestamp_tz_parquet_file(&right_path);
+    let plan = timestamp_timezone_residual_nested_loop_join_plan(parquet_scan(&left_path), parquet_scan(&right_path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_native_rejection(&result, FallbackReason::UnsupportedType);
+    fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn hash_join_filter_literal_in_list_lowers_to_native_residual_predicate() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-filter-in-list");

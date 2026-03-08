@@ -16,7 +16,9 @@ use datafusion::{
         sorts::sort::SortExec,
     },
 };
-use nexus_query_engine::{is_supported_arrow_cast, is_supported_arrow_type};
+use nexus_query_engine::{
+    is_supported_arrow_cast, is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
+};
 
 use crate::policy::FallbackReason;
 
@@ -36,6 +38,14 @@ pub(super) fn validate_schema(schema: SchemaRef) -> Result<(), FallbackReason> {
 
 pub(super) fn is_supported_native_type(data_type: &DataType) -> bool {
     is_supported_arrow_type(data_type)
+}
+
+pub(super) fn is_timestamp_with_timezone_type(data_type: &DataType) -> bool {
+    is_timestamp_with_timezone(data_type)
+}
+
+pub(super) fn is_list_carry_type(data_type: &DataType) -> bool {
+    is_supported_list_carry_type(data_type)
 }
 
 pub(super) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
@@ -93,10 +103,11 @@ pub(super) fn validate_aggregate(aggregate: &AggregateExec, allow_partial: bool)
             return Err(FallbackReason::UnsupportedExpression);
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
+        validate_operator_value_expr(arg, &aggregate.input().schema())?;
     }
     validate_aggregate_filters(aggregate)?;
     for (group_expr, _alias) in group_by.expr() {
-        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+        validate_operator_key_expr(group_expr, &aggregate.input().schema())?;
     }
     Ok(())
 }
@@ -139,10 +150,11 @@ fn validate_grouping_set_aggregate(aggregate: &AggregateExec, allow_partial: boo
             return Err(FallbackReason::UnsupportedExpression);
         };
         validate_physical_expr(arg, &aggregate.input().schema())?;
+        validate_operator_value_expr(arg, &aggregate.input().schema())?;
     }
     validate_aggregate_filters(aggregate)?;
     for (group_expr, _alias) in group_by.expr() {
-        validate_physical_expr(group_expr, &aggregate.input().schema())?;
+        validate_operator_key_expr(group_expr, &aggregate.input().schema())?;
     }
     for (null_expr, _alias) in group_by.null_expr() {
         validate_physical_expr(null_expr, &aggregate.input().schema())?;
@@ -184,9 +196,23 @@ pub(super) fn validate_sort(sort: &SortExec) -> Result<(), FallbackReason> {
         return Err(FallbackReason::UnsupportedExpression);
     }
     for sort_expr in sort.expr() {
-        validate_physical_expr(&sort_expr.expr, &sort.input().schema())?;
+        validate_operator_key_expr(&sort_expr.expr, &sort.input().schema())?;
     }
     Ok(())
+}
+
+fn validate_operator_key_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    validate_physical_expr(expr, input_schema)?;
+    validate_operator_value_expr(expr, input_schema)
+}
+
+fn validate_operator_value_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {
+    let data_type = expr.data_type(input_schema.as_ref()).map_err(|_error| FallbackReason::UnsupportedExpression)?;
+    if is_timestamp_with_timezone_type(&data_type) || is_list_carry_type(&data_type) {
+        Err(FallbackReason::UnsupportedType)
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) fn native_zero_column_count_source_is_safe(

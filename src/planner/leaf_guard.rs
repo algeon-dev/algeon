@@ -304,7 +304,7 @@ fn physical_plan_shape(plan: &dyn ExecutionPlan) -> String {
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use arrow::datatypes::{DataType, Field, Schema};
     use nexus_query_engine::{LiteralBatchSource, QueryPlanBuilder, SourceNode};
 
     use super::*;
@@ -505,11 +505,7 @@ mod tests {
 
     #[test]
     fn leaf_guard_derives_projected_dtype_rejection_without_native_rule_context() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "event_time",
-            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
-            true,
-        )]));
+        let schema = Arc::new(Schema::new(vec![Field::new("event_time", DataType::Binary, true)]));
         let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
             .with_logical_schema(Arc::clone(&schema))
             .with_native_source_schema(Arc::clone(&schema))

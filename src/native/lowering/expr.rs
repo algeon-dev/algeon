@@ -21,7 +21,8 @@ use crate::{
         literal::{NativeLiteralContext, native_literal_value, parse_yyyy_mm_dd_date32},
         lowering::FieldBinding,
         validate::{
-            bounded_nonnegative_integral_cast_is_supported, is_supported_native_cast, is_supported_native_type,
+            bounded_nonnegative_integral_cast_is_supported, is_list_carry_type, is_supported_native_cast,
+            is_supported_native_type,
         },
     },
     policy::FallbackReason,
@@ -118,6 +119,9 @@ pub(super) fn lower_physical_expr_with_bindings(
             && !bounded_nonnegative_integral_cast_is_supported(cast.expr(), &source_type, cast.cast_type())
         {
             return Err(FallbackReason::UnsupportedType);
+        }
+        if source_type == *cast.cast_type() && is_list_carry_type(&source_type) {
+            return lower_physical_expr_with_bindings(cast.expr(), input_schema, bindings);
         }
         return Ok(NativeExpr::cast(
             lower_physical_expr_with_bindings(cast.expr(), input_schema, bindings)?,

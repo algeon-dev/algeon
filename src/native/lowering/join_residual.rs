@@ -19,7 +19,7 @@ use super::{
     join::CanonicalJoin,
 };
 use crate::{
-    native::validate::{is_supported_native_cast, is_supported_native_type},
+    native::validate::{is_supported_native_cast, is_supported_native_type, validate_physical_expr},
     policy::FallbackReason,
 };
 
@@ -93,6 +93,7 @@ pub(super) fn lower_join_filter(
     // Supported residual vocabulary is deliberately small. Expressions the
     // cuDF join AST cannot represent directly may be materialized on one input
     // side, but a residual predicate must still reference both sides.
+    validate_physical_expr(filter.expression(), filter.schema())?;
     let mut left_required = BTreeSet::new();
     let mut right_required = BTreeSet::new();
     let mut materializations = JoinResidualMaterializations::default();

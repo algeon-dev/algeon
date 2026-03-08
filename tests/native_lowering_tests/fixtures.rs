@@ -3,8 +3,10 @@ use std::{fs::File, sync::Arc};
 use arrow::{
     array::{
         ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array,
-        Int64Array, StringArray, StructArray, TimestampNanosecondArray,
+        Int32Builder, Int64Array, ListArray, MapBuilder, StringArray, StringBuilder, StructArray,
+        TimestampMicrosecondArray, TimestampNanosecondArray,
     },
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
@@ -132,6 +134,88 @@ pub(super) fn write_join_right_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+pub(super) fn write_join_left_list_parquet_file(path: &std::path::Path) {
+    let item = Arc::new(Field::new("element", DataType::Utf8, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_tags", DataType::List(Arc::clone(&item)), true),
+        Field::new("l_m00", DataType::Int64, false),
+    ]));
+    let tags = ListArray::new(
+        item,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 1, 2])),
+        Arc::new(StringArray::from(vec![Some("red"), Some("blue")])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(tags),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_join_right_list_parquet_file(path: &std::path::Path) {
+    let item = Arc::new(Field::new("element", DataType::Utf8, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_tags", DataType::List(Arc::clone(&item)), true),
+        Field::new("r_m01", DataType::Int64, false),
+    ]));
+    let tags = ListArray::new(
+        item,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2, 2])),
+        Arc::new(StringArray::from(vec![Some("cyan"), Some("gold")])),
+        Some(NullBuffer::from(vec![true, true, false])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(tags), Arc::new(Int64Array::from(vec![10, 20, 30]))],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_join_left_timestamp_tz_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("l_event_ts", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), false),
+        Field::new("l_m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 1])),
+            Arc::new(TimestampMicrosecondArray::from(vec![100, 200, 300]).with_timezone("UTC")),
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_join_right_timestamp_tz_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("r_event_ts", DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())), false),
+        Field::new("r_m01", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(TimestampMicrosecondArray::from(vec![150, 250, 350]).with_timezone("UTC")),
+            Arc::new(Int64Array::from(vec![1, 2, 3])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
 pub(super) fn write_join_left_string_payload_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
@@ -238,6 +322,70 @@ pub(super) fn write_binary_schema_parquet_file(path: &std::path::Path) {
             Arc::new(Int64Array::from(vec![100, 200, 300])),
             Arc::new(Int64Array::from(vec![1, 2, 3])),
             Arc::new(BinaryArray::from(vec![b"a" as &[u8], b"b" as &[u8], b"c" as &[u8]])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_list_utf8_parquet_file(path: &std::path::Path) {
+    let item = Arc::new(Field::new("element", DataType::Utf8, true));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("tags", DataType::List(Arc::clone(&item)), true),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let tags = ListArray::new(
+        item,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 3])),
+        Arc::new(StringArray::from(vec![Some("red"), Some("blue"), Some("green")])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(tags), Arc::new(Int64Array::from(vec![10, 20, 30]))],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn write_struct_map_parquet_file(path: &std::path::Path) {
+    let struct_x = Arc::new(Field::new("x", DataType::Int32, false));
+    let struct_y = Arc::new(Field::new("y", DataType::Utf8, true));
+    let details = Arc::new(StructArray::from(vec![
+        (Arc::clone(&struct_x), Arc::new(Int32Array::from(vec![10, 20, 30])) as ArrayRef),
+        (Arc::clone(&struct_y), Arc::new(StringArray::from(vec![Some("alpha"), None, Some("gamma")])) as ArrayRef),
+    ])) as ArrayRef;
+
+    let mut map_builder = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+    map_builder.keys().append_value("a");
+    map_builder.values().append_value(1);
+    map_builder.append(true).unwrap();
+    map_builder.keys().append_value("b");
+    map_builder.values().append_value(2);
+    map_builder.keys().append_value("c");
+    map_builder.values().append_value(3);
+    map_builder.append(true).unwrap();
+    map_builder.append(false).unwrap();
+    let attrs = Arc::new(map_builder.finish()) as ArrayRef;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new(
+            "details",
+            DataType::Struct(Fields::from(vec![Arc::clone(&struct_x), Arc::clone(&struct_y)])),
+            false,
+        ),
+        Field::new("attrs", attrs.data_type().clone(), true),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            details,
+            attrs,
+            Arc::new(Int64Array::from(vec![100, 200, 300])),
         ],
     )
     .unwrap();
