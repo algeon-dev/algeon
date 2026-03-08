@@ -974,7 +974,7 @@ fn append_projected_column_mapping(
         TableFormatColumnSource::UnsupportedNestedProjection
     };
 
-    plan.projected_columns.push(TableFormatColumnMapping::new(
+    let mut mapping = TableFormatColumnMapping::new(
         Some(field_id),
         field.name.clone(),
         Some(field.name.clone()),
@@ -982,7 +982,15 @@ fn append_projected_column_mapping(
         !field.required,
         source,
         TableFormatColumnRole::Projected,
-    ));
+    );
+    if let Some(default_value) = field
+        .initial_default
+        .as_ref()
+        .and_then(|default| table_format_partition_scalar_value(Some(default), &mapping.data_type))
+    {
+        mapping = mapping.with_missing_default_value(default_value);
+    }
+    plan.projected_columns.push(mapping);
 
     Ok(())
 }

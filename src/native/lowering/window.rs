@@ -12,9 +12,9 @@ use datafusion::{
     physical_plan::{ExecutionPlan, windows::WindowUDFExpr},
 };
 use nexus_query_engine::{
-    Expr as NativeExpr, LiteralValue as NativeLiteralValue, QueryPlanBuilder as NativeQueryPlanBuilder,
-    ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr, WindowFrame as NativeWindowFrame,
-    WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
+    Expr as NativeExpr, LimitSpec as NativeLimitSpec, LiteralValue as NativeLiteralValue,
+    QueryPlanBuilder as NativeQueryPlanBuilder, ShiftDirection as NativeShiftDirection, SortExpr as NativeSortExpr,
+    WindowFrame as NativeWindowFrame, WindowFunction as NativeWindowFunction, WindowSpec as NativeWindowSpec,
 };
 
 use super::{
@@ -46,7 +46,20 @@ pub(super) fn lower_sort_input(
     }
     child_required.extend(_required_output_fields.requested_indices(sort.sort.schema().fields().len())?);
     let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required))?;
-    lower_sort_with_input(builder, sort.sort, input, _required_output_fields)
+    let sorted = lower_sort_with_input(builder, sort.sort, input, _required_output_fields)?;
+    apply_sort_fetch_limit(builder, sorted, sort.fetch)
+}
+
+fn apply_sort_fetch_limit(
+    builder: &mut NativeQueryPlanBuilder,
+    sorted: LoweredNativeInput,
+    fetch: Option<NativeLimitSpec>,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let Some(fetch) = fetch else {
+        return Ok(sorted);
+    };
+    let node = builder.add_limit(sorted.node, fetch, Arc::clone(&sorted.schema));
+    Ok(LoweredNativeInput::with_bindings(node, sorted.schema, sorted.bindings))
 }
 
 pub(super) fn lower_window_input(

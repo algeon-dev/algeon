@@ -119,6 +119,35 @@ pub(in crate::exec::bounded) struct RootHashJoinFrameStreamProbeState {
     inputs: ResidentFrameStreamPayload,
 }
 
+fn stateless_streaming_probe_supported(node: &JoinNode) -> bool {
+    matches!(node.spec.join_type, JoinType::Inner)
+        || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::JoinSpec;
+
+    fn join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
+        JoinNode {
+            inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
+            spec: JoinSpec::new(join_type, Vec::new()).with_build_side(build_side),
+        }
+    }
+
+    #[test]
+    fn stateless_streaming_probe_rejects_outer_join_shapes_that_reemit_build_rows() {
+        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Inner, JoinSide::Left)));
+        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Inner, JoinSide::Right)));
+        assert!(stateless_streaming_probe_supported(&join_node(JoinType::Left, JoinSide::Right)));
+
+        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Left, JoinSide::Left)));
+        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Full, JoinSide::Left)));
+        assert!(!stateless_streaming_probe_supported(&join_node(JoinType::Full, JoinSide::Right)));
+    }
+}
+
 pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     left_keys: Vec<String>,
     left_columns: Vec<String>,
@@ -586,7 +615,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     }
 
     match build {
-        BoundedCompiledJoinBuildState::Hash(build) => {
+        BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
             let mut outputs = Vec::new();
             let stream_result = stream_bounded_join_leaf_local_parquet_source(
                 context,
@@ -620,7 +649,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             if matches!(
                 build.strategy,
                 CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui
-            ) && node.spec.residual_predicate.is_none() =>
+            ) && node.spec.residual_predicate.is_none()
+                && stateless_streaming_probe_supported(node) =>
         {
             if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui {
                 if partitioned_streaming_probe_supported(node) {
@@ -688,7 +718,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
-        BoundedCompiledJoinBuildState::Hash(build) => {
+        BoundedCompiledJoinBuildState::Hash(build) if stateless_streaming_probe_supported(node) => {
             Ok(BoundedCompiledJoinProbeState::HashLazyStream(RootHashJoinFrameStreamProbeState { build, inputs }))
         },
         BoundedCompiledJoinBuildState::Filtered(build) => {
@@ -727,7 +757,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
         },
         BoundedCompiledJoinBuildState::Prepared(build)
             if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
-                && node.spec.residual_predicate.is_none() =>
+                && node.spec.residual_predicate.is_none()
+                && stateless_streaming_probe_supported(node) =>
         {
             if inputs.max_per_frame_reservation_bytes() <= partitioned_join_target_bytes_for_context(context) / 2 {
                 execute_compiled_one_shot_equi_join_probe_from_frame_stream(

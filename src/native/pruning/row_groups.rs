@@ -1,4 +1,5 @@
 use arrow::datatypes::DataType;
+use datafusion::parquet::schema::types::SchemaDescriptor;
 
 use super::*;
 
@@ -51,6 +52,7 @@ fn metadata_row_group_selection(
     let path = local_object_path_to_filesystem(file.object_meta.location.as_ref());
     let reader = SerializedFileReader::try_from(path.as_path()).ok()?;
     let metadata = reader.metadata();
+    let schema = metadata.file_metadata().schema_descr();
     let total_row_groups = metadata.num_row_groups();
     if total_row_groups == 0 {
         return None;
@@ -60,7 +62,7 @@ fn metadata_row_group_selection(
         .iter()
         .enumerate()
         .map(|(index, row_group)| {
-            row_group_may_satisfy_expr(row_group, &predicate).map(|may_satisfy| may_satisfy.then_some(index))
+            row_group_may_satisfy_expr(row_group, schema, &predicate).map(|may_satisfy| may_satisfy.then_some(index))
         })
         .collect::<Option<Vec<_>>>()
         .map(|row_groups| row_groups.into_iter().flatten().collect())?;
@@ -251,18 +253,19 @@ fn pruning_literal(value: &ScalarValue, column_type: &DataType) -> Option<Prunin
 
 fn row_group_may_satisfy_expr(
     row_group: &parquet::file::metadata::RowGroupMetaData,
+    schema: &SchemaDescriptor,
     expr: &RowGroupPruningExpr,
 ) -> Option<bool> {
     match expr {
-        RowGroupPruningExpr::Atom(atom) => row_group_may_satisfy_atom(row_group, atom),
+        RowGroupPruningExpr::Atom(atom) => row_group_may_satisfy_atom(row_group, schema, atom),
         RowGroupPruningExpr::And(left, right) => {
-            let left = row_group_may_satisfy_expr(row_group, left);
-            let right = row_group_may_satisfy_expr(row_group, right);
+            let left = row_group_may_satisfy_expr(row_group, schema, left);
+            let right = row_group_may_satisfy_expr(row_group, schema, right);
             Some(!matches!(left, Some(false)) && !matches!(right, Some(false)))
         },
         RowGroupPruningExpr::Or(left, right) => {
-            let left = row_group_may_satisfy_expr(row_group, left);
-            let right = row_group_may_satisfy_expr(row_group, right);
+            let left = row_group_may_satisfy_expr(row_group, schema, left);
+            let right = row_group_may_satisfy_expr(row_group, schema, right);
             Some(!matches!((left, right), (Some(false), Some(false))))
         },
     }
@@ -270,27 +273,50 @@ fn row_group_may_satisfy_expr(
 
 fn row_group_may_satisfy_atom(
     row_group: &parquet::file::metadata::RowGroupMetaData,
+    schema: &SchemaDescriptor,
     atom: &RowGroupPruningAtom,
 ) -> Option<bool> {
     match atom {
         RowGroupPruningAtom::Comparison { column_index, op, literal } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             row_group_may_satisfy_comparison(statistics, *op, literal)
         },
         RowGroupPruningAtom::InList { column_index, literals } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             row_group_may_satisfy_in_list(statistics, literals)
         },
         RowGroupPruningAtom::IsNull { column_index } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             Some(statistics.null_count_opt()? > 0)
         },
         RowGroupPruningAtom::IsNotNull { column_index } => {
-            let statistics = row_group.columns().get(*column_index)?.statistics()?;
+            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
             let row_count = u64::try_from(row_group.num_rows()).ok()?;
             Some(statistics.null_count_opt()? < row_count)
         },
     }
+}
+
+fn leaf_column_statistics<'a>(
+    row_group: &'a parquet::file::metadata::RowGroupMetaData,
+    schema: &SchemaDescriptor,
+    root_column_index: usize,
+) -> Option<&'a Statistics> {
+    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
+    row_group.columns().get(leaf_column_index)?.statistics()
+}
+
+fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
+    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
+        return None;
+    }
+    let mut leaf_indices =
+        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
+    let leaf_index = leaf_indices.next()?;
+    if leaf_indices.next().is_some() {
+        return None;
+    }
+    Some(leaf_index)
 }
 
 fn row_group_may_satisfy_in_list(statistics: &Statistics, literals: &[PruningLiteral]) -> Option<bool> {

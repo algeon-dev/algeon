@@ -2,10 +2,10 @@ use std::{fs::File, sync::Arc};
 
 use arrow::{
     array::{
-        BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array, Int64Array,
-        StringArray, TimestampNanosecondArray,
+        ArrayRef, BinaryArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Float64Array, Int32Array,
+        Int64Array, StringArray, StructArray, TimestampNanosecondArray,
     },
-    datatypes::{DataType, Field, Schema, TimeUnit},
+    datatypes::{DataType, Field, Fields, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -318,6 +318,30 @@ pub(super) fn write_nullable_row_group_pruning_parquet_file(path: &std::path::Pa
     )
     .unwrap();
     let props = WriterProperties::builder().set_max_row_group_row_count(Some(2)).build();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+pub(super) fn write_nested_prefix_row_group_pruning_parquet_file(path: &std::path::Path) {
+    let payload_x = Arc::new(Field::new("x", DataType::Int32, false));
+    let payload_y = Arc::new(Field::new("y", DataType::Int32, false));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("payload", DataType::Struct(Fields::from(vec![payload_x.clone(), payload_y.clone()])), false),
+        Field::new("key", DataType::Int32, false),
+        Field::new("m00", DataType::Int64, false),
+    ]));
+    let payload = Arc::new(StructArray::from(vec![
+        (payload_x, Arc::new(Int32Array::from(vec![0, 0])) as ArrayRef),
+        (payload_y, Arc::new(Int32Array::from(vec![200, 0])) as ArrayRef),
+    ])) as ArrayRef;
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![payload, Arc::new(Int32Array::from(vec![100, 200])), Arc::new(Int64Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(1)).build();
     let file = File::create(path).unwrap();
     let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();

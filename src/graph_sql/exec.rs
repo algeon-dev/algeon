@@ -15,15 +15,18 @@ use arrow::{
 use cudf::{DataFrame, Series, frame::factorization::Codebook};
 use datafusion::{
     common::{DataFusionError, Result},
+    datasource::{memory::MemorySourceConfig, physical_plan::FileScanConfig, source::DataSourceExec},
     execution::context::TaskContext,
     physical_expr::{EquivalenceProperties, Partitioning, expressions::Column},
     physical_plan::{
         DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream,
-        aggregates::AggregateExec,
+        aggregates::{AggregateExec, AggregateMode},
         collect,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
         projection::ProjectionExec,
+        repartition::RepartitionExec,
+        sorts::sort::SortExec,
         stream::RecordBatchStreamAdapter,
         union::UnionExec,
     },
@@ -520,13 +523,15 @@ impl CugraphEdgeCanonicalFacts {
 
 fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorithmSpec) -> CugraphEdgeCanonicalFacts {
     if let Some(aggregate) = plan.downcast_ref::<AggregateExec>() {
-        let mut facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec);
-        facts |= aggregate_edge_dedup_facts(aggregate, spec);
-        return facts;
+        let input_facts = cugraph_edge_canonical_facts(aggregate.input().as_ref(), spec);
+        return aggregate_edge_dedup_facts(aggregate, spec, input_facts);
     }
 
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        return cugraph_edge_canonical_facts(projection.input().as_ref(), spec);
+        if projection_edge_orientation(projection, spec).is_some() {
+            return cugraph_edge_canonical_facts(projection.input().as_ref(), spec);
+        }
+        return CugraphEdgeCanonicalFacts::default();
     }
 
     if let Some(union) = plan.downcast_ref::<UnionExec>()
@@ -545,45 +550,77 @@ fn cugraph_edge_canonical_facts(plan: &dyn ExecutionPlan, spec: &CugraphAlgorith
     CugraphEdgeCanonicalFacts::default()
 }
 
-impl std::ops::BitOrAssign for CugraphEdgeCanonicalFacts {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.add_reverse_present |= rhs.add_reverse_present;
-        self.dedup_present |= rhs.dedup_present;
-    }
-}
-
 fn preserves_edge_list_canonical_facts(plan: &dyn ExecutionPlan) -> bool {
-    matches!(plan.name(), "CoalesceBatchesExec" | "CoalescePartitionsExec" | "RepartitionExec" | "SortExec")
+    plan.downcast_ref::<RepartitionExec>().is_some()
+        || plan.downcast_ref::<SortExec>().is_some_and(|sort| sort.fetch().is_none())
+        || matches!(plan.name(), "CoalesceBatchesExec" | "CoalescePartitionsExec") && plan.fetch().is_none()
 }
 
-fn aggregate_edge_dedup_facts(aggregate: &AggregateExec, spec: &CugraphAlgorithmSpec) -> CugraphEdgeCanonicalFacts {
+fn aggregate_edge_dedup_facts(
+    aggregate: &AggregateExec,
+    spec: &CugraphAlgorithmSpec,
+    input_facts: CugraphEdgeCanonicalFacts,
+) -> CugraphEdgeCanonicalFacts {
+    if !matches!(aggregate.mode(), AggregateMode::Single | AggregateMode::Final | AggregateMode::FinalPartitioned) {
+        return CugraphEdgeCanonicalFacts::default();
+    }
+    let group_by = aggregate.group_expr();
+    if group_by.has_grouping_set()
+        || !group_by.null_expr().is_empty()
+        || group_by.groups().len() != 1
+        || group_by.groups().first().is_some_and(|group| group.iter().any(|is_null| *is_null))
+    {
+        return CugraphEdgeCanonicalFacts::default();
+    }
     let group_exprs = aggregate.group_expr().expr();
-    let groups_source = group_exprs.iter().any(|(expr, alias)| {
-        physical_column_name(expr.as_ref()).is_some_and(|name| same_edge_column(name, &spec.src_col))
-            || same_edge_column(alias, &spec.src_col)
-    });
-    let groups_destination = group_exprs.iter().any(|(expr, alias)| {
-        physical_column_name(expr.as_ref()).is_some_and(|name| same_edge_column(name, &spec.dst_col))
-            || same_edge_column(alias, &spec.dst_col)
-    });
-    if !(groups_source && groups_destination) {
+    if group_exprs.len() != 2 {
+        return CugraphEdgeCanonicalFacts::default();
+    }
+    let Some(output_indices) = unique_edge_schema_column_indices(aggregate.schema().as_ref(), spec) else {
+        return CugraphEdgeCanonicalFacts::default();
+    };
+    if output_indices.source >= group_exprs.len() || output_indices.destination >= group_exprs.len() {
+        return CugraphEdgeCanonicalFacts::default();
+    }
+    let Some(input_indices) = unique_edge_schema_column_indices(aggregate.input().schema().as_ref(), spec) else {
+        return CugraphEdgeCanonicalFacts::default();
+    };
+    let Some(source_role) = group_exprs
+        .get(output_indices.source)
+        .and_then(|(expr, _alias)| edge_column_role(expr.as_ref(), input_indices, spec))
+    else {
+        return CugraphEdgeCanonicalFacts::default();
+    };
+    let Some(destination_role) = group_exprs
+        .get(output_indices.destination)
+        .and_then(|(expr, _alias)| edge_column_role(expr.as_ref(), input_indices, spec))
+    else {
+        return CugraphEdgeCanonicalFacts::default();
+    };
+    if source_role == destination_role {
         return CugraphEdgeCanonicalFacts::default();
     }
 
-    CugraphEdgeCanonicalFacts { dedup_present: true, add_reverse_present: false }
+    CugraphEdgeCanonicalFacts { dedup_present: true, add_reverse_present: input_facts.add_reverse_present }
 }
 
 fn union_has_reverse_edge_expansion(union: &UnionExec, spec: &CugraphAlgorithmSpec) -> bool {
-    let mut has_forward = false;
-    let mut has_reverse = false;
-    for input in union.inputs() {
-        match edge_projection_orientation(input.as_ref(), spec) {
-            Some(EdgeProjectionOrientation::Forward) => has_forward = true,
-            Some(EdgeProjectionOrientation::Reverse) => has_reverse = true,
-            None => {},
-        }
-    }
-    has_forward && has_reverse
+    let inputs = union.inputs();
+    let [left, right] = inputs.as_slice() else {
+        return false;
+    };
+    let Some(left) = edge_projection_provenance(left.as_ref(), spec) else {
+        return false;
+    };
+    let Some(right) = edge_projection_provenance(right.as_ref(), spec) else {
+        return false;
+    };
+    left.input_identity == right.input_identity
+        && matches!(
+            (left.orientation, right.orientation),
+            (EdgeProjectionOrientation::Forward, EdgeProjectionOrientation::Reverse)
+                | (EdgeProjectionOrientation::Reverse, EdgeProjectionOrientation::Forward)
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -592,46 +629,122 @@ enum EdgeProjectionOrientation {
     Reverse,
 }
 
-fn edge_projection_orientation(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EdgeProjectionProvenance {
+    orientation: EdgeProjectionOrientation,
+    input_identity: EdgeProjectionInputIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EdgeProjectionInputIdentity {
+    FileScan {
+        object_store_url: String,
+        file_groups: Vec<Vec<String>>,
+        projection: String,
+        filter: String,
+        fetch: Option<usize>,
+    },
+    MemorySourcePointer(String),
+}
+
+fn edge_projection_provenance(
     plan: &dyn ExecutionPlan,
     spec: &CugraphAlgorithmSpec,
-) -> Option<EdgeProjectionOrientation> {
+) -> Option<EdgeProjectionProvenance> {
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
-        return projection_edge_orientation(projection, spec);
+        let orientation = projection_edge_orientation(projection, spec)?;
+        let input_identity = edge_projection_input_identity(projection.input().as_ref(), spec)?;
+        return Some(EdgeProjectionProvenance { orientation, input_identity });
     }
 
-    let children = plan.children();
-    if let [child] = children.as_slice()
-        && let Some(orientation) = edge_projection_orientation(child.as_ref(), spec)
-    {
-        return Some(orientation);
+    if preserves_edge_list_canonical_facts(plan) {
+        let children = plan.children();
+        if let [child] = children.as_slice() {
+            return edge_projection_provenance(child.as_ref(), spec);
+        }
     }
 
     let schema = plan.schema();
-    if schema.index_of(&spec.src_col).is_ok() && schema.index_of(&spec.dst_col).is_ok() {
-        Some(EdgeProjectionOrientation::Forward)
+    if unique_edge_schema_column_indices(schema.as_ref(), spec).is_some() {
+        let input_identity = edge_projection_input_identity(plan, spec)?;
+        Some(EdgeProjectionProvenance { orientation: EdgeProjectionOrientation::Forward, input_identity })
     } else {
         None
     }
+}
+
+fn edge_projection_input_identity(
+    plan: &dyn ExecutionPlan,
+    spec: &CugraphAlgorithmSpec,
+) -> Option<EdgeProjectionInputIdentity> {
+    if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+        if projection_edge_orientation(projection, spec).is_some() {
+            return edge_projection_input_identity(projection.input().as_ref(), spec);
+        }
+        return None;
+    }
+    if preserves_edge_list_canonical_facts(plan) {
+        let children = plan.children();
+        if let [child] = children.as_slice() {
+            return edge_projection_input_identity(child.as_ref(), spec);
+        }
+        return None;
+    }
+    let source = plan.downcast_ref::<DataSourceExec>()?;
+    let data_source = source.data_source();
+    let data_source_any = data_source.as_ref() as &dyn std::any::Any;
+    if let Some(file_scan) = data_source_any.downcast_ref::<FileScanConfig>() {
+        let file_groups = file_scan
+            .file_groups
+            .iter()
+            .map(|group| {
+                group
+                    .files()
+                    .iter()
+                    .map(|file| {
+                        format!(
+                            "{}:{}:{:?}:{:?}",
+                            file.object_meta.location, file.object_meta.size, file.range, file.partition_values
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        return Some(EdgeProjectionInputIdentity::FileScan {
+            object_store_url: format!("{:?}", file_scan.object_store_url),
+            file_groups,
+            projection: format!("{:?}", file_scan.file_source.projection()),
+            filter: format!("{:?}", file_scan.file_source.filter()),
+            fetch: file_scan.limit,
+        });
+    }
+    if data_source_any.downcast_ref::<MemorySourceConfig>().is_some() {
+        return Some(EdgeProjectionInputIdentity::MemorySourcePointer(format!("{:p}", Arc::as_ptr(data_source))));
+    }
+    None
 }
 
 fn projection_edge_orientation(
     projection: &ProjectionExec,
     spec: &CugraphAlgorithmSpec,
 ) -> Option<EdgeProjectionOrientation> {
-    let schema = projection.schema();
-    let source_index = schema.index_of(&spec.src_col).ok()?;
-    let destination_index = schema.index_of(&spec.dst_col).ok()?;
-    let source_input = projection.expr().get(source_index).and_then(|expr| physical_column_name(expr.expr.as_ref()))?;
+    let output_indices = unique_edge_schema_column_indices(projection.schema().as_ref(), spec)?;
+    let input_indices = unique_edge_schema_column_indices(projection.input().schema().as_ref(), spec)?;
+    let source_input =
+        projection.expr().get(output_indices.source).and_then(|expr| physical_column(expr.expr.as_ref()))?;
     let destination_input =
-        projection.expr().get(destination_index).and_then(|expr| physical_column_name(expr.expr.as_ref()))?;
+        projection.expr().get(output_indices.destination).and_then(|expr| physical_column(expr.expr.as_ref()))?;
     if !projection_preserves_weight(projection, spec) {
         return None;
     }
 
-    if same_edge_column(source_input, &spec.src_col) && same_edge_column(destination_input, &spec.dst_col) {
+    if column_matches_edge_role(source_input, input_indices.source, &spec.src_col)
+        && column_matches_edge_role(destination_input, input_indices.destination, &spec.dst_col)
+    {
         Some(EdgeProjectionOrientation::Forward)
-    } else if same_edge_column(source_input, &spec.dst_col) && same_edge_column(destination_input, &spec.src_col) {
+    } else if column_matches_edge_role(source_input, input_indices.destination, &spec.dst_col)
+        && column_matches_edge_role(destination_input, input_indices.source, &spec.src_col)
+    {
         Some(EdgeProjectionOrientation::Reverse)
     } else {
         None
@@ -642,22 +755,75 @@ fn projection_preserves_weight(projection: &ProjectionExec, spec: &CugraphAlgori
     let Some(weight_col) = spec.weight_col.as_deref() else {
         return true;
     };
-    let Ok(weight_index) = projection.schema().index_of(weight_col) else {
+    let Some(weight_index) = unique_schema_column_index(projection.schema().as_ref(), weight_col) else {
+        return false;
+    };
+    let Some(input_weight_index) = unique_schema_column_index(projection.input().schema().as_ref(), weight_col) else {
         return false;
     };
     projection
         .expr()
         .get(weight_index)
-        .and_then(|expr| physical_column_name(expr.expr.as_ref()))
-        .is_some_and(|name| same_edge_column(name, weight_col))
+        .and_then(|expr| physical_column(expr.expr.as_ref()))
+        .is_some_and(|column| column_matches_edge_role(column, input_weight_index, weight_col))
 }
 
-fn physical_column_name(expr: &dyn datafusion::physical_expr::PhysicalExpr) -> Option<&str> {
-    expr.downcast_ref::<Column>().map(Column::name)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EdgeSchemaColumnIndices {
+    source: usize,
+    destination: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeColumnRole {
+    Source,
+    Destination,
+}
+
+fn unique_edge_schema_column_indices(schema: &Schema, spec: &CugraphAlgorithmSpec) -> Option<EdgeSchemaColumnIndices> {
+    let source = unique_schema_column_index(schema, &spec.src_col)?;
+    let destination = unique_schema_column_index(schema, &spec.dst_col)?;
+    (source != destination).then_some(EdgeSchemaColumnIndices { source, destination })
+}
+
+fn unique_schema_column_index(schema: &Schema, column_name: &str) -> Option<usize> {
+    let mut matching_indices = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, field)| same_edge_column(field.name(), column_name).then_some(index));
+    let index = matching_indices.next()?;
+    if matching_indices.next().is_some() {
+        return None;
+    }
+    Some(index)
+}
+
+fn edge_column_role(
+    expr: &dyn datafusion::physical_expr::PhysicalExpr,
+    input_indices: EdgeSchemaColumnIndices,
+    spec: &CugraphAlgorithmSpec,
+) -> Option<EdgeColumnRole> {
+    let column = physical_column(expr)?;
+    if column_matches_edge_role(column, input_indices.source, &spec.src_col) {
+        Some(EdgeColumnRole::Source)
+    } else if column_matches_edge_role(column, input_indices.destination, &spec.dst_col) {
+        Some(EdgeColumnRole::Destination)
+    } else {
+        None
+    }
+}
+
+fn column_matches_edge_role(column: &Column, index: usize, name: &str) -> bool {
+    column.index() == index && same_edge_column(column.name(), name)
+}
+
+fn physical_column(expr: &dyn datafusion::physical_expr::PhysicalExpr) -> Option<&Column> {
+    expr.downcast_ref::<Column>()
 }
 
 fn same_edge_column(actual: &str, expected: &str) -> bool {
-    actual.eq_ignore_ascii_case(expected)
+    actual == expected
 }
 
 async fn execute_edge_source_to_gpu(

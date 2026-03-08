@@ -207,6 +207,62 @@ fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross
 }
 
 #[test]
+fn predicate_free_left_nested_loop_join_with_skipped_scalar_right_stays_left_join() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-left-nlj-skipped-scalar-right");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = parquet_scan(&left_path);
+    let right_scan = parquet_scan(&right_path);
+    let right_scan_schema = right_scan.schema();
+    let count = AggregateExprBuilder::new(count_udaf(), vec![lit(ScalarValue::Int64(Some(1)))])
+        .schema(Arc::clone(&right_scan_schema))
+        .alias("right_count")
+        .build()
+        .unwrap();
+    let right_aggregate: Arc<dyn ExecutionPlan> = Arc::new(
+        AggregateExec::try_new(
+            AggregateMode::Single,
+            PhysicalGroupBy::new_single(Vec::new()),
+            vec![Arc::new(count)],
+            vec![None],
+            right_scan,
+            right_scan_schema,
+        )
+        .unwrap(),
+    );
+    let right: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(right_aggregate, 1, Some(1)));
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join: Arc<dyn ExecutionPlan> = Arc::new(
+        NestedLoopJoinExec::try_new(
+            left,
+            right,
+            None,
+            &JoinType::Left,
+            Some(vec![
+                left_schema.index_of("key").unwrap(),
+                left_schema.index_of("l_m00").unwrap(),
+                left_schema.fields().len() + right_schema.index_of("right_count").unwrap(),
+            ]),
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(join);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let join = rewritten_native_join(&result);
+    assert_eq!(join.spec.join_type, NativeJoinType::Left);
+    assert!(join.spec.keys.is_empty());
+    assert!(join.spec.residual_predicate.is_none());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn duplicate_same_named_canonical_swapped_join_fields_project_by_ordinal_to_distinct_native_columns() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-duplicate-join-fields");
     let left_path = dir.join("supplier_nation.parquet");

@@ -147,6 +147,7 @@ impl SourceDiagnostics {
         let schema_refs_are_valid = columns.read_columns.len() == columns.read_column_file_indices.len()
             && columns.projected_output_columns.len() == columns.projected_output_column_source_refs.len()
             && columns.pure_filter_columns.len() == columns.pure_filter_column_source_refs.len();
+        let has_field_id_bindings = files.iter().any(|file| !file.field_id_read_bindings.is_empty());
         let schema_mapping_disposition = if schema_refs_are_valid {
             if columns
                 .projected_output_column_source_refs
@@ -155,6 +156,8 @@ impl SourceDiagnostics {
                 .any(|source_ref| matches!(source_ref, SourceColumnRef::MissingNull(_)))
             {
                 SchemaMappingDisposition::MissingNullableColumns
+            } else if has_field_id_bindings {
+                SchemaMappingDisposition::FieldIdBindings
             } else {
                 SchemaMappingDisposition::DirectByName
             }
@@ -597,6 +600,8 @@ impl ZeroColumnCountDisposition {
 pub enum SchemaMappingDisposition {
     /// Logical columns map directly by name to file or partition columns.
     DirectByName,
+    /// Logical columns map through footer-proven table-format field ids.
+    FieldIdBindings,
     /// Nullable logical columns absent from the physical file are represented
     /// as typed null columns.
     MissingNullableColumns,
@@ -609,6 +614,7 @@ impl SchemaMappingDisposition {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::DirectByName => "direct_by_name",
+            Self::FieldIdBindings => "field_id_bindings",
             Self::MissingNullableColumns => "missing_nullable_columns",
             Self::Rejected => "rejected",
         }

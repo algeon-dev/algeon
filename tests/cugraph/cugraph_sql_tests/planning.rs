@@ -503,6 +503,88 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     .collect()
     .await
     .unwrap();
+    ctx.sql(
+        "CREATE VIEW grouped_by_extra_edge_attr AS \
+         SELECT src, dst \
+         FROM tiny_directed_edges \
+         WHERE active \
+         GROUP BY src, dst, weight",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    ctx.sql(
+        "CREATE VIEW projected_duplicate_edges AS \
+         SELECT src, src AS dst \
+         FROM ( \
+           SELECT src, dst \
+           FROM tiny_directed_edges \
+           WHERE active \
+           GROUP BY src, dst \
+         ) e",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    ctx.sql(
+        "CREATE VIEW aggregate_alias_overwrites_dst_edges AS \
+         SELECT src, MAX(1) AS dst \
+         FROM tiny_directed_edges \
+         WHERE active \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    ctx.sql(
+        "CREATE VIEW aggregate_over_canonical_edges AS \
+         SELECT src, COUNT(*) AS dst \
+         FROM canonical_directed_edges \
+         GROUP BY src",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    ctx.sql(
+        "CREATE VIEW filtered_reverse_expansion_edges AS \
+         SELECT src, dst \
+         FROM ( \
+           SELECT src, dst FROM tiny_communities WHERE src > 0 \
+           UNION ALL \
+           SELECT dst AS src, src AS dst FROM tiny_communities \
+         ) e \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    register_edge_memtable(&ctx, "memory_forward_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_edge_memtable(&ctx, "memory_reverse_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    ctx.sql(
+        "CREATE VIEW mixed_memory_reverse_edges AS \
+         SELECT src, dst \
+         FROM ( \
+           SELECT src, dst FROM memory_forward_edges \
+           UNION ALL \
+           SELECT dst AS src, src AS dst FROM memory_reverse_edges \
+         ) e \
+         GROUP BY src, dst",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
 
     let directed_df = ctx
         .sql(
@@ -555,6 +637,97 @@ async fn cugraph_sql_planning_skips_edge_normalize_for_precanonicalized_edge_vie
     assert!(
         weighted_display.contains("edge_normalize_inserted=true"),
         "weighted MIN(weight) aggregate must not prove Python cuGraph keep-last duplicate semantics:\n{weighted_display}"
+    );
+
+    let grouped_by_extra_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank('grouped_by_extra_edge_attr', 'src', 'dst') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let grouped_by_extra_plan = grouped_by_extra_df.create_physical_plan().await.unwrap();
+    let grouped_by_extra_display = displayable(grouped_by_extra_plan.as_ref()).indent(false).to_string();
+    assert!(
+        grouped_by_extra_display.contains("edge_normalize_inserted=true"),
+        "GROUP BY src,dst plus an extra key must not prove edge dedup provenance:\n{grouped_by_extra_display}"
+    );
+
+    let projected_duplicate_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank('projected_duplicate_edges', 'src', 'dst') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let projected_duplicate_plan = projected_duplicate_df.create_physical_plan().await.unwrap();
+    let projected_duplicate_display = displayable(projected_duplicate_plan.as_ref()).indent(false).to_string();
+    assert!(
+        projected_duplicate_display.contains("edge_normalize_inserted=true"),
+        "non-bijective projection above GROUP BY src,dst must not preserve dedup provenance:\n{projected_duplicate_display}"
+    );
+
+    let aggregate_alias_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank('aggregate_alias_overwrites_dst_edges', 'src', 'dst') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let aggregate_alias_plan = aggregate_alias_df.create_physical_plan().await.unwrap();
+    let aggregate_alias_display = displayable(aggregate_alias_plan.as_ref()).indent(false).to_string();
+    assert!(
+        aggregate_alias_display.contains("edge_normalize_inserted=true"),
+        "aggregate alias for dst must not inherit GROUP BY src,dst dedup proof:\n{aggregate_alias_display}"
+    );
+
+    let aggregate_over_canonical_df = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_pagerank('aggregate_over_canonical_edges', 'src', 'dst') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let aggregate_over_canonical_plan = aggregate_over_canonical_df.create_physical_plan().await.unwrap();
+    let aggregate_over_canonical_display =
+        displayable(aggregate_over_canonical_plan.as_ref()).indent(false).to_string();
+    assert!(
+        aggregate_over_canonical_display.contains("edge_normalize_inserted=true"),
+        "non-edge-preserving aggregate must not inherit stale canonical facts:\n{aggregate_over_canonical_display}"
+    );
+
+    let filtered_reverse_df = ctx
+        .sql(
+            "SELECT vertex, partition \
+             FROM cugraph_louvain('filtered_reverse_expansion_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let filtered_reverse_plan = filtered_reverse_df.create_physical_plan().await.unwrap();
+    let filtered_reverse_display = displayable(filtered_reverse_plan.as_ref()).indent(false).to_string();
+    assert!(
+        filtered_reverse_display.contains("edge_normalize_inserted=true"),
+        "filtered forward branch must not prove full reverse-edge expansion:\n{filtered_reverse_display}"
+    );
+
+    let mixed_memory_df = ctx
+        .sql(
+            "SELECT vertex, partition \
+             FROM cugraph_louvain('mixed_memory_reverse_edges', 'src', 'dst', NULL, '{\"directed\":false}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    let mixed_memory_plan = mixed_memory_df.create_physical_plan().await.unwrap();
+    let mixed_memory_display = displayable(mixed_memory_plan.as_ref()).indent(false).to_string();
+    assert!(
+        mixed_memory_display.contains("edge_normalize_inserted=true"),
+        "reverse projection from a different memory source must not prove reverse-edge expansion:\n{mixed_memory_display}"
     );
 
     fs::remove_dir_all(dir).ok();

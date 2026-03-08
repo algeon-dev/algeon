@@ -185,6 +185,37 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
 }
 
 #[tokio::test]
+async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-count-typed-null");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let plan = typed_null_count_only_sort_limit_plan(parquet_scan(&path));
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.candidate_count(), 1);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert!(
+        !result
+            .source_diagnostics
+            .iter()
+            .any(|diagnostics| { diagnostics.zero_column_count_disposition.as_str() == "represented" })
+    );
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert!(!source.is_zero_column_count_source());
+    let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
+    assert_eq!(aggregate_exprs.len(), 1);
+    assert_eq!(aggregate_exprs[0].function, AggregateFunction::Count);
+    assert!(matches!(
+        &aggregate_exprs[0].expr,
+        Expr::Column(column) if column.name().starts_with("__cudf_aggregate_arg_")
+    ));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_shape() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-sql-count-only");
     let path = dir.join("input.parquet");

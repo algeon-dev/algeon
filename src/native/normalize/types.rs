@@ -325,12 +325,14 @@ impl NormalizedNativeAggregate<'_> {
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeSort<'a> {
     pub(in crate::native) sort: &'a SortExec,
+    pub(in crate::native) fetch: Option<LimitSpec>,
     pub(in crate::native) input: Box<NormalizedNativeInput<'a>>,
 }
 
 impl NormalizedNativeSort<'_> {
     fn shape(&self) -> String {
-        wrap_shape("SortExec", self.input.shape())
+        let name = if self.fetch.is_some() { "SortExec(fetch)" } else { "SortExec" };
+        wrap_shape(name, self.input.shape())
     }
 
     fn operator_count(&self) -> usize {

@@ -1104,6 +1104,9 @@ impl CapabilityAnalysis {
     }
 
     fn selected_specialized_strict_bounded_envelope(&self) -> Option<StrictBoundedEnvelope> {
+        // This order is part of admission semantics. Prefer narrow, shape-specific
+        // envelopes before broader projection/scalar-setop contracts, since those
+        // contracts can also prove cardinality for several specialized join shapes.
         [
             (
                 StrictBoundedEnvelope::MultiJoinAggregateOverJoinSubplanTopK,
@@ -1116,7 +1119,6 @@ impl CapabilityAnalysis {
             ),
             (StrictBoundedEnvelope::RootFullSortJoinAggregate, &self.root_full_sort_join_aggregate_admission),
             (StrictBoundedEnvelope::ProjectionGlobalLimit, &self.projection_global_limit_admission),
-            (StrictBoundedEnvelope::ProjectionScalarSetop, &self.projection_scalar_setop_admission),
             (
                 StrictBoundedEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
                 &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
@@ -1142,6 +1144,7 @@ impl CapabilityAnalysis {
                 StrictBoundedEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter,
                 &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
             ),
+            (StrictBoundedEnvelope::ProjectionScalarSetop, &self.projection_scalar_setop_admission),
             (StrictBoundedEnvelope::UnionPipeline, &self.union_pipeline_admission),
         ]
         .into_iter()

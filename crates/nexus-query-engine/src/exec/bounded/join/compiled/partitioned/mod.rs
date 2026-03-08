@@ -287,8 +287,7 @@ pub(super) fn slice_partition_join_side(
 }
 
 pub(super) fn partitioned_streaming_probe_supported(node: &JoinNode) -> bool {
-    matches!(node.spec.join_type, JoinType::Inner)
-        || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
+    super::stateless_streaming_probe_supported(node)
 }
 
 pub(super) fn join_keys_for_side(node: &JoinNode, side: JoinSide) -> Vec<String> {

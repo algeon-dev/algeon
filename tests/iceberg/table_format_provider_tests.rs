@@ -430,7 +430,7 @@ async fn iceberg_provider_rejects_mixed_file_and_partition_source_mapping_for_on
     let schema = transformed_partition_test_schema();
     let plan =
         identity_and_day_partition_scan_plan(Arc::clone(&schema)).with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
+            None,
             "customerId",
             Some("customerId"),
             DataType::Utf8,
@@ -576,7 +576,7 @@ async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicat
             .with_row_count(11),
         )
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
+            None,
             "ship_date",
             Some("ship_date"),
             DataType::Date32,
@@ -585,7 +585,7 @@ async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicat
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(2),
+            None,
             "value",
             Some("value"),
             DataType::Utf8,
@@ -1032,7 +1032,7 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
             .with_row_count(11),
         )
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(1),
+            None,
             "id",
             Some("id"),
             DataType::Int64,
@@ -1041,7 +1041,7 @@ fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(2),
+            None,
             "value",
             Some("value"),
             DataType::Utf8,
@@ -1072,9 +1072,9 @@ fn native_admissible_scan_plan_for_schema(
                 .with_size_bytes(4096)
                 .with_row_count(11),
             ),
-        |plan, (index, field)| {
+        |plan, (_index, field)| {
             plan.with_projected_column(TableFormatColumnMapping::new(
-                Some(index as i32 + 1),
+                None,
                 field.name(),
                 Some(field.name()),
                 field.data_type().clone(),
@@ -1188,7 +1188,7 @@ fn mixed_row_count_scan_plan_for_files(
 
 fn count_star_probe_carrier_mapping() -> TableFormatColumnMapping {
     TableFormatColumnMapping::new(
-        Some(1),
+        None,
         "id",
         Some("id"),
         DataType::Int64,
@@ -1267,7 +1267,7 @@ fn identity_and_day_partition_scan_plan(schema: Arc<Schema>) -> TableFormatScanP
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(2),
+            None,
             "event_ts",
             Some("event_ts"),
             DataType::Timestamp(TimeUnit::Microsecond, None),
@@ -1276,7 +1276,7 @@ fn identity_and_day_partition_scan_plan(schema: Arc<Schema>) -> TableFormatScanP
             TableFormatColumnRole::Projected,
         ))
         .with_projected_column(TableFormatColumnMapping::new(
-            Some(3),
+            None,
             "value",
             Some("value"),
             DataType::Int64,

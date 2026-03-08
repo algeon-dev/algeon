@@ -14,6 +14,7 @@ use parquet::{
         reader::{FileReader, SerializedFileReader},
         statistics::Statistics,
     },
+    schema::types::SchemaDescriptor,
 };
 
 use super::rewrite;
@@ -1364,12 +1365,14 @@ fn prune_target_source(
         let path = file.location.as_local_path()?;
         let reader = SerializedFileReader::try_from(path).ok()?;
         let metadata = reader.metadata();
+        let key_leaf_index =
+            single_leaf_primitive_root_column_index(metadata.file_metadata().schema_descr(), key_file_index);
         let selected = selected_or_all_row_groups(file, metadata.num_row_groups());
         before += selected.len();
         let mut kept = Vec::new();
         for row_group_index in selected {
             let row_group = metadata.row_group(row_group_index);
-            match row_group_key_range(row_group, key_file_index) {
+            match key_leaf_index.and_then(|index| row_group_key_range(row_group, index)) {
                 Some(row_group_range) => {
                     saw_statistics = true;
                     if key_filter.overlaps(row_group_range) {
@@ -1395,6 +1398,19 @@ fn prune_target_source(
     }
     source.refresh_diagnostics();
     Some(TargetPruneResult { before, after, applied: true })
+}
+
+fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
+    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
+        return None;
+    }
+    let mut leaf_indices =
+        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
+    let leaf_index = leaf_indices.next()?;
+    if leaf_indices.next().is_some() {
+        return None;
+    }
+    Some(leaf_index)
 }
 
 /// Outcome of [`apply_dimension_derived_pruning_with_stats`].

@@ -1851,6 +1851,8 @@ pub struct TableFormatColumnMapping {
     pub source: TableFormatColumnSource,
     /// Whether the column is projected or filter-only.
     pub role: TableFormatColumnRole,
+    /// Literal value used when this logical column is absent from an older data file.
+    pub missing_default_value: Option<TableFormatScalarValue>,
 }
 
 impl TableFormatColumnMapping {
@@ -1872,7 +1874,14 @@ impl TableFormatColumnMapping {
             nullable,
             source,
             role,
+            missing_default_value: None,
         }
+    }
+
+    /// Records a table-format default value for missing older-file columns.
+    pub fn with_missing_default_value(mut self, value: TableFormatScalarValue) -> Self {
+        self.missing_default_value = Some(value);
+        self
     }
 }
 
@@ -2443,6 +2452,48 @@ impl TableFormatScanPlan {
         } else {
             TableFormatDirectDeviceReadDisposition::Rejected
         }
+    }
+
+    /// First local rejection reason implied by retained scan facts.
+    ///
+    /// This mirrors the native table-format lowering admission order and is
+    /// intentionally credential-free. It is used by late diagnostics, such as
+    /// the GPU-only leaf guard, when the native rule did not retain enough
+    /// context to explain why the scan leaf could not be consumed.
+    pub fn first_rejection_reason(&self) -> Option<FallbackReason> {
+        if self.data_files.is_empty() && self.delete_files.is_empty() && self.unsupported_features.is_empty() {
+            return None;
+        }
+        if let Some(reason) = self.unsupported_fallback_reasons().into_iter().next() {
+            return Some(reason);
+        }
+        if !self.delete_files.is_empty() {
+            return Some(FallbackReason::IcebergDeleteFilesUnsupported);
+        }
+        if self.data_files.is_empty() {
+            return Some(FallbackReason::NativeSourceEmpty);
+        }
+        if self.data_files.iter().any(|file| file.format != TableFormatDataFileFormat::Parquet) {
+            return Some(FallbackReason::IcebergNonParquetDataFile);
+        }
+        if self.data_files.iter().any(|file| !file.read_capability.is_native_parquet_capable()) {
+            return Some(FallbackReason::IcebergObjectStoreReadUnsupported);
+        }
+        if self
+            .logical_schema
+            .fields()
+            .iter()
+            .chain(self.native_source_schema.fields().iter())
+            .any(|field| !nexus_query_engine::is_supported_arrow_type(field.data_type()))
+            || self
+                .projected_columns
+                .iter()
+                .chain(self.pure_filter_columns.iter())
+                .any(|column| !nexus_query_engine::is_supported_arrow_type(&column.data_type))
+        {
+            return Some(FallbackReason::UnsupportedType);
+        }
+        None
     }
 
     /// Comma-separated stable read-capability codes across data files.

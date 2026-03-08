@@ -283,6 +283,7 @@ fn object_store_file_fetch_pipeline_enabled(
         && source.files.len() > 1
         && max_source_reads_in_flight > 1
         && source.files.iter().all(|file| file.resolved_source.uses_host_buffer())
+        && source.files.iter().all(|file| object_store_file_fetch_pipeline_compatible(source, file))
 }
 
 fn read_object_store_parquet_source_with_fetch_pipeline(
@@ -337,7 +338,14 @@ fn start_object_store_file_fetches(
 ) -> Result<()> {
     while pending.len() < max_in_flight && *next_file_index < source.files.len() {
         let file_index = *next_file_index;
-        let fetch = start_object_store_parquet_file_fetch(context, source, &source.files[file_index])?;
+        let fetch = if pending.is_empty() {
+            Some(start_object_store_parquet_file_pipeline_fetch(context, source, &source.files[file_index])?)
+        } else {
+            try_start_object_store_parquet_file_pipeline_fetch(context, source, &source.files[file_index])?
+        };
+        let Some(fetch) = fetch else {
+            break;
+        };
         pending.push_back((file_index, fetch));
         *next_file_index += 1;
     }
@@ -1489,8 +1497,8 @@ mod tests {
     #[test]
     fn object_store_file_fetch_pipeline_requires_multiple_object_store_files_without_scan_limit() {
         let files = vec![
-            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap(),
-            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap(),
+            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap().with_file_size_bytes(1024),
+            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap().with_file_size_bytes(1024),
         ];
         let source = test_source(files, vec!["c1".to_string()]);
 
@@ -1501,6 +1509,17 @@ mod tests {
         let mut limited = source.clone();
         limited.scan_limit = Some(1);
         assert!(!object_store_file_fetch_pipeline_enabled(2, &limited, &["c1"]));
+    }
+
+    #[test]
+    fn object_store_file_fetch_pipeline_rejects_unknown_size_sources() {
+        let files = vec![
+            LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap(),
+            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap().with_file_size_bytes(1024),
+        ];
+        let source = test_source(files, vec!["c1".to_string()]);
+
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
     }
 
     #[test]
@@ -1519,6 +1538,25 @@ mod tests {
             vec!["c1".to_string()],
         );
         assert!(!object_store_file_fetch_pipeline_enabled(2, &single, &["c1"]));
+    }
+
+    #[test]
+    fn object_store_file_fetch_pipeline_rejects_ranged_fetch_sources() {
+        let mut ranged_file = LocalParquetFile::object_store_uri("s3://bucket/a.parquet").unwrap();
+        let ranged_resolved = ranged_file.resolved_source.clone().with_remote_host_buffer_ranged_enabled(true);
+        ranged_file = ranged_file
+            .with_resolved_parquet_source(ranged_resolved)
+            .unwrap()
+            .with_file_size_bytes(1024)
+            .with_row_groups(vec![0])
+            .with_row_group_rows(vec![1, 1]);
+        let files = vec![
+            ranged_file,
+            LocalParquetFile::object_store_uri("s3://bucket/b.parquet").unwrap().with_file_size_bytes(1024),
+        ];
+        let source = test_source(files, vec!["c1".to_string()]);
+
+        assert!(!object_store_file_fetch_pipeline_enabled(2, &source, &["c1"]));
     }
 
     #[test]

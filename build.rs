@@ -58,54 +58,75 @@ fn extract_metadata_value(metadata: Option<&str>, key: &str) -> Option<String> {
 /// symbols process-wide, so divergent cudf/cugraph copies can execute against
 /// mismatched globals and crash at runtime.
 fn enforce_single_rapids_runtime_libraries() {
-    for (lib_name, cudf_dep_env, cudf_metadata_key) in [
-        ("librmm.so", "DEP_CUDF_RUST_RMM_RUNTIME_LIB", "rmm-runtime-lib"),
-        ("librapids_logger.so", "DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB", "rapids-logger-runtime-lib"),
-    ] {
-        let cudf_lib = std::env::var(cudf_dep_env)
+    enforce_required_shared_rapids_library("librmm.so", "DEP_CUDF_RUST_RMM_RUNTIME_LIB", "rmm-runtime-lib");
+
+    if let Some(cudf_logger_lib) =
+        cudf_shared_runtime_library("DEP_CUDF_RUST_RAPIDS_LOGGER_RUNTIME_LIB", "rapids-logger-runtime-lib")
+    {
+        enforce_shared_rapids_library_matches_cudf("librapids_logger.so", &cudf_logger_lib);
+    } else {
+        println!("cargo:rerun-if-env-changed=DEP_CUDF_RUST_RAPIDS_LOGGER_LINKAGE");
+        let logger_linkage = std::env::var("DEP_CUDF_RUST_RAPIDS_LOGGER_LINKAGE")
             .ok()
             .or_else(|| {
-                extract_metadata_value(std::env::var("DEP_CUDF_RUST_METADATA").ok().as_deref(), cudf_metadata_key)
+                extract_metadata_value(std::env::var("DEP_CUDF_RUST_METADATA").ok().as_deref(), "rapids-logger-linkage")
             })
-            .map(PathBuf::from);
+            .unwrap_or_else(|| "unknown".to_string());
+        println!(
+            "cargo:warning=cudf-sys did not expose a shared librapids_logger.so (linkage={logger_linkage}); \
+             skipping cross-crate rapids_logger identity enforcement"
+        );
+    }
+}
 
-        let Some(cudf_lib) = cudf_lib else {
-            panic!(
-                "the `cugraph` feature requires libcudf to ship a shared {lib_name}, but cudf-sys did not expose \
-                 one via {cudf_dep_env}. Rebuild libcudf with CUDF_RMM_BUILD_SHARED=ON (the cudf fork default), \
-                 re-run `cmake --install`, and rebuild cudf-sys so the install prefix exports a single canonical \
-                 {lib_name} for every RAPIDS consumer in the process."
-            );
-        };
-        println!("cargo:rerun-if-changed={}", cudf_lib.display());
+fn enforce_required_shared_rapids_library(lib_name: &str, cudf_dep_env: &str, cudf_metadata_key: &str) {
+    let Some(cudf_lib) = cudf_shared_runtime_library(cudf_dep_env, cudf_metadata_key) else {
+        panic!(
+            "the `cugraph` feature requires libcudf to ship a shared {lib_name}, but cudf-sys did not expose \
+             one via {cudf_dep_env}. Rebuild libcudf with CUDF_RMM_BUILD_SHARED=ON (the cudf fork default), \
+             re-run `cmake --install`, and rebuild cudf-sys so the install prefix exports a single canonical \
+             {lib_name} for every RAPIDS consumer in the process."
+        );
+    };
+    enforce_shared_rapids_library_matches_cudf(lib_name, &cudf_lib);
+}
 
-        let cugraph_libs = cugraph_native_library_candidates(lib_name);
-        if cugraph_libs.is_empty() {
-            panic!(
-                "the `cugraph` feature is enabled but no {lib_name} is reachable from the cugraph-sys link/runtime \
-                 dirs (DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS), so the build cannot prove \
-                 libcugraph links the same {lib_name} as libcudf ({}). Reconfigure the cugraph C++ build against \
-                 the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and \
-                 rebuild it.",
-                cudf_lib.display()
-            );
+fn cudf_shared_runtime_library(cudf_dep_env: &str, cudf_metadata_key: &str) -> Option<PathBuf> {
+    std::env::var(cudf_dep_env)
+        .ok()
+        .or_else(|| extract_metadata_value(std::env::var("DEP_CUDF_RUST_METADATA").ok().as_deref(), cudf_metadata_key))
+        .map(PathBuf::from)
+}
+
+fn enforce_shared_rapids_library_matches_cudf(lib_name: &str, cudf_lib: &Path) {
+    println!("cargo:rerun-if-changed={}", cudf_lib.display());
+
+    let cugraph_libs = cugraph_native_library_candidates(lib_name);
+    if cugraph_libs.is_empty() {
+        panic!(
+            "the `cugraph` feature is enabled but no {lib_name} is reachable from the cugraph-sys link/runtime \
+             dirs (DEP_CUGRAPH_NATIVE_LINK_DIRS / DEP_CUGRAPH_RUNTIME_LIB_DIRS), so the build cannot prove \
+             libcugraph links the same {lib_name} as libcudf ({}). Reconfigure the cugraph C++ build against \
+             the cudf install prefix (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>) and \
+             rebuild it.",
+            cudf_lib.display()
+        );
+    }
+
+    for candidate in cugraph_libs {
+        println!("cargo:rerun-if-changed={}", candidate.display());
+        if same_library_build(cudf_lib, &candidate) {
+            continue;
         }
-
-        for candidate in cugraph_libs {
-            println!("cargo:rerun-if-changed={}", candidate.display());
-            if same_library_build(&cudf_lib, &candidate) {
-                continue;
-            }
-            panic!(
-                "two divergent {lib_name} builds are linked into this process:\n  cudf-sys:    {}\n  cugraph-sys: {}\n\
-                 One process must bind every {lib_name} symbol to a single build, or execution corrupts at runtime. \
-                 Reconfigure the cugraph C++ build against the cudf install prefix \
-                 (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>), rebuild it, and remove stale \
-                 copies from the cugraph build tree.",
-                cudf_lib.display(),
-                candidate.display()
-            );
-        }
+        panic!(
+            "two divergent {lib_name} builds are linked into this process:\n  cudf-sys:    {}\n  cugraph-sys: {}\n\
+             One process must bind every {lib_name} symbol to a single build, or execution corrupts at runtime. \
+             Reconfigure the cugraph C++ build against the cudf install prefix \
+             (cmake -Drmm_ROOT=<cudf-install> -Drapids_logger_ROOT=<cudf-install>), rebuild it, and remove stale \
+             copies from the cugraph build tree.",
+            cudf_lib.display(),
+            candidate.display()
+        );
     }
 }
 

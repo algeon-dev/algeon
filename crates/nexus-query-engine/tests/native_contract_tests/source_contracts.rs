@@ -437,6 +437,46 @@ fn local_parquet_source_represents_missing_nullable_columns_as_typed_nulls() {
 }
 
 #[test]
+fn local_parquet_source_tracks_field_id_binding_diagnostics_and_output_override_contract() {
+    let source_schema = Arc::new(Schema::new(vec![
+        Field::new("old_status", DataType::Int64, true),
+        Field::new("status", DataType::Int64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+    let file = LocalParquetFile::new("/tmp/source-contract.parquet").with_field_id_read_bindings(vec![
+        ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, DataType::Int64),
+    ]);
+    let source = LocalParquetSource::from_files(vec![file], source_schema, vec!["old_status".to_string()])
+        .with_column_roles(vec!["status".to_string()], Vec::new())
+        .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
+        .with_output_schema_override(output_schema);
+
+    validate_local_parquet_source(&source).unwrap();
+
+    assert_eq!(source.diagnostics.schema_mapping_disposition, SchemaMappingDisposition::FieldIdBindings);
+    assert_eq!(source.diagnostics.schema_mapping_disposition.as_str(), "field_id_bindings");
+    assert_eq!(source.source_column_ref("status"), Some(SourceColumnRef::File(0)));
+}
+
+#[test]
+fn local_parquet_source_rejects_output_override_missing_execution_schema_field() {
+    let source_schema = Arc::new(Schema::new(vec![Field::new("old_status", DataType::Int64, true)]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+    let file = LocalParquetFile::new("/tmp/source-contract.parquet").with_field_id_read_bindings(vec![
+        ParquetFieldIdReadBinding::new(2, "status", "old_status", 0, true, DataType::Int64),
+    ]);
+    let source = LocalParquetSource::from_files(vec![file], source_schema, vec!["old_status".to_string()])
+        .with_column_roles(vec!["status".to_string()], Vec::new())
+        .with_column_source_refs(vec![0], vec![SourceColumnRef::File(0)], Vec::new())
+        .with_output_schema_override(output_schema);
+
+    let error = validate_local_parquet_source(&source).unwrap_err();
+
+    assert_eq!(error.fact_value("reason"), Some("output_schema_override_field_absent"));
+    assert_eq!(error.fact_value("field_name"), Some("status"));
+}
+
+#[test]
 fn local_parquet_source_rejects_non_nullable_missing_columns() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),

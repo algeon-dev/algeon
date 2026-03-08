@@ -164,3 +164,35 @@ async fn direct_friendly_sql_is_null_prunes_native_row_groups_from_metadata() {
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[tokio::test]
+async fn direct_friendly_sql_nested_prefix_pruning_uses_parquet_leaf_stats() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-nested-row-group-pruning");
+    let path = dir.join("input.parquet");
+    write_nested_prefix_row_group_pruning_parquet_file(&path);
+    let total_row_groups = parquet_row_group_count(&path);
+    let plan = sql_plan(
+        &path,
+        direct_friendly_sql_session_config(),
+        "
+        SELECT key, SUM(m00) AS sum_m00
+        FROM bench
+        WHERE key = 200
+        GROUP BY key
+        ORDER BY key ASC
+        LIMIT 10
+        ",
+    )
+    .await;
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(total_row_groups, 2);
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.source_diagnostics[0].selected_row_groups, Some(1));
+    let source = native_local_parquet_source(&result.plans[0]);
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));
+
+    fs::remove_dir_all(dir).unwrap();
+}
