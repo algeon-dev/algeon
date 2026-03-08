@@ -2,7 +2,7 @@ use arrow::datatypes::DataType as ArrowDataType;
 
 use super::rewrite;
 use crate::{
-    datatypes::is_supported_arrow_type,
+    datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
     dynamic_filter::{
         DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage, DynamicFilterId,
         DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
@@ -845,7 +845,7 @@ fn consumer_reader_column_is_visible(source: &LocalParquetSource, column: &str) 
 }
 
 fn consumer_column_type_is_supported(source: &LocalParquetSource, column: &str) -> bool {
-    source.schema.field_with_name(column).ok().is_some_and(|field| is_supported_arrow_type(field.data_type()))
+    source.schema.field_with_name(column).ok().is_some_and(dynamic_filter_key_type_is_supported)
 }
 
 fn earliest_filter_consumer_for_column(
@@ -864,7 +864,7 @@ fn earliest_filter_consumer_for_column(
             .output_schema()
             .field_with_name(column)
             .ok()
-            .filter(|field| is_supported_arrow_type(field.data_type()))
+            .filter(|field| dynamic_filter_key_type_is_supported(field))
             .map(|_| (DynamicFilterConsumer::Filter { filter_node_id: node_id }, column.to_string())),
         PlanNode::Projection(projection) => projection
             .outputs
@@ -906,7 +906,7 @@ fn post_decode_consumer_for_orientation(
     if !plan
         .node(orientation.consumer_input)
         .and_then(|node| node.output_schema().field_with_name(consumer_key).ok())
-        .is_some_and(|field| is_supported_arrow_type(field.data_type()))
+        .is_some_and(dynamic_filter_key_type_is_supported)
     {
         return None;
     }
@@ -925,6 +925,12 @@ fn post_decode_consumer_for_orientation(
             )
         })
     })
+}
+
+fn dynamic_filter_key_type_is_supported(field: &arrow::datatypes::Field) -> bool {
+    is_supported_arrow_type(field.data_type())
+        && !is_timestamp_with_timezone(field.data_type())
+        && !is_supported_list_carry_type(field.data_type())
 }
 
 fn populate_selected_consumer_diagnostics(

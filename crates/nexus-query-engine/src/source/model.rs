@@ -20,7 +20,9 @@ use super::diagnostics::{
     redacted_debug_option, redacted_debug_value, redacted_stable_id_diagnostic, stable_fnv1a64,
 };
 use crate::{
-    datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_type},
+    datatypes::{
+        cudf_dtype_from_arrow_type, is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
+    },
     expr::{BinaryOp, Expr, LiteralValue},
 };
 
@@ -789,6 +791,77 @@ impl ParquetFieldIdReadBinding {
     }
 }
 
+/// Iceberg position-delete Parquet file associated with one data file.
+///
+/// The delete file is read as a normal native Parquet source and filtered by
+/// Iceberg's `file_path` column before anti-joining data rows by file-global
+/// `pos`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParquetPositionDeleteFile {
+    /// Stable delete-file id for diagnostics.
+    pub id: String,
+    /// Explicit source location for the delete Parquet file.
+    pub location: ParquetSourceLocation,
+    /// Path-shaped reader string retained for diagnostics and cuDF reader APIs.
+    pub path: PathBuf,
+    /// Resolved reader strategy and decode contract for this delete file.
+    pub resolved_source: ResolvedParquetSource,
+    /// Stable identifier for diagnostics and executor bookkeeping.
+    pub stable_id: String,
+    /// Known delete-file size in bytes, when available.
+    pub file_size_bytes: Option<u64>,
+    /// Known delete row count, when available.
+    pub row_count: Option<u64>,
+}
+
+impl ParquetPositionDeleteFile {
+    /// Creates a delete-file descriptor from an already resolved reader contract.
+    pub fn from_resolved_parquet_source(
+        id: impl Into<String>,
+        resolved_source: ResolvedParquetSource,
+    ) -> Result<Self, String> {
+        let id = id.into();
+        let location = parquet_source_location_for_original(&resolved_source.original_location)?;
+        let stable_id = format!("position-delete:{id}:{}", location.diagnostic_location());
+        Ok(Self {
+            id,
+            location,
+            path: PathBuf::from(&resolved_source.reader_location),
+            resolved_source,
+            stable_id,
+            file_size_bytes: None,
+            row_count: None,
+        })
+    }
+
+    /// Sets known delete-file size in bytes.
+    pub fn with_file_size_bytes(mut self, file_size_bytes: u64) -> Self {
+        self.file_size_bytes = Some(file_size_bytes);
+        self
+    }
+
+    /// Sets known delete row count.
+    pub fn with_row_count(mut self, row_count: u64) -> Self {
+        self.row_count = Some(row_count);
+        self
+    }
+
+    /// Builds a normal local Parquet file descriptor for reading the delete file.
+    pub fn to_local_parquet_file(&self) -> LocalParquetFile {
+        let mut file = LocalParquetFile::new(self.path.clone())
+            .with_resolved_parquet_source(self.resolved_source.clone())
+            .expect("validated position delete source remains representable")
+            .with_stable_id(self.stable_id.clone());
+        if let Some(file_size_bytes) = self.file_size_bytes {
+            file = file.with_file_size_bytes(file_size_bytes);
+        }
+        if let Some(row_count) = self.row_count {
+            file = file.with_row_group_rows(vec![row_count]);
+        }
+        file
+    }
+}
+
 /// cuDF reader-side decimal storage type proven from Parquet metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParquetReaderDecimalTypeId {
@@ -1423,6 +1496,8 @@ fn reader_predicate_operator_outputs_boolean(op: crate::expr::BinaryOp) -> bool 
 
 fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
     is_supported_arrow_type(data_type)
+        && !is_timestamp_with_timezone(data_type)
+        && !is_supported_list_carry_type(data_type)
 }
 
 fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {
@@ -1828,6 +1903,8 @@ pub struct LocalParquetFile {
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
     /// Per-file field-id bindings proven from table-format and Parquet footer metadata.
     pub field_id_read_bindings: Vec<ParquetFieldIdReadBinding>,
+    /// Position-delete files associated with this data file.
+    pub position_delete_files: Vec<ParquetPositionDeleteFile>,
     /// Values for `LocalParquetSource::partition_columns` in source order.
     pub partition_values: Vec<LiteralValue>,
 }
@@ -1849,6 +1926,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("row_group_rows", &self.row_group_rows)
             .field("reader_decimal_types", &self.reader_decimal_types)
             .field("field_id_read_bindings", &self.field_id_read_bindings)
+            .field("position_delete_files", &self.position_delete_files)
             .field("partition_values", &self.partition_values)
             .finish()
     }
@@ -1875,6 +1953,7 @@ impl LocalParquetFile {
             row_group_rows: None,
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
+            position_delete_files: Vec::new(),
             partition_values: Vec::new(),
         }
     }
@@ -1904,6 +1983,7 @@ impl LocalParquetFile {
             row_group_rows: None,
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
+            position_delete_files: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1927,6 +2007,7 @@ impl LocalParquetFile {
             row_group_rows: None,
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
+            position_delete_files: Vec::new(),
             partition_values: Vec::new(),
         })
     }
@@ -1997,6 +2078,17 @@ impl LocalParquetFile {
     pub fn with_field_id_read_bindings(mut self, bindings: Vec<ParquetFieldIdReadBinding>) -> Self {
         self.field_id_read_bindings = bindings;
         self
+    }
+
+    /// Sets position-delete files associated with this data file.
+    pub fn with_position_delete_files(mut self, delete_files: Vec<ParquetPositionDeleteFile>) -> Self {
+        self.position_delete_files = delete_files;
+        self
+    }
+
+    /// Returns true when this data file requires Iceberg position deletes.
+    pub fn has_position_delete_files(&self) -> bool {
+        !self.position_delete_files.is_empty()
     }
 
     /// Sets values for represented partition columns.

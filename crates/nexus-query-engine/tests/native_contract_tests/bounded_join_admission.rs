@@ -1369,7 +1369,7 @@ fn bounded_capability_analysis_rejects_unsupported_join_output_dtype_before_stra
     assert_eq!(*reason, "unsupported_join_output_dtype");
     assert_eq!(facts.get("field_index").map(String::as_str), Some("0"));
     assert_eq!(facts.get("field_name").map(String::as_str), Some("l_key"));
-    assert_eq!(facts.get("dtype").map(String::as_str), Some("Timestamp(ns, \"UTC\")"));
+    assert_eq!(facts.get("dtype").map(String::as_str), Some("Date64"));
     assert!(plan.bounded_join_modeled_facts(ExecutionBoundaryPolicy::default()).is_none());
 }
 
@@ -1527,11 +1527,7 @@ fn simple_root_join_plan() -> nexus_query_engine::QueryPlan {
 fn root_join_with_unsupported_output_dtype_plan() -> nexus_query_engine::QueryPlan {
     let left_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![Field::new("r_key", DataType::Int32, false)]));
-    let output_schema = Arc::new(Schema::new(vec![Field::new(
-        "l_key",
-        DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
-        false,
-    )]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("l_key", DataType::Date64, false)]));
 
     let mut builder = QueryPlanBuilder::new();
     let left = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(

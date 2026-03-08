@@ -58,7 +58,8 @@ pub mod ir {
     pub use crate::{
         datatypes::{
             arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
-            is_supported_arrow_implicit_cast, is_supported_arrow_type, timestamp_unit_to_cudf_resolution,
+            is_supported_arrow_implicit_cast, is_supported_arrow_type, is_supported_list_carry_type,
+            is_timestamp_with_timezone, timestamp_unit_to_cudf_resolution,
         },
         expr::{
             AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, ColumnQualifier, ColumnRef, DatePart,
@@ -83,11 +84,11 @@ pub mod ir {
         source::{
             ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
             LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-            ParquetFieldIdReadBinding, ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
-            ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition,
-            RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition,
-            SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics,
-            SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+            ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReadStrategy, ParquetReaderDecimalType,
+            ParquetReaderDecimalTypeId, ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition,
+            PredicateDisposition, RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource,
+            ScanLimitDisposition, SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput,
+            SourceDiagnostics, SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
         },
     };
 }
@@ -249,7 +250,8 @@ pub use contract_report::{
 };
 pub use datatypes::{
     arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_cast,
-    is_supported_arrow_implicit_cast, is_supported_arrow_type, timestamp_unit_to_cudf_resolution,
+    is_supported_arrow_implicit_cast, is_supported_arrow_type, is_supported_list_carry_type,
+    is_timestamp_with_timezone, timestamp_unit_to_cudf_resolution,
 };
 pub use dynamic_filter::{
     DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
@@ -357,9 +359,9 @@ pub use runtime::{
 pub use source::{
     ByteRangeDisposition, CredentialMode, GpuResidentSource, LakehouseCacheFillMode, LakehouseCacheReadMode,
     LakehouseCacheStatus, LiteralBatchSource, LocalParquetFile, LocalParquetSource, MissingColumn,
-    ParquetFieldIdReadBinding, ParquetReadStrategy, ParquetReaderDecimalType, ParquetReaderDecimalTypeId,
-    ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition, PredicateDisposition, RejectedSourceFeature,
-    RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition, SchemaMappingDisposition,
-    SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics, SourceFormat, SourceNode,
-    ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
+    ParquetFieldIdReadBinding, ParquetPositionDeleteFile, ParquetReadStrategy, ParquetReaderDecimalType,
+    ParquetReaderDecimalTypeId, ParquetSourceLocation, PartitionColumn, PartitionColumnDisposition,
+    PredicateDisposition, RejectedSourceFeature, RemoteParquetReadMode, ResolvedParquetSource, ScanLimitDisposition,
+    SchemaMappingDisposition, SelectedRowGroupStats, SourceColumnRef, SourceDecodeInput, SourceDiagnostics,
+    SourceFormat, SourceNode, ZERO_COLUMN_COUNT_COLUMN, ZeroColumnCountDisposition,
 };

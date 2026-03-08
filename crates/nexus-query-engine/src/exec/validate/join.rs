@@ -6,8 +6,8 @@ use super::{
     expressions::{validate_column, validate_literal},
     types::{
         is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
-        require_compatible_types, require_date_or_timestamp, require_integral_type, require_string,
-        require_timestamp_second,
+        require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
+        require_string, require_timestamp_second, require_timezone_free_operator_key,
     },
     *,
 };
@@ -138,6 +138,8 @@ pub(super) fn validate_join_capability(
         validate_join_column_ref(&key.right, JoinSide::Right)?;
         let left_type = validate_column(key.left.name(), left_schema, left_available)?;
         let right_type = validate_column(key.right.name(), right_schema, right_available)?;
+        require_timezone_free_operator_key(&left_type, "join left key")?;
+        require_timezone_free_operator_key(&right_type, "join right key")?;
         require_comparable_types(&left_type, &right_type)?;
     }
     if let Some(predicate) = &join.spec.residual_predicate {
@@ -458,7 +460,9 @@ fn validate_join_residual_expr(
             Ok(ArrowDataType::Boolean)
         },
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
-            validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type =
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_scalar_operator_value(&data_type, "join residual IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {
@@ -611,7 +615,9 @@ fn validate_post_join_residual_expr(
             Ok(ArrowDataType::Boolean)
         },
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
-            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type =
+                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            require_scalar_operator_value(&data_type, "post-join residual IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {

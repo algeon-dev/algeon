@@ -1,7 +1,7 @@
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 
 use super::*;
-use crate::datatypes::is_supported_arrow_implicit_cast;
+use crate::datatypes::{is_supported_arrow_implicit_cast, is_supported_list_carry_type, is_timestamp_with_timezone};
 
 pub(super) fn require_boolean(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Boolean) {
@@ -35,6 +35,26 @@ pub(super) fn require_timestamp_second(data_type: &ArrowDataType, context: &'sta
     }
 }
 
+pub(super) fn require_timezone_free_operator_key(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
+    if is_timestamp_with_timezone(data_type) {
+        unsupported_type(context, data_type, "expected timezone-free operator key")
+    } else if is_supported_list_carry_type(data_type) {
+        unsupported_type(context, data_type, "expected scalar operator key")
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn require_scalar_operator_value(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
+    if is_timestamp_with_timezone(data_type) {
+        unsupported_type(context, data_type, "expected timezone-free scalar operator value")
+    } else if is_supported_list_carry_type(data_type) {
+        unsupported_type(context, data_type, "expected scalar operator value")
+    } else {
+        Ok(())
+    }
+}
+
 pub(super) fn require_integral_type(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_integral_type(data_type) { Ok(()) } else { unsupported_type(context, data_type, "expected integral") }
 }
@@ -52,6 +72,21 @@ pub(super) fn require_compatible_types(
     right: &ArrowDataType,
     context: &'static str,
 ) -> Result<()> {
+    if is_timestamp_with_timezone(left)
+        || is_timestamp_with_timezone(right)
+        || list_carry_operand(left)
+        || list_carry_operand(right)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.plan.validate_expr",
+            "native expression operand types are not compatible",
+        )
+        .with_fact("context", context)
+        .with_fact("left_type", format!("{left:?}"))
+        .with_fact("right_type", format!("{right:?}"))
+        .with_fact("reason", carry_operand_rejection_reason(left, right, "operator")));
+    }
     if left == right || is_supported_arrow_implicit_cast(right, left) || is_supported_arrow_implicit_cast(left, right) {
         Ok(())
     } else {
@@ -67,6 +102,20 @@ pub(super) fn require_compatible_types(
 }
 
 pub(super) fn require_comparable_types(left: &ArrowDataType, right: &ArrowDataType) -> Result<()> {
+    if is_timestamp_with_timezone(left)
+        || is_timestamp_with_timezone(right)
+        || list_carry_operand(left)
+        || list_carry_operand(right)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.plan.validate_expr",
+            "native comparison operand types are not compatible",
+        )
+        .with_fact("left_type", format!("{left:?}"))
+        .with_fact("right_type", format!("{right:?}"))
+        .with_fact("reason", carry_operand_rejection_reason(left, right, "comparison")));
+    }
     if left == right
         || ((is_numeric_type(left) || is_decimal_type(left)) && (is_numeric_type(right) || is_decimal_type(right)))
         || (is_string_type(left) && is_string_type(right))
@@ -81,6 +130,25 @@ pub(super) fn require_comparable_types(left: &ArrowDataType, right: &ArrowDataTy
         )
         .with_fact("left_type", format!("{left:?}"))
         .with_fact("right_type", format!("{right:?}")))
+    }
+}
+
+fn list_carry_operand(data_type: &ArrowDataType) -> bool {
+    is_supported_list_carry_type(data_type)
+}
+
+fn carry_operand_rejection_reason(
+    left: &ArrowDataType,
+    right: &ArrowDataType,
+    operation: &'static str,
+) -> &'static str {
+    if is_timestamp_with_timezone(left) || is_timestamp_with_timezone(right) {
+        match operation {
+            "comparison" => "timestamp_timezone_comparison_unsupported",
+            _ => "timestamp_timezone_operator_unsupported",
+        }
+    } else {
+        "list_operator_unsupported"
     }
 }
 

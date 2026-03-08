@@ -1,5 +1,8 @@
 use super::*;
-use crate::source::{PredicateDisposition, SourceColumnRef};
+use crate::{
+    datatypes::{arrow_data_types_match_except_list_child_names, is_supported_list_carry_type},
+    source::{PredicateDisposition, SourceColumnRef},
+};
 
 /// Validate local Parquet source invariants before native reads.
 ///
@@ -33,6 +36,40 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 "local parquet source path must not be empty",
             )
             .with_fact("file_index", file_index));
+        }
+        if file.has_position_delete_files() && file.row_groups.as_ref().is_some_and(|row_groups| !row_groups.is_empty())
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "local parquet source with Iceberg position deletes must read full data files",
+            )
+            .with_fact("reason", "position_deletes_require_full_file_read")
+            .with_fact("file_index", file_index)
+            .with_fact("path", file_path_fact(file))
+            .with_fact("stable_id", file_stable_id_fact(file)));
+        }
+        for (delete_index, delete_file) in file.position_delete_files.iter().enumerate() {
+            if delete_file.stable_id.is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "position delete file must have a stable identity",
+                )
+                .with_fact("reason", "empty_position_delete_stable_id")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index));
+            }
+            if delete_file.path.as_os_str().is_empty() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "position delete source path must not be empty",
+                )
+                .with_fact("reason", "empty_position_delete_path")
+                .with_fact("file_index", file_index)
+                .with_fact("delete_index", delete_index));
+            }
         }
         if file.partition_values.len() != source.partition_columns.len() {
             return Err(QueryError::new(
@@ -84,6 +121,22 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
                 .with_fact("stable_id", file_stable_id_fact(file)));
             }
         }
+    }
+    if source.files.iter().any(LocalParquetFile::has_position_delete_files) && source.read_columns.is_empty() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.validate",
+            "Iceberg position deletes require at least one physical data column to establish row positions",
+        )
+        .with_fact("reason", "position_deletes_require_data_column"));
+    }
+    if source.files.iter().any(LocalParquetFile::has_position_delete_files) && source.reader_predicate.is_some() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.local_parquet_source.validate",
+            "Iceberg position deletes require full file-row ordinals before source filtering",
+        )
+        .with_fact("reason", "position_deletes_reject_reader_predicate"));
     }
     if let Some(predicate) = &source.reader_predicate
         && !source.reader_predicate_is_supported(predicate)
@@ -181,9 +234,7 @@ fn validate_output_schema_override_contract(source: &LocalParquetSource) -> Resu
             .with_fact("field_index", field_index)
             .with_fact("field_name", output_field.name().as_str())
         })?;
-        if source_field.data_type() != output_field.data_type()
-            || source_field.is_nullable() != output_field.is_nullable()
-        {
+        if !output_schema_override_field_matches_source(source_field, output_field) {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.local_parquet_source.validate",
@@ -200,6 +251,23 @@ fn validate_output_schema_override_contract(source: &LocalParquetSource) -> Resu
     }
 
     Ok(())
+}
+
+fn output_schema_override_field_matches_source(source_field: &Field, output_field: &Field) -> bool {
+    source_field.metadata() == output_field.metadata()
+        && output_schema_override_data_type_matches_source(source_field.data_type(), output_field.data_type())
+        && (!source_field.is_nullable() || output_field.is_nullable())
+}
+
+fn output_schema_override_data_type_matches_source(source_type: &ArrowDataType, output_type: &ArrowDataType) -> bool {
+    match (source_type, output_type) {
+        (ArrowDataType::Timestamp(source_unit, _), ArrowDataType::Timestamp(output_unit, Some(_)))
+            if source_unit == output_unit =>
+        {
+            true
+        },
+        _ => arrow_data_types_match_except_list_child_names(source_type, output_type),
+    }
 }
 
 fn source_column_ref_is_available(source: &LocalParquetSource, source_ref: SourceColumnRef) -> bool {
@@ -411,7 +479,9 @@ fn validate_represented_missing_columns(source: &LocalParquetSource) -> Result<(
             .with_fact("missing_index", missing_index)
             .with_fact("missing_column", missing_column.name.as_str())
         })?;
-        if field.data_type() != &missing_column.data_type || field.is_nullable() != missing_column.nullable {
+        if !arrow_data_types_match_except_list_child_names(field.data_type(), &missing_column.data_type)
+            || field.is_nullable() != missing_column.nullable
+        {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.local_parquet_source.validate",
@@ -432,6 +502,17 @@ fn validate_represented_missing_columns(source: &LocalParquetSource) -> Result<(
                 "missing source columns can only represent nullable logical columns",
             )
             .with_fact("reason", "non_nullable_missing_column")
+            .with_fact("missing_index", missing_index)
+            .with_fact("missing_column", missing_column.name.as_str())
+            .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
+        }
+        if is_supported_list_carry_type(&missing_column.data_type) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.local_parquet_source.validate",
+                "missing source list columns are not supported by native execution",
+            )
+            .with_fact("reason", "unsupported_missing_column_type")
             .with_fact("missing_index", missing_index)
             .with_fact("missing_column", missing_column.name.as_str())
             .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
@@ -483,7 +564,9 @@ fn validate_represented_partition_columns(source: &LocalParquetSource) -> Result
             .with_fact("partition_index", partition_index)
             .with_fact("partition_column", partition_column.name.as_str())
         })?;
-        if field.data_type() != &partition_column.data_type || field.is_nullable() != partition_column.nullable {
+        if !arrow_data_types_match_except_list_child_names(field.data_type(), &partition_column.data_type)
+            || field.is_nullable() != partition_column.nullable
+        {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.local_parquet_source.validate",
@@ -517,6 +600,7 @@ fn validate_partition_value_type(partition_column: &PartitionColumn, partition_v
 
     if partition_column.data_type == partition_value.data_type()
         || (is_string_arrow_type(&partition_column.data_type) && is_string_arrow_type(&partition_value.data_type()))
+        || timestamp_partition_value_matches(&partition_column.data_type, &partition_value.data_type())
     {
         return Ok(());
     }
@@ -533,6 +617,14 @@ fn validate_partition_value_type(partition_column: &PartitionColumn, partition_v
 
 fn is_string_arrow_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn timestamp_partition_value_matches(partition_type: &ArrowDataType, value_type: &ArrowDataType) -> bool {
+    matches!(
+        (partition_type, value_type),
+        (ArrowDataType::Timestamp(partition_unit, Some(_)), ArrowDataType::Timestamp(value_unit, None))
+            if partition_unit == value_unit
+    )
 }
 
 fn validate_represented_zero_column_count_source(source: &LocalParquetSource) -> Result<()> {

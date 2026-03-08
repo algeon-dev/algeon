@@ -184,6 +184,20 @@ fn coerce_projection_output_schema(
         let field_name = field.name();
         let actual_dtype =
             frame_column_cudf_data_type(&frame, field_name, "nexus_query_engine.projection.schema_coerce")?;
+        let expected_type = field.data_type();
+        let target_type = cudf_dtype_from_arrow_type(expected_type).ok_or_else(|| {
+            projection_schema_mismatch_error_with_budget(
+                token,
+                field_index,
+                field_name,
+                expected_type,
+                expected_type,
+                "expected_type_not_supported",
+            )
+        })?;
+        if actual_dtype == target_type {
+            continue;
+        }
         let actual_type = cudf::interop::arrow_host::arrow_type_from_cudf_dtype(actual_dtype).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.projection.schema_coerce",
@@ -193,20 +207,6 @@ fn coerce_projection_output_schema(
             .with_fact("field_name", field_name)
             .with_fact("field_index", field_index)
         })?;
-        let expected_type = field.data_type();
-        let target_type = cudf_dtype_from_arrow_type(expected_type).ok_or_else(|| {
-            projection_schema_mismatch_error_with_budget(
-                token,
-                field_index,
-                field_name,
-                &actual_type,
-                expected_type,
-                "expected_type_not_supported",
-            )
-        })?;
-        if actual_dtype == target_type {
-            continue;
-        }
         if !is_supported_arrow_implicit_cast(&actual_type, expected_type) {
             return Err(projection_schema_mismatch_error_with_budget(
                 token,

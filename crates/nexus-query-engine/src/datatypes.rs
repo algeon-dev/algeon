@@ -4,10 +4,14 @@
 //! plan reaches cudf-rs. Returning `false` or `None` means the query should be
 //! rejected by capability analysis rather than attempted at execution time.
 
+use std::collections::HashMap;
+
 use arrow::datatypes::{
-    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, TimeUnit, validate_decimal_precision_and_scale,
+    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, Field, TimeUnit,
+    validate_decimal_precision_and_scale,
 };
 use cudf::{DataType as CudfDataType, TimestampResolution, TypeId};
+use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
 /// Returns whether this Arrow type has a native cuDF physical representation.
 pub fn is_supported_arrow_type(data_type: &ArrowDataType) -> bool {
@@ -16,8 +20,10 @@ pub fn is_supported_arrow_type(data_type: &ArrowDataType) -> bool {
 
 /// Converts a supported Arrow type to its cuDF dtype.
 ///
-/// Timezone-aware timestamps, unsupported nested types, and decimal shapes
-/// outside the native policy return `None`.
+/// Unsupported nested types and decimal shapes outside the native policy return
+/// `None`. Timezone-aware timestamps and string-list columns are admitted only
+/// as carry types; operator validation decides where their semantics are
+/// unsupported.
 pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataType> {
     match data_type {
         ArrowDataType::Boolean => Some(CudfDataType::new(TypeId::Bool8)),
@@ -37,15 +43,59 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
         ArrowDataType::Decimal128(precision, scale) => is_supported_decimal128(*precision, *scale)
             .then(|| CudfDataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))),
         ArrowDataType::Date32 => Some(CudfDataType::new(TypeId::TimestampDays)),
-        ArrowDataType::Timestamp(unit, None) => {
-            Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).type_id()))
-        },
-        ArrowDataType::Timestamp(_, Some(_)) => None,
+        ArrowDataType::Timestamp(unit, _) => Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).type_id())),
         ArrowDataType::Duration(unit) => {
             Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).duration_type_id()))
         },
+        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_string_list_child(field) => {
+            Some(CudfDataType::new(TypeId::List))
+        },
         _ => None,
     }
+}
+
+/// Returns whether this Arrow type is a timestamp carrying timezone metadata.
+pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::Timestamp(_, Some(_)))
+}
+
+/// Returns whether this Arrow type is a list admitted only for carry/projection.
+pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_string_list_child(field))
+}
+
+pub(crate) fn arrow_fields_match_except_name(left: &Field, right: &Field) -> bool {
+    left.is_nullable() == right.is_nullable()
+        && arrow_field_metadata_matches_except_parquet_field_id(left.metadata(), right.metadata())
+        && arrow_data_types_match_except_list_child_names(left.data_type(), right.data_type())
+}
+
+pub(crate) fn arrow_data_types_match_except_list_child_names(left: &ArrowDataType, right: &ArrowDataType) -> bool {
+    match (left, right) {
+        (ArrowDataType::List(left_field), ArrowDataType::List(right_field))
+        | (ArrowDataType::LargeList(left_field), ArrowDataType::LargeList(right_field)) => {
+            arrow_fields_match_except_name(left_field.as_ref(), right_field.as_ref())
+        },
+        _ => left == right,
+    }
+}
+
+fn is_supported_string_list_child(field: &arrow::datatypes::FieldRef) -> bool {
+    matches!(field.data_type(), ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
+}
+
+fn arrow_field_metadata_matches_except_parquet_field_id(
+    left: &HashMap<String, String>,
+    right: &HashMap<String, String>,
+) -> bool {
+    let visible_len = |metadata: &HashMap<String, String>| {
+        metadata.keys().filter(|key| key.as_str() != PARQUET_FIELD_ID_META_KEY).count()
+    };
+    visible_len(left) == visible_len(right)
+        && left
+            .iter()
+            .filter(|(key, _value)| key.as_str() != PARQUET_FIELD_ID_META_KEY)
+            .all(|(key, value)| right.get(key) == Some(value))
 }
 
 /// Converts Arrow's decimal scale to cuDF fixed-point scale convention.

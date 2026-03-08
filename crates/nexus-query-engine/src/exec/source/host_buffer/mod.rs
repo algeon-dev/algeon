@@ -355,8 +355,8 @@ mod tests {
         runtime::SourceChunkPlanningMode,
         source::{
             CredentialMode, LakehouseCacheFillMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn,
-            ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
-            SourceColumnRef, SourceNode,
+            ParquetPositionDeleteFile, ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation,
+            ResolvedParquetSource, SourceColumnRef, SourceNode,
         },
     };
 
@@ -1077,6 +1077,23 @@ mod tests {
     }
 
     #[test]
+    fn ranged_file_request_is_disabled_for_position_delete_files() {
+        let mut source = scan_limited_source();
+        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "delete-0",
+            ResolvedParquetSource::remote_host_buffer(
+                "s3://bucket/table/delete-0.parquet",
+                "s3://bucket/table/delete-0.parquet",
+                CredentialMode::SharedProcessEnv,
+            ),
+        )
+        .unwrap();
+        source.files[0] = source.files[0].clone().with_position_delete_files(vec![delete_file]);
+
+        assert!(ranged_parquet_file_request(&source, &source.files[0]).is_none());
+    }
+
+    #[test]
     fn ranged_file_request_prefers_scan_limit_prefix_over_column_pruned_whole_file() {
         let source = scan_limited_source().with_column_file_indices(vec![0], vec![0], vec![]).with_file_column_count(2);
 
@@ -1096,6 +1113,25 @@ mod tests {
 
         assert_eq!(request.file_column_indices, Some(vec![0]));
         assert!(matches!(request.row_group_selector, ranged_parquet::RangedRowGroupSelector::ScanLimit(15)));
+    }
+
+    #[test]
+    fn ranged_chunk_request_is_disabled_for_position_delete_files() {
+        let mut source = scan_limited_source().with_column_file_indices(vec![0], vec![0], vec![]);
+        let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+            "delete-0",
+            ResolvedParquetSource::remote_host_buffer(
+                "s3://bucket/table/delete-0.parquet",
+                "s3://bucket/table/delete-0.parquet",
+                CredentialMode::SharedProcessEnv,
+            ),
+        )
+        .unwrap();
+        source.files[0] = source.files[0].clone().with_position_delete_files(vec![delete_file]);
+        let mut chunk = source_chunk(&source, vec![0, 1, 2]);
+        chunk.scan_limit_rows = Some(15);
+
+        assert!(ranged_parquet_chunk_request(&source, &chunk).is_none());
     }
 
     #[test]
