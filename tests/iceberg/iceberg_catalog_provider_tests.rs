@@ -316,6 +316,22 @@ async fn information_schema_tables_lists_discovered_tables() {
     assert!(table_names.contains(&"tpch_sf1_orders".to_string()));
 }
 
+#[tokio::test]
+async fn information_schema_tables_does_not_load_iceberg_table_metadata() {
+    let (counting_backend, load_count) = CountingMockBackend::new(mock_backend_with_tpch());
+    let backend = Arc::new(counting_backend);
+    let provider = build_catalog_provider_from_backend(backend, "glue", IcebergProviderKind::Gpu).await.unwrap();
+    let ctx = session_with_catalog("glue", provider).await;
+
+    let sql = "SELECT table_name FROM information_schema.tables \
+               WHERE table_catalog = 'glue' AND table_schema = 'tpch_sf1'";
+    let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap();
+    let row_count: usize = batches.iter().map(|batch| batch.num_rows()).sum();
+
+    assert_eq!(row_count, 3);
+    assert_eq!(load_count.load(Ordering::SeqCst), 0, "information_schema.tables must use table_type()");
+}
+
 // ---------------------------------------------------------------------------
 // Multi-level namespace: join with "."
 // ---------------------------------------------------------------------------
