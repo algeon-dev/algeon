@@ -469,12 +469,12 @@ fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
 /// Milestone 3 requires the *entire* native-friendly query shape to lower into a
 /// single native pipeline rather than only rewriting the source leaf. The
 /// optimizer rule does this by replacing the accepted subtree's root with a
-/// [`NativeCudfExec`]; everything between that root and DataFusion's
+/// native execution wrapper; everything between that root and DataFusion's
 /// post-planning wrappers must be free of unabsorbed CPU operators.
 ///
 /// This walker therefore (1) descends through the thin post-rewrite wrappers
 /// DataFusion can still leave above the native root (`CoalescePartitionsExec`,
-/// projections, output coercion, etc.) until it finds the [`NativeCudfExec`]
+/// projections, output coercion, etc.) until it finds a native execution
 /// boundary, then (2) verifies no aggregate / sort / join / repartition /
 /// SortPreservingMergeExec node is sitting above that boundary. A surviving
 /// `AggregateExec` or `SortPreservingMergeExec` would mean the native rule
@@ -482,12 +482,12 @@ fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
 fn assert_query_fully_lowered_to_native(plan: &dyn ExecutionPlan) {
     let rendered = displayable(plan).indent(false).to_string();
     let native_root = find_native_cudf_exec_root(plan).unwrap_or_else(|| {
-        panic!("native profile rewrite did not produce a NativeCudfExec; plan:\n{rendered}");
+        panic!("native profile rewrite did not produce a native execution wrapper; plan:\n{rendered}");
     });
     for forbidden in CPU_PIPELINE_OPERATORS_ABSORBED_BY_NATIVE_REWRITE {
         assert!(
             !native_root.ancestor_names.iter().any(|name| name == forbidden),
-            "native profile rewrite left `{forbidden}` above the NativeCudfExec root; \
+            "native profile rewrite left `{forbidden}` above the native execution root; \
              the whole accepted subtree must collapse into a single native pipeline. plan:\n{rendered}",
         );
     }
@@ -533,15 +533,15 @@ fn find_native_cudf_exec_root(plan: &dyn ExecutionPlan) -> Option<NativeRootDesc
     let mut ancestor_names = Vec::new();
     let mut cursor: &dyn ExecutionPlan = plan;
     loop {
-        if cursor.name() == "NativeCudfExec" {
+        if matches!(cursor.name(), "NativeCudfExec" | "NativeCudfComposedExec") {
             return Some(NativeRootDescent { ancestor_names });
         }
         ancestor_names.push(cursor.name().to_string());
         let children = cursor.children();
         if children.len() != 1 {
             // Multi-input or leaf nodes that are not the native root mean the
-            // rewrite either did not produce a NativeCudfExec at all or did
-            // not collapse the accepted subtree into a single pipeline.
+            // rewrite either did not produce a native execution wrapper at all
+            // or did not collapse the accepted subtree into a single pipeline.
             return None;
         }
         cursor = children[0].as_ref();
