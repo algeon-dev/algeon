@@ -50,7 +50,7 @@ pub fn binary_operation_vv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let dtype_handle = output_type.to_raw_handle()?;
+    let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vv")?;
     let mut out = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_binary_operation_vv(
@@ -62,7 +62,11 @@ pub fn binary_operation_vv(
         )
     };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status(status)?;
+    error::check_status_in_with(
+        status,
+        "binary::binary_operation_vv",
+        [("operator", format!("{:?}", op).to_lowercase())],
+    )?;
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -73,7 +77,7 @@ pub fn binary_operation_vs(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let dtype_handle = output_type.to_raw_handle()?;
+    let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vs")?;
     let mut out = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_binary_operation_vs(
@@ -85,7 +89,11 @@ pub fn binary_operation_vs(
         )
     };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status(status)?;
+    error::check_status_in_with(
+        status,
+        "binary::binary_operation_vs",
+        [("operator", format!("{:?}", op).to_lowercase())],
+    )?;
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -96,7 +104,7 @@ pub fn binary_operation_sv(
     op: BinaryOperator,
     output_type: &DataType,
 ) -> Result<Column> {
-    let dtype_handle = output_type.to_raw_handle()?;
+    let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_sv")?;
     let mut out = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_binary_operation_sv(
@@ -108,6 +116,10 @@ pub fn binary_operation_sv(
         )
     };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status(status)?;
+    error::check_status_in_with(
+        status,
+        "binary::binary_operation_sv",
+        [("operator", format!("{:?}", op).to_lowercase())],
+    )?;
     Ok(unsafe { Column::from_raw(out) })
 }

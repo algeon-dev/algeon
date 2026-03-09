@@ -108,6 +108,70 @@ fn test_groupby_count() {
 }
 
 #[test]
+fn test_groupby_rejects_empty_aggregations_in_request() {
+    let keys_col = Column::from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.view().unwrap();
+    let vals_view = vals_col.view().unwrap();
+
+    let requests = [AggregationRequest {
+        values: &vals_view,
+        aggregations: &[],
+    }];
+
+    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude)
+        .err()
+        .expect("expected error");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_groupby_rejects_negative_ddof() {
+    let keys_col = Column::from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = Column::from_slice(&[10f64, 20.0, 30.0]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.view().unwrap();
+    let vals_view = vals_col.view().unwrap();
+
+    let requests = [AggregationRequest {
+        values: &vals_view,
+        aggregations: &[Aggregation::Std { ddof: -1 }],
+    }];
+
+    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude)
+        .err()
+        .expect("expected error");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_groupby_error_contains_operation_context() {
+    let keys_col = Column::from_slice(&[1i32, 2, 1]).unwrap();
+    let vals_col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+
+    let keys_table = Table::from_columns(vec![keys_col]).unwrap();
+    let kv = keys_table.view().unwrap();
+    let vals_view = vals_col.view().unwrap();
+
+    let requests = [AggregationRequest {
+        values: &vals_view,
+        aggregations: &[],
+    }];
+
+    let err = groupby::groupby_aggregate(&kv, &requests, NullPolicy::Exclude)
+        .err()
+        .expect("expected error");
+
+    assert_eq!(err.operation(), "groupby::groupby_aggregate");
+    let ctx = err.context();
+    assert!(ctx.iter().any(|(k, _)| *k == "request_index"));
+    assert!(ctx.iter().any(|(k, _)| *k == "num_requests"));
+}
+
+#[test]
 fn test_groupby_multi_column_keys() {
     // Two key columns.
     let k0 = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();

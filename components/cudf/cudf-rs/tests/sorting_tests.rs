@@ -103,6 +103,52 @@ fn test_sorted_order() {
 }
 
 #[test]
+fn test_sort_rejects_mismatched_column_order_len() {
+    let c0 = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let c1 = Column::from_slice(&[30i32, 10, 20]).unwrap();
+    let table = Table::from_columns(vec![c0, c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let err = sorting::sort(&view, Some(&[Order::Ascending]), None)
+        .err()
+        .expect("expected error");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_is_sorted_rejects_mismatched_null_precedence_len() {
+    let c0 = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let c1 = Column::from_slice(&[30i32, 10, 20]).unwrap();
+    let table = Table::from_columns(vec![c0, c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let err = sorting::is_sorted(
+        &view,
+        Some(&[Order::Ascending, Order::Ascending]),
+        Some(&[NullOrder::After]),
+    )
+    .err()
+    .expect("expected error");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_sort_error_contains_operation_context() {
+    let col = Column::from_slice(&[3i32, 1, 2]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let view = table.view().unwrap();
+
+    let err = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None)
+        .err()
+        .expect("expected error");
+
+    assert_eq!(err.operation(), "sorting::sort");
+    let ctx = err.context();
+    assert!(ctx.iter().any(|(k, _)| *k == "num_keys"));
+    assert!(ctx.iter().any(|(k, _)| *k == "column_order_len"));
+}
+
+#[test]
 fn test_is_sorted() {
     let sorted_col = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let sorted_table = Table::from_columns(vec![sorted_col]).unwrap();

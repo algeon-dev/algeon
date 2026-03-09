@@ -80,6 +80,26 @@ fn test_comparison() {
 }
 
 #[test]
+fn test_binary_operation_error_contains_operation_context() {
+    let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let b = Column::from_slice(&[10i32, 20]).unwrap(); // mismatched length
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let err = binary::binary_operation_vv(
+        &av,
+        &bv,
+        BinaryOperator::Add,
+        &DataType::new(TypeId::Int32),
+    )
+    .err()
+    .expect("expected error");
+
+    assert_eq!(err.operation(), "binary::binary_operation_vv");
+    assert!(err.context().iter().any(|(k, _)| *k == "operator"));
+}
+
+#[test]
 fn test_logical_and() {
     let a = Column::from_slice(&[true, true, false, false]).unwrap();
     let b = Column::from_slice(&[true, false, true, false]).unwrap();

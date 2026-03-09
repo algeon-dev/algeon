@@ -12,3 +12,7 @@ cudf-sys = { path = "../cudf-sys" }
 
 [dev-dependencies]
 tempfile = "3"
+
+[[example]]
+name = "basic"
+path = "examples/basic.rs"

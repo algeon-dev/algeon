@@ -70,3 +70,25 @@ fn test_table_with_nullable_columns() {
     assert!(col0.nullable().unwrap());
     assert_eq!(col0.null_count().unwrap(), 1);
 }
+
+#[test]
+fn test_table_from_columns_mismatched_rows_rejected() {
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = Column::from_slice(&[10i32, 20]).unwrap();
+    let res = Table::from_columns(vec![c1, c2]);
+    assert!(res.is_err());
+    let err = res.err().unwrap();
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}
+
+#[test]
+fn test_table_view_negative_column_index_rejected() {
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let res = view.column(-1);
+    assert!(res.is_err());
+    let err = res.err().unwrap();
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}

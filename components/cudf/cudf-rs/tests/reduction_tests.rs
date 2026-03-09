@@ -114,6 +114,24 @@ fn test_scan_exclusive_sum() {
 }
 
 #[test]
+fn test_reduce_negative_ddof_contains_context() {
+    let col = Column::from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
+    let view = col.view().unwrap();
+
+    let err = reduction::reduce(
+        &view,
+        &ReduceAggregation::Variance { ddof: -1 },
+        &DataType::new(TypeId::Float64),
+    )
+    .err()
+    .expect("expected error");
+
+    assert_eq!(err.operation(), "reduction::create_reduce_agg_handle(variance)");
+    let ctx = err.context();
+    assert!(ctx.iter().any(|(k, _)| *k == "ddof"));
+}
+
+#[test]
 fn test_minmax() {
     let col = Column::from_slice(&[5i32, 1, 3, 7, 2]).unwrap();
     let view = col.view().unwrap();

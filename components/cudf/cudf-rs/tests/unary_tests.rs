@@ -102,6 +102,20 @@ fn test_is_not_nan() {
 }
 
 #[test]
+fn test_cast_error_contains_operation_context() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+
+    let unsupported = DataType::new(TypeId::Struct);
+    let err = unary::cast(&view, &unsupported)
+        .err()
+        .expect("expected error");
+
+    assert_eq!(err.operation(), "unary::cast");
+    assert!(err.context().iter().any(|(k, _)| *k == "output_type_id"));
+}
+
+#[test]
 fn test_trig_sin() {
     let col = Column::from_slice(&[0.0f64]).unwrap();
     let view = col.view().unwrap();

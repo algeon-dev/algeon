@@ -1,6 +1,15 @@
 //! GPU column types: owned `Column` and borrowed `ColumnView`.
 
 use crate::error::{self, Error, ErrorKind, Result};
+
+fn usize_to_i32_len(len: usize, what: &'static str) -> Result<i32> {
+    i32::try_from(len).map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidOperation,
+            format!("{} length exceeds i32::MAX", what),
+        )
+    })
+}
 use crate::types::{CudfType, DataType, TypeId};
 use std::marker::PhantomData;
 use std::os::raw::c_void;
@@ -20,9 +29,10 @@ impl Column {
     /// Create an empty column of the given type.
     pub fn empty(type_id: TypeId) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
+            "column::empty",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("null handle on success"),
         })
@@ -37,16 +47,20 @@ impl Column {
     /// ```
     pub fn from_slice<T: CudfType>(data: &[T]) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_create_numeric(
-                T::TYPE_ID.to_raw(),
-                data.as_ptr() as *const c_void,
-                data.len() as i32,
-                ptr::null(),
-                0,
-                &mut handle,
-            )
-        })?;
+        let size = usize_to_i32_len(data.len(), "data")?;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_create_numeric(
+                    T::TYPE_ID.to_raw(),
+                    data.as_ptr() as *const c_void,
+                    size,
+                    ptr::null(),
+                    0,
+                    &mut handle,
+                )
+            },
+            "column::from_slice",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("null handle on success"),
         })
@@ -63,20 +77,24 @@ impl Column {
             ));
         }
 
+        let size = usize_to_i32_len(data.len(), "data")?;
         let null_mask = crate::types::validity_to_bitmask(validity);
         let null_count = crate::types::count_nulls(validity);
 
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_create_numeric(
-                T::TYPE_ID.to_raw(),
-                data.as_ptr() as *const c_void,
-                data.len() as i32,
-                null_mask.as_ptr(),
-                null_count,
-                &mut handle,
-            )
-        })?;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_create_numeric(
+                    T::TYPE_ID.to_raw(),
+                    data.as_ptr() as *const c_void,
+                    size,
+                    null_mask.as_ptr(),
+                    null_count,
+                    &mut handle,
+                )
+            },
+            "column::from_slice_nullable",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("null handle on success"),
         })
@@ -85,9 +103,10 @@ impl Column {
     /// Deep-copy this column.
     pub fn copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
+            "column::copy",
+        )?;
         Ok(Self {
             handle: NonNull::new(handle).expect("null handle on success"),
         })
@@ -98,9 +117,10 @@ impl Column {
     /// The returned `ColumnView` borrows from `self` and cannot outlive it.
     pub fn view(&self) -> Result<ColumnView<'_>> {
         let mut view_handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view(self.handle.as_ptr(), &mut view_handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view(self.handle.as_ptr(), &mut view_handle) },
+            "column::view",
+        )?;
         Ok(ColumnView {
             handle: NonNull::new(view_handle).expect("null handle on success"),
             _lifetime: PhantomData,
@@ -165,18 +185,20 @@ impl<'a> ColumnView<'a> {
     /// Returns the data type of this column.
     pub fn data_type(&self) -> Result<DataType> {
         let mut raw_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_type(self.handle.as_ptr(), &mut raw_id)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_type(self.handle.as_ptr(), &mut raw_id) },
+            "column_view::data_type",
+        )?;
         Ok(DataType::new(TypeId::from_raw(raw_id)))
     }
 
     /// Returns the number of elements.
     pub fn len(&self) -> Result<i32> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_size(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_size(self.handle.as_ptr(), &mut out) },
+            "column_view::len",
+        )?;
         Ok(out)
     }
 
@@ -188,36 +210,47 @@ impl<'a> ColumnView<'a> {
     /// Returns the number of null (invalid) elements.
     pub fn null_count(&self) -> Result<i32> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_null_count(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_null_count(self.handle.as_ptr(), &mut out) },
+            "column_view::null_count",
+        )?;
         Ok(out)
     }
 
     /// Returns `true` if this column has a null mask allocated.
     pub fn nullable(&self) -> Result<bool> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_nullable(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_nullable(self.handle.as_ptr(), &mut out) },
+            "column_view::nullable",
+        )?;
         Ok(out != 0)
     }
 
     /// Returns the number of child columns (for nested types).
     pub fn num_children(&self) -> Result<i32> {
         let mut out: i32 = 0;
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_num_children(self.handle.as_ptr(), &mut out)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_num_children(self.handle.as_ptr(), &mut out) },
+            "column_view::num_children",
+        )?;
         Ok(out)
     }
 
     /// Get a child column view by index.
     pub fn child(&self, index: i32) -> Result<ColumnView<'a>> {
+        if index < 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "column child index must be >= 0",
+            ));
+        }
+
         let mut child_handle = ptr::null_mut();
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle)
-        })?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle) },
+            "column_view::child",
+        )?;
         Ok(ColumnView {
             handle: NonNull::new(child_handle).expect("null handle on success"),
             _lifetime: PhantomData,
@@ -244,13 +277,16 @@ impl<'a> ColumnView<'a> {
         let mut buf = vec![unsafe { std::mem::zeroed::<T>() }; size];
         let buf_size = size * std::mem::size_of::<T>();
 
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_to_host(
-                self.handle.as_ptr(),
-                buf.as_mut_ptr() as *mut c_void,
-                buf_size,
-            )
-        })?;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_to_host(
+                    self.handle.as_ptr(),
+                    buf.as_mut_ptr() as *mut c_void,
+                    buf_size,
+                )
+            },
+            "column_view::to_vec",
+        )?;
 
         Ok(buf)
     }
@@ -270,13 +306,16 @@ impl<'a> ColumnView<'a> {
         let alloc_bytes = mask_bytes.div_ceil(64) * 64;
         let mut mask = vec![0u8; alloc_bytes];
 
-        error::check_status(unsafe {
-            cudf_sys::cudf_column_view_null_mask_to_host(
-                self.handle.as_ptr(),
-                mask.as_mut_ptr(),
-                alloc_bytes,
-            )
-        })?;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_column_view_null_mask_to_host(
+                    self.handle.as_ptr(),
+                    mask.as_mut_ptr(),
+                    alloc_bytes,
+                )
+            },
+            "column_view::validity",
+        )?;
 
         // Unpack bitmask to bool vec.
         let validity: Vec<bool> = (0..size)
