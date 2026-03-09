@@ -1,5 +1,5 @@
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -55,10 +55,11 @@ fn main() {
         let candidates = [build_dir.join("lib"), build_dir.clone()];
         candidates
             .iter()
-            .find(|p| p.join("libcugraph.so").exists() || p.join("libcugraph.dylib").exists())
+            .find(|p| has_required_cugraph_libs(p))
             .cloned()
             .unwrap_or(candidates[0].clone())
     };
+
     // Use canonicalize when the path exists for a clean absolute path,
     // otherwise fall back to the raw path and warn. This lets bindgen
     // generate the FFI bindings even before libcugraph is compiled;
@@ -75,6 +76,25 @@ fn main() {
         }
     };
 
+    // If the directory exists, check that both required shared libraries are present.
+    if library_dir.exists() && !has_required_cugraph_libs(&library_dir) {
+        if let Some(dir) = &library_from_env {
+            panic!(
+                "CUGRAPH_LIBRARY_DIR='{}' does not contain both required libraries \
+                 (libcugraph and libcugraph_c). Build cuGraph C API libraries first \
+                 or set CUGRAPH_LIBRARY_DIR to the correct directory.",
+                dir
+            );
+        } else {
+            println!(
+                "cargo:warning=cuGraph library directory '{}' does not contain both required \
+                 libraries (libcugraph and libcugraph_c). Build cuGraph C API libraries first \
+                 (see README) or set CUGRAPH_LIBRARY_DIR.",
+                library_dir.display()
+            );
+        }
+    }
+
     println!("cargo:rustc-link-search=native={}", library_dir.display());
     println!("cargo:rustc-link-lib=dylib=cugraph");
     println!("cargo:rustc-link-lib=dylib=cugraph_c");
@@ -86,6 +106,7 @@ fn main() {
     let mut builder = bindgen::Builder::default()
         .header("wrapper.h")
         .clang_arg(format!("-I{}", include_dir.display()))
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
         .allowlist_function("cugraph_.*")
         .allowlist_type("cugraph_.*")
         .allowlist_type("bool_.*")
@@ -100,10 +121,10 @@ fn main() {
         .derive_copy(true)
         .derive_eq(true)
         .derive_hash(true)
-        // Use repr(C) enums
-        .rustified_enum("cugraph_error_code_")
-        .rustified_enum("bool_")
-        .rustified_enum("data_type_id_");
+        // Use newtype enums for FFI safety. Rust enums are UB-prone if C passes unknown values.
+        .newtype_enum("cugraph_error_code_")
+        .newtype_enum("bool_")
+        .newtype_enum("data_type_id_");
 
     // Detect GCC system include paths so clang can find stddef.h etc.
     if let Some(gcc_include) = detect_gcc_include_dir() {
@@ -113,9 +134,44 @@ fn main() {
     let bindings = builder.generate().expect("Unable to generate bindings");
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let bindings_path = out_path.join("bindings.rs");
     bindings
-        .write_to_file(out_path.join("bindings.rs"))
+        .write_to_file(&bindings_path)
         .expect("Couldn't write bindings!");
+
+    // Expose the generated bindings path to integration tests so they can
+    // validate API coverage.
+    println!(
+        "cargo:rustc-env=CUGRAPH_SYS_BINDINGS_RS={}",
+        bindings_path.display()
+    );
+}
+
+fn has_required_cugraph_libs(dir: &Path) -> bool {
+    has_library(dir, "cugraph") && has_library(dir, "cugraph_c")
+}
+
+fn has_library(dir: &Path, stem: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        return dir.join(format!("lib{stem}.dylib")).exists();
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return dir.join(format!("{stem}.dll")).exists()
+            || dir.join(format!("lib{stem}.dll")).exists()
+            || dir.join(format!("{stem}.lib")).exists()
+            || dir.join(format!("lib{stem}.lib")).exists();
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // Linux and other Unix-like platforms.
+        dir.join(format!("lib{stem}.so")).exists()
+            || dir.join(format!("lib{stem}.so.0")).exists()
+            || dir.join(format!("lib{stem}.so.1")).exists()
+    }
 }
 
 /// Ask GCC for its built-in include directory (contains stddef.h, stdarg.h, etc.)
