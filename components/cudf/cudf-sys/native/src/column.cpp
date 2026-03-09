@@ -15,7 +15,6 @@
 
 #include <cstring>
 #include <memory>
-#include <vector>
 
 static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
   return static_cast<cudf::type_id>(id);
@@ -26,6 +25,7 @@ extern "C" {
 cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
                                        cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto dtype = cudf::data_type(to_cudf_type_id(type_id));
     auto col = cudf::make_empty_column(dtype);
@@ -41,9 +41,21 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          int32_t null_count,
                                          cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (null_count < 0 || null_count > size) {
+    set_error("null_count must be in [0, size]");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   if (size > 0) {
     CUDF_RUST_NULL_CHECK(data, "data is null");
   }
+  if (null_count > 0) {
+    CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0");
+  }
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto dtype = cudf::data_type(to_cudf_type_id(type_id));
     auto stream = cudf::get_default_stream();
@@ -81,6 +93,7 @@ cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto* col = static_cast<cudf::column*>(src);
     auto stream = cudf::get_default_stream();
@@ -202,7 +215,7 @@ cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
     }
     auto stream = cudf::get_default_stream();
     // Copy from device to host.
-    cudaMemcpyAsync(host_buf, view->head<uint8_t>() + (view->offset() * elem_size),
+    cudaMemcpyAsync(host_buf, view->data<uint8_t>(),
                     needed, cudaMemcpyDeviceToHost, stream.value());
     stream.synchronize();
     return CUDF_SUCCESS;
@@ -219,6 +232,10 @@ cudf_status_t cudf_column_view_null_mask_to_host(
     if (!view->nullable()) {
       set_error("Column has no null mask");
       return CUDF_ERROR_NULL;
+    }
+    if (view->offset() != 0) {
+      set_error("null mask export for sliced views (offset != 0) is not supported");
+      return CUDF_ERROR_INVALID_OPERATION;
     }
     size_t mask_bytes =
         cudf::bitmask_allocation_size_bytes(view->size());

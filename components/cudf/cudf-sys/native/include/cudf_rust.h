@@ -8,6 +8,8 @@
 #include "column.h"
 #include "table.h"
 #include "scalar.h"
+#include "stream.h"
+#include "memory_resource.h"
 #include "io.h"
 #include "sorting.h"
 #include "filter.h"

@@ -122,6 +122,13 @@ cudf_status_t cudf_groupby_aggregate(
   CUDF_RUST_NULL_CHECK(out_keys, "out_keys is null");
   CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
   CUDF_RUST_NULL_CHECK(out_total_columns, "out_total_columns is null");
+  *out_keys = nullptr;
+  *out_values = nullptr;
+  *out_total_columns = 0;
+  if (num_requests < 0) {
+    set_error("num_requests must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   if (num_requests > 0) {
     CUDF_RUST_NULL_CHECK(values, "values is null");
     CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null");
@@ -138,11 +145,21 @@ cudf_status_t cudf_groupby_aggregate(
     // Build aggregation requests.
     std::vector<cudf::groupby::aggregation_request> requests;
     requests.reserve(num_requests);
+
+    for (int32_t i = 0; i < num_requests; ++i) {
+      if (agg_counts[i] < 0) {
+        set_error("agg_counts entries must be >= 0");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+    }
+
     int32_t agg_offset = 0;
     for (int32_t i = 0; i < num_requests; ++i) {
+      CUDF_RUST_NULL_CHECK(values[i], "value column view handle is null");
       cudf::groupby::aggregation_request req;
       req.values = *static_cast<cudf::column_view*>(values[i]);
       for (int32_t j = 0; j < agg_counts[i]; ++j) {
+        CUDF_RUST_NULL_CHECK(aggregations[agg_offset + j], "aggregation handle is null");
         auto* agg = static_cast<cudf::groupby_aggregation*>(
             aggregations[agg_offset + j]);
         auto cloned = agg->clone();
@@ -156,15 +173,11 @@ cudf_status_t cudf_groupby_aggregate(
 
     auto [result_keys, result_values] = gb.aggregate(requests);
 
-    // Output: keys table.
-    *out_keys = static_cast<cudf_table_handle>(result_keys.release());
-
-    // Output: flatten result columns into a single array.
+    // Flatten result columns into a single array.
     int32_t total = 0;
     for (auto& rv : result_values) {
       total += static_cast<int32_t>(rv.results.size());
     }
-    *out_total_columns = total;
 
     auto* col_array = new cudf_column_handle[total];
     int32_t idx = 0;
@@ -173,6 +186,10 @@ cudf_status_t cudf_groupby_aggregate(
         col_array[idx++] = static_cast<cudf_column_handle>(col.release());
       }
     }
+
+    // Publish outputs only after all work succeeds.
+    *out_keys = static_cast<cudf_table_handle>(result_keys.release());
+    *out_total_columns = total;
     *out_values = col_array;
 
     return CUDF_SUCCESS;
