@@ -1,0 +1,424 @@
+//! Errors carry structured context — kind, status, operation, key-value pairs,
+//! and an optional source — so that GPU pipeline failures are debuggable without
+//! guesswork.
+
+use std::ffi::CStr;
+use std::fmt;
+
+/// The kind of error that occurred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorKind {
+    /// A logical precondition was violated (e.g., invalid argument).
+    InvalidOperation,
+    /// A CUDA runtime error occurred.
+    CudaError,
+    /// A fatal CUDA error occurred (device may be unusable).
+    FatalCudaError,
+    /// Device or host memory allocation failed.
+    OutOfMemory,
+    /// An I/O error occurred (file not found, permission denied, etc.).
+    IoError,
+    /// An operation was attempted on an unsupported data type.
+    TypeError,
+    /// A null pointer or null value was encountered unexpectedly.
+    NullError,
+    /// An index was out of bounds.
+    IndexError,
+    /// An unknown or unclassified error.
+    Unknown,
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorKind::InvalidOperation => write!(f, "InvalidOperation"),
+            ErrorKind::CudaError => write!(f, "CudaError"),
+            ErrorKind::FatalCudaError => write!(f, "FatalCudaError"),
+            ErrorKind::OutOfMemory => write!(f, "OutOfMemory"),
+            ErrorKind::IoError => write!(f, "IoError"),
+            ErrorKind::TypeError => write!(f, "TypeError"),
+            ErrorKind::NullError => write!(f, "NullError"),
+            ErrorKind::IndexError => write!(f, "IndexError"),
+            ErrorKind::Unknown => write!(f, "Unknown"),
+        }
+    }
+}
+
+/// Whether an error is expected to be transient or permanent.
+///
+/// This classification helps callers decide whether retrying an operation
+/// makes sense (e.g., a CUDA OOM may clear after other work completes,
+/// but a type mismatch will never succeed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ErrorStatus {
+    /// The error is caused by invalid input or logic and will never succeed
+    /// if retried with the same arguments.
+    Permanent,
+    /// The error may be transient (e.g., CUDA OOM, device busy) and retrying
+    /// could succeed.
+    Temporary,
+    /// The error has been observed repeatedly and is unlikely to resolve
+    /// without intervention, but is not strictly a logic error.
+    Persistent,
+}
+
+impl fmt::Display for ErrorStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorStatus::Permanent => write!(f, "permanent"),
+            ErrorStatus::Temporary => write!(f, "temporary"),
+            ErrorStatus::Persistent => write!(f, "persistent"),
+        }
+    }
+}
+
+/// An error from a cudf operation.
+///
+/// - `kind` — what category of failure occurred
+/// - `status` — permanent / temporary / persistent
+/// - `operation` — which API entry point was executing
+/// - `context` — arbitrary key-value pairs (dtype, column name, …)
+/// - `source` — an optional chained cause
+pub struct Error {
+    kind: ErrorKind,
+    message: String,
+    status: ErrorStatus,
+    operation: &'static str,
+    context: Vec<(&'static str, String)>,
+    source: Option<anyhow::Error>,
+}
+
+impl Error {
+    /// Create a new error with the given kind and message.
+    ///
+    /// Defaults: `Permanent` status, empty operation, no context, no source.
+    /// This keeps all existing call sites compiling unchanged.
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            status: ErrorStatus::Permanent,
+            operation: "",
+            context: Vec::new(),
+            source: None,
+        }
+    }
+
+    // -- Builder methods (consuming self, for chaining) ----------------------
+
+    /// Set the operation that was being performed when the error occurred.
+    pub fn with_operation(mut self, operation: &'static str) -> Self {
+        self.operation = operation;
+        self
+    }
+
+    /// Append a key-value context pair.
+    pub fn with_context(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.context.push((key, value.into()));
+        self
+    }
+
+    /// Attach a source error.
+    pub fn set_source(mut self, src: impl Into<anyhow::Error>) -> Self {
+        self.source = Some(src.into());
+        self
+    }
+
+    /// Mark this error as temporary (transient, retryable).
+    pub fn set_temporary(mut self) -> Self {
+        self.status = ErrorStatus::Temporary;
+        self
+    }
+
+    /// Mark this error as permanent (will never succeed if retried).
+    pub fn set_permanent(mut self) -> Self {
+        self.status = ErrorStatus::Permanent;
+        self
+    }
+
+    /// Mark this error as persistent (repeated failure, needs intervention).
+    pub fn set_persistent(mut self) -> Self {
+        self.status = ErrorStatus::Persistent;
+        self
+    }
+
+    // -- Accessors -----------------------------------------------------------
+
+    /// Returns the kind of this error.
+    pub fn kind(&self) -> ErrorKind {
+        self.kind
+    }
+
+    /// Returns the error message.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Returns the operation that was being performed.
+    pub fn operation(&self) -> &'static str {
+        self.operation
+    }
+
+    /// Returns the context key-value pairs.
+    pub fn context(&self) -> &[(&'static str, String)] {
+        &self.context
+    }
+
+    /// Returns `true` if the error status is `Temporary`.
+    pub fn is_temporary(&self) -> bool {
+        self.status == ErrorStatus::Temporary
+    }
+
+    /// Returns `true` if the error status is `Permanent`.
+    pub fn is_permanent(&self) -> bool {
+        self.status == ErrorStatus::Permanent
+    }
+
+    /// Returns `true` if the error status is `Persistent`.
+    pub fn is_persistent(&self) -> bool {
+        self.status == ErrorStatus::Persistent
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.kind, self.status)?;
+
+        if !self.operation.is_empty() {
+            write!(f, " at {}", self.operation)?;
+        }
+
+        if !self.context.is_empty() {
+            write!(f, ", context: {{ ")?;
+            for (i, (k, v)) in self.context.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}: {}", k, v)?;
+            }
+            write!(f, " }}")?;
+        }
+
+        if !self.message.is_empty() {
+            write!(f, " => {}", self.message)?;
+        }
+
+        if let Some(ref src) = self.source {
+            write!(f, ", source: {}", src)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{} ({}):", self.kind, self.status)?;
+
+        if !self.operation.is_empty() {
+            writeln!(f, "  operation: {}", self.operation)?;
+        }
+
+        if !self.context.is_empty() {
+            writeln!(f, "  context:")?;
+            for (k, v) in &self.context {
+                writeln!(f, "    {}: {}", k, v)?;
+            }
+        }
+
+        if !self.message.is_empty() {
+            writeln!(f, "  message: {}", self.message)?;
+        }
+
+        if let Some(ref src) = self.source {
+            writeln!(f, "  source: {:?}", src)?;
+        }
+
+        Ok(())
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_ref().map(|e| e.as_ref())
+    }
+}
+
+/// Convenience type alias.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Classify an [`ErrorKind`] as temporary or permanent.
+///
+/// CUDA runtime errors and OOM are considered temporary (the GPU may recover),
+/// while logic errors (type mismatch, invalid args) are permanent.
+fn default_status_for_kind(kind: ErrorKind) -> ErrorStatus {
+    match kind {
+        ErrorKind::CudaError | ErrorKind::OutOfMemory => ErrorStatus::Temporary,
+        _ => ErrorStatus::Permanent,
+    }
+}
+
+/// Convert a C shim status code into a `Result<()>`.
+///
+/// On success (`CUDF_SUCCESS`), returns `Ok(())`.
+/// On failure, reads the thread-local error message and returns an `Err`
+/// with the error status automatically classified by [`default_status_for_kind`].
+pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
+    if status == cudf_sys::CUDF_SUCCESS {
+        return Ok(());
+    }
+
+    let kind = match status {
+        cudf_sys::CUDF_ERROR_INVALID_OPERATION => ErrorKind::InvalidOperation,
+        cudf_sys::CUDF_ERROR_CUDA => ErrorKind::CudaError,
+        cudf_sys::CUDF_ERROR_FATAL_CUDA => ErrorKind::FatalCudaError,
+        cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => ErrorKind::OutOfMemory,
+        cudf_sys::CUDF_ERROR_IO => ErrorKind::IoError,
+        cudf_sys::CUDF_ERROR_TYPE => ErrorKind::TypeError,
+        cudf_sys::CUDF_ERROR_NULL => ErrorKind::NullError,
+        cudf_sys::CUDF_ERROR_INDEX => ErrorKind::IndexError,
+        _ => ErrorKind::Unknown,
+    };
+
+    let message = unsafe {
+        let ptr = cudf_sys::cudf_last_error_message();
+        if ptr.is_null() {
+            String::from("(no error message)")
+        } else {
+            CStr::from_ptr(ptr).to_string_lossy().into_owned()
+        }
+    };
+
+    let mut err = Error::new(kind, message);
+    err.status = default_status_for_kind(kind);
+    Err(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_defaults_to_permanent() {
+        let err = Error::new(ErrorKind::TypeError, "bad type");
+        assert_eq!(err.kind(), ErrorKind::TypeError);
+        assert_eq!(err.message(), "bad type");
+        assert!(err.is_permanent());
+        assert!(!err.is_temporary());
+        assert!(!err.is_persistent());
+        assert_eq!(err.operation(), "");
+        assert!(err.context().is_empty());
+    }
+
+    #[test]
+    fn builder_methods_chain() {
+        let err = Error::new(ErrorKind::CudaError, "out of memory")
+            .with_operation("reduce")
+            .with_context("dtype", "float64")
+            .with_context("rows", "1000000")
+            .set_temporary();
+
+        assert_eq!(err.kind(), ErrorKind::CudaError);
+        assert!(err.is_temporary());
+        assert_eq!(err.operation(), "reduce");
+        assert_eq!(err.context().len(), 2);
+        assert_eq!(err.context()[0], ("dtype", "float64".to_string()));
+        assert_eq!(err.context()[1], ("rows", "1000000".to_string()));
+    }
+
+    #[test]
+    fn set_source_attaches_cause() {
+        let cause = std::io::Error::new(std::io::ErrorKind::NotFound, "file gone");
+        let err = Error::new(ErrorKind::IoError, "read failed").set_source(cause);
+
+        // std::error::Error::source() should return the cause
+        let src = std::error::Error::source(&err);
+        assert!(src.is_some());
+    }
+
+    #[test]
+    fn display_minimal() {
+        let err = Error::new(ErrorKind::TypeError, "cannot cast");
+        let s = err.to_string();
+        assert!(s.contains("TypeError"));
+        assert!(s.contains("permanent"));
+        assert!(s.contains("cannot cast"));
+        // No operation or context in minimal case
+        assert!(!s.contains(" at "));
+        assert!(!s.contains("context:"));
+    }
+
+    #[test]
+    fn display_full() {
+        let err = Error::new(ErrorKind::CudaError, "out of memory")
+            .with_operation("reduce")
+            .with_context("dtype", "float64")
+            .set_temporary();
+
+        let s = err.to_string();
+        assert!(s.contains("CudaError (temporary)"));
+        assert!(s.contains("at reduce"));
+        assert!(s.contains("dtype: float64"));
+        assert!(s.contains("out of memory"));
+    }
+
+    #[test]
+    fn debug_is_multiline() {
+        let err = Error::new(ErrorKind::CudaError, "oom")
+            .with_operation("sort")
+            .with_context("rows", "1M");
+
+        let s = format!("{:?}", err);
+        assert!(s.contains("operation: sort"));
+        assert!(s.contains("rows: 1M"));
+        assert!(s.contains("message: oom"));
+    }
+
+    #[test]
+    fn default_status_cuda_is_temporary() {
+        assert_eq!(
+            default_status_for_kind(ErrorKind::CudaError),
+            ErrorStatus::Temporary
+        );
+        assert_eq!(
+            default_status_for_kind(ErrorKind::OutOfMemory),
+            ErrorStatus::Temporary
+        );
+    }
+
+    #[test]
+    fn default_status_logic_errors_are_permanent() {
+        assert_eq!(
+            default_status_for_kind(ErrorKind::TypeError),
+            ErrorStatus::Permanent
+        );
+        assert_eq!(
+            default_status_for_kind(ErrorKind::InvalidOperation),
+            ErrorStatus::Permanent
+        );
+        assert_eq!(
+            default_status_for_kind(ErrorKind::IndexError),
+            ErrorStatus::Permanent
+        );
+    }
+
+    #[test]
+    fn set_persistent_works() {
+        let err = Error::new(ErrorKind::Unknown, "repeated failure").set_persistent();
+        assert!(err.is_persistent());
+        assert!(!err.is_permanent());
+        assert!(!err.is_temporary());
+    }
+
+    #[test]
+    fn display_with_source() {
+        let cause = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
+        let err = Error::new(ErrorKind::IoError, "read failed")
+            .with_operation("read_csv")
+            .set_source(cause);
+
+        let s = err.to_string();
+        assert!(s.contains("source:"));
+        assert!(s.contains("no such file"));
+    }
+}
