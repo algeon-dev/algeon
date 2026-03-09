@@ -1270,6 +1270,7 @@ mod tests {
             ));
 
         assert_eq!(plan.first_rejection_reason(), None);
+        assert_eq!(plan.first_unsupported_column(), None);
     }
 
     #[test]
@@ -1294,6 +1295,10 @@ mod tests {
             ));
 
         assert_eq!(plan.first_rejection_reason(), Some(FallbackReason::UnsupportedType));
+        let unsupported = plan.first_unsupported_column().expect("projected map column must be named");
+        assert_eq!(unsupported.logical_name, "allRiskEvents");
+        assert_eq!(unsupported.role_code(), "projected");
+        assert!(unsupported.data_type_debug().starts_with("Map("));
     }
 
     #[test]
@@ -1928,6 +1933,29 @@ pub struct TableFormatColumnMapping {
     pub missing_default_value: Option<TableFormatScalarValue>,
 }
 
+/// First unsupported scan column selected by native table-format admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TableFormatUnsupportedColumn<'a> {
+    /// Logical column name visible to SQL/DataFusion.
+    pub(crate) logical_name: &'a str,
+    /// Arrow type exposed by the table-format scan.
+    pub(crate) data_type: &'a DataType,
+    /// Column role in the native source boundary.
+    pub(crate) role: TableFormatColumnRole,
+}
+
+impl<'a> TableFormatUnsupportedColumn<'a> {
+    /// Stable role code for diagnostics.
+    pub(crate) const fn role_code(&self) -> &'static str {
+        self.role.code()
+    }
+
+    /// Debug-formatted Arrow type for diagnostics.
+    pub(crate) fn data_type_debug(&self) -> String {
+        format!("{:?}", self.data_type)
+    }
+}
+
 impl TableFormatColumnMapping {
     /// Builds one logical-to-source column mapping.
     pub fn new(
@@ -2137,6 +2165,8 @@ pub struct TableFormatDeleteFile {
     pub size_bytes: Option<u64>,
     /// Optional delete row count from metadata.
     pub row_count: Option<u64>,
+    /// Referenced data-file path from Iceberg position-delete metadata, when present.
+    pub referenced_data_file: Option<String>,
     /// Inclusive lower bound for the Iceberg position-delete `pos` column.
     pub position_lower_bound: Option<u64>,
     /// Inclusive upper bound for the Iceberg position-delete `pos` column.
@@ -2157,6 +2187,10 @@ impl fmt::Debug for TableFormatDeleteFile {
             .field("content", &self.content)
             .field("size_bytes", &self.size_bytes)
             .field("row_count", &self.row_count)
+            .field(
+                "referenced_data_file",
+                &self.referenced_data_file.as_deref().map(redacted_scan_location_debug_value),
+            )
             .field("position_lower_bound", &self.position_lower_bound)
             .field("position_upper_bound", &self.position_upper_bound)
             .field("read_capability", &self.read_capability)
@@ -2192,6 +2226,7 @@ impl TableFormatDeleteFile {
             content,
             size_bytes: None,
             row_count: None,
+            referenced_data_file: None,
             position_lower_bound: None,
             position_upper_bound: None,
             read_capability: TableFormatReadCapability::unsupported("unresolved"),
@@ -2208,6 +2243,12 @@ impl TableFormatDeleteFile {
     /// Records delete-file row count.
     pub fn with_row_count(mut self, row_count: u64) -> Self {
         self.row_count = Some(row_count);
+        self
+    }
+
+    /// Records the referenced data-file path for manifest-proven position-delete pruning.
+    pub fn with_referenced_data_file(mut self, referenced_data_file: impl Into<String>) -> Self {
+        self.referenced_data_file = Some(referenced_data_file.into());
         self
     }
 
@@ -2655,15 +2696,23 @@ impl TableFormatScanPlan {
         if self.data_files.iter().any(|file| !file.read_capability.is_native_parquet_capable()) {
             return Some(FallbackReason::IcebergObjectStoreReadUnsupported);
         }
-        if self
-            .projected_columns
-            .iter()
-            .chain(self.pure_filter_columns.iter())
-            .any(|column| !nexus_query_engine::is_supported_arrow_type(&column.data_type))
-        {
+        if self.first_unsupported_column().is_some() {
             return Some(FallbackReason::UnsupportedType);
         }
         None
+    }
+
+    /// First projected or filter-only column whose Arrow type cannot enter native execution.
+    pub(crate) fn first_unsupported_column(&self) -> Option<TableFormatUnsupportedColumn<'_>> {
+        self.projected_columns
+            .iter()
+            .chain(self.pure_filter_columns.iter())
+            .find(|column| !nexus_query_engine::is_supported_arrow_type(&column.data_type))
+            .map(|column| TableFormatUnsupportedColumn {
+                logical_name: column.logical_name.as_str(),
+                data_type: &column.data_type,
+                role: column.role,
+            })
     }
 
     fn position_delete_file_is_associated(&self, delete_file: &TableFormatDeleteFile) -> bool {

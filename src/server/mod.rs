@@ -19,6 +19,7 @@ pub mod diagnostics;
 pub mod error;
 mod flight;
 mod session;
+mod table_format_operator_fast_fail;
 
 pub use auth::{AuthConfig, AuthInterceptor, AuthMode, Principal, StaticUserConfig, TokenStore};
 pub use config::*;

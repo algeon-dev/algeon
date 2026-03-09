@@ -201,9 +201,16 @@ fn native_scan_limited_position_delete_source_reads_until_visible_row() {
     let dir = unique_temp_dir("nexus-query-engine-native-position-delete-limit");
     let data_path = dir.join("data.parquet");
     let delete_first_path = dir.join("delete-first.parquet");
+    let delete_wrong_reference_path = dir.join("delete-wrong-reference.parquet");
     let delete_late_path = dir.join("delete-late.parquet");
     let projected_schema = write_single_i32_row_grouped_parquet(&data_path, 1);
-    write_position_delete_parquet(&delete_first_path, data_path.display().to_string().as_str(), &[0], &[]);
+    write_position_delete_parquet(
+        &delete_first_path,
+        format!("file://localhost{}", data_path.display()).as_str(),
+        &[0],
+        &[],
+    );
+    write_position_delete_parquet(&delete_wrong_reference_path, data_path.display().to_string().as_str(), &[1], &[]);
     write_position_delete_parquet(&delete_late_path, data_path.display().to_string().as_str(), &[3], &[]);
 
     let delete_first = ParquetPositionDeleteFile::from_resolved_parquet_source(
@@ -222,9 +229,18 @@ fn native_scan_limited_position_delete_source_reads_until_visible_row() {
     .with_file_size_bytes(fs::metadata(&delete_late_path).unwrap().len())
     .with_row_count(1)
     .with_position_bounds(Some(3), Some(3));
+    let delete_wrong_reference = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-wrong-reference",
+        ResolvedParquetSource::local_kvikio(delete_wrong_reference_path.display().to_string()),
+    )
+    .unwrap()
+    .with_file_size_bytes(fs::metadata(&delete_wrong_reference_path).unwrap().len())
+    .with_row_count(1)
+    .with_referenced_data_file(dir.join("other-data.parquet").display().to_string())
+    .with_position_bounds(Some(1), Some(1));
     let data_file = LocalParquetFile::new(&data_path)
         .with_file_size_bytes(fs::metadata(&data_path).unwrap().len())
-        .with_position_delete_files(vec![delete_first, delete_late]);
+        .with_position_delete_files(vec![delete_first, delete_wrong_reference, delete_late]);
     let source = LocalParquetSource::from_files(vec![data_file], projected_schema, vec!["id".to_string()])
         .with_scan_limit(Some(1));
     let mut builder = QueryPlanBuilder::new();
@@ -245,6 +261,72 @@ fn native_scan_limited_position_delete_source_reads_until_visible_row() {
     assert_eq!(chunk_reads.len(), 2);
     assert!(chunk_reads.iter().all(|row| row.row_group_count == 1));
     assert_eq!(metrics.source_read_runtime_rows.iter().filter(|row| row.read_kind == "file").count(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_position_delete_reader_predicate_prunes_delete_row_groups_for_scan_limit() {
+    let dir = unique_temp_dir("nexus-query-engine-native-position-delete-reader-predicate");
+    let data_path = dir.join("data.parquet");
+    let delete_path = dir.join("delete.parquet");
+    let projected_schema = write_single_i32_row_grouped_parquet(&data_path, 1);
+    write_position_delete_parquet_with_row_group_rows(
+        &delete_path,
+        data_path.display().to_string().as_str(),
+        &[2, 3, 4, 5],
+        &[],
+        1,
+    );
+
+    let delete_file = ParquetPositionDeleteFile::from_resolved_parquet_source(
+        "delete-broad",
+        ResolvedParquetSource::local_kvikio(delete_path.display().to_string()),
+    )
+    .unwrap()
+    .with_file_size_bytes(fs::metadata(&delete_path).unwrap().len())
+    .with_row_count(4);
+    let data_file = LocalParquetFile::new(&data_path)
+        .with_file_size_bytes(fs::metadata(&data_path).unwrap().len())
+        .with_position_delete_files(vec![delete_file]);
+    let source = LocalParquetSource::from_files(vec![data_file], projected_schema, vec!["id".to_string()])
+        .with_scan_limit(Some(1));
+    let mut builder = QueryPlanBuilder::new();
+    let source_node = builder.add_source(SourceNode::LocalParquet(source));
+    let plan = builder.finish_with_host_sink(source_node);
+    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()));
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize scan-limited RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[1]);
+
+    let chunk_reads =
+        metrics.source_read_runtime_rows.iter().filter(|row| row.read_kind == "chunk").collect::<Vec<_>>();
+    assert_eq!(chunk_reads.len(), 1);
+    let delete_reads = metrics
+        .source_read_runtime_rows
+        .iter()
+        .filter(|row| row.read_kind == "file" && row.reader_predicate)
+        .collect::<Vec<_>>();
+    assert_eq!(delete_reads.len(), 1);
+    let delete_read = delete_reads[0];
+    assert_eq!(delete_read.output_rows, 0);
+    let pruning_input = delete_read
+        .parquet_read_evidence
+        .pruning_input_row_groups
+        .expect("position-delete reader predicate should report pruning input row groups");
+    let after_stats = delete_read
+        .parquet_read_evidence
+        .row_groups_after_stats_filter
+        .expect("position-delete reader predicate should report stats pruning");
+    assert!(
+        after_stats < pruning_input,
+        "position-delete reader predicate should prune delete row groups: {delete_read:?}"
+    );
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -464,6 +546,17 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
 }
 
 fn write_position_delete_parquet(path: &Path, data_file_path: &str, positions: &[i64], other_positions: &[i64]) {
+    let row_count = positions.len().saturating_add(other_positions.len()).max(1);
+    write_position_delete_parquet_with_row_group_rows(path, data_file_path, positions, other_positions, row_count);
+}
+
+fn write_position_delete_parquet_with_row_group_rows(
+    path: &Path,
+    data_file_path: &str,
+    positions: &[i64],
+    other_positions: &[i64],
+    max_row_group_rows: usize,
+) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("file_path", DataType::Utf8, false),
         Field::new("pos", DataType::Int64, false),
@@ -478,7 +571,8 @@ fn write_position_delete_parquet(path: &Path, data_file_path: &str, positions: &
     )
     .unwrap();
     let file = File::create(path).unwrap();
-    let mut writer = ArrowWriter::try_new(file, schema, Some(WriterProperties::builder().build())).unwrap();
+    let props = WriterProperties::builder().set_max_row_group_row_count(Some(max_row_group_rows)).build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
 }

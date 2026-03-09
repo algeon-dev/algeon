@@ -140,6 +140,9 @@ pub fn log_leaf_guard_rejection(query_id: &str, error: &DataFusionError, profile
         credential_mode = fields.credential_mode,
         lakehouse_cache_status = fields.lakehouse_cache_status,
         direct_device_read_disposition = fields.direct_device_read_disposition,
+        unsupported_column = fields.unsupported_column,
+        unsupported_column_type = fields.unsupported_column_type,
+        unsupported_column_role = fields.unsupported_column_role,
         rejection_class = fields.rejection_class.as_str(),
         session_profile = profile.as_str(),
         profile_hint = profile_hint(profile),
@@ -185,6 +188,9 @@ pub(crate) struct LeafGuardEventFields<'a> {
     pub credential_mode: &'a str,
     pub lakehouse_cache_status: &'a str,
     pub direct_device_read_disposition: &'a str,
+    pub unsupported_column: &'a str,
+    pub unsupported_column_type: &'a str,
+    pub unsupported_column_role: &'a str,
     pub rejection_class: FlightSqlNativeRejectClass,
 }
 
@@ -227,6 +233,9 @@ pub(crate) fn leaf_guard_event_fields(error: &DataFusionError) -> Option<LeafGua
         credential_mode: facts.get("credential_mode").unwrap_or(""),
         lakehouse_cache_status: facts.get("lakehouse_cache_status").unwrap_or(""),
         direct_device_read_disposition: facts.get("direct_device_read_disposition").unwrap_or(""),
+        unsupported_column: facts.get("unsupported_column").unwrap_or(""),
+        unsupported_column_type: facts.get("unsupported_column_type").unwrap_or(""),
+        unsupported_column_role: facts.get("unsupported_column_role").unwrap_or(""),
         rejection_class: FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf,
     })
 }
@@ -394,6 +403,9 @@ mod tests {
         assert!(fields.physical_plan_shape.contains("CudfTableFormatScanExec"));
         assert_eq!(fields.table_format, "iceberg");
         assert_eq!(fields.leaf_guard_first_rejection, FallbackReason::NativeSortPreservingMergeUnsupported.code());
+        assert_eq!(fields.unsupported_column, "");
+        assert_eq!(fields.unsupported_column_type, "");
+        assert_eq!(fields.unsupported_column_role, "");
         assert_eq!(fields.rejection_class, FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf);
     }
 
@@ -453,7 +465,10 @@ mod tests {
         .with_fact("source_decode_input", "host_buffer")
         .with_fact("credential_mode", "scoped_resolved")
         .with_fact("lakehouse_cache_status", "miss")
-        .with_fact("direct_device_read_disposition", "rejected");
+        .with_fact("direct_device_read_disposition", "rejected")
+        .with_fact("unsupported_column", "countDetail")
+        .with_fact("unsupported_column_type", "Map(Field { name: \"entries\" }, false)")
+        .with_fact("unsupported_column_role", "projected");
         let df_error: DataFusionError = error.into();
 
         let fields = leaf_guard_event_fields(&df_error).expect("leaf-guard error must produce structured fields");
@@ -471,6 +486,9 @@ mod tests {
         assert_eq!(fields.credential_mode, "scoped_resolved");
         assert_eq!(fields.lakehouse_cache_status, "miss");
         assert_eq!(fields.direct_device_read_disposition, "rejected");
+        assert_eq!(fields.unsupported_column, "countDetail");
+        assert!(fields.unsupported_column_type.starts_with("Map("));
+        assert_eq!(fields.unsupported_column_role, "projected");
         assert_eq!(fields.rejection_class, FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf);
     }
 

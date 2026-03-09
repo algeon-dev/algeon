@@ -1136,6 +1136,7 @@ fn attach_manifest_delete_metadata(
             .filter(|delete_file| delete_file.location == limited_delete.file_path)
         {
             delete_file.row_count = Some(limited_delete.record_count);
+            delete_file.referenced_data_file = limited_delete.referenced_data_file.clone();
             delete_file.position_lower_bound = limited_delete.position_lower_bound;
             delete_file.position_upper_bound = limited_delete.position_upper_bound;
         }
@@ -1143,6 +1144,7 @@ fn attach_manifest_delete_metadata(
             delete_file.data_file_id == data_file_id && delete_file.location == limited_delete.file_path
         }) {
             delete_file.row_count = Some(limited_delete.record_count);
+            delete_file.referenced_data_file = limited_delete.referenced_data_file.clone();
             delete_file.position_lower_bound = limited_delete.position_lower_bound;
             delete_file.position_upper_bound = limited_delete.position_upper_bound;
         }
@@ -2588,7 +2590,13 @@ mod tests {
         .with_position_delete_files(vec![table_delete.clone()]);
         let mut plan =
             TableFormatScanPlan::new(TableFormat::Iceberg).with_data_file(data_file).with_delete_file(table_delete);
-        let mut limited_delete = test_limited_delete(DataContentType::PositionDeletes, 0, Some(10), None, None);
+        let mut limited_delete = test_limited_delete(
+            DataContentType::PositionDeletes,
+            0,
+            Some(10),
+            None,
+            Some("s3://bucket/table/data.parquet"),
+        );
         limited_delete.record_count = 7;
         limited_delete.position_lower_bound = Some(11);
         limited_delete.position_upper_bound = Some(29);
@@ -2597,9 +2605,11 @@ mod tests {
 
         let associated_delete = &plan.data_files[0].position_delete_files[0];
         assert_eq!(associated_delete.row_count, Some(7));
+        assert_eq!(associated_delete.referenced_data_file.as_deref(), Some("s3://bucket/table/data.parquet"));
         assert_eq!(associated_delete.position_lower_bound, Some(11));
         assert_eq!(associated_delete.position_upper_bound, Some(29));
         assert_eq!(plan.delete_files[0].row_count, Some(7));
+        assert_eq!(plan.delete_files[0].referenced_data_file.as_deref(), Some("s3://bucket/table/data.parquet"));
         assert_eq!(plan.delete_files[0].position_lower_bound, Some(11));
         assert_eq!(plan.delete_files[0].position_upper_bound, Some(29));
     }
