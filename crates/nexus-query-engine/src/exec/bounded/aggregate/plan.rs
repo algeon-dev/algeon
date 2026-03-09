@@ -157,6 +157,7 @@ impl<'a> BoundedPlan<'a> {
                 "non_local_parquet_source",
             ));
         };
+        reject_position_delete_visible_scan_limit_for_specialized_bounded_aggregate(source)?;
 
         Ok(Self {
             source_id: current,
@@ -221,6 +222,7 @@ impl<'a> BoundedPlan<'a> {
                 "non_local_parquet_source",
             ));
         };
+        reject_position_delete_visible_scan_limit_for_specialized_bounded_aggregate(source)?;
 
         Ok(Self {
             source_id: current,
@@ -274,6 +276,18 @@ impl<'a> BoundedPlan<'a> {
     pub(in crate::exec::bounded) fn has_source_adjacent_stages(&self) -> bool {
         !self.pre_filter_projections.is_empty() || self.filter.is_some() || !self.post_filter_projections.is_empty()
     }
+}
+
+fn reject_position_delete_visible_scan_limit_for_specialized_bounded_aggregate(
+    source: &LocalParquetSource,
+) -> Result<()> {
+    if !source.has_position_delete_visible_scan_limit() {
+        return Ok(());
+    }
+    Err(unsupported_bounded_shape(
+        "specialized bounded aggregate execution does not own Iceberg position-delete visible-row scan-limit stopping",
+        "position_delete_visible_scan_limit_requires_generic_source_execution",
+    ))
 }
 
 fn validate_bounded_unary_stage_capability(stage: &BoundedUnaryStage<'_>) -> Result<()> {

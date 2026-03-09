@@ -1128,6 +1128,8 @@ fn push_position_delete_files(
         push_token(output, format!("{label}.stable_id"), delete_file.stable_id.as_str());
         push_optional_u64(output, format!("{label}.size"), delete_file.file_size_bytes);
         push_optional_u64(output, format!("{label}.rows"), delete_file.row_count);
+        push_optional_u64(output, format!("{label}.position_lower_bound"), delete_file.position_lower_bound);
+        push_optional_u64(output, format!("{label}.position_upper_bound"), delete_file.position_upper_bound);
     }
 }
 

@@ -216,6 +216,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             PlanNode::Source(source) => match source.as_ref() {
                 SourceNode::LocalParquet(source)
                     if !self.resource_has_multiple_consumers(output)
+                        && !source.has_position_delete_visible_scan_limit()
                         && (self.task_feeds_direct_join_input(task.id())
                             || self.task_feeds_any_join_input_through_unary_chain(task.id())
                             || self.source_has_dynamic_filter_routes(node_id)) =>

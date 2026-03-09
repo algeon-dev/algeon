@@ -8,6 +8,12 @@ pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stre
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
     validate_local_parquet_source(source)?;
+    if source.has_position_delete_visible_scan_limit() {
+        return Err(unsupported_bounded_shape(
+            "bounded join leaf streaming does not own Iceberg position-delete visible-row scan-limit stopping",
+            "position_delete_visible_scan_limit_requires_materialized_source",
+        ));
+    }
     let planning_policy = join_source_chunk_planning_policy(context, source, has_source_adjacent_stages);
     let mut chunk_plan =
         plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, context)?;

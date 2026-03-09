@@ -812,6 +812,12 @@ pub struct ParquetPositionDeleteFile {
     pub file_size_bytes: Option<u64>,
     /// Known delete row count, when available.
     pub row_count: Option<u64>,
+    /// Inclusive lower bound for the Iceberg `pos` column, when manifest
+    /// metrics prove it.
+    pub position_lower_bound: Option<u64>,
+    /// Inclusive upper bound for the Iceberg `pos` column, when manifest
+    /// metrics prove it.
+    pub position_upper_bound: Option<u64>,
 }
 
 impl ParquetPositionDeleteFile {
@@ -831,6 +837,8 @@ impl ParquetPositionDeleteFile {
             stable_id,
             file_size_bytes: None,
             row_count: None,
+            position_lower_bound: None,
+            position_upper_bound: None,
         })
     }
 
@@ -843,6 +851,13 @@ impl ParquetPositionDeleteFile {
     /// Sets known delete row count.
     pub fn with_row_count(mut self, row_count: u64) -> Self {
         self.row_count = Some(row_count);
+        self
+    }
+
+    /// Sets inclusive Iceberg `pos` bounds from delete-file manifest metrics.
+    pub fn with_position_bounds(mut self, lower_bound: Option<u64>, upper_bound: Option<u64>) -> Self {
+        self.position_lower_bound = lower_bound;
+        self.position_upper_bound = upper_bound;
         self
     }
 
@@ -954,6 +969,10 @@ pub struct LocalParquetSource {
     /// Nullable logical source columns materialized as typed null columns.
     pub missing_columns: Vec<MissingColumn>,
     /// Source-level scan limit applied before source-adjacent native filters.
+    ///
+    /// For files with Iceberg position deletes this is a visible-row stop
+    /// bound: the executor applies deletes for each read chunk before deciding
+    /// whether enough rows have been emitted.
     pub scan_limit: Option<usize>,
     /// Reader-level Parquet predicate applied by the cuDF reader before source-local native filters.
     ///
@@ -1215,6 +1234,17 @@ impl LocalParquetSource {
     /// Returns true when this source reads a carrier column only to emit count weights.
     pub fn is_count_star_probe_source(&self) -> bool {
         self.count_star_probe
+    }
+
+    /// Returns true when any data file in this source carries Iceberg position deletes.
+    pub fn has_position_delete_files(&self) -> bool {
+        self.files.iter().any(LocalParquetFile::has_position_delete_files)
+    }
+
+    /// Returns true when source scan-limit accounting must happen after
+    /// per-chunk position deletes have been applied.
+    pub fn has_position_delete_visible_scan_limit(&self) -> bool {
+        self.scan_limit.is_some() && self.has_position_delete_files() && !self.is_count_star_probe_source()
     }
 
     fn mark_zero_column_count_represented(&mut self) {

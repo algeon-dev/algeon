@@ -50,6 +50,15 @@ impl SourceChunkPlanningPolicy {
         self.source_chunk_planning_reason = reason;
     }
 
+    /// One-row-group chunking for scan-limited sources with Iceberg position
+    /// deletes, where execution must apply deletes before deciding whether the
+    /// source-level limit has produced enough visible rows.
+    pub fn for_position_delete_scan_limit() -> Self {
+        let mut policy = Self::new(None, 1);
+        policy.source_chunk_planning_reason = "position_delete_scan_limit";
+        policy
+    }
+
     /// Derives a source-task policy from the bounded memory policy and slot model.
     ///
     /// For unbounded execution this returns the default unbounded policy. For
