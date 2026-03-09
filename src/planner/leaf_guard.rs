@@ -274,7 +274,7 @@ fn leftover_leaf_error(
     if let Some(column) = leaf.scan_plan().first_unsupported_column() {
         error = error
             .with_fact("unsupported_column", column.logical_name)
-            .with_fact("unsupported_column_type", column.data_type_debug())
+            .with_fact("unsupported_column_type", column.data_type_summary())
             .with_fact("unsupported_column_role", column.role_code());
     }
     if let Some(context) = blocking_context {

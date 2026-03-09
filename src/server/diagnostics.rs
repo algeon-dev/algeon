@@ -467,7 +467,7 @@ mod tests {
         .with_fact("lakehouse_cache_status", "miss")
         .with_fact("direct_device_read_disposition", "rejected")
         .with_fact("unsupported_column", "countDetail")
-        .with_fact("unsupported_column_type", "Map(Field { name: \"entries\" }, false)")
+        .with_fact("unsupported_column_type", "Map(\"entries\": non-null Struct(\"key\": non-null Utf8), unsorted)")
         .with_fact("unsupported_column_role", "projected");
         let df_error: DataFusionError = error.into();
 
@@ -487,7 +487,10 @@ mod tests {
         assert_eq!(fields.lakehouse_cache_status, "miss");
         assert_eq!(fields.direct_device_read_disposition, "rejected");
         assert_eq!(fields.unsupported_column, "countDetail");
-        assert!(fields.unsupported_column_type.starts_with("Map("));
+        assert_eq!(
+            fields.unsupported_column_type,
+            "Map(\"entries\": non-null Struct(\"key\": non-null Utf8), unsorted)"
+        );
         assert_eq!(fields.unsupported_column_role, "projected");
         assert_eq!(fields.rejection_class, FlightSqlNativeRejectClass::TableFormatGpuOnlyLeaf);
     }

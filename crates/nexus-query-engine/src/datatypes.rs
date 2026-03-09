@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::{
-    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, Field, TimeUnit,
+    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, Field, Fields, TimeUnit,
     validate_decimal_precision_and_scale,
 };
 use cudf::{DataType as CudfDataType, TimestampResolution, TypeId};
@@ -62,6 +62,44 @@ pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
 /// Returns whether this Arrow type is a list admitted only for carry/projection.
 pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_string_list_child(field))
+}
+
+/// Human-readable Arrow type name for client-facing diagnostics.
+pub fn diagnostic_arrow_type(data_type: &ArrowDataType) -> String {
+    match data_type {
+        ArrowDataType::List(field) => format!("List({})", diagnostic_arrow_field(field)),
+        ArrowDataType::LargeList(field) => format!("LargeList({})", diagnostic_arrow_field(field)),
+        ArrowDataType::FixedSizeList(field, size) => {
+            format!("FixedSizeList({}, size={size})", diagnostic_arrow_field(field))
+        },
+        ArrowDataType::Struct(fields) => diagnostic_arrow_struct(fields),
+        ArrowDataType::Map(field, sorted) => {
+            format!("Map({}, {})", diagnostic_arrow_field(field), if *sorted { "sorted" } else { "unsorted" })
+        },
+        ArrowDataType::Dictionary(key, value) => {
+            format!("Dictionary({}, {})", diagnostic_arrow_type(key), diagnostic_arrow_type(value))
+        },
+        ArrowDataType::Timestamp(unit, Some(timezone)) => {
+            format!("Timestamp({unit:?}, timezone={timezone})")
+        },
+        ArrowDataType::Timestamp(unit, None) => format!("Timestamp({unit:?})"),
+        ArrowDataType::Duration(unit) => format!("Duration({unit:?})"),
+        ArrowDataType::Time32(unit) => format!("Time32({unit:?})"),
+        ArrowDataType::Time64(unit) => format!("Time64({unit:?})"),
+        ArrowDataType::Decimal128(precision, scale) => format!("Decimal128({precision}, {scale})"),
+        ArrowDataType::Decimal256(precision, scale) => format!("Decimal256({precision}, {scale})"),
+        _ => format!("{data_type:?}"),
+    }
+}
+
+fn diagnostic_arrow_field(field: &Field) -> String {
+    let nullability = if field.is_nullable() { "" } else { "non-null " };
+    format!("\"{}\": {nullability}{}", field.name(), diagnostic_arrow_type(field.data_type()))
+}
+
+fn diagnostic_arrow_struct(fields: &Fields) -> String {
+    let fields = fields.iter().map(|field| diagnostic_arrow_field(field)).collect::<Vec<_>>().join(", ");
+    format!("Struct({fields})")
 }
 
 pub(crate) fn arrow_fields_match_except_name(left: &Field, right: &Field) -> bool {
@@ -269,4 +307,57 @@ fn is_supported_timestamp_cast(source_type: &ArrowDataType, target_type: &ArrowD
 
 fn is_supported_duration_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     matches!((source_type, target_type), (ArrowDataType::Duration(_), ArrowDataType::Duration(_)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType as ArrowDataType, Field, Fields};
+
+    use super::diagnostic_arrow_type;
+
+    #[test]
+    fn diagnostic_arrow_type_formats_map_without_arrow_debug_noise() {
+        let data_type = ArrowDataType::Map(
+            Arc::new(Field::new(
+                "key_value",
+                ArrowDataType::Struct(Fields::from(vec![
+                    Arc::new(Field::new("key", ArrowDataType::Utf8, false)),
+                    Arc::new(Field::new("value", ArrowDataType::Int32, true)),
+                ])),
+                false,
+            )),
+            false,
+        );
+
+        assert_eq!(
+            diagnostic_arrow_type(&data_type),
+            "Map(\"key_value\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)"
+        );
+    }
+
+    #[test]
+    fn diagnostic_arrow_type_formats_sorted_map_and_lists() {
+        let data_type = ArrowDataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                ArrowDataType::Struct(Fields::from(vec![
+                    Arc::new(Field::new("key", ArrowDataType::Utf8, false)),
+                    Arc::new(Field::new(
+                        "value",
+                        ArrowDataType::List(Arc::new(Field::new("element", ArrowDataType::LargeUtf8, true))),
+                        false,
+                    )),
+                ])),
+                false,
+            )),
+            true,
+        );
+
+        assert_eq!(
+            diagnostic_arrow_type(&data_type),
+            "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": non-null List(\"element\": LargeUtf8)), sorted)"
+        );
+    }
 }
