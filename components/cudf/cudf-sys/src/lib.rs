@@ -585,4 +585,49 @@ extern "C" {
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
     ) -> cudf_status_t;
+
+    // -- Replace -------------------------------------------------------------
+
+    pub fn cudf_replace_nulls_scalar(
+        input: cudf_column_view_handle,
+        replacement: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    // -- Search --------------------------------------------------------------
+
+    pub fn cudf_contains(
+        haystack: cudf_column_view_handle,
+        needles: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    // -- Copying (gather) ----------------------------------------------------
+
+    pub fn cudf_gather(
+        input: cudf_table_view_handle,
+        gather_map: cudf_column_view_handle,
+        bounds_policy: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    // -- Stream Compaction ---------------------------------------------------
+
+    pub fn cudf_drop_nulls(
+        input: cudf_table_view_handle,
+        keys: *const i32,
+        num_keys: i32,
+        keep_threshold: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_distinct(
+        input: cudf_table_view_handle,
+        keys: *const i32,
+        num_keys: i32,
+        keep: i32,
+        null_equality: i32,
+        nan_equality: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
 }

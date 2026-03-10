@@ -94,6 +94,10 @@ add_library(
   src/concatenate.cpp
   src/dictionary.cpp
   src/hashing.cpp
+  src/replace.cpp
+  src/search.cpp
+  src/copying.cpp
+  src/stream_compaction.cpp
   src/abi_checks.cpp
   src/c_header_smoke.c
 )
