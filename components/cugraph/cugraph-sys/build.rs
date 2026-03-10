@@ -5,94 +5,32 @@ use std::process::Command;
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
 
-    // Resolve include path: env var -> in-tree fallback
+    // Resolve include path: env var -> in-tree fallback.
+    // If the env var is set but the directory is missing or doesn't contain
+    // cuGraph headers, we warn and fall back to the submodule path so that
+    // builds don't fail just because the env var points somewhere stale.
     let include_from_env = env::var("CUGRAPH_INCLUDE_DIR").ok();
-    let include_dir = include_from_env
-        .clone()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("../cugraph/cpp/include"));
-    let include_dir = include_dir.canonicalize().unwrap_or_else(|e| {
-        if include_from_env.is_some() {
-            panic!(
-                "CUGRAPH_INCLUDE_DIR='{}' does not exist: {e}.",
-                include_dir.display()
-            )
-        } else {
-            panic!(
-                "Could not resolve cuGraph include directory '{}': {e}. \
-                 Initialize the git submodule (git submodule update --init --recursive) \
-                 or set CUGRAPH_INCLUDE_DIR.",
-                include_dir.display()
-            )
-        }
-    });
-
-    // Verify the directory actually contains cuGraph headers.
-    if !include_dir.join("cugraph_c").is_dir() {
-        if let Some(val) = &include_from_env {
-            panic!(
-                "CUGRAPH_INCLUDE_DIR='{val}' does not contain cuGraph headers \
-                 (expected a cugraph_c/ subdirectory inside '{}').",
-                include_dir.display()
-            );
-        } else {
-            panic!(
-                "cuGraph include directory '{}' does not contain a cugraph_c/ subdirectory. \
-                 The git submodule may be incomplete — try: git submodule update --init --recursive",
-                include_dir.display()
-            );
-        }
-    }
+    let submodule_include = manifest_dir.join("../cugraph/cpp/include");
+    let include_dir = resolve_include_dir(&include_from_env, &submodule_include);
 
     // Resolve library path: env var -> in-tree fallback.
     // CMake may place the libraries in build/ or build/lib/ depending on
     // configuration, so we probe both locations when no env var is set.
+    // If the env var is set but the directory doesn't contain the required
+    // libraries, we warn and fall back to the submodule build paths.
     let library_from_env = env::var("CUGRAPH_LIBRARY_DIR").ok();
-    let library_dir = if let Some(ref dir) = library_from_env {
-        PathBuf::from(dir)
-    } else {
-        let build_dir = manifest_dir.join("../cugraph/cpp/build");
-        let candidates = [build_dir.join("lib"), build_dir.clone()];
-        candidates
-            .iter()
-            .find(|p| has_required_cugraph_libs(p))
-            .cloned()
-            .unwrap_or(candidates[0].clone())
-    };
-
-    // Use canonicalize when the path exists for a clean absolute path,
-    // otherwise fall back to the raw path and warn. This lets bindgen
-    // generate the FFI bindings even before libcugraph is compiled;
-    // the linker will produce the actual error if the library is missing.
-    let library_dir = match library_dir.canonicalize() {
-        Ok(p) => p,
-        Err(_) => {
-            println!(
-                "cargo:warning=cuGraph library directory not found: {}. \
-                 Build libcugraph first (see README) or set CUGRAPH_LIBRARY_DIR.",
-                library_dir.display()
-            );
-            library_dir
-        }
-    };
+    let build_dir = manifest_dir.join("../cugraph/cpp/build");
+    let submodule_lib_candidates = [build_dir.join("lib"), build_dir.clone()];
+    let library_dir = resolve_library_dir(&library_from_env, &submodule_lib_candidates);
 
     // If the directory exists, check that both required shared libraries are present.
     if library_dir.exists() && !has_required_cugraph_libs(&library_dir) {
-        if let Some(dir) = &library_from_env {
-            panic!(
-                "CUGRAPH_LIBRARY_DIR='{}' does not contain both required libraries \
-                 (libcugraph and libcugraph_c). Build cuGraph C API libraries first \
-                 or set CUGRAPH_LIBRARY_DIR to the correct directory.",
-                dir
-            );
-        } else {
-            println!(
-                "cargo:warning=cuGraph library directory '{}' does not contain both required \
-                 libraries (libcugraph and libcugraph_c). Build cuGraph C API libraries first \
-                 (see README) or set CUGRAPH_LIBRARY_DIR.",
-                library_dir.display()
-            );
-        }
+        println!(
+            "cargo:warning=cuGraph library directory '{}' does not contain both required \
+             libraries (libcugraph and libcugraph_c). Build cuGraph C API libraries first \
+             (see README) or set CUGRAPH_LIBRARY_DIR.",
+            library_dir.display()
+        );
     }
 
     println!("cargo:rustc-link-search=native={}", library_dir.display());
@@ -145,6 +83,90 @@ fn main() {
         "cargo:rustc-env=CUGRAPH_SYS_BINDINGS_RS={}",
         bindings_path.display()
     );
+}
+
+/// Resolve the cuGraph include directory.
+///
+/// If `env_val` is set and points to a directory containing `cugraph_c/`,
+/// use it.  Otherwise warn and fall back to the submodule path.  If neither
+/// is usable, panic with a helpful message.
+fn resolve_include_dir(env_val: &Option<String>, submodule_path: &Path) -> PathBuf {
+    if let Some(dir_str) = env_val {
+        let p = PathBuf::from(dir_str);
+        if let Ok(canon) = p.canonicalize() {
+            if canon.join("cugraph_c").is_dir() {
+                return canon;
+            }
+            println!(
+                "cargo:warning=CUGRAPH_INCLUDE_DIR='{dir_str}' does not contain cuGraph headers \
+                 (expected a cugraph_c/ subdirectory inside '{}'). Falling back to submodule.",
+                canon.display()
+            );
+        } else {
+            println!(
+                "cargo:warning=CUGRAPH_INCLUDE_DIR='{dir_str}' does not exist. \
+                 Falling back to submodule."
+            );
+        }
+    }
+
+    // Submodule fallback
+    let canon = submodule_path.canonicalize().unwrap_or_else(|e| {
+        panic!(
+            "Could not resolve cuGraph include directory '{}': {e}. \
+             Initialize the git submodule (git submodule update --init --recursive) \
+             or set CUGRAPH_INCLUDE_DIR.",
+            submodule_path.display()
+        )
+    });
+    if !canon.join("cugraph_c").is_dir() {
+        panic!(
+            "cuGraph include directory '{}' does not contain a cugraph_c/ subdirectory. \
+             The git submodule may be incomplete — try: git submodule update --init --recursive",
+            canon.display()
+        );
+    }
+    canon
+}
+
+/// Resolve the cuGraph library directory.
+///
+/// If `env_val` is set and the directory contains the required shared
+/// libraries, use it.  Otherwise warn and fall back to the submodule build
+/// candidates (build/lib/ then build/).
+fn resolve_library_dir(env_val: &Option<String>, submodule_candidates: &[PathBuf]) -> PathBuf {
+    if let Some(dir_str) = env_val {
+        let p = PathBuf::from(dir_str);
+        if p.exists() && has_required_cugraph_libs(&p) {
+            return p.canonicalize().unwrap_or(p);
+        }
+        println!(
+            "cargo:warning=CUGRAPH_LIBRARY_DIR='{dir_str}' does not contain both required \
+             libraries (libcugraph and libcugraph_c). Falling back to submodule build paths."
+        );
+    }
+
+    // Submodule fallback — pick the first candidate that has the libs
+    for candidate in submodule_candidates {
+        if has_required_cugraph_libs(candidate) {
+            return candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+        }
+    }
+
+    // None found — return the first candidate as-is (linker will error later,
+    // and a cargo:warning was already emitted by the caller if needed).
+    let fallback = submodule_candidates[0].clone();
+    match fallback.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            println!(
+                "cargo:warning=cuGraph library directory not found: {}. \
+                 Build libcugraph first (see README) or set CUGRAPH_LIBRARY_DIR.",
+                fallback.display()
+            );
+            fallback
+        }
+    }
 }
 
 fn has_required_cugraph_libs(dir: &Path) -> bool {
