@@ -37,3 +37,6 @@ pub mod graph;
 pub mod handle;
 pub mod traversal;
 pub mod types;
+
+#[cfg(feature = "cudf-interop")]
+pub mod cudf_interop;

@@ -5,9 +5,13 @@ edition = "2021"
 description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
 license = "Apache-2.0"
 
+[features]
+cudf-interop = ["cudf"]
+
 [dependencies]
 anyhow = "1"
 cugraph-sys = { path = "../cugraph-sys" }
+cudf = { path = "../../cudf-rs/cudf-rs", optional = true }
 
 [dev-dependencies]
 static_assertions = "1"
