@@ -192,8 +192,44 @@ pub(super) fn attach_row_group_byte_metadata(
     {
         native_file = native_file.with_row_group_rows(row_group_rows);
     }
+    let parquet_schema = metadata.file_metadata().schema_descr();
+    for column_index in read_column_indexes {
+        let Some(leaf_index) = single_leaf_primitive_root_column_index(parquet_schema, column_index) else {
+            continue;
+        };
+        let null_counts = metadata
+            .row_groups()
+            .iter()
+            .map(|row_group| {
+                row_group
+                    .columns()
+                    .get(leaf_index)
+                    .and_then(|column| column.statistics())
+                    .and_then(|statistics| statistics.null_count_opt())
+            })
+            .collect::<Vec<_>>();
+        native_file = native_file.with_row_group_null_counts(column_index, null_counts);
+    }
 
     native_file
+}
+
+fn single_leaf_primitive_root_column_index(
+    schema: &parquet::schema::types::SchemaDescriptor,
+    root_index: usize,
+) -> Option<usize> {
+    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
+        return None;
+    }
+    let mut leaf_indices = schema.columns().iter().enumerate().filter_map(|(leaf_index, column)| {
+        (column.path().parts().first()? == schema.root_schema().get_fields().get(root_index)?.name())
+            .then_some(leaf_index)
+    });
+    let leaf_index = leaf_indices.next()?;
+    if leaf_indices.next().is_some() {
+        return None;
+    }
+    Some(leaf_index)
 }
 
 fn file_source_ref_index(source_ref: &NativeSourceColumnRef) -> Option<usize> {
@@ -278,4 +314,33 @@ fn native_partition_values(
                 .and_then(|value| native_literal_value(value, NativeLiteralContext::SourceValue))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use parquet::schema::{parser::parse_message_type, types::SchemaDescriptor};
+
+    use super::single_leaf_primitive_root_column_index;
+
+    #[test]
+    fn null_count_leaf_mapping_refuses_nested_roots_and_maps_later_primitives() {
+        let parquet_type = parse_message_type(
+            "
+            message schema {
+              optional group payload {
+                optional int32 x;
+                optional int32 y;
+              }
+              optional int32 fact_key;
+            }
+            ",
+        )
+        .expect("test Parquet schema should parse");
+        let schema = SchemaDescriptor::new(Arc::new(parquet_type));
+
+        assert_eq!(single_leaf_primitive_root_column_index(&schema, 0), None);
+        assert_eq!(single_leaf_primitive_root_column_index(&schema, 1), Some(2));
+    }
 }

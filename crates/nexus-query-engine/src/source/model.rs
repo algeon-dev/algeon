@@ -1,6 +1,7 @@
 //! DataFusion-free native source model and reader-predicate contracts.
 
 use std::{
+    collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -1333,6 +1334,13 @@ impl LocalParquetSource {
         self.partition_columns.len()
     }
 
+    /// Returns true when every file represented by this source proves a
+    /// physical file column has no nulls in its selected row groups.
+    pub fn selected_file_column_has_no_nulls(&self, file_column_index: usize) -> bool {
+        !self.files.is_empty()
+            && self.files.iter().all(|file| file.selected_row_groups_have_no_nulls(file_column_index))
+    }
+
     fn source_column_refs(&self, columns: &[String]) -> Vec<SourceColumnRef> {
         columns.iter().filter_map(|column| self.source_column_ref(column)).collect()
     }
@@ -1958,6 +1966,12 @@ pub struct LocalParquetFile {
     pub pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     /// Estimated or known row counts for selected row groups.
     pub row_group_rows: Option<Vec<u64>>,
+    /// Per-file-column null counts by row group, keyed by physical root column index.
+    ///
+    /// Inner vectors are indexed by physical row-group number, not selected
+    /// row-group position. `None` means the footer did not prove a null count
+    /// for that column chunk.
+    pub row_group_null_counts: BTreeMap<usize, Vec<Option<u64>>>,
     /// Per-read-column decimal storage types proven from Parquet metadata.
     pub reader_decimal_types: Vec<ParquetReaderDecimalType>,
     /// Per-file field-id bindings proven from table-format and Parquet footer metadata.
@@ -1983,6 +1997,7 @@ impl fmt::Debug for LocalParquetFile {
             .field("pure_filter_row_group_compressed_bytes", &self.pure_filter_row_group_compressed_bytes)
             .field("pure_filter_row_group_uncompressed_bytes", &self.pure_filter_row_group_uncompressed_bytes)
             .field("row_group_rows", &self.row_group_rows)
+            .field("row_group_null_counts", &self.row_group_null_counts)
             .field("reader_decimal_types", &self.reader_decimal_types)
             .field("field_id_read_bindings", &self.field_id_read_bindings)
             .field("position_delete_files", &self.position_delete_files)
@@ -2010,6 +2025,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            row_group_null_counts: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
@@ -2040,6 +2056,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            row_group_null_counts: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
@@ -2064,6 +2081,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            row_group_null_counts: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             field_id_read_bindings: Vec::new(),
             position_delete_files: Vec::new(),
@@ -2125,6 +2143,22 @@ impl LocalParquetFile {
     pub fn with_row_group_rows(mut self, row_group_rows: Vec<u64>) -> Self {
         self.row_group_rows = Some(row_group_rows);
         self
+    }
+
+    /// Sets row-group null-count metadata for one physical file column.
+    pub fn with_row_group_null_counts(mut self, file_column_index: usize, null_counts: Vec<Option<u64>>) -> Self {
+        self.row_group_null_counts.insert(file_column_index, null_counts);
+        self
+    }
+
+    /// Returns true when footer stats prove this file column has no nulls in
+    /// every selected row group represented by this file descriptor.
+    pub fn selected_row_groups_have_no_nulls(&self, file_column_index: usize) -> bool {
+        let Some(null_counts) = self.row_group_null_counts.get(&file_column_index) else {
+            return false;
+        };
+        let selected = self.row_groups.clone().unwrap_or_else(|| (0..null_counts.len()).collect::<Vec<_>>());
+        selected.iter().all(|row_group| null_counts.get(*row_group).and_then(|count| *count) == Some(0))
     }
 
     /// Sets per-read-column decimal storage types proven from Parquet metadata.

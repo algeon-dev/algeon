@@ -80,6 +80,12 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     /// This preserves the adapter-side view of the scan projection so later
     /// lowering can connect DataFusion expressions to native source columns.
     pub(in crate::native) scan_output_columns: Vec<String>,
+    /// Whether this requirement exists only to preserve row presence.
+    ///
+    /// Table-format field-id rebinding must keep such carriers backed by a
+    /// physical file read; a missing/default synthetic value does not prove row
+    /// positions for source execution.
+    pub(in crate::native) requires_physical_row_presence: bool,
 }
 
 /// Computes source column roles for aggregate-root native lowering.
@@ -114,6 +120,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
             partition_column_indices: Vec::new(),
             missing_columns: Vec::new(),
             scan_output_columns: Vec::new(),
+            requires_physical_row_presence: false,
         });
     }
 
@@ -171,12 +178,20 @@ pub(in crate::native) fn required_parquet_column_requirements(
     read_columns.extend(filter_columns.iter().cloned());
     read_columns.extend(output_columns.iter().cloned());
 
-    let read_columns =
+    let mut read_columns =
         read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<BTreeSet<_>>();
-
-    let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
-    let read_columns = read_columns.into_iter().collect::<Vec<_>>();
+    let mut pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
     let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
+
+    let mut requires_physical_row_presence = false;
+    if read_columns.is_empty() && required_source_columns.is_empty() {
+        let carrier = first_supported_physical_file_column(&file_schema)?;
+        read_columns.insert(carrier.clone());
+        pure_filter_columns.push(carrier);
+        requires_physical_row_presence = true;
+    }
+
+    let read_columns = read_columns.into_iter().collect::<Vec<_>>();
     let projected_output_columns = output_columns.into_iter().collect::<Vec<_>>();
     let (partition_columns, partition_column_indices) =
         native_required_partition_columns(file_scan, &required_source_columns)?;
@@ -200,6 +215,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
         partition_column_indices,
         missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
+        requires_physical_row_presence,
     })
 }
 
@@ -248,12 +264,19 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
         scan_output_columns.insert(field.name().clone());
     }
 
-    let pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
     let mut read_columns: BTreeSet<String> = BTreeSet::new();
     read_columns.extend(filter_columns.iter().cloned());
     read_columns.extend(output_columns.iter().cloned());
-    let read_columns =
+    let mut read_columns =
         read_columns.into_iter().filter(|column| file_schema.index_of(column).is_ok()).collect::<Vec<_>>();
+    let mut pure_filter_columns = filter_columns.difference(&output_columns).cloned().collect::<Vec<_>>();
+    let mut requires_physical_row_presence = false;
+    if read_columns.is_empty() && filter_columns.is_empty() && output_columns.is_empty() {
+        let carrier = first_supported_physical_file_column(&file_schema)?;
+        read_columns.push(carrier.clone());
+        pure_filter_columns.push(carrier);
+        requires_physical_row_presence = true;
+    }
     let required_source_columns = filter_columns.union(&output_columns).cloned().collect::<BTreeSet<_>>();
     let projected_output_columns = ordered_output_columns;
     let (partition_columns, partition_column_indices) =
@@ -278,6 +301,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
         partition_column_indices,
         missing_columns,
         scan_output_columns: scan_output_columns.into_iter().collect(),
+        requires_physical_row_presence,
     })
 }
 
@@ -374,6 +398,15 @@ fn column_file_indices(file_schema: &SchemaRef, columns: &[String]) -> Result<Ve
         .iter()
         .map(|column| file_schema.index_of(column).map_err(|_error| FallbackReason::UnsupportedExpression))
         .collect()
+}
+
+fn first_supported_physical_file_column(file_schema: &SchemaRef) -> Result<String, FallbackReason> {
+    file_schema
+        .fields()
+        .iter()
+        .find(|field| is_supported_native_type(field.data_type()))
+        .map(|field| field.name().clone())
+        .ok_or(FallbackReason::UnsupportedType)
 }
 
 /// Builds the native source node's emitted schema from file and partition columns.

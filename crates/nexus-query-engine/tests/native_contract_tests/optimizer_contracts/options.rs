@@ -22,6 +22,7 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
 
     assert!(!options.projection_simplification.enabled);
     assert!(!options.semijoin_reduction.enabled);
+    assert!(!options.count_non_null_column_pruning.enabled);
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert!(result.diagnostics.is_empty());
@@ -60,6 +61,13 @@ fn aggregate_join_pushdown_options_and_rule_name_are_stable() {
     assert_eq!(AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, "aggregate_join_pushdown");
     assert!(AggregateJoinPushdownOptions::default().enabled);
     assert!(!AggregateJoinPushdownOptions::disabled().enabled);
+}
+
+#[test]
+fn count_non_null_column_pruning_options_and_rule_name_are_stable() {
+    assert_eq!(COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME, "count_non_null_column_pruning");
+    assert!(CountNonNullColumnPruningOptions::default().enabled);
+    assert!(!CountNonNullColumnPruningOptions::disabled().enabled);
 }
 
 #[test]

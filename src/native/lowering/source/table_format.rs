@@ -453,6 +453,7 @@ fn add_table_format_zero_column_count_source_node(
         partition_column_indices: Vec::new(),
         missing_columns: Vec::new(),
         scan_output_columns: Vec::new(),
+        requires_physical_row_presence: false,
     };
     let native_files = table_format_local_parquet_files(scan_plan, &requirements)?;
     let source = NativeLocalParquetSource::zero_column_count(native_files).with_scan_limit(scan_plan.scan_limit);
@@ -564,6 +565,7 @@ fn lower_table_format_count_star_fallback_source_for_plan(
         partition_column_indices: Vec::new(),
         missing_columns: Vec::new(),
         scan_output_columns: vec![read_column.clone()],
+        requires_physical_row_presence: true,
     };
     let source_output_field = if let Some(mapping) = fallback_column.direct_mapping {
         Field::new(read_column.as_str(), mapping.data_type.clone(), mapping.nullable)
@@ -783,6 +785,10 @@ fn table_format_column_requirements(
         }
     }
 
+    if ordered_required_columns.is_empty() {
+        return table_format_row_presence_carrier_requirements(scan_plan, file_schema);
+    }
+
     let mappings = table_format_column_mapping_by_name(scan_plan)?;
     let ordered_required_mappings = ordered_required_columns
         .iter()
@@ -887,6 +893,30 @@ fn table_format_column_requirements(
         partition_column_indices: Vec::new(),
         missing_columns,
         scan_output_columns,
+        requires_physical_row_presence: false,
+    })
+}
+
+fn table_format_row_presence_carrier_requirements(
+    scan_plan: &TableFormatScanPlan,
+    file_schema: &SchemaRef,
+) -> Result<NativeParquetColumnRequirements, FallbackReason> {
+    let carrier = table_format_count_star_fallback_column(scan_plan, file_schema)?;
+    let read_column = carrier.read_column;
+    let read_column_file_index = carrier.read_column_file_index;
+    Ok(NativeParquetColumnRequirements {
+        read_columns: vec![read_column.clone()],
+        read_column_file_indices: vec![read_column_file_index],
+        projected_output_columns: Vec::new(),
+        projected_output_column_source_refs: Vec::new(),
+        pure_filter_columns: vec![read_column.clone()],
+        pure_filter_column_source_refs: vec![NativeSourceColumnRef::File(read_column_file_index)],
+        partition_columns: Vec::new(),
+        partition_column_values: Vec::new(),
+        partition_column_indices: Vec::new(),
+        missing_columns: Vec::new(),
+        scan_output_columns: vec![read_column],
+        requires_physical_row_presence: true,
     })
 }
 
@@ -932,7 +962,9 @@ fn validate_table_format_direct_file_column_field_ids(
         let schema =
             table_format_data_file_footer_arrow_schema(file).ok_or(FallbackReason::IcebergFieldIdMappingUnsupported)?;
         for (mapping, field_id) in &direct_mappings {
-            let Some((_index, field)) = footer_field_by_id(&schema, *field_id) else {
+            let Some((_index, field)) = footer_field_by_id(&schema, *field_id)
+                .or_else(|| footer_field_by_mapping_name_without_field_id(&schema, mapping))
+            else {
                 if mapping.nullable {
                     continue;
                 }
@@ -949,6 +981,10 @@ fn validate_table_format_direct_file_column_field_ids(
 
 fn parquet_field_id(field: &Field) -> Option<i32> {
     field.metadata().get(PARQUET_FIELD_ID_META_KEY).and_then(|value| value.parse::<i32>().ok())
+}
+
+fn parquet_field_id_metadata_is_absent(field: &Field) -> bool {
+    !field.metadata().contains_key(PARQUET_FIELD_ID_META_KEY)
 }
 
 fn table_format_column_source_refs(
@@ -1020,6 +1056,9 @@ fn table_format_source_read_groups(
             table_format_file_field_id_read_bindings(file_index, &footer_schema, requirements, &mappings)?;
         let file_requirements =
             table_format_requirements_for_file(requirements, &mappings, &file_bindings, &footer_schema)?;
+        if requirements.requires_physical_row_presence && file_requirements.read_columns.is_empty() {
+            return Err(FallbackReason::IcebergFieldIdMappingUnsupported);
+        }
         let source_schema = table_format_source_contract_schema(&file_requirements, &output_schema, &footer_schema)?;
         let key = table_format_source_group_key(&file_requirements);
         if let Some(group_index) = group_by_key.get(&key).copied() {
@@ -1076,7 +1115,9 @@ fn table_format_file_field_id_read_bindings(
         if !seen.insert(field_id) {
             continue;
         }
-        let Some((physical_root_index, field)) = footer_field_by_id(footer_schema, field_id) else {
+        let Some((physical_root_index, field)) = footer_field_by_id(footer_schema, field_id)
+            .or_else(|| footer_field_by_mapping_name_without_field_id(footer_schema, mapping))
+        else {
             if mapping.nullable || mapping.missing_default_value.is_some() {
                 continue;
             }
@@ -1178,6 +1219,7 @@ fn table_format_requirements_for_file(
         partition_column_indices: base.partition_column_indices.clone(),
         missing_columns,
         scan_output_columns: base.scan_output_columns.clone(),
+        requires_physical_row_presence: base.requires_physical_row_presence,
     })
 }
 
@@ -1309,6 +1351,23 @@ fn footer_field_by_id(schema: &Schema, field_id: i32) -> Option<(usize, &Field)>
         .map(|(index, field)| (index, field.as_ref()))
 }
 
+fn footer_field_by_mapping_name_without_field_id<'a>(
+    schema: &'a Schema,
+    mapping: &TableFormatColumnMapping,
+) -> Option<(usize, &'a Field)> {
+    let source_name = mapping.source_name.as_ref().unwrap_or(&mapping.logical_name);
+    schema
+        .fields()
+        .iter()
+        .enumerate()
+        .find(|(_index, field)| {
+            field.name() == source_name
+                && parquet_field_id_metadata_is_absent(field)
+                && table_format_footer_field_matches_mapping(field, mapping)
+        })
+        .map(|(index, field)| (index, field.as_ref()))
+}
+
 fn table_format_source_output_schema(
     scan_plan: &TableFormatScanPlan,
     requirements: &NativeParquetColumnRequirements,
@@ -1420,6 +1479,11 @@ fn table_format_local_parquet_file(
     }
     if !requirements.partition_columns.is_empty() {
         native_file = native_file.with_partition_values(table_format_partition_values(file, requirements)?);
+    }
+    for file_column_index in &requirements.read_column_file_indices {
+        if let Some(null_counts) = file.row_group_null_counts.get(file_column_index) {
+            native_file = native_file.with_row_group_null_counts(*file_column_index, null_counts.clone());
+        }
     }
     Ok(attach_row_group_byte_metadata(native_file, requirements))
 }
@@ -1650,7 +1714,7 @@ fn table_format_field_metadata_matches_except_parquet_field_id(
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{BTreeSet, HashMap},
         fs,
         fs::File,
         time::{SystemTime, UNIX_EPOCH},
@@ -1682,6 +1746,7 @@ mod tests {
             partition_column_indices: Vec::new(),
             missing_columns: Vec::new(),
             scan_output_columns: vec!["c0".to_string()],
+            requires_physical_row_presence: false,
         }
     }
 
@@ -1720,6 +1785,69 @@ mod tests {
         assert_eq!(requirements.read_columns, vec!["status"]);
         assert_eq!(requirements.read_column_file_indices, vec![0]);
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_local_footer_missing_field_id_uses_same_name_direct_file_column() {
+        let dir = unique_table_format_temp_dir("field-id-missing-name-match");
+        let path = dir.join("part.parquet");
+        write_plain_parquet_file_with_nullability(&path, "status", true);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let scan_plan = single_projected_file_scan_plan_with_nullability(&path, Arc::clone(&scan_schema), 2, true);
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].requirements.read_columns, vec!["status"]);
+        assert_eq!(groups[0].requirements.read_column_file_indices, vec![0]);
+        assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
+        assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "status");
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_footer_malformed_field_id_metadata_rejects_same_name_fallback() {
+        let footer_field = Field::new("status", DataType::Int64, false)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "bad-id".to_string())]));
+        let footer_schema = Arc::new(Schema::new(vec![footer_field]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int64,
+                false,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
     }
 
     #[test]
@@ -2554,6 +2682,114 @@ mod tests {
         fs::remove_dir_all(dir).ok();
     }
 
+    #[test]
+    fn table_format_count_star_fallback_admits_same_name_carrier_without_field_id() {
+        let dir = unique_table_format_temp_dir("count-star-field-id-missing-name-match");
+        let path = dir.join("part.parquet");
+        write_plain_parquet_file_with_nullability(&path, "status", false);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let scan_plan = single_pure_filter_file_scan_plan(&path, Arc::clone(&scan_schema), 2);
+        let mut builder = NativeQueryPlanBuilder::new();
+
+        let lowered = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
+            .expect("same-name carrier without a footer field id should admit COUNT(*) fallback");
+
+        assert_eq!(lowered.schema.field(0).name(), NATIVE_ZERO_COLUMN_COUNT_COLUMN);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_empty_required_fields_uses_field_id_carrier_without_projecting_it() {
+        let dir = unique_table_format_temp_dir("empty-required-field-id-carrier");
+        let path = dir.join("part.parquet");
+        write_field_id_parquet_file(&path, "old_status", 2);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let scan_plan = single_projected_file_scan_plan(&path, Arc::clone(&scan_schema), 2);
+        let file_schema = table_format_file_schema(&scan_plan);
+
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::only(BTreeSet::new()),
+        )
+        .unwrap();
+
+        assert_eq!(requirements.read_columns, vec!["status"]);
+        assert_eq!(requirements.read_column_file_indices, vec![0]);
+        assert!(requirements.projected_output_columns.is_empty());
+        assert_eq!(requirements.pure_filter_columns, vec!["status"]);
+        assert_eq!(requirements.pure_filter_column_source_refs, vec![NativeSourceColumnRef::File(0)]);
+        assert_eq!(requirements.scan_output_columns, vec!["status"]);
+        assert!(requirements.requires_physical_row_presence);
+
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+        let (native_source, _) =
+            table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None)
+                .unwrap();
+
+        assert_eq!(groups[0].requirements.read_columns, vec!["old_status"]);
+        assert!(groups[0].requirements.projected_output_columns.is_empty());
+        assert_eq!(groups[0].requirements.pure_filter_columns, vec!["status"]);
+        assert_eq!(native_source.read_columns, vec!["old_status"]);
+        assert!(native_source.projected_output_columns.is_empty());
+        assert_eq!(native_source.pure_filter_columns, vec!["status"]);
+        validate_local_parquet_source(&native_source).unwrap();
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_empty_required_fields_rejects_missing_field_id_carrier_column() {
+        let dir = unique_table_format_temp_dir("empty-required-missing-carrier");
+        let path = dir.join("part.parquet");
+        write_field_id_parquet_file(&path, "other", 1);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let scan_plan = single_projected_file_scan_plan_with_nullability(&path, Arc::clone(&scan_schema), 2, true);
+        let file_schema = table_format_file_schema(&scan_plan);
+
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            scan_schema,
+            None,
+            &RequiredFields::only(BTreeSet::new()),
+        )
+        .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
+            .err()
+            .expect("row-presence carrier must remain backed by a physical file read");
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn table_format_empty_required_fields_rejects_iceberg_implicit_local_carrier_column() {
+        let dir = unique_table_format_temp_dir("empty-required-implicit-carrier");
+        let path = dir.join("part.parquet");
+        write_field_id_parquet_file(&path, "status", 2);
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, false)]));
+        let scan_plan = single_unmapped_file_scan_plan(&path, Arc::clone(&scan_schema));
+        let file_schema = table_format_file_schema(&scan_plan);
+
+        let error = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            scan_schema,
+            None,
+            &RequiredFields::only(BTreeSet::new()),
+        )
+        .err()
+        .expect("Iceberg empty required fields must not synthesize a name-based carrier column");
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+        fs::remove_dir_all(dir).ok();
+    }
+
     fn single_projected_file_scan_plan(path: &Path, schema: SchemaRef, field_id: i32) -> TableFormatScanPlan {
         single_projected_file_scan_plan_with_nullability(path, schema, field_id, false)
     }
@@ -2665,6 +2901,14 @@ mod tests {
     fn write_field_id_parquet_file_with_nullability(path: &Path, column_name: &str, field_id: i32, nullable: bool) {
         let field = Field::new(column_name, DataType::Int64, nullable)
             .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), field_id.to_string())]));
+        write_parquet_file_with_field(path, field);
+    }
+
+    fn write_plain_parquet_file_with_nullability(path: &Path, column_name: &str, nullable: bool) {
+        write_parquet_file_with_field(path, Field::new(column_name, DataType::Int64, nullable));
+    }
+
+    fn write_parquet_file_with_field(path: &Path, field: Field) {
         let schema = Arc::new(Schema::new(vec![field]));
         let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![10, 20]))]).unwrap();
         let file = File::create(path).unwrap();
