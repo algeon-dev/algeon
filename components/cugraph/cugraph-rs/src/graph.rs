@@ -48,10 +48,7 @@ impl Graph {
     ) -> Result<Self> {
         if src.len() != dst.len() {
             return Err(Error::new(ErrorKind::InvalidInput, "Graph::from_edge_list")
-                .with_context(
-                    "message",
-                    "src and dst must have the same number of elements",
-                )
+                .with_message("src and dst must have the same number of elements")
                 .with_context("src_len", src.len().to_string())
                 .with_context("dst_len", dst.len().to_string()));
         }
@@ -59,10 +56,7 @@ impl Graph {
         if let Some(w) = weights {
             if w.len() != src.len() {
                 return Err(Error::new(ErrorKind::InvalidInput, "Graph::from_edge_list")
-                    .with_context(
-                        "message",
-                        "weights must have the same number of elements as src/dst",
-                    )
+                    .with_message("weights must have the same number of elements as src/dst")
                     .with_context("src_len", src.len().to_string())
                     .with_context("weights_len", w.len().to_string()));
             }

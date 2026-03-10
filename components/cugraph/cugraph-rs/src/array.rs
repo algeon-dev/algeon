@@ -78,10 +78,7 @@ impl DeviceArray {
         if data.len() != expected {
             return Err(
                 Error::new(ErrorKind::InvalidInput, "DeviceArray::copy_from_host")
-                    .with_context(
-                        "message",
-                        "host input length must exactly match device array byte length",
-                    )
+                    .with_message("host input length must exactly match device array byte length")
                     .with_context("expected_len", expected.to_string())
                     .with_context("actual_len", data.len().to_string()),
             );
@@ -111,10 +108,7 @@ impl DeviceArray {
         if dest.len() != expected {
             return Err(
                 Error::new(ErrorKind::InvalidInput, "DeviceArray::copy_to_host")
-                    .with_context(
-                        "message",
-                        "destination length must exactly match device array byte length",
-                    )
+                    .with_message("destination length must exactly match device array byte length")
                     .with_context("expected_len", expected.to_string())
                     .with_context("actual_len", dest.len().to_string()),
             );
@@ -163,7 +157,10 @@ pub unsafe trait DeviceBuffer {
     fn len(&self) -> usize;
 
     /// Element type of the allocation.
-    fn dtype(&self) -> DataType;
+    ///
+    /// Returns an error if the underlying type has no cuGraph equivalent (e.g.
+    /// a timestamp or string type from an external library).
+    fn dtype(&self) -> Result<DataType>;
 }
 
 /// A non-owning view into device (GPU) memory.
@@ -219,23 +216,24 @@ impl<'a> DeviceArrayView<'a> {
     /// This is the ergonomic constructor for zero-copy interop. The lifetime
     /// of the returned view is tied to `buffer`, preventing accidental use
     /// after the external allocation is dropped.
-    pub fn from_device_buffer<B>(buffer: &'a B) -> Self
+    pub fn from_device_buffer<B>(buffer: &'a B) -> Result<Self>
     where
         B: DeviceBuffer + ?Sized,
     {
+        let dtype = buffer.dtype()?;
         let raw = unsafe {
             cugraph_type_erased_device_array_view_create(
                 buffer.device_ptr(),
                 buffer.len(),
-                buffer.dtype().into(),
+                dtype.into(),
             )
         };
-        DeviceArrayView {
+        Ok(DeviceArrayView {
             raw,
             owned: true,
             _lifetime: PhantomData,
             _nosend_nosync: PhantomData,
-        }
+        })
     }
 
     /// Device pointer to the first element of this view.
@@ -257,8 +255,7 @@ impl<'a> DeviceArrayView<'a> {
     pub fn dtype(&self) -> Result<DataType> {
         let c_type = unsafe { cugraph_type_erased_device_array_view_type(self.raw) };
         DataType::try_from(c_type).map_err(|_| {
-            Error::new(ErrorKind::UnsupportedType, "DeviceArrayView::dtype").with_context(
-                "message",
+            Error::new(ErrorKind::UnsupportedType, "DeviceArrayView::dtype").with_message(
                 format!("unknown cugraph_data_type_id_t value: {}", c_type.0),
             )
         })
@@ -343,13 +340,18 @@ pub fn device_array_from_host<T: Copy>(
     data: &[T],
     dtype: DataType,
 ) -> Result<DeviceArray> {
-    let byte_len = std::mem::size_of_val(data);
-    assert_eq!(
-        std::mem::size_of::<T>(),
-        dtype.size_of(),
-        "type size mismatch"
-    );
+    let type_size = std::mem::size_of::<T>();
+    let dtype_size = dtype.size_of();
+    if type_size != dtype_size {
+        return Err(
+            Error::new(ErrorKind::InvalidInput, "device_array_from_host")
+                .with_message("Rust type size does not match the specified DataType size")
+                .with_context("rust_type_size", type_size.to_string())
+                .with_context("dtype_size", dtype_size.to_string()),
+        );
+    }
 
+    let byte_len = std::mem::size_of_val(data);
     let mut arr = DeviceArray::new(handle, data.len(), dtype)?;
     let bytes = unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, byte_len) };
     arr.copy_from_host(handle, bytes)?;
@@ -365,10 +367,8 @@ unsafe impl DeviceBuffer for DeviceArray {
         self.view().len()
     }
 
-    fn dtype(&self) -> DataType {
-        self.view()
-            .dtype()
-            .expect("DeviceArray must contain a valid cuGraph data type")
+    fn dtype(&self) -> Result<DataType> {
+        self.view().dtype()
     }
 }
 
@@ -381,9 +381,8 @@ unsafe impl<'a> DeviceBuffer for DeviceArrayView<'a> {
         DeviceArrayView::len(self)
     }
 
-    fn dtype(&self) -> DataType {
-        self.dtype()
-            .expect("DeviceArrayView must contain a valid cuGraph data type")
+    fn dtype(&self) -> Result<DataType> {
+        DeviceArrayView::dtype(self)
     }
 }
 
@@ -513,8 +512,8 @@ mod tests {
                 self.arr.view().len()
             }
 
-            fn dtype(&self) -> DataType {
-                self.dtype
+            fn dtype(&self) -> crate::error::Result<DataType> {
+                Ok(self.dtype)
             }
         }
 
@@ -527,7 +526,7 @@ mod tests {
             dtype: DataType::Int32,
         };
 
-        let view = DeviceArrayView::from_device_buffer(&ext);
+        let view = DeviceArrayView::from_device_buffer(&ext).expect("from_device_buffer");
         assert_eq!(view.len(), 4);
         assert_eq!(view.dtype().expect("dtype"), DataType::Int32);
 
@@ -537,5 +536,19 @@ mod tests {
             .map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         assert_eq!(result, src);
+    }
+
+    #[test]
+    fn test_device_array_from_host_rejects_type_size_mismatch() {
+        let handle = ResourceHandle::new().expect("handle");
+        // i64 (8 bytes) does not match Int32 (4 bytes)
+        let data: Vec<i64> = vec![1, 2, 3];
+        let err = match device_array_from_host(&handle, &data, DataType::Int32) {
+            Ok(_) => panic!("must reject type size mismatch"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), crate::error::ErrorKind::InvalidInput);
+        assert_eq!(err.operation(), "device_array_from_host");
+        assert!(err.message().contains("size"));
     }
 }

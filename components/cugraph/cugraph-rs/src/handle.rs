@@ -29,7 +29,7 @@ impl ResourceHandle {
         let raw = unsafe { cugraph_create_resource_handle(ptr::null_mut()) };
         if raw.is_null() {
             return Err(Error::new(ErrorKind::Unexpected, "ResourceHandle::new")
-                .with_context("message", "cugraph_create_resource_handle returned NULL"));
+                .with_message("cugraph_create_resource_handle returned NULL"));
         }
         Ok(Self {
             raw,
