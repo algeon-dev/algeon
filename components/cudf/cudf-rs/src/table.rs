@@ -27,6 +27,8 @@ impl Table {
                 ErrorKind::InvalidOperation,
                 "number of columns exceeds i32::MAX",
             )
+            .with_operation("table::from_columns")
+            .with_context("num_columns", columns.len().to_string())
         })?;
         let mut handles: Vec<*mut c_void> = columns.into_iter().map(|c| c.into_raw()).collect();
 
@@ -129,12 +131,16 @@ impl<'a> TableView<'a> {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
                 "table column index must be >= 0",
-            ));
+            )
+            .with_operation("table_view::column")
+            .with_context("column_index", index.to_string()));
         }
 
         let mut col_handle = ptr::null_mut();
         error::check_status_in(
-            unsafe { cudf_sys::cudf_table_view_column(self.handle.as_ptr(), index, &mut col_handle) },
+            unsafe {
+                cudf_sys::cudf_table_view_column(self.handle.as_ptr(), index, &mut col_handle)
+            },
             "table_view::column",
         )?;
         Ok(unsafe { ColumnView::from_raw(col_handle) })

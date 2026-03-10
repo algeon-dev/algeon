@@ -200,6 +200,32 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
+                                        const void** out) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    // data<uint8_t>() returns the base device pointer. For STRING columns
+    // this is nullptr — callers should use child views instead.
+    *out = view->head<uint8_t>();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
+                                      int32_t* out) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    *out = view->offset();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
                                        void* host_buf, size_t buf_size) {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");

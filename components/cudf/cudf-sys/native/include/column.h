@@ -77,6 +77,28 @@ cudf_status_t cudf_column_view_child(cudf_column_view_handle handle,
 cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
                                        void* host_buf, size_t buf_size);
 
+/// Get the raw device (GPU) data pointer of a column_view.
+///
+/// Returns the pointer to the device memory that backs this column's data.
+/// The pointer remains valid as long as the underlying column/table is alive.
+///
+/// For fixed-width types the pointer addresses `size` contiguous elements.
+/// For STRING columns the data pointer is NULL — use child column views
+/// (child 0 = offsets, child 1 = chars) to access device data instead.
+///
+/// The offset of the column view is NOT applied — the pointer is to the
+/// base of the device buffer. Callers working with sliced views must add
+/// `offset * element_size` manually.
+cudf_status_t cudf_column_view_data_ptr(cudf_column_view_handle handle,
+                                        const void** out);
+
+/// Get the element offset of a column_view into its parent buffer.
+///
+/// Returns 0 for non-sliced columns. For sliced views, the offset indicates
+/// how many elements from the start of the device buffer the view begins.
+cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
+                                      int32_t* out);
+
 /// Copy null mask to host buffer. `host_buf` must be at least
 /// bitmask_allocation_size_bytes(size) bytes.
 ///

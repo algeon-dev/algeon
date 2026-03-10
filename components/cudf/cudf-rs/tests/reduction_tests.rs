@@ -126,7 +126,10 @@ fn test_reduce_negative_ddof_contains_context() {
     .err()
     .expect("expected error");
 
-    assert_eq!(err.operation(), "reduction::create_reduce_agg_handle(variance)");
+    assert_eq!(
+        err.operation(),
+        "reduction::create_reduce_agg_handle(variance)"
+    );
     let ctx = err.context();
     assert!(ctx.iter().any(|(k, _)| *k == "ddof"));
 }

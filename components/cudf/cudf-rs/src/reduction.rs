@@ -19,9 +19,13 @@ pub enum ReduceAggregation {
     Any,
     All,
     /// Variance with degrees-of-freedom correction.
-    Variance { ddof: i32 },
+    Variance {
+        ddof: i32,
+    },
     /// Standard deviation with degrees-of-freedom correction.
-    Std { ddof: i32 },
+    Std {
+        ddof: i32,
+    },
 }
 
 /// Aggregation type for scan (prefix) operations.
@@ -120,12 +124,9 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
         }
         ReduceAggregation::Variance { ddof } => {
             if *ddof < 0 {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "ddof must be >= 0",
-                )
-                .with_operation("reduction::create_reduce_agg_handle(variance)")
-                .with_context("ddof", ddof.to_string()));
+                return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
+                    .with_operation("reduction::create_reduce_agg_handle(variance)")
+                    .with_context("ddof", ddof.to_string()));
             }
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create_variance(*ddof, &mut handle),
@@ -134,12 +135,9 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAggregation) -> Result<*mut c_voi
         }
         ReduceAggregation::Std { ddof } => {
             if *ddof < 0 {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "ddof must be >= 0",
-                )
-                .with_operation("reduction::create_reduce_agg_handle(std)")
-                .with_context("ddof", ddof.to_string()));
+                return Err(Error::new(ErrorKind::InvalidOperation, "ddof must be >= 0")
+                    .with_operation("reduction::create_reduce_agg_handle(std)")
+                    .with_context("ddof", ddof.to_string()));
             }
             error::check_status_in(
                 cudf_sys::cudf_reduce_aggregation_create_std(*ddof, &mut handle),
@@ -177,9 +175,8 @@ pub fn reduce(
     let dtype_handle = output_type.to_raw_handle_for("reduction::reduce")?;
 
     let mut out = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out)
-    };
+    let status =
+        unsafe { cudf_sys::cudf_reduce(input.raw_handle(), agg_handle, dtype_handle, &mut out) };
 
     unsafe {
         cudf_sys::cudf_reduce_aggregation_destroy(agg_handle);

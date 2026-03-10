@@ -19,5 +19,7 @@
 #include "binary.h"
 #include "reduction.h"
 #include "concatenate.h"
+#include "dictionary.h"
+#include "hashing.h"
 
 #endif  // CUDF_RUST_H

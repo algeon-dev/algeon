@@ -61,8 +61,9 @@ impl Scalar {
         let c_str = CString::new(value).map_err(|_| {
             Error::new(
                 ErrorKind::InvalidOperation,
-                "String contains interior null byte",
+                "string contains interior null byte",
             )
+            .with_operation("scalar::from_string")
         })?;
         let mut handle = ptr::null_mut();
         error::check_status_in(
@@ -131,20 +132,16 @@ impl Scalar {
         if dt.id() != T::TYPE_ID {
             return Err(Error::new(
                 ErrorKind::TypeError,
-                format!(
-                    "Scalar type {:?} does not match requested type {:?}",
-                    dt.id(),
-                    T::TYPE_ID
-                ),
-            ));
+                "scalar type does not match requested type",
+            )
+            .with_operation("scalar::value")
+            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+            .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
         let mut out = unsafe { std::mem::zeroed::<T>() };
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_scalar_value(
-                    self.handle.as_ptr(),
-                    &mut out as *mut T as *mut c_void,
-                )
+                cudf_sys::cudf_scalar_value(self.handle.as_ptr(), &mut out as *mut T as *mut c_void)
             },
             "scalar::value",
         )?;

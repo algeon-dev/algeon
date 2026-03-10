@@ -22,8 +22,7 @@ fn test_sort_descending() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let sorted =
-        sorting::sort(&view, Some(&[Order::Descending]), None).unwrap();
+    let sorted = sorting::sort(&view, Some(&[Order::Descending]), None).unwrap();
     let sv = sorted.view().unwrap();
     let result = sv.column(0).unwrap().to_vec::<i32>().unwrap();
     assert_eq!(result, vec![3, 2, 1]);
@@ -37,12 +36,7 @@ fn test_sort_multi_column() {
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let view = table.view().unwrap();
 
-    let sorted = sorting::sort(
-        &view,
-        Some(&[Order::Ascending, Order::Descending]),
-        None,
-    )
-    .unwrap();
+    let sorted = sorting::sort(&view, Some(&[Order::Ascending, Order::Descending]), None).unwrap();
     let sv = sorted.view().unwrap();
 
     let col0 = sv.column(0).unwrap().to_vec::<i32>().unwrap();
@@ -53,21 +47,13 @@ fn test_sort_multi_column() {
 
 #[test]
 fn test_sort_with_nulls() {
-    let col = Column::from_slice_nullable(
-        &[3i32, 1, 2],
-        &[true, false, true],
-    )
-    .unwrap();
+    let col = Column::from_slice_nullable(&[3i32, 1, 2], &[true, false, true]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
     // Nulls before: null should appear first.
-    let sorted = sorting::sort(
-        &view,
-        Some(&[Order::Ascending]),
-        Some(&[NullOrder::Before]),
-    )
-    .unwrap();
+    let sorted =
+        sorting::sort(&view, Some(&[Order::Ascending]), Some(&[NullOrder::Before])).unwrap();
     let sv = sorted.view().unwrap();
     let validity = sv.column(0).unwrap().validity().unwrap().unwrap();
     // The first element should be null.

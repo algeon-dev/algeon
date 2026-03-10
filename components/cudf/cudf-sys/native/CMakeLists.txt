@@ -92,6 +92,8 @@ add_library(
   src/binary.cpp
   src/reduction.cpp
   src/concatenate.cpp
+  src/dictionary.cpp
+  src/hashing.cpp
   src/abi_checks.cpp
   src/c_header_smoke.c
 )

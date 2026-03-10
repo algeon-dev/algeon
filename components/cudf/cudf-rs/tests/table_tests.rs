@@ -54,11 +54,7 @@ fn test_empty_table() {
 
 #[test]
 fn test_table_with_nullable_columns() {
-    let c1 = Column::from_slice_nullable(
-        &[1i32, 2, 3],
-        &[true, false, true],
-    )
-    .unwrap();
+    let c1 = Column::from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();

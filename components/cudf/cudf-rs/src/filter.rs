@@ -14,11 +14,7 @@ pub fn apply_boolean_mask(input: &TableView<'_>, mask: &ColumnView<'_>) -> Resul
     let mut out = ptr::null_mut();
     error::check_status_in(
         unsafe {
-            cudf_sys::cudf_apply_boolean_mask(
-                input.raw_handle(),
-                mask.raw_handle(),
-                &mut out,
-            )
+            cudf_sys::cudf_apply_boolean_mask(input.raw_handle(), mask.raw_handle(), &mut out)
         },
         "filter::apply_boolean_mask",
     )?;
