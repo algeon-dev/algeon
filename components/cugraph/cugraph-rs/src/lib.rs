@@ -35,6 +35,8 @@ pub mod centrality;
 pub mod error;
 pub mod graph;
 pub mod handle;
+pub mod layout;
+pub mod random;
 pub mod structure;
 pub mod traversal;
 pub mod types;

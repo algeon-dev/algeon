@@ -3,6 +3,8 @@ use static_assertions::assert_not_impl_any;
 use cugraph::array::{DeviceArray, DeviceArrayView, HostArrayView};
 use cugraph::centrality::{CentralityResult, PageRankResult};
 use cugraph::graph::Graph;
+use cugraph::layout::LayoutResult;
+use cugraph::random::RngState;
 use cugraph::traversal::BfsResult;
 
 #[test]
@@ -15,4 +17,6 @@ fn graph_and_result_types_are_not_send_or_sync() {
     assert_not_impl_any!(CentralityResult: Send, Sync);
     assert_not_impl_any!(PageRankResult: Send, Sync);
     assert_not_impl_any!(BfsResult: Send, Sync);
+    assert_not_impl_any!(LayoutResult: Send, Sync);
+    assert_not_impl_any!(RngState: Send, Sync);
 }
