@@ -20,7 +20,7 @@
 //! let dst = device_array_from_host(&handle, &[1i32, 2, 0], DataType::Int32).unwrap();
 //!
 //! let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-//! let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, false, true).unwrap();
+//! let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true).unwrap();
 //!
 //! let result = pagerank(&handle, &mut graph, &PageRankParams::default()).unwrap();
 //! println!(
