@@ -28,9 +28,7 @@ use std::ptr;
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {
     let mut out = ptr::null_mut();
     error::check_status_in(
-        unsafe {
-            cudf_sys::cudf_contains(haystack.raw_handle(), needles.raw_handle(), &mut out)
-        },
+        unsafe { cudf_sys::cudf_contains(haystack.raw_handle(), needles.raw_handle(), &mut out) },
         "search::contains",
     )?;
     Ok(unsafe { Column::from_raw(out) })

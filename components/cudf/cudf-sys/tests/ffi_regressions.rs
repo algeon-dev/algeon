@@ -129,6 +129,97 @@ fn test_sort_negative_num_keys_rejected() {
 }
 
 #[test]
+fn test_drop_nulls_negative_num_keys_rejected() {
+    let col = make_i32_column(&[1, 2, 3]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let keys = [0i32];
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_drop_nulls(tv, keys.as_ptr(), -1, 1, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_distinct_negative_num_keys_rejected() {
+    let col = make_i32_column(&[1, 2, 3]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let keys = [0i32];
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), -1, 0, 0, 0, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_gather_invalid_bounds_policy_rejected() {
+    let col = make_i32_column(&[10, 20, 30]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let map_col = make_i32_column(&[0, 2]);
+    let map_view = make_column_view(map_col);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_gather(tv, map_view, 99, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(map_view);
+        cudf_sys::cudf_column_destroy(map_col);
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_distinct_invalid_policy_values_rejected() {
+    let col = make_i32_column(&[1, 2, 2]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let keys = [0i32];
+    let mut out: *mut c_void = ptr::null_mut();
+
+    // Invalid keep policy
+    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), 1, 99, 0, 0, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    // Invalid null equality policy
+    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), 1, 0, 99, 0, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    // Invalid nan equality policy
+    let status = unsafe { cudf_sys::cudf_distinct(tv, keys.as_ptr(), 1, 0, 0, 99, &mut out) };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
 fn test_column_create_numeric_negative_size_rejected() {
     let data: [i32; 1] = [42];
     let mut out: *mut c_void = ptr::null_mut();
@@ -180,6 +271,44 @@ fn test_column_create_numeric_null_count_requires_mask() {
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
+}
+
+#[test]
+fn test_drop_nulls_zero_num_keys_allows_null_keys_pointer() {
+    let col = make_i32_column(&[1, 2, 3]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_drop_nulls(tv, ptr::null(), 0, 0, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
+}
+
+#[test]
+fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
+    let col = make_i32_column(&[1, 2, 2]);
+    let tbl = make_table_from_one_column(col);
+    let tv = make_table_view(tbl);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_distinct(tv, ptr::null(), 0, 0, 0, 0, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+
+    unsafe {
+        cudf_sys::cudf_table_destroy(out);
+        cudf_sys::cudf_table_view_destroy(tv);
+        cudf_sys::cudf_table_destroy(tbl);
+    }
 }
 
 #[test]

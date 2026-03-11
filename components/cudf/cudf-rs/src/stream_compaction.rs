@@ -55,27 +55,11 @@ pub enum NanEquality {
 /// let result = stream_compaction::drop_nulls(&table.view().unwrap(), &[0], 1).unwrap();
 /// // Rows with null in column 0 are removed.
 /// ```
-pub fn drop_nulls(
-    input: &TableView<'_>,
-    keys: &[i32],
-    keep_threshold: i32,
-) -> Result<Table> {
-    if keys.is_empty() {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "keys must not be empty",
-        )
-        .with_operation("stream_compaction::drop_nulls")
-        .with_context("num_keys", "0"));
-    }
-
+pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> Result<Table> {
     let num_keys = i32::try_from(keys.len()).map_err(|_| {
-        Error::new(
-            ErrorKind::InvalidOperation,
-            "num_keys exceeds i32::MAX",
-        )
-        .with_operation("stream_compaction::drop_nulls")
-        .with_context("num_keys", keys.len().to_string())
+        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
+            .with_operation("stream_compaction::drop_nulls")
+            .with_context("num_keys", keys.len().to_string())
     })?;
 
     let mut out = ptr::null_mut();
@@ -127,22 +111,10 @@ pub fn distinct(
     null_equality: NullEquality,
     nan_equality: NanEquality,
 ) -> Result<Table> {
-    if keys.is_empty() {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "keys must not be empty",
-        )
-        .with_operation("stream_compaction::distinct")
-        .with_context("num_keys", "0"));
-    }
-
     let num_keys = i32::try_from(keys.len()).map_err(|_| {
-        Error::new(
-            ErrorKind::InvalidOperation,
-            "num_keys exceeds i32::MAX",
-        )
-        .with_operation("stream_compaction::distinct")
-        .with_context("num_keys", keys.len().to_string())
+        Error::new(ErrorKind::InvalidOperation, "num_keys exceeds i32::MAX")
+            .with_operation("stream_compaction::distinct")
+            .with_context("num_keys", keys.len().to_string())
     })?;
 
     let mut out = ptr::null_mut();

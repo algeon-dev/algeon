@@ -31,8 +31,7 @@ fn test_replace_nulls_no_nulls() {
 #[test]
 fn test_replace_nulls_all_null() {
     // All-null column — all values should be replaced.
-    let col =
-        Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
+    let col = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let replacement = Scalar::from_value(42i32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();
@@ -43,8 +42,7 @@ fn test_replace_nulls_all_null() {
 
 #[test]
 fn test_replace_nulls_float32() {
-    let col =
-        Column::from_slice_nullable(&[1.0f32, 0.0, 3.0], &[true, false, true]).unwrap();
+    let col = Column::from_slice_nullable(&[1.0f32, 0.0, 3.0], &[true, false, true]).unwrap();
     let replacement = Scalar::from_value(0.0f32).unwrap();
     let view = col.view().unwrap();
     let result = replace::replace_nulls(&view, &replacement).unwrap();

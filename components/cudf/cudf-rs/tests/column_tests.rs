@@ -150,7 +150,10 @@ fn test_device_data_ptr_i32() {
     let view = col.view().unwrap();
 
     let ptr = view.device_data_ptr().unwrap();
-    assert!(!ptr.is_null(), "device data pointer for i32 column must be non-null");
+    assert!(
+        !ptr.is_null(),
+        "device data pointer for i32 column must be non-null"
+    );
 }
 
 #[test]
@@ -160,7 +163,10 @@ fn test_device_data_ptr_f64() {
     let view = col.view().unwrap();
 
     let ptr = view.device_data_ptr().unwrap();
-    assert!(!ptr.is_null(), "device data pointer for f64 column must be non-null");
+    assert!(
+        !ptr.is_null(),
+        "device data pointer for f64 column must be non-null"
+    );
 }
 
 #[test]
@@ -241,9 +247,8 @@ fn test_device_slice_split_at() {
     assert_eq!(left.as_ptr(), slice.as_ptr());
 
     // Right pointer should be offset by 2 elements = 8 bytes.
-    let expected_right = unsafe {
-        (slice.as_ptr() as *const u8).add(2 * 4) as *mut std::ffi::c_void
-    };
+    let expected_right =
+        unsafe { (slice.as_ptr() as *const u8).add(2 * 4) as *mut std::ffi::c_void };
     assert_eq!(right.as_ptr(), expected_right);
 }
 

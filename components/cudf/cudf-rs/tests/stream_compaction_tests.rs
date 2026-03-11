@@ -19,7 +19,10 @@ fn test_drop_nulls_basic() {
     let rv = result.view().unwrap();
     assert_eq!(rv.num_rows().unwrap(), 2);
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 3]);
-    assert_eq!(rv.column(1).unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0]);
+    assert_eq!(
+        rv.column(1).unwrap().to_vec::<f64>().unwrap(),
+        vec![10.0, 30.0]
+    );
 }
 
 #[test]
@@ -35,8 +38,7 @@ fn test_drop_nulls_no_nulls() {
 
 #[test]
 fn test_drop_nulls_all_null() {
-    let c0 =
-        Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
+    let c0 = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
     let table = Table::from_columns(vec![c0]).unwrap();
     let tv = table.view().unwrap();
 
@@ -46,12 +48,31 @@ fn test_drop_nulls_all_null() {
 }
 
 #[test]
+fn test_drop_nulls_empty_keys_returns_unchanged_table() {
+    let c0 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c1 = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let table = Table::from_columns(vec![c0, c1]).unwrap();
+    let tv = table.view().unwrap();
+
+    let result = stream_compaction::drop_nulls(&tv, &[], 0).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.num_rows().unwrap(), 3);
+    assert_eq!(rv.num_columns().unwrap(), 2);
+    assert_eq!(
+        rv.column(0).unwrap().to_vec::<i32>().unwrap(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        rv.column(1).unwrap().to_vec::<i32>().unwrap(),
+        vec![10, 20, 30]
+    );
+}
+
+#[test]
 fn test_drop_nulls_multi_key() {
     // Drop rows where ANY key column has null (threshold = 2 means both keys must be valid).
-    let c0 =
-        Column::from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
-    let c1 =
-        Column::from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
+    let c0 = Column::from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
+    let c1 = Column::from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
     let table = Table::from_columns(vec![c0, c1]).unwrap();
     let tv = table.view().unwrap();
 
@@ -168,6 +189,25 @@ fn test_distinct_multi_column_dedup() {
     let mut ids_out = rv.column(0).unwrap().to_vec::<i32>().unwrap();
     ids_out.sort();
     assert_eq!(ids_out, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_distinct_empty_keys_returns_empty_table() {
+    let col = Column::from_slice(&[1i32, 2, 2]).unwrap();
+    let table = Table::from_columns(vec![col]).unwrap();
+    let tv = table.view().unwrap();
+
+    let result = stream_compaction::distinct(
+        &tv,
+        &[],
+        stream_compaction::DuplicateKeepOption::KeepAny,
+        stream_compaction::NullEquality::Equal,
+        stream_compaction::NanEquality::AllEqual,
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.num_rows().unwrap(), 0);
+    assert_eq!(rv.num_columns().unwrap(), 1);
 }
 
 #[test]
