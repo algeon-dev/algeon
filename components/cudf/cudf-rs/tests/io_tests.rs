@@ -120,6 +120,100 @@ fn test_csv_roundtrip() {
 }
 
 #[test]
+fn test_parquet_read_with_metadata_returns_column_names() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_meta.parquet");
+
+    // Write a parquet file with known column names
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+    let c3 = Column::from_slice(&[100i64, 200, 300]).unwrap();
+    let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetWriterOptions::new(&path)
+        .unwrap()
+        .column_names(&["alpha", "beta", "gamma"]);
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    // Read back with metadata
+    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap();
+    let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
+
+    // Verify column names
+    assert_eq!(result.column_names, vec!["alpha", "beta", "gamma"]);
+
+    // Verify table data is intact
+    let read_view = result.table.view().unwrap();
+    assert_eq!(read_view.num_columns().unwrap(), 3);
+    assert_eq!(read_view.num_rows().unwrap(), 3);
+
+    let col0 = read_view.column(0).unwrap();
+    assert_eq!(col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+
+    let col1 = read_view.column(1).unwrap();
+    assert_eq!(col1.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+
+    let col2 = read_view.column(2).unwrap();
+    assert_eq!(col2.to_vec::<i64>().unwrap(), vec![100, 200, 300]);
+}
+
+#[test]
+fn test_parquet_read_with_metadata_column_selection() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_meta_select.parquet");
+
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = Column::from_slice(&[4i32, 5, 6]).unwrap();
+    let c3 = Column::from_slice(&[7i32, 8, 9]).unwrap();
+    let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetWriterOptions::new(&path)
+        .unwrap()
+        .column_names(&["x", "y", "z"]);
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    // Read only columns "x" and "z"
+    let read_opts = parquet::ParquetReaderOptions::new(&path)
+        .unwrap()
+        .columns(&["x", "z"]);
+    let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
+
+    // Only the selected columns should appear
+    assert_eq!(result.column_names, vec!["x", "z"]);
+    let read_view = result.table.view().unwrap();
+    assert_eq!(read_view.num_columns().unwrap(), 2);
+
+    let col0 = read_view.column(0).unwrap();
+    assert_eq!(col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+
+    let col1 = read_view.column(1).unwrap();
+    assert_eq!(col1.to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+}
+
+#[test]
+fn test_parquet_read_with_metadata_single_column() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("test_meta_single.parquet");
+
+    let c1 = Column::from_slice(&[42i32]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let write_opts = parquet::ParquetWriterOptions::new(&path)
+        .unwrap()
+        .column_names(&["only_col"]);
+    parquet::write_parquet(&view, &write_opts).unwrap();
+
+    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap();
+    let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
+
+    assert_eq!(result.column_names, vec!["only_col"]);
+    assert_eq!(result.table.view().unwrap().num_columns().unwrap(), 1);
+}
+
+#[test]
 fn test_csv_custom_delimiter() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("test_tab.csv");
