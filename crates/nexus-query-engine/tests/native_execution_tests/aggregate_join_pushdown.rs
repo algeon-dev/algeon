@@ -39,6 +39,45 @@ fn optimized_aggregate_join_pushdown_matches_plain_sum_inner_join_with_duplicate
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn optimized_aggregate_join_pushdown_matches_left_join_count_with_unmatched_rows() {
+    let dir = unique_temp_dir("nexus-query-engine-aggregate-join-pushdown-left-count-parity");
+    let left_path = dir.join("customer.parquet");
+    let right_path = dir.join("orders.parquet");
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+
+    let left_schema = write_left_count_customer_parquet(&runtime, &left_path);
+    let right_schema = write_left_count_orders_parquet(&runtime, &right_path);
+    let plan = aggregate_join_pushdown_left_count_plan(&left_path, &left_schema, &right_path, &right_schema);
+    let optimizer_result = nexus_query_engine::optimize_query_plan(plan.clone(), &Default::default());
+    assert_eq!(optimizer_result.change, nexus_query_engine::NativeOptimizerChange::Changed);
+    assert_eq!(optimizer_result.diagnostics.aggregate_join_pushdown.applied_count, 1);
+
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let original = execute_query_plan(&context, &plan).unwrap();
+    let optimized = execute_query_plan(&context, &optimizer_result.plan).unwrap();
+
+    let QueryOutput::HostArrow(original_batch) = original.output() else {
+        panic!("original left count aggregate-join plan should materialize host output");
+    };
+    let QueryOutput::HostArrow(optimized_batch) = optimized.output() else {
+        panic!("optimized left count aggregate-join plan should materialize host output");
+    };
+    assert_eq!(original_batch.schema(), optimized_batch.schema());
+    assert_eq!(
+        int32_array(original_batch, 0).iter().collect::<Vec<_>>(),
+        int32_array(optimized_batch, 0).iter().collect::<Vec<_>>()
+    );
+    assert_eq!(
+        int64_array(original_batch, 1).iter().collect::<Vec<_>>(),
+        int64_array(optimized_batch, 1).iter().collect::<Vec<_>>()
+    );
+    assert_eq!(int32_array(optimized_batch, 0).iter().collect::<Vec<_>>(), vec![Some(1), Some(2), Some(3), Some(4)]);
+    assert_eq!(int64_array(optimized_batch, 1).iter().collect::<Vec<_>>(), vec![Some(1), Some(4), Some(0), Some(0)]);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
 fn aggregate_join_pushdown_execution_plan(
     left_path: &Path,
     left_schema: &Arc<Schema>,
@@ -110,6 +149,61 @@ fn aggregate_join_pushdown_execution_plan(
     builder.finish_with_host_sink(sort)
 }
 
+fn aggregate_join_pushdown_left_count_plan(
+    left_path: &Path,
+    left_schema: &Arc<Schema>,
+    right_path: &Path,
+    right_schema: &Arc<Schema>,
+) -> nexus_query_engine::QueryPlan {
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(local_source(left_path, left_schema, &["c_custkey"])));
+    let right = builder.add_source(SourceNode::LocalParquet(local_source(
+        right_path,
+        right_schema,
+        &["o_custkey", "o_orderkey"],
+    )));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "c_custkey", "c_custkey"),
+                nexus_query_engine::ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(nexus_query_engine::ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("c_custkey"), false, true)]),
+        aggregate_schema,
+    );
+    builder.finish_with_host_sink(sort)
+}
+
 fn local_source(path: &Path, schema: &Arc<Schema>, columns: &[&str]) -> LocalParquetSource {
     LocalParquetSource::from_files(
         vec![LocalParquetFile::new(path).with_file_size_bytes(fs::metadata(path).unwrap().len())],
@@ -142,6 +236,34 @@ fn write_aggregate_join_pushdown_right_parquet(runtime: &cudf::Runtime, path: &P
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![Arc::new(Int32Array::from(vec![Some(1), Some(1), Some(2), Some(3), Some(3), None]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_left_count_customer_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![Some(1), Some(2), Some(2), Some(3), Some(4)]))],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();
+    schema
+}
+
+fn write_left_count_orders_parquet(runtime: &cudf::Runtime, path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("o_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int64, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), Some(1), Some(2), Some(2), Some(2), Some(5)])),
+            Arc::new(Int64Array::from(vec![Some(10), None, Some(20), Some(21), None, Some(50)])),
+        ],
     )
     .unwrap();
     DataFrame::from_record_batch(runtime, &batch).unwrap().write_parquet(path).unwrap();

@@ -99,3 +99,103 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
         "pre-aggregate must include the join key so the reduced inner join preserves right-key multiplicity"
     );
 }
+
+#[test]
+fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
+    let left_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("o_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int64, true),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("o_orderkey", DataType::Int64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("c_custkey", DataType::Int32, false),
+        Field::new("c_count", DataType::Int64, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let customer = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "customer",
+        Arc::clone(&left_schema),
+    )));
+    let orders =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("orders", Arc::clone(&right_schema))));
+    let join = builder.add_join(
+        customer,
+        orders,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "c_custkey", "c_custkey"),
+                ColumnRef::input(1, "o_custkey", "o_custkey"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "c_custkey", "c_custkey"), "c_custkey"),
+            JoinOutputColumn::right(ColumnRef::input(1, "o_orderkey", "o_orderkey"), "o_orderkey"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("c_custkey")],
+            vec![AggregateExpr::new(AggregateFunction::Count, Expr::column("o_orderkey"), "c_count")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "left count-over-join aggregate should be pre-aggregated");
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert_all_node_inputs_exist(&optimized.plan);
+
+    let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else {
+        panic!("optimized root should remain a final aggregate");
+    };
+    assert_eq!(final_aggregate.spec.group_exprs, vec![Expr::column("c_custkey")]);
+    assert_eq!(final_aggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(final_aggregate.spec.aggr_exprs[0].function, AggregateFunction::Sum);
+    assert_eq!(final_aggregate.spec.aggr_exprs[0].alias, "c_count");
+    let Expr::Column(preagg_count_column) = &final_aggregate.spec.aggr_exprs[0].expr else {
+        panic!("final aggregate should sum the projected pre-aggregate count");
+    };
+    assert!(preagg_count_column.name().starts_with("__cudf_preagg_sum_"));
+
+    let PlanNode::Projection(coalesce_projection) =
+        &optimized.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind
+    else {
+        panic!("left join count rewrite should coalesce missing right-side counts before final aggregation");
+    };
+    assert!(matches!(
+        &coalesce_projection.outputs[1].expr,
+        Expr::Alias { expr, alias }
+            if alias.starts_with("__cudf_preagg_sum_")
+                && matches!(expr.as_ref(), Expr::Case { .. })
+    ));
+
+    let PlanNode::Join(reduced_join) =
+        &optimized.plan.node(coalesce_projection.input).expect("coalesce projection input should exist").kind
+    else {
+        panic!("coalesce projection should consume the reduced left join");
+    };
+    assert_eq!(reduced_join.spec.join_type, JoinType::Left);
+    assert_eq!(reduced_join.spec.build_side, JoinSide::Right);
+
+    let PlanNode::Aggregate(preaggregate) =
+        &optimized.plan.node(reduced_join.inputs[1]).expect("right pre-aggregate should exist").kind
+    else {
+        panic!("right input to reduced left join should be the pushed pre-aggregate");
+    };
+    assert_eq!(preaggregate.spec.group_exprs, vec![Expr::column("o_custkey").alias("o_custkey")]);
+    assert_eq!(preaggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(preaggregate.spec.aggr_exprs[0].function, AggregateFunction::Count);
+    assert_eq!(preaggregate.spec.aggr_exprs[0].expr, Expr::column("o_orderkey"));
+}
