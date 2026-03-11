@@ -7,6 +7,7 @@
 #include <cudf/copying.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
+#include <cudf/utilities/error.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 #include <cudf/utilities/traits.hpp>
 #include <cudf/null_mask.hpp>
@@ -273,6 +274,52 @@ cudf_status_t cudf_column_view_null_mask_to_host(
     cudaMemcpyAsync(host_buf, view->null_mask(), mask_bytes,
                     cudaMemcpyDeviceToHost, stream.value());
     stream.synchronize();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_create_from_device_data(
+    cudf_type_id_t type_id,
+    const void* device_data,
+    int32_t size,
+    cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (size > 0) {
+    CUDF_RUST_NULL_CHECK(device_data, "device_data is null");
+  }
+  *out = nullptr;
+  CUDF_RUST_TRY {
+    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
+    auto stream = cudf::get_default_stream();
+    auto mr = cudf::get_current_device_resource_ref();
+
+    if (size == 0) {
+      auto col = cudf::make_empty_column(dtype);
+      *out = static_cast<cudf_column_handle>(col.release());
+      return CUDF_SUCCESS;
+    }
+
+    // Compute data size in bytes.
+    auto elem_size = cudf::size_of(dtype);
+    size_t data_bytes = static_cast<size_t>(size) * elem_size;
+
+    // Device-to-device copy into a new rmm::device_buffer.
+    rmm::device_buffer dev_data(data_bytes, stream, mr);
+    CUDF_CUDA_TRY(cudaMemcpyAsync(dev_data.data(), device_data, data_bytes,
+                                  cudaMemcpyDeviceToDevice, stream.value()));
+    stream.synchronize();
+
+    // Construct an owning column from the device buffer (no null mask).
+    auto col = std::make_unique<cudf::column>(
+        dtype, static_cast<cudf::size_type>(size), std::move(dev_data),
+        rmm::device_buffer{}, 0);
+
+    *out = static_cast<cudf_column_handle>(col.release());
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

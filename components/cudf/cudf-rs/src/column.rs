@@ -149,6 +149,69 @@ impl Column {
             handle: NonNull::new(handle).expect("null column handle"),
         }
     }
+
+    /// Create a column by copying data from an existing device (GPU) pointer.
+    ///
+    /// Performs a device-to-device copy; the new column owns its own memory
+    /// independently of the source buffer.
+    ///
+    /// # Safety
+    ///
+    /// `device_ptr` must point to valid GPU memory containing at least `len`
+    /// elements of the type identified by `type_id`. For `len == 0`,
+    /// `device_ptr` may be null.
+    ///
+    /// Any prior GPU writes to `device_ptr` must be visible to the default
+    /// stream used by this API before calling (i.e., establish stream/event
+    /// ordering if writes occurred on a different stream).
+    ///
+    /// Only fixed-width types are supported.
+    pub unsafe fn from_device_ptr(
+        device_ptr: *const c_void,
+        len: usize,
+        type_id: TypeId,
+    ) -> Result<Self> {
+        if type_id.size_in_bytes()?.is_none() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "from_device_ptr only supports fixed-width types",
+            )
+            .with_operation("column::from_device_ptr")
+            .with_context("len", len.to_string())
+            .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+        }
+
+        if len > 0 && device_ptr.is_null() {
+            return Err(Error::new(
+                ErrorKind::NullError,
+                "device_ptr is null but len > 0",
+            )
+            .with_operation("column::from_device_ptr")
+            .with_context("len", len.to_string())
+            .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+        }
+
+        let size = usize_to_i32_len(len, "data", "column::from_device_ptr")?;
+        let mut handle = ptr::null_mut();
+        error::check_status_in_with(
+            unsafe {
+                cudf_sys::cudf_column_create_from_device_data(
+                    type_id.to_raw(),
+                    device_ptr,
+                    size,
+                    &mut handle,
+                )
+            },
+            "column::from_device_ptr",
+            [
+                ("len", len.to_string()),
+                ("type_id", format!("{:?}", type_id).to_lowercase()),
+            ],
+        )?;
+        Ok(Self {
+            handle: NonNull::new(handle).expect("null handle on success"),
+        })
+    }
 }
 
 impl Drop for Column {

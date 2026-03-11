@@ -316,3 +316,170 @@ fn test_device_slice_from_dictionary_indices() {
     assert_eq!(src.len(), 3);
     assert_eq!(dst.len(), 3);
 }
+
+// --- from_device_ptr tests ---
+
+#[test]
+fn test_from_device_ptr_i32_roundtrip() {
+    // Create a column from host data, get its device pointer, then create a
+    // new column from that device pointer. Verify the data survives the round-trip.
+    let original_data = vec![10i32, 20, 30, 40, 50];
+    let src_col = Column::from_slice(&original_data).unwrap();
+    let src_view = src_col.view().unwrap();
+
+    let device_ptr = src_view.device_data_ptr().unwrap();
+    let len = src_view.len().unwrap() as usize;
+
+    let new_col = unsafe {
+        Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap()
+    };
+
+    let new_view = new_col.view().unwrap();
+    assert_eq!(new_view.len().unwrap(), 5);
+    assert_eq!(new_view.data_type().unwrap().id(), TypeId::Int32);
+    assert_eq!(new_view.null_count().unwrap(), 0);
+
+    let host_data = new_view.to_vec::<i32>().unwrap();
+    assert_eq!(host_data, original_data);
+}
+
+#[test]
+fn test_from_device_ptr_f64_roundtrip() {
+    let original_data = vec![1.5f64, 2.5, 3.5, 4.5];
+    let src_col = Column::from_slice(&original_data).unwrap();
+    let src_view = src_col.view().unwrap();
+
+    let device_ptr = src_view.device_data_ptr().unwrap();
+    let len = src_view.len().unwrap() as usize;
+
+    let new_col = unsafe {
+        Column::from_device_ptr(device_ptr, len, TypeId::Float64).unwrap()
+    };
+
+    let host_data = new_col.view().unwrap().to_vec::<f64>().unwrap();
+    assert_eq!(host_data, original_data);
+}
+
+#[test]
+fn test_from_device_ptr_i64_roundtrip() {
+    let original_data = vec![100i64, 200, 300];
+    let src_col = Column::from_slice(&original_data).unwrap();
+    let src_view = src_col.view().unwrap();
+
+    let device_ptr = src_view.device_data_ptr().unwrap();
+    let len = src_view.len().unwrap() as usize;
+
+    let new_col = unsafe {
+        Column::from_device_ptr(device_ptr, len, TypeId::Int64).unwrap()
+    };
+
+    let host_data = new_col.view().unwrap().to_vec::<i64>().unwrap();
+    assert_eq!(host_data, original_data);
+}
+
+#[test]
+fn test_from_device_ptr_independent_of_source() {
+    // The new column should own its own memory — dropping the source should not
+    // invalidate the new column (device-to-device copy, not zero-copy).
+    let original_data = vec![42i32, 99, 7, 13];
+
+    let new_col = {
+        let src_col = Column::from_slice(&original_data).unwrap();
+        let src_view = src_col.view().unwrap();
+        let device_ptr = src_view.device_data_ptr().unwrap();
+        let len = src_view.len().unwrap() as usize;
+
+        unsafe {
+            Column::from_device_ptr(device_ptr, len, TypeId::Int32).unwrap()
+        }
+        // src_col is dropped here
+    };
+
+    // The new column should still be readable.
+    let host_data = new_col.view().unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(host_data, original_data);
+}
+
+#[test]
+fn test_from_device_ptr_empty() {
+    // Edge case: empty column (len = 0). The device pointer may be anything;
+    // it should not be dereferenced.
+    let src_col = Column::from_slice::<i32>(&[]).unwrap();
+    let src_view = src_col.view().unwrap();
+    let device_ptr = src_view.device_data_ptr().unwrap();
+
+    let new_col = unsafe {
+        Column::from_device_ptr(device_ptr, 0, TypeId::Int32).unwrap()
+    };
+
+    let new_view = new_col.view().unwrap();
+    assert_eq!(new_view.len().unwrap(), 0);
+    assert!(new_view.is_empty().unwrap());
+    assert_eq!(new_view.data_type().unwrap().id(), TypeId::Int32);
+}
+
+#[test]
+fn test_from_device_ptr_null_pointer_with_zero_len() {
+    // Null pointer with len 0 should succeed (no data to copy).
+    let new_col = unsafe {
+        Column::from_device_ptr(std::ptr::null(), 0, TypeId::Int32).unwrap()
+    };
+
+    let new_view = new_col.view().unwrap();
+    assert_eq!(new_view.len().unwrap(), 0);
+}
+
+#[test]
+fn test_from_device_ptr_null_pointer_with_nonzero_len() {
+    // Null pointer with len > 0 should fail.
+    let result = unsafe {
+        Column::from_device_ptr(std::ptr::null(), 5, TypeId::Int32)
+    };
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert_eq!(err.kind(), cudf::ErrorKind::NullError);
+}
+
+#[test]
+fn test_from_device_ptr_various_types() {
+    // i8
+    let data_i8 = vec![1i8, -1, 127];
+    let col = Column::from_slice(&data_i8).unwrap();
+    let v = col.view().unwrap();
+    let new_col = unsafe {
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Int8).unwrap()
+    };
+    assert_eq!(new_col.view().unwrap().to_vec::<i8>().unwrap(), data_i8);
+
+    // u32
+    let data_u32 = vec![0u32, 42, u32::MAX];
+    let col = Column::from_slice(&data_u32).unwrap();
+    let v = col.view().unwrap();
+    let new_col = unsafe {
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::UInt32).unwrap()
+    };
+    assert_eq!(new_col.view().unwrap().to_vec::<u32>().unwrap(), data_u32);
+
+    // f32
+    let data_f32 = vec![1.0f32, -0.5, 3.125];
+    let col = Column::from_slice(&data_f32).unwrap();
+    let v = col.view().unwrap();
+    let new_col = unsafe {
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Float32).unwrap()
+    };
+    let result = new_col.view().unwrap().to_vec::<f32>().unwrap();
+    assert_eq!(result, data_f32);
+}
+
+#[test]
+fn test_from_device_ptr_rejects_non_fixed_width_type() {
+    // from_device_ptr must only accept fixed-width primitive types.
+    let result = unsafe {
+        Column::from_device_ptr(std::ptr::null(), 0, TypeId::String)
+    };
+
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+}
+
