@@ -156,6 +156,9 @@ pub unsafe trait DeviceBuffer {
     /// Number of logical elements.
     fn len(&self) -> usize;
 
+    /// Returns `true` if the buffer contains no elements.
+    fn is_empty(&self) -> bool { self.len() == 0 }
+
     /// Element type of the allocation.
     ///
     /// Returns an error if the underlying type has no cuGraph equivalent (e.g.
@@ -255,9 +258,10 @@ impl<'a> DeviceArrayView<'a> {
     pub fn dtype(&self) -> Result<DataType> {
         let c_type = unsafe { cugraph_type_erased_device_array_view_type(self.raw) };
         DataType::try_from(c_type).map_err(|_| {
-            Error::new(ErrorKind::UnsupportedType, "DeviceArrayView::dtype").with_message(
-                format!("unknown cugraph_data_type_id_t value: {}", c_type.0),
-            )
+            Error::new(ErrorKind::UnsupportedType, "DeviceArrayView::dtype").with_message(format!(
+                "unknown cugraph_data_type_id_t value: {}",
+                c_type.0
+            ))
         })
     }
 

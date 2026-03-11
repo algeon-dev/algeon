@@ -62,10 +62,10 @@ use crate::types::to_bool_t;
 /// Numeric parameters use strongly-typed wrappers that enforce invariants:
 ///
 /// - `max_iter` ([`IterationCount`]): must be `>= 1`
-/// - `overlap_scaling_ratio`, `scaling_ratio`, `gravity` ([`PositiveF64`]):
+/// - `overlap_scaling_ratio`, `scaling_ratio` ([`PositiveF64`]):
 ///   must be `> 0.0`
-/// - `edge_weight_influence`, `jitter_tolerance` ([`NonNegativeF64`]): must be
-///   `>= 0.0`
+/// - `gravity`, `edge_weight_influence`, `jitter_tolerance`
+///   ([`NonNegativeF64`]): must be `>= 0.0`
 /// - `barnes_hut_theta` ([`ClosedUnitF64`]): must be in `[0.0, 1.0]`
 ///
 /// See the [Force Atlas 2 paper](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679)
@@ -102,8 +102,8 @@ pub struct ForceAtlas2Params {
     /// Attract distant nodes more strongly to the center (default: `false`).
     pub strong_gravity_mode: bool,
     /// Gravity — attracts nodes to center, prevents islands drifting
-    /// (default: 1.0). Must be strictly positive.
-    pub gravity: PositiveF64,
+    /// (default: 1.0). Zero disables gravity. Must be non-negative.
+    pub gravity: NonNegativeF64,
     /// Print convergence info at each iteration (default: `false`).
     pub verbose: bool,
 }
@@ -123,7 +123,7 @@ impl Default for ForceAtlas2Params {
             barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
             scaling_ratio: PositiveF64::new(2.0).unwrap(),
             strong_gravity_mode: false,
-            gravity: PositiveF64::new(1.0).unwrap(),
+            gravity: NonNegativeF64::new(1.0).unwrap(),
             verbose: false,
         }
     }
@@ -133,6 +133,7 @@ impl Default for ForceAtlas2Params {
 ///
 /// Each attribute is a pair of device arrays: one for vertex ids and one for
 /// the corresponding values. Both arrays must have the same length.
+#[derive(Default)]
 pub struct ForceAtlas2VertexAttrs<'a> {
     /// Per-vertex radius (used when `prevent_overlapping` is set).
     /// `(vertex_ids, radius_values)`.
@@ -143,16 +144,6 @@ pub struct ForceAtlas2VertexAttrs<'a> {
     /// Per-vertex mass, controls attraction to other vertices. If not provided,
     /// mass defaults to degree + 1. `(vertex_ids, mass_values)`.
     pub mass: Option<(&'a DeviceArrayView<'a>, &'a DeviceArrayView<'a>)>,
-}
-
-impl<'a> Default for ForceAtlas2VertexAttrs<'a> {
-    fn default() -> Self {
-        Self {
-            radius: None,
-            mobility: None,
-            mass: None,
-        }
-    }
 }
 
 /// Optional initial positions for Force Atlas 2.
@@ -261,20 +252,16 @@ pub fn force_atlas2(
     if let Some(pos) = initial_pos {
         let n = pos.vertices.len();
         if pos.x.len() != n {
-            return Err(
-                Error::new(ErrorKind::InvalidInput, "force_atlas2")
-                    .with_message("initial positions: x length must match vertices length")
-                    .with_context("vertices_len", n.to_string())
-                    .with_context("x_len", pos.x.len().to_string()),
-            );
+            return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                .with_message("initial positions: x length must match vertices length")
+                .with_context("vertices_len", n.to_string())
+                .with_context("x_len", pos.x.len().to_string()));
         }
         if pos.y.len() != n {
-            return Err(
-                Error::new(ErrorKind::InvalidInput, "force_atlas2")
-                    .with_message("initial positions: y length must match vertices length")
-                    .with_context("vertices_len", n.to_string())
-                    .with_context("y_len", pos.y.len().to_string()),
-            );
+            return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                .with_message("initial positions: y length must match vertices length")
+                .with_context("vertices_len", n.to_string())
+                .with_context("y_len", pos.y.len().to_string()));
         }
     }
 
@@ -282,34 +269,26 @@ pub fn force_atlas2(
     if let Some(attrs) = vertex_attrs {
         if let Some((verts, vals)) = attrs.radius {
             if verts.len() != vals.len() {
-                return Err(
-                    Error::new(ErrorKind::InvalidInput, "force_atlas2")
-                        .with_message("vertex radius: vertices and values must have the same length")
-                        .with_context("vertices_len", verts.len().to_string())
-                        .with_context("values_len", vals.len().to_string()),
-                );
+                return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                    .with_message("vertex radius: vertices and values must have the same length")
+                    .with_context("vertices_len", verts.len().to_string())
+                    .with_context("values_len", vals.len().to_string()));
             }
         }
         if let Some((verts, vals)) = attrs.mobility {
             if verts.len() != vals.len() {
-                return Err(
-                    Error::new(ErrorKind::InvalidInput, "force_atlas2")
-                        .with_message(
-                            "vertex mobility: vertices and values must have the same length",
-                        )
-                        .with_context("vertices_len", verts.len().to_string())
-                        .with_context("values_len", vals.len().to_string()),
-                );
+                return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                    .with_message("vertex mobility: vertices and values must have the same length")
+                    .with_context("vertices_len", verts.len().to_string())
+                    .with_context("values_len", vals.len().to_string()));
             }
         }
         if let Some((verts, vals)) = attrs.mass {
             if verts.len() != vals.len() {
-                return Err(
-                    Error::new(ErrorKind::InvalidInput, "force_atlas2")
-                        .with_message("vertex mass: vertices and values must have the same length")
-                        .with_context("vertices_len", verts.len().to_string())
-                        .with_context("values_len", vals.len().to_string()),
-                );
+                return Err(Error::new(ErrorKind::InvalidInput, "force_atlas2")
+                    .with_message("vertex mass: vertices and values must have the same length")
+                    .with_context("vertices_len", verts.len().to_string())
+                    .with_context("values_len", vals.len().to_string()));
             }
         }
     }
@@ -383,7 +362,7 @@ pub fn force_atlas2(
 mod tests {
     use super::*;
     use crate::array::device_array_from_host;
-    use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64};
+    use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64};
     use crate::types::{DataType, GraphProperties};
 
     /// Helper: decode device array bytes into Vec<i32>.
@@ -437,8 +416,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result =
-            force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
+        let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
 
         // Should have 3 vertices with x,y coordinates
         assert_eq!(result.vertices().len(), 3, "should have 3 vertices");
@@ -570,8 +548,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result =
-            force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
+        let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
 
         assert_eq!(result.vertices().len(), 5, "should have 5 vertices");
         assert_eq!(result.x().len(), 5, "should have 5 x coords");
@@ -623,8 +600,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result =
-            force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
+        let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
 
         assert_eq!(result.vertices().len(), 3);
         assert_eq!(result.x().len(), 3);
@@ -715,8 +691,7 @@ mod tests {
 
         // Create mismatched initial position arrays
         let verts = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("verts");
-        let x_pos =
-            device_array_from_host(&handle, &[1.0f32, 2.0], DataType::Float32).expect("x");
+        let x_pos = device_array_from_host(&handle, &[1.0f32, 2.0], DataType::Float32).expect("x");
         let y_pos = device_array_from_host(&handle, &[3.0f32], DataType::Float32).expect("y"); // wrong length
 
         let params = ForceAtlas2Params::default();
@@ -726,15 +701,8 @@ mod tests {
             y: &y_pos.view(),
         };
 
-        let err = force_atlas2(
-            &handle,
-            &mut rng,
-            &mut graph,
-            &params,
-            None,
-            Some(&init),
-        )
-        .expect_err("should reject mismatched y length");
+        let err = force_atlas2(&handle, &mut rng, &mut graph, &params, None, Some(&init))
+            .expect_err("should reject mismatched y length");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("y length"));
     }
@@ -780,15 +748,8 @@ mod tests {
             ..Default::default()
         };
 
-        let err = force_atlas2(
-            &handle,
-            &mut rng,
-            &mut graph,
-            &params,
-            Some(&attrs),
-            None,
-        )
-        .expect_err("should reject mismatched mass array lengths");
+        let err = force_atlas2(&handle, &mut rng, &mut graph, &params, Some(&attrs), None)
+            .expect_err("should reject mismatched mass array lengths");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.message().contains("mass"));
     }
@@ -827,12 +788,11 @@ mod tests {
             max_iter: IterationCount::new(30).unwrap(),
             lin_log_mode: true,
             strong_gravity_mode: true,
-            gravity: PositiveF64::new(2.0).unwrap(),
+            gravity: NonNegativeF64::new(2.0).unwrap(),
             ..Default::default()
         };
 
-        let result =
-            force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
+        let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
 
         assert_eq!(result.vertices().len(), 4);
         assert_eq!(result.x().len(), 4);

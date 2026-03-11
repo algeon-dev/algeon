@@ -149,7 +149,9 @@ fn resolve_library_dir(env_val: &Option<String>, submodule_candidates: &[PathBuf
     // Submodule fallback — pick the first candidate that has the libs
     for candidate in submodule_candidates {
         if has_required_cugraph_libs(candidate) {
-            return candidate.canonicalize().unwrap_or_else(|_| candidate.clone());
+            return candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone());
         }
     }
 

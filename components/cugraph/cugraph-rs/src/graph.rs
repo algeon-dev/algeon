@@ -25,9 +25,7 @@ pub struct Graph {
 
 impl std::fmt::Debug for Graph {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Graph")
-            .field("raw", &self.raw)
-            .finish()
+        f.debug_struct("Graph").field("raw", &self.raw).finish()
     }
 }
 
@@ -88,9 +86,7 @@ impl Graph {
         if let Some(etids) = edge_type_ids {
             if etids.len() != src.len() {
                 return Err(Error::new(ErrorKind::InvalidInput, "Graph::from_edge_list")
-                    .with_message(
-                        "edge_type_ids must have the same number of elements as src/dst",
-                    )
+                    .with_message("edge_type_ids must have the same number of elements as src/dst")
                     .with_context("src_len", src.len().to_string())
                     .with_context("edge_type_ids_len", etids.len().to_string()));
             }
