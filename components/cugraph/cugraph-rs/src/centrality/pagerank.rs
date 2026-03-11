@@ -8,24 +8,54 @@ use super::CentralityResult;
 use crate::error::{check_error, Result};
 use crate::graph::Graph;
 use crate::handle::ResourceHandle;
+use crate::params::{IterationCount, PositiveF64, UnitF64};
 
 /// Parameters for the PageRank algorithm.
+///
+/// All fields use strongly-typed wrappers that enforce invariants at
+/// construction time:
+///
+/// - `alpha` ([`UnitF64`]): damping factor, must be in `(0.0, 1.0)`
+/// - `epsilon` ([`PositiveF64`]): convergence tolerance, must be `> 0.0`
+/// - `max_iterations` ([`IterationCount`]): must be `>= 1`
+///
+/// Use the [`Default`] implementation for standard values, or construct
+/// individual fields using `TryFrom`/`.new()`.
+///
+/// # Example
+///
+/// ```
+/// use cugraph::centrality::PageRankParams;
+///
+/// // Default parameters
+/// let params = PageRankParams::default();
+/// assert_eq!(params.alpha.get(), 0.85);
+///
+/// // Custom parameters
+/// use cugraph::params::{IterationCount, PositiveF64, UnitF64};
+/// let params = PageRankParams {
+///     alpha: UnitF64::new(0.9).unwrap(),
+///     epsilon: PositiveF64::new(1e-6).unwrap(),
+///     max_iterations: IterationCount::new(200).unwrap(),
+/// };
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct PageRankParams {
-    /// Damping factor (default 0.85).
-    pub alpha: f64,
-    /// Convergence tolerance (default 1e-5).
-    pub epsilon: f64,
-    /// Maximum number of iterations (default 100).
-    pub max_iterations: usize,
+    /// Damping factor (default 0.85). Must be in the open interval `(0.0, 1.0)`.
+    pub alpha: UnitF64,
+    /// Convergence tolerance (default 1e-5). Must be strictly positive.
+    pub epsilon: PositiveF64,
+    /// Maximum number of iterations (default 100). Must be at least 1.
+    pub max_iterations: IterationCount,
 }
 
 impl Default for PageRankParams {
     fn default() -> Self {
         Self {
-            alpha: 0.85,
-            epsilon: 1e-5,
-            max_iterations: 100,
+            // SAFETY: these literals are known-valid constants.
+            alpha: UnitF64::new(0.85).unwrap(),
+            epsilon: PositiveF64::new(1e-5).unwrap(),
+            max_iterations: IterationCount::new(100).unwrap(),
         }
     }
 }
@@ -51,9 +81,9 @@ pub fn pagerank(
             ptr::null(), // precomputed_vertex_out_weight_sums
             ptr::null(), // initial_guess_vertices
             ptr::null(), // initial_guess_values
-            params.alpha,
-            params.epsilon,
-            params.max_iterations,
+            params.alpha.get(),
+            params.epsilon.get(),
+            usize::from(params.max_iterations),
             bool_t::FALSE, // do_expensive_check
             &mut result,
             &mut error,

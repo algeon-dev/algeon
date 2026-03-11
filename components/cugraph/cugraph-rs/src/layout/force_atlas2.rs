@@ -16,6 +16,7 @@
 //!     graph::Graph,
 //!     handle::ResourceHandle,
 //!     layout::{force_atlas2, ForceAtlas2Params},
+//!     params::IterationCount,
 //!     random::RngState,
 //!     types::{DataType, GraphProperties},
 //! };
@@ -31,7 +32,7 @@
 //!     &handle, props, &src.view(), &dst.view(), None, None, None, false, true,
 //! ).unwrap();
 //!
-//! let params = ForceAtlas2Params { max_iter: 100, ..Default::default() };
+//! let params = ForceAtlas2Params { max_iter: IterationCount::new(100).unwrap(), ..Default::default() };
 //! let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).unwrap();
 //!
 //! assert_eq!(result.vertices().len(), 3);
@@ -51,18 +52,28 @@ use crate::array::DeviceArrayView;
 use crate::error::{check_error, Error, ErrorKind, Result};
 use crate::graph::Graph;
 use crate::handle::ResourceHandle;
+use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64};
 use crate::random::RngState;
 use crate::types::to_bool_t;
 
 /// Parameters for the Force Atlas 2 layout algorithm.
 ///
 /// All boolean and floating-point parameters map directly to the C API.
+/// Numeric parameters use strongly-typed wrappers that enforce invariants:
+///
+/// - `max_iter` ([`IterationCount`]): must be `>= 1`
+/// - `overlap_scaling_ratio`, `scaling_ratio`, `gravity` ([`PositiveF64`]):
+///   must be `> 0.0`
+/// - `edge_weight_influence`, `jitter_tolerance` ([`NonNegativeF64`]): must be
+///   `>= 0.0`
+/// - `barnes_hut_theta` ([`ClosedUnitF64`]): must be in `[0.0, 1.0]`
+///
 /// See the [Force Atlas 2 paper](https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0098679)
 /// for detailed descriptions.
 #[derive(Debug, Clone, Copy)]
 pub struct ForceAtlas2Params {
-    /// Maximum number of iterations (default: 500).
-    pub max_iter: i32,
+    /// Maximum number of iterations (default: 500). Must be at least 1.
+    pub max_iter: IterationCount,
     /// Distributes attraction along outbound edges. Hubs attract less and are
     /// pushed to borders (default: `false`).
     pub outbound_attraction_distribution: bool,
@@ -72,25 +83,27 @@ pub struct ForceAtlas2Params {
     /// Prevent nodes from overlapping (default: `false`).
     pub prevent_overlapping: bool,
     /// When `prevent_overlapping` is set, scales the repulsion force between
-    /// overlapping nodes (default: 2.0).
-    pub overlap_scaling_ratio: f64,
+    /// overlapping nodes (default: 2.0). Must be strictly positive.
+    pub overlap_scaling_ratio: PositiveF64,
     /// Influence of edge weights. 0 = no influence, 1 = normal (default: 1.0).
-    pub edge_weight_influence: f64,
+    /// Must be non-negative.
+    pub edge_weight_influence: NonNegativeF64,
     /// How much swinging is allowed. Above 1 is discouraged. Lower gives less
-    /// speed and more precision (default: 1.0).
-    pub jitter_tolerance: f64,
+    /// speed and more precision (default: 1.0). Must be non-negative.
+    pub jitter_tolerance: NonNegativeF64,
     /// Use Barnes-Hut approximation for faster computation (default: `false`).
     pub barnes_hut_optimize: bool,
     /// Trade-off for Barnes-Hut: speed (1.0) vs accuracy (0.0)
-    /// (default: 0.5).
-    pub barnes_hut_theta: f64,
-    /// How much repulsion. More makes a sparser graph (default: 2.0).
-    pub scaling_ratio: f64,
+    /// (default: 0.5). Must be in `[0.0, 1.0]`.
+    pub barnes_hut_theta: ClosedUnitF64,
+    /// How much repulsion. More makes a sparser graph (default: 2.0). Must be
+    /// strictly positive.
+    pub scaling_ratio: PositiveF64,
     /// Attract distant nodes more strongly to the center (default: `false`).
     pub strong_gravity_mode: bool,
     /// Gravity — attracts nodes to center, prevents islands drifting
-    /// (default: 1.0).
-    pub gravity: f64,
+    /// (default: 1.0). Must be strictly positive.
+    pub gravity: PositiveF64,
     /// Print convergence info at each iteration (default: `false`).
     pub verbose: bool,
 }
@@ -98,18 +111,19 @@ pub struct ForceAtlas2Params {
 impl Default for ForceAtlas2Params {
     fn default() -> Self {
         Self {
-            max_iter: 500,
+            // SAFETY: these literals are known-valid constants.
+            max_iter: IterationCount::new(500).unwrap(),
             outbound_attraction_distribution: false,
             lin_log_mode: false,
             prevent_overlapping: false,
-            overlap_scaling_ratio: 2.0,
-            edge_weight_influence: 1.0,
-            jitter_tolerance: 1.0,
+            overlap_scaling_ratio: PositiveF64::new(2.0).unwrap(),
+            edge_weight_influence: NonNegativeF64::new(1.0).unwrap(),
+            jitter_tolerance: NonNegativeF64::new(1.0).unwrap(),
             barnes_hut_optimize: false,
-            barnes_hut_theta: 0.5,
-            scaling_ratio: 2.0,
+            barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
+            scaling_ratio: PositiveF64::new(2.0).unwrap(),
             strong_gravity_mode: false,
-            gravity: 1.0,
+            gravity: PositiveF64::new(1.0).unwrap(),
             verbose: false,
         }
     }
@@ -333,7 +347,7 @@ pub fn force_atlas2(
             handle.as_ptr(),
             rng_state.as_ptr(),
             graph.raw,
-            params.max_iter,
+            i32::from(params.max_iter),
             start_verts_ptr,
             x_start_ptr,
             y_start_ptr,
@@ -342,14 +356,14 @@ pub fn force_atlas2(
             to_bool_t(params.prevent_overlapping),
             radius_verts_ptr,
             radius_vals_ptr,
-            params.overlap_scaling_ratio,
-            params.edge_weight_influence,
-            params.jitter_tolerance,
+            params.overlap_scaling_ratio.get(),
+            params.edge_weight_influence.get(),
+            params.jitter_tolerance.get(),
             to_bool_t(params.barnes_hut_optimize),
-            params.barnes_hut_theta,
-            params.scaling_ratio,
+            params.barnes_hut_theta.get(),
+            params.scaling_ratio.get(),
             to_bool_t(params.strong_gravity_mode),
-            params.gravity,
+            params.gravity.get(),
             mobility_verts_ptr,
             mobility_vals_ptr,
             mass_verts_ptr,
@@ -369,6 +383,7 @@ pub fn force_atlas2(
 mod tests {
     use super::*;
     use crate::array::device_array_from_host;
+    use crate::params::{ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64};
     use crate::types::{DataType, GraphProperties};
 
     /// Helper: decode device array bytes into Vec<i32>.
@@ -418,7 +433,7 @@ mod tests {
         .expect("graph");
 
         let params = ForceAtlas2Params {
-            max_iter: 50,
+            max_iter: IterationCount::new(50).unwrap(),
             ..Default::default()
         };
 
@@ -475,7 +490,7 @@ mod tests {
 
         // First pass: 50 iterations, random initial positions
         let params1 = ForceAtlas2Params {
-            max_iter: 50,
+            max_iter: IterationCount::new(50).unwrap(),
             ..Default::default()
         };
         let result1 =
@@ -485,7 +500,7 @@ mod tests {
 
         // Second pass: 10 iterations, using first pass result as initial positions
         let params2 = ForceAtlas2Params {
-            max_iter: 10,
+            max_iter: IterationCount::new(10).unwrap(),
             ..Default::default()
         };
         let init_pos = InitialPositions {
@@ -551,7 +566,7 @@ mod tests {
         .expect("graph");
 
         let params = ForceAtlas2Params {
-            max_iter: 10,
+            max_iter: IterationCount::new(10).unwrap(),
             ..Default::default()
         };
 
@@ -603,8 +618,8 @@ mod tests {
         .expect("graph");
 
         let params = ForceAtlas2Params {
-            max_iter: 50,
-            edge_weight_influence: 1.0,
+            max_iter: IterationCount::new(50).unwrap(),
+            edge_weight_influence: NonNegativeF64::new(1.0).unwrap(),
             ..Default::default()
         };
 
@@ -647,9 +662,9 @@ mod tests {
         .expect("graph");
 
         let params = ForceAtlas2Params {
-            max_iter: 50,
+            max_iter: IterationCount::new(50).unwrap(),
             barnes_hut_optimize: true,
-            barnes_hut_theta: 0.5,
+            barnes_hut_theta: ClosedUnitF64::new(0.5).unwrap(),
             ..Default::default()
         };
 
@@ -809,10 +824,10 @@ mod tests {
         .expect("graph");
 
         let params = ForceAtlas2Params {
-            max_iter: 30,
+            max_iter: IterationCount::new(30).unwrap(),
             lin_log_mode: true,
             strong_gravity_mode: true,
-            gravity: 2.0,
+            gravity: PositiveF64::new(2.0).unwrap(),
             ..Default::default()
         };
 
