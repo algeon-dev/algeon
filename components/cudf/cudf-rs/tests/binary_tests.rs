@@ -1,4 +1,4 @@
-//! Tests for binary operations.
+//! Tests for binary operations (numeric and string).
 
 use cudf::binary::{self, BinaryOperator};
 use cudf::column::Column;
@@ -108,4 +108,290 @@ fn test_logical_and() {
     let rv = result.view().unwrap();
     let values = rv.to_vec::<bool>().unwrap();
     assert_eq!(values, vec![true, false, false, false]);
+}
+
+// ---------------------------------------------------------------------------
+// String comparison: column vs column
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_string_equal_vv() {
+    let a = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
+    let b = Column::from_strings(&["foo", "bar", "qux"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8))
+            .unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
+}
+
+#[test]
+fn test_string_not_equal_vv() {
+    let a = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
+    let b = Column::from_strings(&["foo", "bar", "qux"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result = binary::binary_operation_vv(
+        &av,
+        &bv,
+        BinaryOperator::NotEqual,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
+}
+
+#[test]
+fn test_string_less_vv() {
+    let a = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
+    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::Less, &DataType::new(TypeId::Bool8))
+            .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_string_greater_vv() {
+    let a = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
+    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result = binary::binary_operation_vv(
+        &av,
+        &bv,
+        BinaryOperator::Greater,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_string_less_equal_vv() {
+    let a = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
+    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result = binary::binary_operation_vv(
+        &av,
+        &bv,
+        BinaryOperator::LessEqual,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
+}
+
+#[test]
+fn test_string_greater_equal_vv() {
+    let a = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
+    let b = Column::from_strings(&["banana", "banana", "banana"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result = binary::binary_operation_vv(
+        &av,
+        &bv,
+        BinaryOperator::GreaterEqual,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
+}
+
+// ---------------------------------------------------------------------------
+// String comparison: column vs scalar
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_string_equal_vs() {
+    let col = Column::from_strings(&["active", "inactive", "active"]).unwrap();
+    let scalar = Scalar::from_string("active").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::Equal,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn test_string_not_equal_vs() {
+    let col = Column::from_strings(&["active", "inactive", "active"]).unwrap();
+    let scalar = Scalar::from_string("active").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::NotEqual,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_string_less_vs() {
+    let col = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = Scalar::from_string("banana").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::Less,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" < "banana" → true, "cherry" < "banana" → false, "banana" < "banana" → false
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_string_greater_vs() {
+    let col = Column::from_strings(&["apple", "cherry", "banana"]).unwrap();
+    let scalar = Scalar::from_string("banana").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::Greater,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" > "banana" → false, "cherry" > "banana" → true, "banana" > "banana" → false
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_string_less_equal_vs() {
+    let col = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
+    let scalar = Scalar::from_string("banana").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::LessEqual,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" <= "banana" → true, "banana" <= "banana" → true, "cherry" <= "banana" → false
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
+}
+
+#[test]
+fn test_string_greater_equal_vs() {
+    let col = Column::from_strings(&["apple", "banana", "cherry"]).unwrap();
+    let scalar = Scalar::from_string("banana").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::GreaterEqual,
+        &DataType::new(TypeId::Bool8),
+    )
+    .unwrap();
+    let rv = result.view().unwrap();
+    // "apple" >= "banana" → false, "banana" >= "banana" → true, "cherry" >= "banana" → true
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
+}
+
+// ---------------------------------------------------------------------------
+// String edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_string_equal_empty() {
+    let a = Column::from_strings(&["", "hello", ""]).unwrap();
+    let b = Column::from_strings(&["", "", "hello"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8))
+            .unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_string_equal_case_sensitive() {
+    let a = Column::from_strings(&["Foo", "BAR", "baz"]).unwrap();
+    let b = Column::from_strings(&["foo", "bar", "baz"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result =
+        binary::binary_operation_vv(&av, &bv, BinaryOperator::Equal, &DataType::new(TypeId::Bool8))
+            .unwrap();
+    let rv = result.view().unwrap();
+    // Case-sensitive: "Foo" != "foo", "BAR" != "bar", "baz" == "baz"
+    assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
+}
+
+// ---------------------------------------------------------------------------
+// String arithmetic errors
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_string_add_vv_error() {
+    let a = Column::from_strings(&["foo", "bar"]).unwrap();
+    let b = Column::from_strings(&["baz", "qux"]).unwrap();
+    let av = a.view().unwrap();
+    let bv = b.view().unwrap();
+
+    let result = binary::binary_operation_vv(
+        &av,
+        &bv,
+        BinaryOperator::Add,
+        &DataType::new(TypeId::String),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_string_sub_vs_error() {
+    let col = Column::from_strings(&["foo", "bar"]).unwrap();
+    let scalar = Scalar::from_string("baz").unwrap();
+    let cv = col.view().unwrap();
+
+    let result = binary::binary_operation_vs(
+        &cv,
+        &scalar,
+        BinaryOperator::Sub,
+        &DataType::new(TypeId::String),
+    );
+    assert!(result.is_err());
 }
