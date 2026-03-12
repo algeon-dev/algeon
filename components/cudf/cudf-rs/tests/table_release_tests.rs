@@ -1,4 +1,4 @@
-//! Tests for Table::into_columns (Task 12).
+//! Tests for Table::into_columns.
 
 use cudf::column::Column;
 use cudf::table::Table;
