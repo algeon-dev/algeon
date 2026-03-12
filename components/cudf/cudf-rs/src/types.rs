@@ -109,6 +109,49 @@ impl TypeId {
         )
     }
 
+    /// Returns `true` if this is a signed integer type.
+    pub fn is_signed_int(self) -> bool {
+        matches!(
+            self,
+            TypeId::Int8 | TypeId::Int16 | TypeId::Int32 | TypeId::Int64
+        )
+    }
+
+    /// Returns `true` if this is an unsigned integer type.
+    pub fn is_unsigned_int(self) -> bool {
+        matches!(
+            self,
+            TypeId::UInt8 | TypeId::UInt16 | TypeId::UInt32 | TypeId::UInt64
+        )
+    }
+
+    /// Returns `true` if this is a floating-point type.
+    pub fn is_float(self) -> bool {
+        matches!(self, TypeId::Float32 | TypeId::Float64)
+    }
+
+    /// Returns a numeric rank used for type promotion ordering.
+    ///
+    /// Integers get sequential ranks by width, floats get higher ranks:
+    /// - `Int8=0, UInt8=1, Int16=2, UInt16=3, Int32=4, UInt32=5, Int64=6, UInt64=7`
+    /// - `Float32=8, Float64=10`
+    /// - Non-numeric types → `None`
+    pub(crate) fn numeric_rank(self) -> Option<u8> {
+        match self {
+            TypeId::Int8 => Some(0),
+            TypeId::UInt8 => Some(1),
+            TypeId::Int16 => Some(2),
+            TypeId::UInt16 => Some(3),
+            TypeId::Int32 => Some(4),
+            TypeId::UInt32 => Some(5),
+            TypeId::Int64 => Some(6),
+            TypeId::UInt64 => Some(7),
+            TypeId::Float32 => Some(8),
+            TypeId::Float64 => Some(10),
+            _ => None,
+        }
+    }
+
     /// Returns `true` if this is a fixed-point decimal type.
     pub fn is_decimal(self) -> bool {
         matches!(

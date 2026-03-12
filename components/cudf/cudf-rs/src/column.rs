@@ -302,6 +302,251 @@ impl Column {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Binary operations on Column (Tasks 14–16)
+// ---------------------------------------------------------------------------
+
+impl Column {
+    /// Generic binary operation with inferred output type.
+    pub fn binary_op(&self, rhs: &Column, op: crate::binary::BinaryOperator) -> Result<Column> {
+        (|| {
+            let lv = self.view()?;
+            let rv = rhs.view()?;
+            let out_type = crate::binary::infer_binary_output_type(
+                lv.data_type()?.id(),
+                rv.data_type()?.id(),
+                op,
+            )?;
+            crate::binary::binary_operation_vv(&lv, &rv, op, &out_type)
+        })()
+        .map_err(|e| {
+            e.with_operation("column::binary_op")
+                .with_context("operator", format!("{:?}", op).to_lowercase())
+        })
+    }
+
+    /// Generic binary operation with explicit output type (escape hatch).
+    pub fn binary_op_with_type(
+        &self,
+        rhs: &Column,
+        op: crate::binary::BinaryOperator,
+        output_type: &DataType,
+    ) -> Result<Column> {
+        (|| {
+            let lv = self.view()?;
+            let rv = rhs.view()?;
+            crate::binary::binary_operation_vv(&lv, &rv, op, output_type)
+        })()
+        .map_err(|e| {
+            e.with_operation("column::binary_op_with_type")
+                .with_context("operator", format!("{:?}", op).to_lowercase())
+                .with_context(
+                    "output_type_id",
+                    format!("{:?}", output_type.id()).to_lowercase(),
+                )
+        })
+    }
+
+    // -- Arithmetic methods ---------------------------------------------------
+
+    /// Element-wise addition: `self + rhs`. Output type inferred.
+    pub fn add(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Add)
+            .map_err(|e| e.with_operation("column::add"))
+    }
+
+    /// Element-wise subtraction: `self - rhs`. Output type inferred.
+    pub fn sub(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Sub)
+            .map_err(|e| e.with_operation("column::sub"))
+    }
+
+    /// Element-wise multiplication: `self * rhs`. Output type inferred.
+    pub fn mul(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Mul)
+            .map_err(|e| e.with_operation("column::mul"))
+    }
+
+    /// Element-wise division: `self / rhs`. Output type inferred.
+    pub fn div(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Div)
+            .map_err(|e| e.with_operation("column::div"))
+    }
+
+    /// Element-wise true division (always float output).
+    pub fn true_div(&self, rhs: &Column) -> Result<Column> {
+        (|| {
+            let lv = self.view()?;
+            let rv = rhs.view()?;
+            let out_type = DataType::new(TypeId::Float64);
+            crate::binary::binary_operation_vv(
+                &lv,
+                &rv,
+                crate::binary::BinaryOperator::TrueDiv,
+                &out_type,
+            )
+        })()
+        .map_err(|e| {
+            e.with_operation("column::true_div")
+                .with_context("operator", "true_div")
+        })
+    }
+
+    /// Element-wise floor division.
+    pub fn floor_div(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::FloorDiv)
+            .map_err(|e| e.with_operation("column::floor_div"))
+    }
+
+    /// Element-wise modulo: `self % rhs`.
+    pub fn modulo(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Mod)
+            .map_err(|e| e.with_operation("column::modulo"))
+    }
+
+    // -- Comparison methods ---------------------------------------------------
+
+    /// Element-wise equal: `self == rhs`. Returns Bool8 column.
+    pub fn eq_col(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Equal)
+            .map_err(|e| e.with_operation("column::eq_col"))
+    }
+
+    /// Element-wise not-equal: `self != rhs`. Returns Bool8 column.
+    pub fn ne_col(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::NotEqual)
+            .map_err(|e| e.with_operation("column::ne_col"))
+    }
+
+    /// Element-wise less-than: `self < rhs`. Returns Bool8 column.
+    pub fn lt_col(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Less)
+            .map_err(|e| e.with_operation("column::lt_col"))
+    }
+
+    /// Element-wise greater-than: `self > rhs`. Returns Bool8 column.
+    pub fn gt_col(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::Greater)
+            .map_err(|e| e.with_operation("column::gt_col"))
+    }
+
+    /// Element-wise less-or-equal: `self <= rhs`. Returns Bool8 column.
+    pub fn le_col(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::LessEqual)
+            .map_err(|e| e.with_operation("column::le_col"))
+    }
+
+    /// Element-wise greater-or-equal: `self >= rhs`. Returns Bool8 column.
+    pub fn ge_col(&self, rhs: &Column) -> Result<Column> {
+        self.binary_op(rhs, crate::binary::BinaryOperator::GreaterEqual)
+            .map_err(|e| e.with_operation("column::ge_col"))
+    }
+
+    // -- Scalar operations ----------------------------------------------------
+
+    /// Element-wise: `self op scalar`. Output type inferred.
+    pub fn binary_op_scalar(
+        &self,
+        rhs: &crate::scalar::Scalar,
+        op: crate::binary::BinaryOperator,
+    ) -> Result<Column> {
+        (|| {
+            let lv = self.view()?;
+            let out_type = crate::binary::infer_binary_output_type(
+                lv.data_type()?.id(),
+                rhs.data_type()?.id(),
+                op,
+            )?;
+            crate::binary::binary_operation_vs(&lv, rhs, op, &out_type)
+        })()
+        .map_err(|e| {
+            e.with_operation("column::binary_op_scalar")
+                .with_context("operator", format!("{:?}", op).to_lowercase())
+        })
+    }
+
+    /// Element-wise: `self op scalar` with explicit output type.
+    pub fn binary_op_scalar_with_type(
+        &self,
+        rhs: &crate::scalar::Scalar,
+        op: crate::binary::BinaryOperator,
+        output_type: &DataType,
+    ) -> Result<Column> {
+        (|| {
+            let lv = self.view()?;
+            crate::binary::binary_operation_vs(&lv, rhs, op, output_type)
+        })()
+        .map_err(|e| {
+            e.with_operation("column::binary_op_scalar_with_type")
+                .with_context("operator", format!("{:?}", op).to_lowercase())
+                .with_context(
+                    "output_type_id",
+                    format!("{:?}", output_type.id()).to_lowercase(),
+                )
+        })
+    }
+
+    /// Element-wise: `self + scalar`.
+    pub fn add_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Add)
+            .map_err(|e| e.with_operation("column::add_scalar"))
+    }
+
+    /// Element-wise: `self - scalar`.
+    pub fn sub_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Sub)
+            .map_err(|e| e.with_operation("column::sub_scalar"))
+    }
+
+    /// Element-wise: `self * scalar`.
+    pub fn mul_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Mul)
+            .map_err(|e| e.with_operation("column::mul_scalar"))
+    }
+
+    /// Element-wise: `self / scalar`.
+    pub fn div_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Div)
+            .map_err(|e| e.with_operation("column::div_scalar"))
+    }
+
+    /// Element-wise: `self == scalar`. Returns Bool8 column.
+    pub fn eq_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Equal)
+            .map_err(|e| e.with_operation("column::eq_scalar"))
+    }
+
+    /// Element-wise: `self != scalar`. Returns Bool8 column.
+    pub fn ne_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::NotEqual)
+            .map_err(|e| e.with_operation("column::ne_scalar"))
+    }
+
+    /// Element-wise: `self < scalar`. Returns Bool8 column.
+    pub fn lt_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Less)
+            .map_err(|e| e.with_operation("column::lt_scalar"))
+    }
+
+    /// Element-wise: `self > scalar`. Returns Bool8 column.
+    pub fn gt_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Greater)
+            .map_err(|e| e.with_operation("column::gt_scalar"))
+    }
+
+    /// Element-wise: `self <= scalar`. Returns Bool8 column.
+    pub fn le_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::LessEqual)
+            .map_err(|e| e.with_operation("column::le_scalar"))
+    }
+
+    /// Element-wise: `self >= scalar`. Returns Bool8 column.
+    pub fn ge_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
+        self.binary_op_scalar(rhs, crate::binary::BinaryOperator::GreaterEqual)
+            .map_err(|e| e.with_operation("column::ge_scalar"))
+    }
+}
+
 impl Drop for Column {
     fn drop(&mut self) {
         unsafe {
