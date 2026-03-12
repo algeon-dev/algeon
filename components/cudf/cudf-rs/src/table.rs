@@ -88,6 +88,56 @@ impl Table {
             handle: NonNull::new(handle).expect("null table handle"),
         }
     }
+
+    /// Consume this table and return its columns as owned [`Column`] values.
+    ///
+    /// The table is destroyed in the process. The returned columns are in
+    /// the same order as they were when the table was created.
+    ///
+    /// This is a zero-copy operation on the GPU — column device memory is
+    /// transferred, not copied.
+    pub fn into_columns(self) -> Result<Vec<Column>> {
+        let raw_handle = self.handle.as_ptr();
+        // Prevent the Drop impl from destroying the table — ownership
+        // is transferred to the C shim which will consume it.
+        std::mem::forget(self);
+
+        let mut out_columns: *mut *mut c_void = ptr::null_mut();
+        let mut out_count: i32 = 0;
+
+        let status = unsafe {
+            cudf_sys::cudf_table_release_columns(
+                raw_handle,
+                &mut out_columns,
+                &mut out_count,
+            )
+        };
+
+        if status != cudf_sys::CUDF_SUCCESS {
+            // On failure, the C shim did NOT consume the table.
+            // We must destroy it ourselves to avoid a leak.
+            unsafe { cudf_sys::cudf_table_destroy(raw_handle) };
+            error::check_status_in(status, "table::into_columns")?;
+            unreachable!();
+        }
+
+        if out_count == 0 {
+            return Ok(Vec::new());
+        }
+
+        let count = out_count as usize;
+        let col_ptrs = unsafe { std::slice::from_raw_parts(out_columns, count) };
+
+        let columns: Vec<Column> = col_ptrs
+            .iter()
+            .map(|&ptr| unsafe { Column::from_raw(ptr) })
+            .collect();
+
+        // Free the array (not the columns — they are now owned by Column).
+        unsafe { cudf_sys::cudf_free_column_array(out_columns) };
+
+        Ok(columns)
+    }
 }
 
 impl Drop for Table {

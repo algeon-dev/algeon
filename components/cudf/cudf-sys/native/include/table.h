@@ -48,6 +48,20 @@ cudf_status_t cudf_table_view_column(cudf_table_view_handle handle,
                                      int32_t index,
                                      cudf_column_view_handle* out);
 
+/// Release all columns from a table, destroying the table in the process.
+///
+/// The table is consumed: after a successful call, `table` is destroyed and
+/// must NOT be used again. The caller receives ownership of each column via
+/// `out_columns`, which is a heap-allocated array of `out_count` column
+/// handles. Each column must be individually destroyed with
+/// `cudf_column_destroy`. The array itself must be freed with
+/// `cudf_free_column_array`.
+///
+/// On failure, `table` is NOT consumed (caller must still destroy it).
+cudf_status_t cudf_table_release_columns(cudf_table_handle table,
+                                         cudf_column_handle** out_columns,
+                                         int32_t* out_count);
+
 #ifdef __cplusplus
 }
 #endif

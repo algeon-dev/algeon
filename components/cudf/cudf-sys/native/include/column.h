@@ -121,6 +121,42 @@ cudf_status_t cudf_column_create_from_device_data(
     int32_t size,
     cudf_column_handle* out);
 
+/// Create a STRING type column from host string data.
+///
+/// `strings` is an array of pointers to UTF-8 string data (not necessarily
+/// null-terminated). `lengths` holds the byte length of each string.
+/// `num_strings` is the number of strings.
+///
+/// If `null_mask` is non-NULL and `null_count` > 0, the null_mask is a
+/// packed bitmask (LSB order) indicating which rows are valid.
+///
+/// For num_strings == 0, an empty STRING column is returned.
+cudf_status_t cudf_column_create_strings(
+    const char** strings,
+    const int32_t* lengths,
+    int32_t num_strings,
+    const uint8_t* null_mask,
+    int32_t null_count,
+    cudf_column_handle* out);
+
+/// Copy string column data to host buffers.
+///
+/// For a STRING column with `n` rows, this copies:
+///   - `offsets_buf`: n+1 int32 values (byte offsets into chars).
+///   - `chars_buf`: the concatenated character bytes.
+///
+/// `offsets_buf_size` must be >= (n+1)*sizeof(int32_t).
+/// `chars_buf_size` must be >= total chars bytes (= offsets[n] - offsets[0]).
+///
+/// Returns CUDF_ERROR_TYPE if the column is not STRING type.
+cudf_status_t cudf_column_view_strings_to_host(
+    cudf_column_view_handle handle,
+    int32_t* offsets_buf,
+    size_t offsets_buf_size,
+    char* chars_buf,
+    size_t chars_buf_size,
+    int32_t* total_chars_bytes);
+
 #ifdef __cplusplus
 }
 #endif

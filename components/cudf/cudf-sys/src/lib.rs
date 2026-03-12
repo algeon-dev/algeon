@@ -195,6 +195,24 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_create_strings(
+        strings: *const *const c_char,
+        lengths: *const i32,
+        num_strings: i32,
+        null_mask: *const u8,
+        null_count: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_view_strings_to_host(
+        handle: cudf_column_view_handle,
+        offsets_buf: *mut i32,
+        offsets_buf_size: usize,
+        chars_buf: *mut c_char,
+        chars_buf_size: usize,
+        total_chars_bytes: *mut i32,
+    ) -> cudf_status_t;
+
     // -- Table (owning) ------------------------------------------------------
 
     pub fn cudf_table_create(
@@ -228,6 +246,20 @@ extern "C" {
         handle: cudf_table_view_handle,
         index: i32,
         out: *mut cudf_column_view_handle,
+    ) -> cudf_status_t;
+
+    /// Release all columns from a table, destroying the table.
+    ///
+    /// On success, `table` is consumed and must not be used again.
+    /// `out_columns` receives a heap-allocated array of `out_count` column
+    /// handles. Each must be destroyed with `cudf_column_destroy`, and the
+    /// array freed with `cudf_free_column_array`.
+    ///
+    /// On failure, `table` is NOT consumed.
+    pub fn cudf_table_release_columns(
+        table: cudf_table_handle,
+        out_columns: *mut *mut cudf_column_handle,
+        out_count: *mut i32,
     ) -> cudf_status_t;
 
     // -- Scalar --------------------------------------------------------------
