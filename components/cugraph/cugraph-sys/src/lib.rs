@@ -23,10 +23,7 @@ mod tests {
         assert_eq!(cugraph_error_code_t::CUGRAPH_ALLOC_ERROR.0, 3);
         assert_eq!(cugraph_error_code_t::CUGRAPH_INVALID_INPUT.0, 4);
         assert_eq!(cugraph_error_code_t::CUGRAPH_NOT_IMPLEMENTED.0, 5);
-        assert_eq!(
-            cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION.0,
-            6
-        );
+        assert_eq!(cugraph_error_code_t::CUGRAPH_UNSUPPORTED_TYPE_COMBINATION.0, 6);
     }
 
     #[test]

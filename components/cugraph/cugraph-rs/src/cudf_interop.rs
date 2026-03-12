@@ -6,14 +6,15 @@
 //! [`DeviceBuffer`]: crate::array::DeviceBuffer
 //! [`DeviceArrayView`]: crate::array::DeviceArrayView
 
-use crate::array::{DeviceArrayView, DeviceBuffer};
-use crate::error::{Error, ErrorKind, Result};
-use crate::graph::Graph;
-use crate::handle::ResourceHandle;
-use crate::types::{DataType, GraphProperties};
-use cudf::column::DeviceSlice;
-use cudf::io::parquet;
-use cudf::types::TypeId;
+use cudf::{column::DeviceSlice, io::parquet, types::TypeId};
+
+use crate::{
+    array::{DeviceArrayView, DeviceBuffer},
+    error::{Error, ErrorKind, Result},
+    graph::Graph,
+    handle::ResourceHandle,
+    types::{DataType, GraphProperties},
+};
 
 /// Convert a cudf [`TypeId`] to a cugraph [`DataType`].
 ///
@@ -73,10 +74,8 @@ unsafe impl DeviceBuffer for DeviceSlice {
     fn dtype(&self) -> Result<DataType> {
         let type_id = self.type_id();
         cudf_type_to_cugraph(type_id).ok_or_else(|| {
-            Error::new(ErrorKind::UnsupportedType, "DeviceSlice::dtype").with_message(format!(
-                "cudf TypeId {:?} has no cugraph DataType equivalent",
-                type_id
-            ))
+            Error::new(ErrorKind::UnsupportedType, "DeviceSlice::dtype")
+                .with_message(format!("cudf TypeId {:?} has no cugraph DataType equivalent", type_id))
         })
     }
 }
@@ -112,14 +111,8 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
     fn to_cudf_column(&self) -> Result<cudf::Column> {
         let dtype = self.dtype()?;
         let cudf_type = cugraph_type_to_cudf(dtype).ok_or_else(|| {
-            Error::new(
-                ErrorKind::UnsupportedType,
-                "DeviceArrayViewExt::to_cudf_column",
-            )
-            .with_message(format!(
-                "cugraph DataType {:?} has no cudf TypeId equivalent",
-                dtype
-            ))
+            Error::new(ErrorKind::UnsupportedType, "DeviceArrayViewExt::to_cudf_column")
+                .with_message(format!("cugraph DataType {:?} has no cudf TypeId equivalent", dtype))
         })?;
 
         // SAFETY: `self.device_ptr()` points to valid GPU memory containing
@@ -127,11 +120,7 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
         // `cudf_type`. `Column::from_device_ptr` performs a device-to-device
         // copy, so the returned column is independent of this view.
         let col = unsafe {
-            cudf::Column::from_device_ptr(
-                self.device_ptr() as *const std::ffi::c_void,
-                self.len(),
-                cudf_type,
-            )
+            cudf::Column::from_device_ptr(self.device_ptr() as *const std::ffi::c_void, self.len(), cudf_type)
         }
         .map_err(|e| {
             Error::new(ErrorKind::Unexpected, "DeviceArrayViewExt::to_cudf_column")
@@ -140,6 +129,234 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
 
         Ok(col)
     }
+}
+
+/// Build a cuGraph [`Graph`] from a cudf [`TableView`].
+///
+/// This is the core function that extracts column views from a table, validates
+/// them, and builds a graph. Both [`graph_from_parquet`] and
+/// [`graph_from_dataframe`] delegate to this function.
+///
+/// # Arguments
+///
+/// - `handle` — resource handle for GPU operations
+/// - `view` — a borrowed view of a cudf table containing edge-list columns
+/// - `src_col` — zero-based column index for source vertex ids
+/// - `dst_col` — zero-based column index for destination vertex ids
+/// - `wgt_col` — optional zero-based column index for edge weights
+/// - `props` — graph properties (symmetric / multigraph)
+/// - `store_transposed` — whether to store the graph transposed (needed by
+///   some algorithms like PageRank)
+/// - `renumber` — whether to renumber vertices (strongly recommended when
+///   vertex IDs are not sequential from 0)
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - any column index is out of bounds
+/// - selected columns contain null values
+/// - column types are incompatible with cugraph
+/// - graph construction fails
+///
+/// [`TableView`]: cudf::TableView
+pub fn graph_from_table_view(
+    handle: &ResourceHandle,
+    view: &cudf::TableView<'_>,
+    src_col: usize,
+    dst_col: usize,
+    wgt_col: Option<usize>,
+    props: GraphProperties,
+    store_transposed: bool,
+    renumber: bool,
+) -> Result<Graph> {
+    let num_cols = view.num_columns().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+            .with_message(format!("failed to get column count: {}", e))
+    })? as usize;
+
+    // ── Validate column indices ─────────────────────────────────────
+    let validate_col_index = |idx: usize, name: &str| -> Result<()> {
+        if idx >= num_cols {
+            return Err(Error::new(ErrorKind::InvalidInput, "graph_from_table_view")
+                .with_message(format!(
+                    "{} column index {} is out of bounds (table has {} columns)",
+                    name, idx, num_cols
+                ))
+                .with_context("column_name", name.to_string())
+                .with_context("column_index", idx.to_string())
+                .with_context("num_columns", num_cols.to_string()));
+        }
+        Ok(())
+    };
+
+    validate_col_index(src_col, "src")?;
+    validate_col_index(dst_col, "dst")?;
+    if let Some(w) = wgt_col {
+        validate_col_index(w, "wgt")?;
+    }
+
+    // ── Helper: extract a cugraph DeviceArrayView from a table column
+    // Rejects nullable columns (graph edges/weights must be fully defined)
+    // and accounts for cudf column offsets when computing the device ptr.
+    let col_to_cugraph_view = |idx: usize, name: &str| -> Result<DeviceArrayView<'_>> {
+        let col = view.column(idx as i32).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("failed to get {} column: {}", name, e))
+                .with_context("column_index", idx.to_string())
+        })?;
+
+        let dt = col.data_type().map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("failed to get {} column data type: {}", name, e))
+                .with_context("column_index", idx.to_string())
+        })?;
+
+        let cudf_type_id = dt.id();
+        let cugraph_dtype = cudf_type_to_cugraph(cudf_type_id).ok_or_else(|| {
+            Error::new(ErrorKind::UnsupportedType, "graph_from_table_view")
+                .with_message(format!(
+                    "{} column has cudf type {:?} which has no cugraph equivalent",
+                    name, cudf_type_id
+                ))
+                .with_context("column_index", idx.to_string())
+        })?;
+
+        let null_count = col.null_count().map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("failed to get {} column null count: {}", name, e))
+                .with_context("column_index", idx.to_string())
+        })?;
+
+        if null_count != 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "graph_from_table_view")
+                .with_message(format!(
+                    "{} column contains {} null value(s); nulls are not supported for edge lists",
+                    name, null_count
+                ))
+                .with_context("column_name", name.to_string())
+                .with_context("column_index", idx.to_string())
+                .with_context("null_count", null_count.to_string()));
+        }
+
+        let base_ptr = col.device_data_ptr().map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("failed to get {} column device pointer: {}", name, e))
+                .with_context("column_index", idx.to_string())
+        })? as *const u8;
+
+        let len = col.len().map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("failed to get {} column length: {}", name, e))
+                .with_context("column_index", idx.to_string())
+        })? as usize;
+
+        let offset = col.offset().map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("failed to get {} column offset: {}", name, e))
+                .with_context("column_index", idx.to_string())
+        })?;
+
+        if offset < 0 {
+            return Err(Error::new(ErrorKind::Unexpected, "graph_from_table_view")
+                .with_message(format!("{} column returned a negative offset {}", name, offset))
+                .with_context("column_index", idx.to_string()));
+        }
+        let offset = offset as usize;
+
+        let byte_offset = offset.checked_mul(cugraph_dtype.size_of()).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "graph_from_table_view")
+                .with_message(format!("{} column offset is too large", name))
+                .with_context("column_index", idx.to_string())
+                .with_context("offset", offset.to_string())
+                .with_context("dtype_size", cugraph_dtype.size_of().to_string())
+        })?;
+
+        let ptr = if base_ptr.is_null() {
+            base_ptr as *mut std::ffi::c_void
+        } else {
+            // SAFETY: `base_ptr` is the start of the cudf device buffer for this
+            // column, and `byte_offset` is derived from the column's logical offset
+            // and element size.
+            unsafe { base_ptr.add(byte_offset) as *mut std::ffi::c_void }
+        };
+
+        // SAFETY: `ptr` points at the active (offset-adjusted) region of
+        // the cudf column's device buffer for `len` elements of `cugraph_dtype`.
+        // The table outlives all intermediate views in this scope.
+        Ok(unsafe { DeviceArrayView::from_raw(ptr, len, cugraph_dtype) })
+    };
+
+    let src_cg = col_to_cugraph_view(src_col, "src")?;
+    let dst_cg = col_to_cugraph_view(dst_col, "dst")?;
+    let wgt_cg = wgt_col.map(|w| col_to_cugraph_view(w, "wgt")).transpose()?;
+
+    // ── Build the graph ─────────────────────────────────────────────
+    Graph::from_edge_list(
+        handle,
+        props,
+        &src_cg,
+        &dst_cg,
+        wgt_cg.as_ref(),
+        None, // no edge IDs
+        None, // no edge type IDs
+        store_transposed,
+        renumber,
+    )
+}
+
+/// Build a cuGraph [`Graph`] from a cudf [`DataFrame`] using column names.
+///
+/// Resolves column names to indices and delegates to [`graph_from_table_view`].
+///
+/// # Arguments
+///
+/// - `handle` — resource handle for GPU operations
+/// - `df` — a cudf DataFrame containing edge-list columns
+/// - `src_col` — column name for source vertex ids
+/// - `dst_col` — column name for destination vertex ids
+/// - `wgt_col` — optional column name for edge weights
+/// - `props` — graph properties (symmetric / multigraph)
+/// - `store_transposed` — whether to store the graph transposed
+/// - `renumber` — whether to renumber vertices
+///
+/// # Errors
+///
+/// Returns an error if any column name is not found in the DataFrame, or if
+/// [`graph_from_table_view`] fails.
+///
+/// [`DataFrame`]: cudf::DataFrame
+pub fn graph_from_dataframe(
+    handle: &ResourceHandle,
+    df: &cudf::DataFrame,
+    src_col: &str,
+    dst_col: &str,
+    wgt_col: Option<&str>,
+    props: GraphProperties,
+    store_transposed: bool,
+    renumber: bool,
+) -> Result<Graph> {
+    let resolve = |name: &str, role: &str| -> Result<usize> {
+        df.column_index(name).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidInput, "graph_from_dataframe")
+                .with_message(format!("{} column \"{}\" not found in DataFrame", role, name))
+                .with_context("column_name", name.to_string())
+        })
+    };
+
+    let src_idx = resolve(src_col, "src")?;
+    let dst_idx = resolve(dst_col, "dst")?;
+    let wgt_idx = wgt_col.map(|name| resolve(name, "wgt")).transpose()?;
+
+    let table = df.to_table().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, "graph_from_dataframe")
+            .with_message(format!("failed to build table from DataFrame: {}", e))
+    })?;
+    let view = table.view().map_err(|e| {
+        Error::new(ErrorKind::Unexpected, "graph_from_dataframe")
+            .with_message(format!("failed to get table view: {}", e))
+    })?;
+
+    graph_from_table_view(handle, &view, src_idx, dst_idx, wgt_idx, props, store_transposed, renumber)
 }
 
 /// Read a Parquet edge-list and build a cuGraph [`Graph`] on the GPU.
@@ -180,9 +397,10 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
 /// # Example
 ///
 /// ```no_run
-/// use cugraph::cudf_interop::graph_from_parquet;
-/// use cugraph::handle::ResourceHandle;
-/// use cugraph::types::GraphProperties;
+/// use cugraph::{
+///     cudf_interop::graph_from_parquet, handle::ResourceHandle,
+///     types::GraphProperties,
+/// };
 ///
 /// let handle = ResourceHandle::new().unwrap();
 /// let props = GraphProperties { is_symmetric: false, is_multigraph: false };
@@ -190,9 +408,14 @@ impl DeviceArrayViewExt for DeviceArrayView<'_> {
 /// let (_table, mut graph) = graph_from_parquet(
 ///     &handle,
 ///     "edges.parquet",
-///     0, 1, Some(2),
-///     props, false, true,
-/// ).unwrap();
+///     0,
+///     1,
+///     Some(2),
+///     props,
+///     false,
+///     true,
+/// )
+/// .unwrap();
 /// ```
 pub fn graph_from_parquet(
     handle: &ResourceHandle,
@@ -205,17 +428,14 @@ pub fn graph_from_parquet(
     renumber: bool,
 ) -> Result<(cudf::Table, Graph)> {
     // ── Read the Parquet file into GPU memory ───────────────────────────
-    let options = parquet::ParquetReaderOptions::new(path).map_err(|e| {
-        Error::new(ErrorKind::InvalidInput, "graph_from_parquet")
-            .with_message(format!("failed to create Parquet reader options: {}", e))
-            .with_context("path", path.to_string())
-    })?;
+    let options = parquet::ParquetReaderOptions::new(path);
 
-    let table = parquet::read_parquet(&options).map_err(|e| {
+    let result = parquet::read_parquet_with_metadata(options).map_err(|e| {
         Error::new(ErrorKind::InvalidInput, "graph_from_parquet")
             .with_message(format!("failed to read Parquet file: {}", e))
             .with_context("path", path.to_string())
     })?;
+    let table = result.table;
 
     // Build the graph inside an inner scope so that the TableView and all
     // intermediate DeviceArrayViews are dropped before we return `table`.
@@ -225,147 +445,7 @@ pub fn graph_from_parquet(
                 .with_message(format!("failed to get table view: {}", e))
         })?;
 
-        let num_cols = view.num_columns().map_err(|e| {
-            Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                .with_message(format!("failed to get column count: {}", e))
-        })? as usize;
-
-        // ── Validate column indices ─────────────────────────────────────
-        let validate_col_index = |idx: usize, name: &str| -> Result<()> {
-            if idx >= num_cols {
-                return Err(Error::new(ErrorKind::InvalidInput, "graph_from_parquet")
-                    .with_message(format!(
-                        "{} column index {} is out of bounds (table has {} columns)",
-                        name, idx, num_cols
-                    ))
-                    .with_context("column_name", name.to_string())
-                    .with_context("column_index", idx.to_string())
-                    .with_context("num_columns", num_cols.to_string()));
-            }
-            Ok(())
-        };
-
-        validate_col_index(src_col, "src")?;
-        validate_col_index(dst_col, "dst")?;
-        if let Some(w) = wgt_col {
-            validate_col_index(w, "wgt")?;
-        }
-
-        // ── Helper: extract a cugraph DeviceArrayView from a table column
-        // Rejects nullable columns (graph edges/weights must be fully defined)
-        // and accounts for cudf column offsets when computing the device ptr.
-        let col_to_cugraph_view = |idx: usize, name: &str| -> Result<DeviceArrayView<'_>> {
-            let col = view.column(idx as i32).map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!("failed to get {} column: {}", name, e))
-                    .with_context("column_index", idx.to_string())
-            })?;
-
-            let dt = col.data_type().map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!("failed to get {} column data type: {}", name, e))
-                    .with_context("column_index", idx.to_string())
-            })?;
-
-            let cudf_type_id = dt.id();
-            let cugraph_dtype = cudf_type_to_cugraph(cudf_type_id).ok_or_else(|| {
-                Error::new(ErrorKind::UnsupportedType, "graph_from_parquet")
-                    .with_message(format!(
-                        "{} column has cudf type {:?} which has no cugraph equivalent",
-                        name, cudf_type_id
-                    ))
-                    .with_context("column_index", idx.to_string())
-            })?;
-
-            let null_count = col.null_count().map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!("failed to get {} column null count: {}", name, e))
-                    .with_context("column_index", idx.to_string())
-            })?;
-
-            if null_count != 0 {
-                return Err(
-                    Error::new(ErrorKind::InvalidInput, "graph_from_parquet")
-                        .with_message(format!(
-                            "{} column contains {} null value(s); nulls are not supported for edge lists",
-                            name, null_count
-                        ))
-                        .with_context("column_name", name.to_string())
-                        .with_context("column_index", idx.to_string())
-                        .with_context("null_count", null_count.to_string()),
-                );
-            }
-
-            let base_ptr = col.device_data_ptr().map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!(
-                        "failed to get {} column device pointer: {}",
-                        name, e
-                    ))
-                    .with_context("column_index", idx.to_string())
-            })? as *const u8;
-
-            let len = col.len().map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!("failed to get {} column length: {}", name, e))
-                    .with_context("column_index", idx.to_string())
-            })? as usize;
-
-            let offset = col.offset().map_err(|e| {
-                Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!("failed to get {} column offset: {}", name, e))
-                    .with_context("column_index", idx.to_string())
-            })?;
-
-            if offset < 0 {
-                return Err(Error::new(ErrorKind::Unexpected, "graph_from_parquet")
-                    .with_message(format!(
-                        "{} column returned a negative offset {}",
-                        name, offset
-                    ))
-                    .with_context("column_index", idx.to_string()));
-            }
-            let offset = offset as usize;
-
-            let byte_offset = offset.checked_mul(cugraph_dtype.size_of()).ok_or_else(|| {
-                Error::new(ErrorKind::InvalidInput, "graph_from_parquet")
-                    .with_message(format!("{} column offset is too large", name))
-                    .with_context("column_index", idx.to_string())
-                    .with_context("offset", offset.to_string())
-                    .with_context("dtype_size", cugraph_dtype.size_of().to_string())
-            })?;
-
-            let ptr = if base_ptr.is_null() {
-                base_ptr as *mut std::ffi::c_void
-            } else {
-                // SAFETY: `base_ptr` is the start of the cudf device buffer for this
-                // column, and `byte_offset` is derived from the column's logical offset
-                // and element size.
-                unsafe { base_ptr.add(byte_offset) as *mut std::ffi::c_void }
-            };
-
-            // SAFETY: `ptr` points at the active (offset-adjusted) region of
-            // the cudf column's device buffer for `len` elements of `cugraph_dtype`.
-            // The table outlives all intermediate views in this scope.
-            Ok(unsafe { DeviceArrayView::from_raw(ptr, len, cugraph_dtype) })
-        };
-
-        let src_cg = col_to_cugraph_view(src_col, "src")?;
-        let dst_cg = col_to_cugraph_view(dst_col, "dst")?;
-        let wgt_cg = wgt_col.map(|w| col_to_cugraph_view(w, "wgt")).transpose()?;
-
-        // ── Build the graph ─────────────────────────────────────────────
-        Graph::from_edge_list(
-            handle,
-            props,
-            &src_cg,
-            &dst_cg,
-            wgt_cg.as_ref(),
-            None, // no edge IDs
-            None, // no edge type IDs
-            store_transposed,
-            renumber,
-        )?
+        graph_from_table_view(handle, &view, src_col, dst_col, wgt_col, props, store_transposed, renumber)?
     };
 
     Ok((table, graph))
@@ -409,15 +489,11 @@ mod tests {
     fn cugraph_to_cudf_roundtrip() {
         // For every mapped cugraph DataType, converting to cudf and back yields the original.
         for &dt in MAPPED_DATA_TYPES {
-            let cudf_tid = cugraph_type_to_cudf(dt)
-                .unwrap_or_else(|| panic!("cugraph_type_to_cudf returned None for {:?}", dt));
+            let cudf_tid =
+                cugraph_type_to_cudf(dt).unwrap_or_else(|| panic!("cugraph_type_to_cudf returned None for {:?}", dt));
             let back = cudf_type_to_cugraph(cudf_tid)
                 .unwrap_or_else(|| panic!("cudf_type_to_cugraph returned None for {:?}", cudf_tid));
-            assert_eq!(
-                dt, back,
-                "round-trip failed: {:?} → {:?} → {:?}",
-                dt, cudf_tid, back
-            );
+            assert_eq!(dt, back, "round-trip failed: {:?} → {:?} → {:?}", dt, cudf_tid, back);
         }
     }
 
@@ -425,16 +501,11 @@ mod tests {
     fn cudf_to_cugraph_roundtrip() {
         // For every mapped cudf TypeId, converting to cugraph and back yields the original.
         for &tid in MAPPED_TYPE_IDS {
-            let cugraph_dt = cudf_type_to_cugraph(tid)
-                .unwrap_or_else(|| panic!("cudf_type_to_cugraph returned None for {:?}", tid));
-            let back = cugraph_type_to_cudf(cugraph_dt).unwrap_or_else(|| {
-                panic!("cugraph_type_to_cudf returned None for {:?}", cugraph_dt)
-            });
-            assert_eq!(
-                tid, back,
-                "round-trip failed: {:?} → {:?} → {:?}",
-                tid, cugraph_dt, back
-            );
+            let cugraph_dt =
+                cudf_type_to_cugraph(tid).unwrap_or_else(|| panic!("cudf_type_to_cugraph returned None for {:?}", tid));
+            let back = cugraph_type_to_cudf(cugraph_dt)
+                .unwrap_or_else(|| panic!("cugraph_type_to_cudf returned None for {:?}", cugraph_dt));
+            assert_eq!(tid, back, "round-trip failed: {:?} → {:?} → {:?}", tid, cugraph_dt, back);
         }
     }
 
@@ -467,12 +538,7 @@ mod tests {
             TypeId::Struct,
         ];
         for tid in unsupported {
-            assert_eq!(
-                cudf_type_to_cugraph(tid),
-                None,
-                "expected None for unsupported cudf TypeId {:?}",
-                tid
-            );
+            assert_eq!(cudf_type_to_cugraph(tid), None, "expected None for unsupported cudf TypeId {:?}", tid);
         }
     }
 }

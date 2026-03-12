@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 fn bindings_rs_path() -> PathBuf {
     if let Some(path) = option_env!("CUGRAPH_SYS_BINDINGS_RS") {
@@ -11,8 +10,7 @@ fn bindings_rs_path() -> PathBuf {
 
 fn generated_bindings() -> String {
     let path = bindings_rs_path();
-    fs::read_to_string(&path)
-        .unwrap_or_else(|_| panic!("failed to read generated bindings at {}", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|_| panic!("failed to read generated bindings at {}", path.display()))
 }
 
 #[test]
@@ -46,9 +44,6 @@ fn bindings_include_critical_core_symbols() {
 
     for symbol in required_symbols {
         let needle = format!("pub fn {symbol}(");
-        assert!(
-            bindings.contains(&needle),
-            "generated bindings missing critical symbol: {symbol}"
-        );
+        assert!(bindings.contains(&needle), "generated bindings missing critical symbol: {symbol}");
     }
 }

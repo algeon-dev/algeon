@@ -30,8 +30,10 @@
 //! assert_eq!(alpha.get(), 0.85);
 //! ```
 
-use std::fmt;
-use std::num::{NonZeroU32, NonZeroUsize};
+use std::{
+    fmt,
+    num::{NonZeroU32, NonZeroUsize},
+};
 
 use crate::error::{Error, ErrorKind};
 
@@ -132,11 +134,9 @@ impl TryFrom<i32> for IterationCount {
 
     fn try_from(value: i32) -> crate::error::Result<Self> {
         if value <= 0 {
-            return Err(
-                Error::new(ErrorKind::InvalidInput, "IterationCount::try_from<i32>")
-                    .with_message("iteration count must be greater than zero")
-                    .with_context("value", value.to_string()),
-            );
+            return Err(Error::new(ErrorKind::InvalidInput, "IterationCount::try_from<i32>")
+                .with_message("iteration count must be greater than zero")
+                .with_context("value", value.to_string()));
         }
         Self::new(value as u32)
     }
@@ -240,11 +240,9 @@ impl TryFrom<i32> for BfsDepthLimit {
 
     fn try_from(value: i32) -> crate::error::Result<Self> {
         if value <= 0 {
-            return Err(
-                Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::try_from<i32>")
-                    .with_message("BFS depth limit must be greater than zero")
-                    .with_context("value", value.to_string()),
-            );
+            return Err(Error::new(ErrorKind::InvalidInput, "BfsDepthLimit::try_from<i32>")
+                .with_message("BFS depth limit must be greater than zero")
+                .with_context("value", value.to_string()));
         }
         Self::new(value as usize)
     }
@@ -684,10 +682,7 @@ mod tests {
         assert_eq!(PositiveF64::new(0.001).unwrap().get(), 0.001);
         assert_eq!(PositiveF64::new(1.0).unwrap().get(), 1.0);
         assert_eq!(PositiveF64::new(1e10).unwrap().get(), 1e10);
-        assert_eq!(
-            PositiveF64::new(f64::MIN_POSITIVE).unwrap().get(),
-            f64::MIN_POSITIVE
-        );
+        assert_eq!(PositiveF64::new(f64::MIN_POSITIVE).unwrap().get(), f64::MIN_POSITIVE);
     }
 
     #[test]

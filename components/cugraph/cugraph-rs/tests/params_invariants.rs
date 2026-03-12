@@ -1,10 +1,10 @@
 //! Integration tests verifying that the type-level parameter invariants (CX-1)
 //! are enforced correctly and that migrated APIs remain compatible.
 
-use cugraph::centrality::PageRankParams;
-use cugraph::layout::ForceAtlas2Params;
-use cugraph::params::{
-    BfsDepthLimit, ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, UnitF64,
+use cugraph::{
+    centrality::PageRankParams,
+    layout::ForceAtlas2Params,
+    params::{BfsDepthLimit, ClosedUnitF64, IterationCount, NonNegativeF64, PositiveF64, UnitF64},
 };
 
 // ---------------------------------------------------------------------------
@@ -124,10 +124,7 @@ fn force_atlas2_gravity_allows_zero() {
     // gravity = 0 disables gravity (no attraction to center), which is valid.
     // The C API accepts any double; the CUDA kernels multiply by gravity, so
     // zero simply zeroes out the gravity force.
-    let params = ForceAtlas2Params {
-        gravity: NonNegativeF64::new(0.0).unwrap(),
-        ..Default::default()
-    };
+    let params = ForceAtlas2Params { gravity: NonNegativeF64::new(0.0).unwrap(), ..Default::default() };
     assert_eq!(params.gravity.get(), 0.0);
 }
 

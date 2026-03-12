@@ -35,3 +35,8 @@ required-features = ["cudf-interop"]
 [[example]]
 name = "pagerank"
 path = "examples/pagerank.rs"
+
+[[test]]
+name = "cudf_interop_roundtrip"
+path = "tests/cudf_interop_roundtrip.rs"
+required-features = ["cudf-interop"]

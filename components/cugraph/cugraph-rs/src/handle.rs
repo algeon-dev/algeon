@@ -4,12 +4,9 @@
 //! underlying CUDA stream and RAFT handle. The handle is **not** `Send` or
 //! `Sync` because GPU state is thread-local.
 
-use std::marker::PhantomData;
-use std::ptr;
+use std::{marker::PhantomData, ptr};
 
-use cugraph_sys::{
-    cugraph_create_resource_handle, cugraph_free_resource_handle, cugraph_resource_handle_t,
-};
+use cugraph_sys::{cugraph_create_resource_handle, cugraph_free_resource_handle, cugraph_resource_handle_t};
 
 use crate::error::{Error, ErrorKind, Result};
 
@@ -31,10 +28,7 @@ impl ResourceHandle {
             return Err(Error::new(ErrorKind::Unexpected, "ResourceHandle::new")
                 .with_message("cugraph_create_resource_handle returned NULL"));
         }
-        Ok(Self {
-            raw,
-            _nosend_nosync: PhantomData,
-        })
+        Ok(Self { raw, _nosend_nosync: PhantomData })
     }
 
     /// Get the raw C pointer. For internal use by other modules.
@@ -55,8 +49,9 @@ impl Drop for ResourceHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use static_assertions::assert_not_impl_any;
+
+    use super::*;
 
     #[test]
     fn test_resource_handle_creation() {

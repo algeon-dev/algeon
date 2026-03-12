@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 fn read_build_rs() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -23,10 +22,7 @@ fn build_rs_uses_newtype_enums_for_ffi_safety() {
         build_rs.contains("newtype_enum(\"cugraph_error_code_\")"),
         "cugraph_error_code_ should be generated as a newtype enum"
     );
-    assert!(
-        build_rs.contains("newtype_enum(\"bool_\")"),
-        "bool_ should be generated as a newtype enum"
-    );
+    assert!(build_rs.contains("newtype_enum(\"bool_\")"), "bool_ should be generated as a newtype enum");
     assert!(
         build_rs.contains("newtype_enum(\"data_type_id_\")"),
         "data_type_id_ should be generated as a newtype enum"
@@ -43,5 +39,21 @@ fn build_rs_uses_newtype_enums_for_ffi_safety() {
     assert!(
         !build_rs.contains("rustified_enum(\"data_type_id_\")"),
         "rustified C enums are UB-prone across FFI; use newtype enums instead"
+    );
+}
+
+#[test]
+fn build_rs_tracks_layout_header_for_rerun() {
+    let build_rs = read_build_rs();
+
+    assert!(
+        build_rs.contains("layout_algorithms.h"),
+        "build.rs must contain a rerun-if-changed directive for layout_algorithms.h \
+         because it is not #included by wrapper.h and CargoCallbacks cannot track it"
+    );
+
+    assert!(
+        build_rs.contains("rerun-if-changed") && build_rs.contains("layout_algorithms.h"),
+        "build.rs must emit cargo:rerun-if-changed for the layout header path"
     );
 }

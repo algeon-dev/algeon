@@ -5,14 +5,14 @@
 
 use std::ptr;
 
-use cugraph_sys::{
-    cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_free, cugraph_graph_t,
-};
+use cugraph_sys::{cugraph_error_t, cugraph_graph_create_with_times_sg, cugraph_graph_free, cugraph_graph_t};
 
-use crate::array::DeviceArrayView;
-use crate::error::{check_error, Error, ErrorKind, Result};
-use crate::handle::ResourceHandle;
-use crate::types::{to_bool_t, GraphProperties};
+use crate::{
+    array::DeviceArrayView,
+    error::{Error, ErrorKind, Result, check_error},
+    handle::ResourceHandle,
+    types::{GraphProperties, to_bool_t},
+};
 
 /// RAII wrapper for a cuGraph graph object.
 ///
@@ -93,15 +93,9 @@ impl Graph {
         }
 
         let c_props = properties.into();
-        let weights_ptr = weights
-            .map(|w| w.as_ptr() as *const _)
-            .unwrap_or(ptr::null());
-        let edge_ids_ptr = edge_ids
-            .map(|e| e.as_ptr() as *const _)
-            .unwrap_or(ptr::null());
-        let edge_type_ids_ptr = edge_type_ids
-            .map(|e| e.as_ptr() as *const _)
-            .unwrap_or(ptr::null());
+        let weights_ptr = weights.map(|w| w.as_ptr() as *const _).unwrap_or(ptr::null());
+        let edge_ids_ptr = edge_ids.map(|e| e.as_ptr() as *const _).unwrap_or(ptr::null());
+        let edge_type_ids_ptr = edge_type_ids.map(|e| e.as_ptr() as *const _).unwrap_or(ptr::null());
 
         let mut graph: *mut cugraph_graph_t = ptr::null_mut();
         let mut error: *mut cugraph_error_t = ptr::null_mut();
@@ -130,10 +124,7 @@ impl Graph {
             check_error(code, error, "Graph::from_edge_list")?;
         }
 
-        Ok(Self {
-            raw: graph,
-            _nosend_nosync: std::marker::PhantomData,
-        })
+        Ok(Self { raw: graph, _nosend_nosync: std::marker::PhantomData })
     }
 }
 
@@ -148,10 +139,7 @@ impl Drop for Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::device_array_from_host;
-    use crate::error::ErrorKind;
-    use crate::handle::ResourceHandle;
-    use crate::types::DataType;
+    use crate::{array::device_array_from_host, error::ErrorKind, handle::ResourceHandle, types::DataType};
 
     #[test]
     fn test_graph_creation_triangle() {
@@ -164,22 +152,9 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            false,
-        );
+        let graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, false);
         assert!(graph.is_ok(), "graph creation failed: {:?}", graph.err());
     }
 
@@ -190,22 +165,10 @@ mod tests {
         let src = device_array_from_host(&handle, &[0i32, 1, 2], DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &[1i32, 2], DataType::Int32).expect("dst");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let err = match Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false,
-            false,
-        ) {
+        let err = match Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, false)
+        {
             Ok(_) => panic!("should reject mismatched edge-list lengths"),
             Err(err) => err,
         };
@@ -225,15 +188,10 @@ mod tests {
 
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-        let edge_ids =
-            device_array_from_host(&handle, &edge_id_data, DataType::Int32).expect("edge_ids");
-        let edge_types =
-            device_array_from_host(&handle, &edge_type_data, DataType::Int32).expect("edge_types");
+        let edge_ids = device_array_from_host(&handle, &edge_id_data, DataType::Int32).expect("edge_ids");
+        let edge_types = device_array_from_host(&handle, &edge_type_data, DataType::Int32).expect("edge_types");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let graph = Graph::from_edge_list(
             &handle,
@@ -246,11 +204,7 @@ mod tests {
             false,
             true, // renumber required when using edge properties
         );
-        assert!(
-            graph.is_ok(),
-            "graph creation with edge_ids and edge_type_ids failed: {:?}",
-            graph.err()
-        );
+        assert!(graph.is_ok(), "graph creation with edge_ids and edge_type_ids failed: {:?}", graph.err());
     }
 
     #[test]
@@ -263,13 +217,9 @@ mod tests {
 
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-        let edge_ids =
-            device_array_from_host(&handle, &edge_id_data, DataType::Int32).expect("edge_ids");
+        let edge_ids = device_array_from_host(&handle, &edge_id_data, DataType::Int32).expect("edge_ids");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let graph = Graph::from_edge_list(
             &handle,
@@ -282,11 +232,7 @@ mod tests {
             false,
             true,
         );
-        assert!(
-            graph.is_ok(),
-            "graph creation with edge_ids only failed: {:?}",
-            graph.err()
-        );
+        assert!(graph.is_ok(), "graph creation with edge_ids only failed: {:?}", graph.err());
     }
 
     #[test]
@@ -299,13 +245,9 @@ mod tests {
 
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-        let edge_types =
-            device_array_from_host(&handle, &edge_type_data, DataType::Int32).expect("edge_types");
+        let edge_types = device_array_from_host(&handle, &edge_type_data, DataType::Int32).expect("edge_types");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let graph = Graph::from_edge_list(
             &handle,
@@ -318,11 +260,7 @@ mod tests {
             false,
             true,
         );
-        assert!(
-            graph.is_ok(),
-            "graph creation with edge_type_ids only failed: {:?}",
-            graph.err()
-        );
+        assert!(graph.is_ok(), "graph creation with edge_type_ids only failed: {:?}", graph.err());
     }
 
     #[test]
@@ -338,15 +276,10 @@ mod tests {
         let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
         let wgt = device_array_from_host(&handle, &wgt_data, DataType::Float32).expect("wgt");
-        let edge_ids =
-            device_array_from_host(&handle, &edge_id_data, DataType::Int32).expect("edge_ids");
-        let edge_types =
-            device_array_from_host(&handle, &edge_type_data, DataType::Int32).expect("edge_types");
+        let edge_ids = device_array_from_host(&handle, &edge_id_data, DataType::Int32).expect("edge_ids");
+        let edge_types = device_array_from_host(&handle, &edge_type_data, DataType::Int32).expect("edge_types");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let graph = Graph::from_edge_list(
             &handle,
@@ -359,11 +292,7 @@ mod tests {
             false,
             true,
         );
-        assert!(
-            graph.is_ok(),
-            "graph creation with weights + edge properties failed: {:?}",
-            graph.err()
-        );
+        assert!(graph.is_ok(), "graph creation with weights + edge properties failed: {:?}", graph.err());
     }
 
     #[test]
@@ -372,13 +301,9 @@ mod tests {
 
         let src = device_array_from_host(&handle, &[0i32, 1, 2], DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &[1i32, 2, 0], DataType::Int32).expect("dst");
-        let edge_ids =
-            device_array_from_host(&handle, &[10i32, 20], DataType::Int32).expect("edge_ids");
+        let edge_ids = device_array_from_host(&handle, &[10i32, 20], DataType::Int32).expect("edge_ids");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let err = Graph::from_edge_list(
             &handle,
@@ -402,13 +327,9 @@ mod tests {
 
         let src = device_array_from_host(&handle, &[0i32, 1, 2], DataType::Int32).expect("src");
         let dst = device_array_from_host(&handle, &[1i32, 2, 0], DataType::Int32).expect("dst");
-        let edge_types =
-            device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("edge_types");
+        let edge_types = device_array_from_host(&handle, &[0i32, 1], DataType::Int32).expect("edge_types");
 
-        let props = GraphProperties {
-            is_symmetric: false,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
         let err = Graph::from_edge_list(
             &handle,

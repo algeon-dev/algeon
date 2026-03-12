@@ -1,6 +1,8 @@
-use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeSet, HashSet, VecDeque},
+    fs,
+    path::{Path, PathBuf},
+};
 
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,12 +21,10 @@ fn include_dir() -> PathBuf {
 }
 
 fn bindings_rs_path() -> PathBuf {
-    if let Some(path) = option_env!("CUGRAPH_SYS_BINDINGS_RS") {
-        return PathBuf::from(path);
-    }
-
-    // Fallback path for robustness if rustc-env is unavailable.
-    manifest_dir().join("../target/debug/build")
+    PathBuf::from(
+        option_env!("CUGRAPH_SYS_BINDINGS_RS")
+            .expect("CUGRAPH_SYS_BINDINGS_RS not set — build.rs must export this via cargo:rustc-env"),
+    )
 }
 
 fn parse_cugraph_includes(source: &str) -> Vec<String> {
@@ -32,9 +32,7 @@ fn parse_cugraph_includes(source: &str) -> Vec<String> {
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            line.strip_prefix("#include <cugraph_c/")
-                .and_then(|rest| rest.strip_suffix('>'))
-                .map(|s| s.to_string())
+            line.strip_prefix("#include <cugraph_c/").and_then(|rest| rest.strip_suffix('>')).map(|s| s.to_string())
         })
         .collect()
 }
@@ -182,12 +180,8 @@ fn expected_api_from_wrapper_headers() -> BTreeSet<String> {
     let mut expected = BTreeSet::new();
 
     for header in headers {
-        let content = fs::read_to_string(&header).unwrap_or_else(|_| {
-            panic!(
-                "failed to read header for coverage test: {}",
-                header.display()
-            )
-        });
+        let content = fs::read_to_string(&header)
+            .unwrap_or_else(|_| panic!("failed to read header for coverage test: {}", header.display()));
         let content = strip_disabled_if0_blocks(&content);
         let content = strip_c_comments(&content);
 
@@ -201,12 +195,8 @@ fn expected_api_from_wrapper_headers() -> BTreeSet<String> {
 
 fn actual_api_from_generated_bindings() -> BTreeSet<String> {
     let bindings_path = bindings_rs_path();
-    let content = fs::read_to_string(&bindings_path).unwrap_or_else(|_| {
-        panic!(
-            "failed to read generated bindings for coverage test: {}",
-            bindings_path.display()
-        )
-    });
+    let content = fs::read_to_string(&bindings_path)
+        .unwrap_or_else(|_| panic!("failed to read generated bindings for coverage test: {}", bindings_path.display()));
 
     let mut actual = BTreeSet::new();
     for line in content.lines() {
@@ -221,6 +211,12 @@ fn actual_api_from_generated_bindings() -> BTreeSet<String> {
 }
 
 #[test]
+fn bindings_rs_path_points_to_existing_file() {
+    let path = bindings_rs_path();
+    assert!(path.is_file(), "bindings_rs_path() must point to a file, got: {}", path.display());
+}
+
+#[test]
 fn generated_bindings_cover_all_wrapper_declared_functions() {
     let expected = expected_api_from_wrapper_headers();
     let actual = actual_api_from_generated_bindings();
@@ -230,20 +226,11 @@ fn generated_bindings_cover_all_wrapper_declared_functions() {
     ignore.insert("cugraph_type_erased_device_array_release".to_string());
     ignore.insert("cugraph_type_erased_host_array_release".to_string());
 
-    let missing: Vec<_> = expected
-        .difference(&actual)
-        .filter(|name| !ignore.contains(*name))
-        .cloned()
-        .collect();
+    let missing: Vec<_> = expected.difference(&actual).filter(|name| !ignore.contains(*name)).cloned().collect();
 
     assert!(
         missing.is_empty(),
         "generated bindings are missing wrapper-declared APIs (showing up to 30):\n{}",
-        missing
-            .iter()
-            .take(30)
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join("\n")
+        missing.iter().take(30).map(String::as_str).collect::<Vec<_>>().join("\n")
     );
 }

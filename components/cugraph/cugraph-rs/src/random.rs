@@ -15,12 +15,12 @@
 
 use std::ptr;
 
-use cugraph_sys::{
-    cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_free, cugraph_rng_state_t,
-};
+use cugraph_sys::{cugraph_error_t, cugraph_rng_state_create, cugraph_rng_state_free, cugraph_rng_state_t};
 
-use crate::error::{check_error, Result};
-use crate::handle::ResourceHandle;
+use crate::{
+    error::{Result, check_error},
+    handle::ResourceHandle,
+};
 
 /// RAII wrapper around `cugraph_rng_state_t`.
 ///
@@ -46,10 +46,7 @@ impl RngState {
             check_error(code, error, "RngState::new")?;
         }
 
-        Ok(Self {
-            raw,
-            _nosend_nosync: std::marker::PhantomData,
-        })
+        Ok(Self { raw, _nosend_nosync: std::marker::PhantomData })
     }
 
     /// Get the raw C pointer. For internal use by other modules.
@@ -68,8 +65,9 @@ impl Drop for RngState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use static_assertions::assert_not_impl_any;
+
+    use super::*;
 
     #[test]
     fn test_rng_state_creation() {

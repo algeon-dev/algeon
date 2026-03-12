@@ -90,11 +90,7 @@ impl From<GraphProperties> for cugraph_graph_properties_t {
 
 /// Convert a Rust `bool` to the C `bool_t` enum.
 pub(crate) fn to_bool_t(b: bool) -> bool_t {
-    if b {
-        bool_t::TRUE
-    } else {
-        bool_t::FALSE
-    }
+    if b { bool_t::TRUE } else { bool_t::FALSE }
 }
 
 /// Convert the C `bool_t` enum to a Rust `bool`, validating that the value is
@@ -159,10 +155,7 @@ mod tests {
 
     #[test]
     fn test_graph_properties_to_c() {
-        let props = GraphProperties {
-            is_symmetric: true,
-            is_multigraph: false,
-        };
+        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
         let c_props: cugraph_graph_properties_t = props.into();
         assert_eq!(c_props.is_symmetric, bool_t::TRUE);
         assert_eq!(c_props.is_multigraph, bool_t::FALSE);

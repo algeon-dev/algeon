@@ -5,14 +5,15 @@
 //! safe wrapper that is reused by all centrality algorithms.
 
 use cugraph_sys::{
-    cugraph_centrality_result_converged, cugraph_centrality_result_free,
-    cugraph_centrality_result_get_num_iterations, cugraph_centrality_result_get_values,
-    cugraph_centrality_result_get_vertices, cugraph_centrality_result_t,
+    cugraph_centrality_result_converged, cugraph_centrality_result_free, cugraph_centrality_result_get_num_iterations,
+    cugraph_centrality_result_get_values, cugraph_centrality_result_get_vertices, cugraph_centrality_result_t,
 };
 
-use crate::array::DeviceArrayView;
-use crate::error::{Error, ErrorKind, Result};
-use crate::types::try_from_bool_t;
+use crate::{
+    array::DeviceArrayView,
+    error::{Error, ErrorKind, Result},
+    types::try_from_bool_t,
+};
 
 /// Result of a centrality computation (PageRank, betweenness centrality, etc.).
 ///
@@ -35,10 +36,7 @@ impl CentralityResult {
     /// `raw` must be a valid, non-null pointer returned by a cuGraph centrality
     /// C API function. Ownership is transferred to this struct.
     pub(crate) unsafe fn from_raw(raw: *mut cugraph_centrality_result_t) -> Self {
-        Self {
-            raw,
-            _nosend_nosync: std::marker::PhantomData,
-        }
+        Self { raw, _nosend_nosync: std::marker::PhantomData }
     }
 
     /// Get the vertex ids as a device array view.
@@ -75,6 +73,30 @@ impl CentralityResult {
         try_from_bool_t(b).ok_or_else(|| {
             Error::new(ErrorKind::Unexpected, "CentralityResult::converged")
                 .with_message(format!("invalid bool_t value returned by cuGraph: {}", b.0))
+        })
+    }
+}
+
+#[cfg(feature = "cudf-interop")]
+impl CentralityResult {
+    /// Convert this centrality result to a cudf DataFrame.
+    ///
+    /// Returns a 2-column DataFrame:
+    /// - `"vertex"` — vertex ids (same dtype as the algorithm produced)
+    /// - `"value"` — centrality values (typically Float32 or Float64)
+    ///
+    /// Performs a device-to-device copy. The returned DataFrame owns its
+    /// memory independently.
+    pub fn to_dataframe(&self) -> Result<cudf::DataFrame> {
+        use crate::cudf_interop::DeviceArrayViewExt;
+
+        let vert_col =
+            self.vertices().to_cudf_column().map_err(|e| e.with_operation("CentralityResult::to_dataframe"))?;
+        let val_col = self.values().to_cudf_column().map_err(|e| e.with_operation("CentralityResult::to_dataframe"))?;
+
+        cudf::DataFrame::new(vec!["vertex".into(), "value".into()], vec![vert_col, val_col]).map_err(|e| {
+            Error::new(ErrorKind::Unexpected, "CentralityResult::to_dataframe")
+                .with_message(format!("failed to build DataFrame: {}", e))
         })
     }
 }
