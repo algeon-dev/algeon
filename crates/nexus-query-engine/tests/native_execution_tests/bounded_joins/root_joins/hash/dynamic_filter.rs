@@ -161,6 +161,205 @@ fn bounded_native_query_batches_dynamic_reader_predicate_probe_source_chunks() {
 }
 
 #[test]
+fn bounded_native_query_applies_residual_equality_dynamic_filter_before_downstream_dimension_build() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let dir = unique_temp_dir("nexus-query-engine-bounded-residual-equality-dynamic-filter");
+    let sales_path = dir.join("catalog_sales.parquet");
+    let d1_path = dir.join("date_dim_d1.parquet");
+    let inventory_path = dir.join("inventory.parquet");
+    let d2_path = dir.join("date_dim_d2.parquet");
+    let sales_schema = write_q72_sales_parquet(&sales_path);
+    let d1_schema = write_q72_d1_parquet(&d1_path);
+    let inventory_schema = write_q72_inventory_parquet(&inventory_path);
+    let d2_schema = write_q72_d2_parquet(&d2_path);
+    let sales_with_d1_schema = Arc::new(Schema::new(vec![
+        Field::new("cs_item_sk", DataType::Int32, false),
+        Field::new("d_week_seq", DataType::Int32, false),
+    ]));
+    let inventory_with_d2_schema = Arc::new(Schema::new(vec![
+        Field::new("inv_item_sk", DataType::Int32, false),
+        Field::new("d_week_seq", DataType::Int32, false),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![Field::new("cs_item_sk", DataType::Int32, false)]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let sales = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&sales_path)
+                .with_file_size_bytes(fs::metadata(&sales_path).unwrap().len())
+                .with_row_group_rows(vec![2]),
+        ],
+        Arc::clone(&sales_schema),
+        vec!["cs_sold_date_sk".to_string(), "cs_item_sk".to_string()],
+    )));
+    let d1 = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(&d1_path)
+                    .with_file_size_bytes(fs::metadata(&d1_path).unwrap().len())
+                    .with_row_group_rows(vec![1]),
+            ],
+            Arc::clone(&d1_schema),
+            vec!["d_date_sk".to_string(), "d_week_seq".to_string(), "d_year".to_string()],
+        )
+        .with_reader_predicate(Expr::binary(
+            Expr::column("d_year"),
+            BinaryOp::Eq,
+            Expr::literal(LiteralValue::Int32(1999)),
+        )),
+    ));
+    let inventory = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&inventory_path)
+                .with_file_size_bytes(fs::metadata(&inventory_path).unwrap().len())
+                .with_row_group_rows(vec![1, 1]),
+        ],
+        Arc::clone(&inventory_schema),
+        vec!["inv_item_sk".to_string(), "inv_date_sk".to_string()],
+    )));
+    let d2 = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&d2_path)
+                .with_file_size_bytes(fs::metadata(&d2_path).unwrap().len())
+                .with_row_group_rows(vec![1, 1]),
+        ],
+        Arc::clone(&d2_schema),
+        vec!["d_date_sk".to_string(), "d_week_seq".to_string()],
+    )));
+    let sales_with_d1 = builder.add_join(
+        sales,
+        d1,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "cs_sold_date_sk", "cs_sold_date_sk"),
+                nexus_query_engine::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"), "cs_item_sk"),
+            JoinOutputColumn::right(
+                nexus_query_engine::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
+                "d_week_seq",
+            ),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&sales_with_d1_schema),
+    );
+    let inventory_with_d2 = builder.add_join(
+        inventory,
+        d2,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "inv_date_sk", "inv_date_sk"),
+                nexus_query_engine::ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(
+                nexus_query_engine::ColumnRef::input(0, "inv_item_sk", "inv_item_sk"),
+                "inv_item_sk",
+            ),
+            JoinOutputColumn::right(
+                nexus_query_engine::ColumnRef::input(1, "d_week_seq", "d_week_seq"),
+                "d_week_seq",
+            ),
+        ])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&inventory_with_d2_schema),
+    );
+    let root = builder.add_join(
+        sales_with_d1,
+        inventory_with_d2,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+                nexus_query_engine::ColumnRef::input(1, "inv_item_sk", "inv_item_sk"),
+            )],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "d_week_seq", "d_week_seq"),
+            BinaryOp::Eq,
+            Expr::input_column(1, "d_week_seq", "d_week_seq"),
+        ))
+        .with_output_projection(vec![JoinOutputColumn::left(
+            nexus_query_engine::ColumnRef::input(0, "cs_item_sk", "cs_item_sk"),
+            "cs_item_sk",
+        )])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&output_schema),
+    );
+    let plan = builder.finish_with_host_sink(root);
+    let optimizer_options = nexus_query_engine::NativeOptimizerOptions {
+        join_build_side_selection: nexus_query_engine::JoinBuildSideSelectionOptions::disabled(),
+        ..nexus_query_engine::NativeOptimizerOptions::default()
+    };
+    let optimized = nexus_query_engine::optimize_query_plan(plan, &optimizer_options);
+    let residual_route = optimized
+        .plan
+        .dynamic_filter_routes()
+        .iter()
+        .find(|route| {
+            matches!(
+                route.producer,
+                nexus_query_engine::DynamicFilterProducer::HashJoinBuild {
+                    join_node_id,
+                    build_side: JoinSide::Right,
+                    ..
+                } if join_node_id == sales_with_d1
+            ) && matches!(
+                route.consumer,
+                nexus_query_engine::DynamicFilterConsumer::LocalParquetSource {
+                    source_node_id
+                } if source_node_id == d2
+            ) && route.producer_columns == ["d_week_seq".to_string()]
+                && route.consumer_columns == ["d_week_seq".to_string()]
+        })
+        .cloned()
+        .expect("residual equality should route filtered d1 week evidence into d2");
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 8 * 1024 * 1024,
+            max_source_chunk_bytes: 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+
+    let result = execute_query_plan(&context, &optimized.plan).unwrap();
+    let output = result.output().as_host_arrow().unwrap();
+    let metrics = result.metrics();
+    assert_eq!(output.num_rows(), 1);
+    assert_eq!(int32_array(output, 0).values().as_ref(), &[10]);
+    assert!(metrics.dynamic_filter_runtime_rows.iter().any(|row| {
+        row.dynamic_filter_id == residual_route.id.to_string()
+            && row.event == "applied"
+            && row.consumer_node_id == d2.to_string()
+            && row.selected_row_groups_before == Some(2)
+            && row.selected_row_groups_after == Some(1)
+    }));
+    assert!(metrics.source_read_runtime_rows.iter().any(|row| {
+        row.source_node_id == d2.to_string()
+            && row.output_rows == 1
+            && row.reader_predicate
+            && row.reader_dynamic_filter_count == 1
+    }));
+    assert!(metrics.source_read_runtime_rows.iter().any(|row| {
+        row.source_node_id == inventory.to_string()
+            && row.output_rows == 1
+            && row.reader_predicate
+            && row.reader_dynamic_filter_count == 1
+    }));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn bounded_native_query_prunes_hash_set_dynamic_filter_gap_row_group_off_probe_source() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-source-hash-set-dynamic-filter");

@@ -11,10 +11,13 @@ use arrow::{
     array::{Array, Date32Array, Int32Array, Int64Array, UInt32Array, UInt64Array},
     datatypes::DataType,
 };
-use parquet::file::{
-    metadata::RowGroupMetaData,
-    reader::{FileReader, SerializedFileReader},
-    statistics::Statistics,
+use parquet::{
+    file::{
+        metadata::RowGroupMetaData,
+        reader::{FileReader, SerializedFileReader},
+        statistics::Statistics,
+    },
+    schema::types::SchemaDescriptor,
 };
 
 use crate::{
@@ -161,7 +164,10 @@ impl fmt::Display for DynamicFilterConsumerReductionStage {
 /// Native producer for a dynamic-filter route.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum DynamicFilterProducer {
-    /// Hash-join build side produces key evidence for the probe side.
+    /// Hash-join build side produces column evidence for a downstream
+    /// consumer. The producer columns are usually join keys, but may also be
+    /// non-key build-frame columns when a later residual equality proves they
+    /// constrain another source.
     HashJoinBuild {
         /// Join node that owns the hash build.
         join_node_id: NodeId,
@@ -613,7 +619,7 @@ fn prune_source_row_groups_by_key_filter(
         let mut retained = Vec::new();
         for row_group_index in selected {
             let row_group = metadata.row_group(row_group_index);
-            match row_group_i64_range(row_group, column_index) {
+            match row_group_i64_range(row_group, metadata.file_metadata().schema_descr(), column_index) {
                 Some(row_group_range) => {
                     saw_statistics = true;
                     if key_filter.overlaps(KeyRange { min: row_group_range.min, max: row_group_range.max }) {
@@ -671,8 +677,13 @@ struct I64Range {
     max: i64,
 }
 
-fn row_group_i64_range(row_group: &RowGroupMetaData, column_index: usize) -> Option<I64Range> {
-    let statistics = row_group.columns().get(column_index)?.statistics()?;
+fn row_group_i64_range(
+    row_group: &RowGroupMetaData,
+    schema: &SchemaDescriptor,
+    root_column_index: usize,
+) -> Option<I64Range> {
+    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
+    let statistics = row_group.columns().get(leaf_column_index)?.statistics()?;
     match statistics {
         Statistics::Int32(stats) => {
             Some(I64Range { min: i64::from(*stats.min_opt()?), max: i64::from(*stats.max_opt()?) })
@@ -680,6 +691,19 @@ fn row_group_i64_range(row_group: &RowGroupMetaData, column_index: usize) -> Opt
         Statistics::Int64(stats) => Some(I64Range { min: *stats.min_opt()?, max: *stats.max_opt()? }),
         _ => None,
     }
+}
+
+fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
+    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
+        return None;
+    }
+    let mut leaf_indices =
+        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
+    let leaf_index = leaf_indices.next()?;
+    if leaf_indices.next().is_some() {
+        return None;
+    }
+    Some(leaf_index)
 }
 
 fn dynamic_filter_reader_predicate(source: &LocalParquetSource, column: &str, filter: &DynamicFilter) -> Option<Expr> {
@@ -747,7 +771,9 @@ fn selected_source_i64_range(source: &LocalParquetSource, column: &str) -> Resul
         let metadata = reader.metadata();
         for row_group_index in selected_or_all_row_groups(file.row_groups.as_ref(), metadata.num_row_groups()) {
             let row_group = metadata.row_group(row_group_index);
-            let Some(row_group_range) = row_group_i64_range(row_group, column_index) else {
+            let Some(row_group_range) =
+                row_group_i64_range(row_group, metadata.file_metadata().schema_descr(), column_index)
+            else {
                 return Ok(None);
             };
             selected_range = Some(match selected_range {
