@@ -352,3 +352,121 @@ fn test_drop_nulls_nonexistent_column() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
 }
+
+// ---------------------------------------------------------------------------
+// drop_nulls_any
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_drop_nulls_any_equivalent_to_drop_nulls_with_full_threshold() {
+    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true])
+        .unwrap();
+    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
+    let df = DataFrame::new(
+        vec!["id".to_string(), "val".to_string()],
+        vec![ids, vals],
+    )
+    .unwrap();
+
+    let subset = &["id"];
+    let expected = df.drop_nulls(subset, subset.len() as i32).unwrap();
+    let actual = df.drop_nulls_any(subset).unwrap();
+
+    assert_eq!(actual.num_rows().unwrap(), expected.num_rows().unwrap());
+    assert_eq!(
+        actual.column("id").unwrap().to_vec::<i32>().unwrap(),
+        expected.column("id").unwrap().to_vec::<i32>().unwrap(),
+    );
+    assert_eq!(
+        actual.column("val").unwrap().to_vec::<f64>().unwrap(),
+        expected.column("val").unwrap().to_vec::<f64>().unwrap(),
+    );
+}
+
+#[test]
+fn test_drop_nulls_any_mixed_null_patterns() {
+    // Two subset columns with nulls in different positions.
+    let a = Column::from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
+    let b = Column::from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
+    let c = Column::from_slice(&[100.0f64, 200.0, 300.0, 400.0]).unwrap();
+    let df = DataFrame::new(
+        vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        vec![a, b, c],
+    )
+    .unwrap();
+
+    // drop_nulls_any on ["a", "b"]: drop rows where ANY of a or b is null.
+    // Row 0: a=1, b=10 → kept
+    // Row 1: a=null → dropped
+    // Row 2: b=null → dropped
+    // Row 3: a=4, b=40 → kept
+    let cleaned = df.drop_nulls_any(&["a", "b"]).unwrap();
+
+    assert_eq!(cleaned.num_rows().unwrap(), 2);
+    assert_eq!(
+        cleaned.column("a").unwrap().to_vec::<i32>().unwrap(),
+        vec![1, 4]
+    );
+    assert_eq!(
+        cleaned.column("b").unwrap().to_vec::<i32>().unwrap(),
+        vec![10, 40]
+    );
+    assert_eq!(
+        cleaned.column("c").unwrap().to_vec::<f64>().unwrap(),
+        vec![100.0, 400.0]
+    );
+}
+
+#[test]
+fn test_drop_nulls_any_empty_subset_returns_unchanged() {
+    let ids = Column::from_slice_nullable(&[1i32, 0, 3], &[true, false, true]).unwrap();
+    let df = DataFrame::new(vec!["id".to_string()], vec![ids]).unwrap();
+
+    // Empty subset → no columns to check for nulls → all rows kept.
+    let result = df.drop_nulls_any(&[]).unwrap();
+    assert_eq!(result.num_rows().unwrap(), 3);
+}
+
+#[test]
+fn test_drop_nulls_any_no_nulls() {
+    let c = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
+
+    let result = df.drop_nulls_any(&["x"]).unwrap();
+    assert_eq!(result.num_rows().unwrap(), 3);
+}
+
+#[test]
+fn test_drop_nulls_any_all_null() {
+    let c = Column::from_slice_nullable(&[0i32, 0, 0], &[false, false, false]).unwrap();
+    let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
+
+    let result = df.drop_nulls_any(&["x"]).unwrap();
+    assert_eq!(result.num_rows().unwrap(), 0);
+}
+
+#[test]
+fn test_drop_nulls_any_preserves_schema() {
+    let a = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
+    let b = Column::from_slice(&[10.0f64, 20.0]).unwrap();
+    let df = DataFrame::new(
+        vec!["a".to_string(), "b".to_string()],
+        vec![a, b],
+    )
+    .unwrap();
+
+    let cleaned = df.drop_nulls_any(&["a"]).unwrap();
+    assert_eq!(cleaned.column_names(), vec!["a", "b"]);
+    assert_eq!(cleaned.column_index("a"), Some(0));
+    assert_eq!(cleaned.column_index("b"), Some(1));
+}
+
+#[test]
+fn test_drop_nulls_any_nonexistent_column() {
+    let c = Column::from_slice(&[1i32]).unwrap();
+    let df = DataFrame::new(vec!["x".to_string()], vec![c]).unwrap();
+
+    let result = df.drop_nulls_any(&["missing"]);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidOperation);
+}

@@ -1054,6 +1054,33 @@ impl ColumnView<'_> {
 
         Ok((codes, uniques))
     }
+
+    /// Return a boolean mask indicating which elements appear in `values`.
+    ///
+    /// Element `i` of the result is `true` when `self[i]` is found anywhere
+    /// in `values`, `false` otherwise. Null positions in `self` produce null
+    /// entries in the output.
+    ///
+    /// Both `self` and `values` must have the same data type.
+    pub fn isin(&self, values: &ColumnView<'_>) -> Result<Column> {
+        let input_type_id = match self.data_type() {
+            Ok(dt) => dt.id(),
+            Err(e) => return Err(e.with_operation("column_view::isin")),
+        };
+        let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
+
+        let values_type_id = values.data_type().map_err(|e| {
+            e.with_operation("column_view::isin")
+                .with_context("input_type_id", input_type_id_str.clone())
+        })?;
+        let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
+
+        crate::search::contains(values, self).map_err(|e| {
+            e.with_operation("column_view::isin")
+                .with_context("input_type_id", input_type_id_str)
+                .with_context("values_type_id", values_type_id_str)
+        })
+    }
 }
 
 /// Deep-copy a `ColumnView` into an owned `Column`.
