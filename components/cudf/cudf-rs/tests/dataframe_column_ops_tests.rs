@@ -1,10 +1,12 @@
 //! Tests for DataFrame column-level convenience.
 
-use cudf::column::Column;
-use cudf::dataframe::DataFrame;
-use cudf::error::ErrorKind;
-use cudf::scalar::Scalar;
-use cudf::types::{DataType, TypeId};
+use cudf::{
+    column::Column,
+    dataframe::DataFrame,
+    error::ErrorKind,
+    scalar::Scalar,
+    types::{DataType, TypeId},
+};
 
 // ---------------------------------------------------------------------------
 // Column-level convenience (with_column, replace_nulls, cast_column)
@@ -12,11 +14,7 @@ use cudf::types::{DataType, TypeId};
 
 #[test]
 fn test_with_column_adds_new_column() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     let new_col = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let result = df.with_column("b", new_col).unwrap();
@@ -38,10 +36,7 @@ fn test_with_column_adds_new_column() {
 fn test_with_column_replaces_existing_column() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2]).unwrap(),
-            Column::from_slice(&[10i32, 20]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
     )
     .unwrap();
 
@@ -84,18 +79,11 @@ fn test_with_column_preserves_schema_order_on_replace() {
 
 #[test]
 fn test_with_column_mismatched_row_count_returns_error() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
 
     // New column has 2 rows, DataFrame has 3.
     let new_col = Column::from_slice(&[10i32, 20]).unwrap();
-    let err = df
-        .with_column("b", new_col)
-        .err()
-        .expect("expected row count mismatch error");
+    let err = df.with_column("b", new_col).err().expect("expected row count mismatch error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -104,11 +92,7 @@ fn test_replace_nulls_fills_values() {
     let col_a = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let col_b = Column::from_slice_nullable(&[10i32, 0, 30], &[true, false, true]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![col_a, col_b],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![col_a, col_b]).unwrap();
 
     let fill = Scalar::from_value(99i32).unwrap();
     let result = df.replace_nulls("b", &fill).unwrap();
@@ -127,17 +111,10 @@ fn test_replace_nulls_fills_values() {
 
 #[test]
 fn test_replace_nulls_nonexistent_column_returns_error() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
 
     let fill = Scalar::from_value(0i32).unwrap();
-    let err = df
-        .replace_nulls("missing", &fill)
-        .err()
-        .expect("expected error");
+    let err = df.replace_nulls("missing", &fill).err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -147,11 +124,8 @@ fn test_replace_nulls_preserves_other_columns() {
     let col_b = Column::from_slice_nullable(&[10i32, 0], &[true, false]).unwrap();
     let col_c = Column::from_slice(&[100i64, 200]).unwrap();
 
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string(), "c".to_string()],
-        vec![col_a, col_b, col_c],
-    )
-    .unwrap();
+    let df =
+        DataFrame::new(vec!["a".to_string(), "b".to_string(), "c".to_string()], vec![col_a, col_b, col_c]).unwrap();
 
     let fill = Scalar::from_value(99i32).unwrap();
     let result = df.replace_nulls("b", &fill).unwrap();
@@ -169,10 +143,7 @@ fn test_replace_nulls_preserves_other_columns() {
 fn test_cast_column_changes_type() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string()],
-        vec![
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-            Column::from_slice(&[10i32, 20, 30]).unwrap(),
-        ],
+        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
     )
     .unwrap();
 
@@ -195,17 +166,10 @@ fn test_cast_column_changes_type() {
 
 #[test]
 fn test_cast_column_nonexistent_returns_error() {
-    let df = DataFrame::new(
-        vec!["a".to_string()],
-        vec![Column::from_slice(&[1i32]).unwrap()],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
 
     let target = DataType::new(TypeId::Float64);
-    let err = df
-        .cast_column("missing", &target)
-        .err()
-        .expect("expected error");
+    let err = df.cast_column("missing", &target).err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -237,16 +201,11 @@ fn test_cast_column_preserves_schema_order() {
 fn test_with_column_add_preserves_existing_string_column() {
     let df = DataFrame::new(
         vec!["name".to_string(), "a".to_string()],
-        vec![
-            Column::from_strings(&["alice", "bob", "cara"]).unwrap(),
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-        ],
+        vec![Column::from_strings(&["alice", "bob", "cara"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
     )
     .unwrap();
 
-    let result = df
-        .with_column("b", Column::from_slice(&[10i64, 20, 30]).unwrap())
-        .unwrap();
+    let result = df.with_column("b", Column::from_slice(&[10i64, 20, 30]).unwrap()).unwrap();
 
     assert_eq!(result.column_names(), vec!["name", "a", "b"]);
 
@@ -285,16 +244,11 @@ fn test_replace_nulls_with_string_sibling_column() {
 fn test_cast_column_with_string_sibling_column() {
     let df = DataFrame::new(
         vec!["name".to_string(), "qty".to_string()],
-        vec![
-            Column::from_strings(&["a", "b", "c"]).unwrap(),
-            Column::from_slice(&[1i32, 2, 3]).unwrap(),
-        ],
+        vec![Column::from_strings(&["a", "b", "c"]).unwrap(), Column::from_slice(&[1i32, 2, 3]).unwrap()],
     )
     .unwrap();
 
-    let result = df
-        .cast_column("qty", &DataType::new(TypeId::Float64))
-        .unwrap();
+    let result = df.cast_column("qty", &DataType::new(TypeId::Float64)).unwrap();
 
     let names = result.column("name").unwrap().to_strings().unwrap();
     assert_eq!(names, vec!["a", "b", "c"]);

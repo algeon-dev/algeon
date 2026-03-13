@@ -1,9 +1,6 @@
 //! Tests for dictionary encode/decode.
 
-use cudf::column::Column;
-use cudf::dictionary;
-use cudf::types::TypeId;
-use cudf::ErrorKind;
+use cudf::{ErrorKind, column::Column, dictionary, types::TypeId};
 
 #[test]
 fn test_dictionary_encode_i32() {
@@ -141,18 +138,12 @@ fn test_dictionary_set_keys_reindexes_and_drops_missing() {
     let decoded_view = decoded.view().unwrap();
 
     let decoded_vals = decoded_view.to_vec::<i32>().unwrap();
-    let validity = decoded_view
-        .validity()
-        .unwrap()
-        .expect("removed keys should create nulls");
+    let validity = decoded_view.validity().unwrap().expect("removed keys should create nulls");
 
     assert_eq!(validity, vec![true, false, true, true]);
 
-    let non_null_values: Vec<i32> = decoded_vals
-        .iter()
-        .zip(validity.iter())
-        .filter_map(|(v, valid)| valid.then_some(*v))
-        .collect();
+    let non_null_values: Vec<i32> =
+        decoded_vals.iter().zip(validity.iter()).filter_map(|(v, valid)| valid.then_some(*v)).collect();
     assert_eq!(non_null_values, vec![3, 3, 2]);
 }
 
@@ -248,24 +239,12 @@ fn test_match_dictionaries_shared_key_space() {
     let decoded_src = dictionary::decode(&matched_src_view).unwrap();
     let decoded_dst = dictionary::decode(&matched_dst_view).unwrap();
 
-    assert_eq!(
-        decoded_src.view().unwrap().to_vec::<i32>().unwrap(),
-        vec![10, 20, 30, 10]
-    );
-    assert_eq!(
-        decoded_dst.view().unwrap().to_vec::<i32>().unwrap(),
-        vec![20, 30, 40, 20]
-    );
+    assert_eq!(decoded_src.view().unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30, 10]);
+    assert_eq!(decoded_dst.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40, 20]);
 
     // Verify that the same value maps to the same index in both columns.
-    let src_indices = dictionary::indices(&matched_src_view)
-        .unwrap()
-        .to_vec::<i32>()
-        .unwrap();
-    let dst_indices = dictionary::indices(&matched_dst_view)
-        .unwrap()
-        .to_vec::<i32>()
-        .unwrap();
+    let src_indices = dictionary::indices(&matched_src_view).unwrap().to_vec::<i32>().unwrap();
+    let dst_indices = dictionary::indices(&matched_dst_view).unwrap().to_vec::<i32>().unwrap();
 
     // Value 20 appears in both: src[1]=20, dst[0]=20 → same index.
     assert_eq!(src_indices[1], dst_indices[0]);
@@ -295,12 +274,6 @@ fn test_match_dictionaries_no_overlap() {
     // Decoding still produces the original values.
     let decoded_a = dictionary::decode(&matched[0].view().unwrap()).unwrap();
     let decoded_b = dictionary::decode(&matched[1].view().unwrap()).unwrap();
-    assert_eq!(
-        decoded_a.view().unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 2]
-    );
-    assert_eq!(
-        decoded_b.view().unwrap().to_vec::<i32>().unwrap(),
-        vec![3, 4]
-    );
+    assert_eq!(decoded_a.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2]);
+    assert_eq!(decoded_b.view().unwrap().to_vec::<i32>().unwrap(), vec![3, 4]);
 }

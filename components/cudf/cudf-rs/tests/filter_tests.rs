@@ -1,8 +1,6 @@
 //! Tests for filter operations.
 
-use cudf::column::Column;
-use cudf::filter;
-use cudf::table::Table;
+use cudf::{column::Column, filter, table::Table};
 
 #[test]
 fn test_boolean_mask_basic() {

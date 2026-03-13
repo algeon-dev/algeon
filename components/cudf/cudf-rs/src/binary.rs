@@ -11,11 +11,14 @@
 //!   are lexicographic and case-sensitive. Arithmetic and bitwise operators
 //!   on strings will return an error.
 
-use crate::column::{Column, ColumnView};
-use crate::error::{self, Error, ErrorKind, Result};
-use crate::scalar::Scalar;
-use crate::types::{DataType, TypeId};
 use std::ptr;
+
+use crate::{
+    column::{Column, ColumnView},
+    error::{self, Error, ErrorKind, Result},
+    scalar::Scalar,
+    types::{DataType, TypeId},
+};
 
 /// Binary operators matching `cudf::binary_operator` (same integer values).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,11 +83,7 @@ impl BinaryOperator {
 /// - Float + Float → wider float
 /// - Signed int + unsigned int of same width → next wider signed int
 /// - Unsupported combinations → `ErrorKind::InvalidOperation`
-pub fn infer_binary_output_type(
-    lhs: TypeId,
-    rhs: TypeId,
-    op: BinaryOperator,
-) -> Result<DataType> {
+pub fn infer_binary_output_type(lhs: TypeId, rhs: TypeId, op: BinaryOperator) -> Result<DataType> {
     let make_err = |msg: &str| {
         Err(Error::new(ErrorKind::InvalidOperation, msg.to_string())
             .with_operation("binary::infer_binary_output_type")
@@ -137,20 +136,14 @@ pub fn infer_binary_output_type(
     }
 
     // Both signed or both unsigned → wider type
-    if (lhs.is_signed_int() && rhs.is_signed_int())
-        || (lhs.is_unsigned_int() && rhs.is_unsigned_int())
-    {
+    if (lhs.is_signed_int() && rhs.is_signed_int()) || (lhs.is_unsigned_int() && rhs.is_unsigned_int()) {
         return Ok(DataType::new(if lhs_rank >= rhs_rank { lhs } else { rhs }));
     }
 
     // Mixed signed/unsigned integer promotion.
     // If the signed type is strictly wider than the unsigned type, keep signed type.
     // Otherwise, promote based on unsigned width to a signed type that can hold it.
-    let (signed_id, unsigned_id) = if lhs.is_signed_int() {
-        (lhs, rhs)
-    } else {
-        (rhs, lhs)
-    };
+    let (signed_id, unsigned_id) = if lhs.is_signed_int() { (lhs, rhs) } else { (rhs, lhs) };
 
     let signed_width_rank = match signed_id {
         TypeId::Int8 => 0,
@@ -178,10 +171,8 @@ pub fn infer_binary_output_type(
         2 => TypeId::Int64, // UInt32 -> Int64
         3 => {
             // UInt64 cannot be safely represented by available signed integer types.
-            return make_err(
-                "cannot promote signed/unsigned integer pair: no wider signed type available",
-            );
-        }
+            return make_err("cannot promote signed/unsigned integer pair: no wider signed type available");
+        },
         _ => return make_err("unsupported type for binary operation"),
     };
 
@@ -202,13 +193,7 @@ pub fn binary_operation_vv(
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vv")?;
     let mut out = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_binary_operation_vv(
-            lhs.raw_handle(),
-            rhs.raw_handle(),
-            op as i32,
-            dtype_handle,
-            &mut out,
-        )
+        cudf_sys::cudf_binary_operation_vv(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
     };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
@@ -232,13 +217,7 @@ pub fn binary_operation_vs(
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vs")?;
     let mut out = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_binary_operation_vs(
-            lhs.raw_handle(),
-            rhs.raw_handle(),
-            op as i32,
-            dtype_handle,
-            &mut out,
-        )
+        cudf_sys::cudf_binary_operation_vs(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
     };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
@@ -262,13 +241,7 @@ pub fn binary_operation_sv(
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_sv")?;
     let mut out = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_binary_operation_sv(
-            lhs.raw_handle(),
-            rhs.raw_handle(),
-            op as i32,
-            dtype_handle,
-            &mut out,
-        )
+        cudf_sys::cudf_binary_operation_sv(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
     };
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(

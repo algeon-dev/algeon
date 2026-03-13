@@ -1,7 +1,9 @@
 //! Tests for Column, ColumnView, and DeviceSlice.
 
-use cudf::column::Column;
-use cudf::types::{DataType, TypeId};
+use cudf::{
+    column::Column,
+    types::{DataType, TypeId},
+};
 
 #[test]
 fn test_create_empty_column() {
@@ -107,31 +109,19 @@ fn test_validity_none_for_non_nullable_column() {
 fn test_various_numeric_types() {
     // i8
     let col = Column::from_slice(&[1i8, -1, 127]).unwrap();
-    assert_eq!(
-        col.view().unwrap().to_vec::<i8>().unwrap(),
-        vec![1i8, -1, 127]
-    );
+    assert_eq!(col.view().unwrap().to_vec::<i8>().unwrap(), vec![1i8, -1, 127]);
 
     // i16
     let col = Column::from_slice(&[1i16, -1, 32767]).unwrap();
-    assert_eq!(
-        col.view().unwrap().to_vec::<i16>().unwrap(),
-        vec![1i16, -1, 32767]
-    );
+    assert_eq!(col.view().unwrap().to_vec::<i16>().unwrap(), vec![1i16, -1, 32767]);
 
     // u16
     let col = Column::from_slice(&[0u16, 1000, 65535]).unwrap();
-    assert_eq!(
-        col.view().unwrap().to_vec::<u16>().unwrap(),
-        vec![0u16, 1000, 65535]
-    );
+    assert_eq!(col.view().unwrap().to_vec::<u16>().unwrap(), vec![0u16, 1000, 65535]);
 
     // u32
     let col = Column::from_slice(&[0u32, 42, u32::MAX]).unwrap();
-    assert_eq!(
-        col.view().unwrap().to_vec::<u32>().unwrap(),
-        vec![0u32, 42, u32::MAX]
-    );
+    assert_eq!(col.view().unwrap().to_vec::<u32>().unwrap(), vec![0u32, 42, u32::MAX]);
 
     // u64
     let col = Column::from_slice(&[0u64, 99]).unwrap();
@@ -150,10 +140,7 @@ fn test_device_data_ptr_i32() {
     let view = col.view().unwrap();
 
     let ptr = view.device_data_ptr().unwrap();
-    assert!(
-        !ptr.is_null(),
-        "device data pointer for i32 column must be non-null"
-    );
+    assert!(!ptr.is_null(), "device data pointer for i32 column must be non-null");
 }
 
 #[test]
@@ -163,10 +150,7 @@ fn test_device_data_ptr_f64() {
     let view = col.view().unwrap();
 
     let ptr = view.device_data_ptr().unwrap();
-    assert!(
-        !ptr.is_null(),
-        "device data pointer for f64 column must be non-null"
-    );
+    assert!(!ptr.is_null(), "device data pointer for f64 column must be non-null");
 }
 
 #[test]
@@ -247,8 +231,7 @@ fn test_device_slice_split_at() {
     assert_eq!(left.as_ptr(), slice.as_ptr());
 
     // Right pointer should be offset by 2 elements = 8 bytes.
-    let expected_right =
-        unsafe { (slice.as_ptr() as *const u8).add(2 * 4) as *mut std::ffi::c_void };
+    let expected_right = unsafe { (slice.as_ptr() as *const u8).add(2 * 4) as *mut std::ffi::c_void };
     assert_eq!(right.as_ptr(), expected_right);
 }
 
@@ -433,12 +416,7 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_i8).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(
-            v.device_data_ptr().unwrap(),
-            v.len().unwrap() as usize,
-            TypeId::Int8,
-        )
-        .unwrap()
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Int8).unwrap()
     };
     assert_eq!(new_col.view().unwrap().to_vec::<i8>().unwrap(), data_i8);
 
@@ -447,12 +425,7 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_u32).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(
-            v.device_data_ptr().unwrap(),
-            v.len().unwrap() as usize,
-            TypeId::UInt32,
-        )
-        .unwrap()
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::UInt32).unwrap()
     };
     assert_eq!(new_col.view().unwrap().to_vec::<u32>().unwrap(), data_u32);
 
@@ -461,12 +434,7 @@ fn test_from_device_ptr_various_types() {
     let col = Column::from_slice(&data_f32).unwrap();
     let v = col.view().unwrap();
     let new_col = unsafe {
-        Column::from_device_ptr(
-            v.device_data_ptr().unwrap(),
-            v.len().unwrap() as usize,
-            TypeId::Float32,
-        )
-        .unwrap()
+        Column::from_device_ptr(v.device_data_ptr().unwrap(), v.len().unwrap() as usize, TypeId::Float32).unwrap()
     };
     let result = new_col.view().unwrap().to_vec::<f32>().unwrap();
     assert_eq!(result, data_f32);

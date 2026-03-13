@@ -1,11 +1,11 @@
 //! Tokio-focused concurrency tests for safe cudf-rs APIs.
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use cudf::column::Column;
-use cudf::table::Table;
-use cudf::types::TypeId;
+use cudf::{column::Column, table::Table, types::TypeId};
 
 fn assert_send_sync<T: Send + Sync>() {}
 
@@ -65,8 +65,5 @@ async fn test_cudf_api_inside_spawn_blocking_is_thread_safe_and_runtime_responsi
     }
 
     let ticks = ticker.await.expect("ticker task panicked");
-    assert!(
-        ticks >= 10,
-        "Tokio runtime heartbeat stalled while spawn_blocking tasks were running (ticks={ticks})"
-    );
+    assert!(ticks >= 10, "Tokio runtime heartbeat stalled while spawn_blocking tasks were running (ticks={ticks})");
 }

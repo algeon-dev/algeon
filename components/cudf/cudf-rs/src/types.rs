@@ -1,7 +1,8 @@
 //! Data type definitions mirroring `cudf::type_id` and `cudf::data_type`.
 
-use crate::error::{self, Result};
 use std::ptr;
+
+use crate::error::{self, Result};
 
 /// Logical type identifier for column elements.
 ///
@@ -56,15 +57,8 @@ impl TypeId {
     /// variable-width types (String, List, Struct).
     pub fn size_in_bytes(self) -> Result<Option<i32>> {
         let mut out: i32 = 0;
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_type_size(self.to_raw(), &mut out) },
-            "type_id::size_in_bytes",
-        )?;
-        if out == 0 {
-            Ok(None)
-        } else {
-            Ok(Some(out))
-        }
+        error::check_status_in(unsafe { cudf_sys::cudf_type_size(self.to_raw(), &mut out) }, "type_id::size_in_bytes")?;
+        if out == 0 { Ok(None) } else { Ok(Some(out)) }
     }
 
     /// Returns `true` if this is a fixed-width numeric type.
@@ -111,18 +105,12 @@ impl TypeId {
 
     /// Returns `true` if this is a signed integer type.
     pub fn is_signed_int(self) -> bool {
-        matches!(
-            self,
-            TypeId::Int8 | TypeId::Int16 | TypeId::Int32 | TypeId::Int64
-        )
+        matches!(self, TypeId::Int8 | TypeId::Int16 | TypeId::Int32 | TypeId::Int64)
     }
 
     /// Returns `true` if this is an unsigned integer type.
     pub fn is_unsigned_int(self) -> bool {
-        matches!(
-            self,
-            TypeId::UInt8 | TypeId::UInt16 | TypeId::UInt32 | TypeId::UInt64
-        )
+        matches!(self, TypeId::UInt8 | TypeId::UInt16 | TypeId::UInt32 | TypeId::UInt64)
     }
 
     /// Returns `true` if this is a floating-point type.
@@ -154,10 +142,7 @@ impl TypeId {
 
     /// Returns `true` if this is a fixed-point decimal type.
     pub fn is_decimal(self) -> bool {
-        matches!(
-            self,
-            TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128
-        )
+        matches!(self, TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128)
     }
 }
 
@@ -255,34 +240,19 @@ pub fn count_nulls(validity: &[bool]) -> i32 {
 // Internal helpers for FFI handle round-tripping of DataType.
 impl DataType {
     /// Create a C shim data_type handle from this DataType with operation context.
-    pub(crate) fn to_raw_handle_for(
-        self,
-        operation: &'static str,
-    ) -> Result<*mut std::ffi::c_void> {
+    pub(crate) fn to_raw_handle_for(self, operation: &'static str) -> Result<*mut std::ffi::c_void> {
         let mut handle = ptr::null_mut();
         if self.id.is_decimal() {
             error::check_status_in_with(
-                unsafe {
-                    cudf_sys::cudf_data_type_create_fixed_point(
-                        self.id.to_raw(),
-                        self.scale,
-                        &mut handle,
-                    )
-                },
+                unsafe { cudf_sys::cudf_data_type_create_fixed_point(self.id.to_raw(), self.scale, &mut handle) },
                 operation,
-                [
-                    ("type_id", format!("{:?}", self.id).to_lowercase()),
-                    ("scale", self.scale.to_string()),
-                ],
+                [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],
             )?;
         } else {
             error::check_status_in_with(
                 unsafe { cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle) },
                 operation,
-                [
-                    ("type_id", format!("{:?}", self.id).to_lowercase()),
-                    ("scale", self.scale.to_string()),
-                ],
+                [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],
             )?;
         }
         Ok(handle)

@@ -9,9 +9,10 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::column::Column;
-//! use cudf::dataframe::DataFrame;
-//! use cudf::arrow::dataframe_from_record_batch;
+//! use cudf::{
+//!     arrow::dataframe_from_record_batch, column::Column,
+//!     dataframe::DataFrame,
+//! };
 //!
 //! let df = DataFrame::new(
 //!     vec!["id".into(), "score".into()],
@@ -19,7 +20,8 @@
 //!         Column::from_slice(&[1i32, 2, 3]).unwrap(),
 //!         Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap(),
 //!     ],
-//! ).unwrap();
+//! )
+//! .unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
 //! let batch = df.to_record_batch().unwrap();
@@ -32,14 +34,14 @@
 
 use std::sync::Arc;
 
-use arrow::array::*;
-use arrow::datatypes::DataType as ArrowDataType;
-use arrow::record_batch::RecordBatch;
+use arrow::{array::*, datatypes::DataType as ArrowDataType, record_batch::RecordBatch};
 
-use crate::column::{Column, ColumnView};
-use crate::dataframe::DataFrame;
-use crate::error::{Error, ErrorKind, Result};
-use crate::types::TypeId;
+use crate::{
+    column::{Column, ColumnView},
+    dataframe::DataFrame,
+    error::{Error, ErrorKind, Result},
+    types::TypeId,
+};
 
 impl DataFrame {
     /// Convert this GPU DataFrame to an Arrow [`RecordBatch`] via host copy.
@@ -53,9 +55,7 @@ impl DataFrame {
     /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
     ///   `UInt32`, `UInt64`, `Float32`, `Float64`
     /// - `Bool8`
-    ///
-    /// Variable-width types (e.g., `String`, `List`) are not yet supported
-    /// and will return an error.
+    /// - `String` (converted to Arrow `Utf8`)
     ///
     /// # Errors
     ///
@@ -76,8 +76,7 @@ impl DataFrame {
             .collect::<Result<_>>()?;
 
         RecordBatch::try_from_iter_with_nullable(columns).map_err(|e| {
-            Error::new(ErrorKind::InvalidOperation, e.to_string())
-                .with_operation("dataframe::to_record_batch")
+            Error::new(ErrorKind::InvalidOperation, e.to_string()).with_operation("dataframe::to_record_batch")
         })
     }
 }
@@ -92,6 +91,7 @@ impl DataFrame {
 /// - Numeric: `Int8`, `Int16`, `Int32`, `Int64`, `UInt8`, `UInt16`,
 ///   `UInt32`, `UInt64`, `Float32`, `Float64`
 /// - `Boolean`
+/// - `Utf8` / `LargeUtf8` (converted to cudf `String`)
 ///
 /// Unsupported Arrow types will return an error.
 ///
@@ -135,6 +135,7 @@ fn cudf_type_to_arrow(type_id: TypeId) -> Result<ArrowDataType> {
         TypeId::Float32 => Ok(ArrowDataType::Float32),
         TypeId::Float64 => Ok(ArrowDataType::Float64),
         TypeId::Bool8 => Ok(ArrowDataType::Boolean),
+        TypeId::String => Ok(ArrowDataType::Utf8),
         _ => Err(Error::new(
             ErrorKind::InvalidOperation,
             format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
@@ -159,6 +160,7 @@ fn arrow_type_to_cudf(dt: &ArrowDataType) -> Result<TypeId> {
         ArrowDataType::Float32 => Ok(TypeId::Float32),
         ArrowDataType::Float64 => Ok(TypeId::Float64),
         ArrowDataType::Boolean => Ok(TypeId::Bool8),
+        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 => Ok(TypeId::String),
         _ => Err(Error::new(
             ErrorKind::InvalidOperation,
             format!("unsupported Arrow type for cudf conversion: {:?}", dt),
@@ -186,6 +188,7 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
         TypeId::Float32 => numeric_to_arrow::<f32>(cv),
         TypeId::Float64 => numeric_to_arrow::<f64>(cv),
         TypeId::Bool8 => bool_to_arrow(cv),
+        TypeId::String => string_to_arrow(cv),
         _ => Err(Error::new(
             ErrorKind::InvalidOperation,
             format!("unsupported cudf type for Arrow conversion: {:?}", type_id),
@@ -197,9 +200,7 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
 
 /// Convert a numeric column to the corresponding Arrow primitive array.
 fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
-where
-    T: ArrowPrimitiveMapping,
-{
+where T: ArrowPrimitiveMapping {
     let data: Vec<T> = cv.to_vec()?;
     let validity = cv.validity()?;
 
@@ -207,17 +208,17 @@ where
         None => {
             let arr = PrimitiveArray::<T::ArrowPrimitive>::from_iter_values(data);
             Ok(Arc::new(arr))
-        }
+        },
         Some(mask) => {
             let null_buffer = arrow::buffer::NullBuffer::from(mask);
             let buffer = arrow::buffer::ScalarBuffer::from(data);
-            let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(buffer, Some(null_buffer))
-                .map_err(|e: arrow::error::ArrowError| {
-                    Error::new(ErrorKind::InvalidOperation, e.to_string())
-                        .with_operation("arrow::numeric_to_arrow")
-                })?;
+            let arr = PrimitiveArray::<T::ArrowPrimitive>::try_new(buffer, Some(null_buffer)).map_err(
+                |e: arrow::error::ArrowError| {
+                    Error::new(ErrorKind::InvalidOperation, e.to_string()).with_operation("arrow::numeric_to_arrow")
+                },
+            )?;
             Ok(Arc::new(arr))
-        }
+        },
     }
 }
 
@@ -233,7 +234,22 @@ fn bool_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
             let bool_buffer = arrow::buffer::BooleanBuffer::from(data);
             let arr = BooleanArray::new(bool_buffer, Some(null_buffer));
             Ok(Arc::new(arr))
-        }
+        },
+    }
+}
+
+/// Convert a String column to an Arrow StringArray.
+fn string_to_arrow(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>> {
+    let data: Vec<String> = cv.to_strings()?;
+    let validity = cv.validity()?;
+
+    match validity {
+        None => Ok(Arc::new(StringArray::from(data.iter().map(|s| s.as_str()).collect::<Vec<_>>()))),
+        Some(mask) => {
+            let opt_values: Vec<Option<&str>> =
+                data.iter().zip(mask.iter()).map(|(s, &valid)| if valid { Some(s.as_str()) } else { None }).collect();
+            Ok(Arc::new(StringArray::from(opt_values)))
+        },
     }
 }
 
@@ -256,12 +272,11 @@ fn arrow_array_to_column(arr: &dyn Array, field_name: &str) -> Result<Column> {
         ArrowDataType::Float32 => primitive_to_column::<f32>(arr),
         ArrowDataType::Float64 => primitive_to_column::<f64>(arr),
         ArrowDataType::Boolean => bool_to_column(arr),
+        ArrowDataType::Utf8 => string_array_to_column(arr),
+        ArrowDataType::LargeUtf8 => large_string_array_to_column(arr),
         _ => Err(Error::new(
             ErrorKind::InvalidOperation,
-            format!(
-                "unsupported Arrow type for column '{}': {:?}",
-                field_name, dt
-            ),
+            format!("unsupported Arrow type for column '{}': {:?}", field_name, dt),
         )
         .with_operation("arrow::arrow_array_to_column")
         .with_context("field_name", field_name.to_string())
@@ -271,9 +286,7 @@ fn arrow_array_to_column(arr: &dyn Array, field_name: &str) -> Result<Column> {
 
 /// Convert a primitive Arrow array to a cudf Column.
 fn primitive_to_column<T>(arr: &dyn Array) -> Result<Column>
-where
-    T: ArrowPrimitiveMapping,
-{
+where T: ArrowPrimitiveMapping {
     let prim = arr.as_primitive::<T::ArrowPrimitive>();
     let values: Vec<T> = prim.values().iter().copied().collect();
 
@@ -282,7 +295,7 @@ where
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
             Column::from_slice_nullable(&values, &validity)
-        }
+        },
     }
 }
 
@@ -296,7 +309,43 @@ fn bool_to_column(arr: &dyn Array) -> Result<Column> {
         Some(null_buf) => {
             let validity: Vec<bool> = null_buf.iter().collect();
             Column::from_slice_nullable(&values, &validity)
-        }
+        },
+    }
+}
+
+/// Convert an Arrow StringArray (Utf8) to a cudf STRING Column.
+fn string_array_to_column(arr: &dyn Array) -> Result<Column> {
+    let str_arr = arr.as_any().downcast_ref::<StringArray>().ok_or_else(|| {
+        Error::new(ErrorKind::InvalidOperation, "expected StringArray for Utf8 type")
+            .with_operation("arrow::string_array_to_column")
+    })?;
+
+    let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
+
+    match str_arr.nulls() {
+        None => Column::from_strings(&values),
+        Some(null_buf) => {
+            let validity: Vec<bool> = null_buf.iter().collect();
+            Column::from_strings_nullable(&values, &validity)
+        },
+    }
+}
+
+/// Convert an Arrow LargeStringArray (LargeUtf8) to a cudf STRING Column.
+fn large_string_array_to_column(arr: &dyn Array) -> Result<Column> {
+    let str_arr = arr.as_any().downcast_ref::<LargeStringArray>().ok_or_else(|| {
+        Error::new(ErrorKind::InvalidOperation, "expected LargeStringArray for LargeUtf8 type")
+            .with_operation("arrow::large_string_array_to_column")
+    })?;
+
+    let values: Vec<&str> = (0..str_arr.len()).map(|i| str_arr.value(i)).collect();
+
+    match str_arr.nulls() {
+        None => Column::from_strings(&values),
+        Some(null_buf) => {
+            let validity: Vec<bool> = null_buf.iter().collect();
+            Column::from_strings_nullable(&values, &validity)
+        },
     }
 }
 

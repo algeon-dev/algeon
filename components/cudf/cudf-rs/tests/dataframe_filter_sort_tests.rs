@@ -1,20 +1,14 @@
 //! Tests for DataFrame filter, filter_isin, sort, deduplicate.
 
-use cudf::column::Column;
-use cudf::dataframe::DataFrame;
-use cudf::error::ErrorKind;
-use cudf::sorting::Order;
-use cudf::stream_compaction::DuplicateKeepOption;
+use cudf::{
+    column::Column, dataframe::DataFrame, error::ErrorKind, sorting::Order, stream_compaction::DuplicateKeepOption,
+};
 
 /// Helper: build a 5-row DataFrame with id (i32) and score (f64) columns.
 fn sample_df() -> DataFrame {
     let ids = Column::from_slice(&[3i32, 1, 4, 1, 5]).unwrap();
     let scores = Column::from_slice(&[30.0f64, 10.0, 40.0, 15.0, 50.0]).unwrap();
-    DataFrame::new(
-        vec!["id".to_string(), "score".to_string()],
-        vec![ids, scores],
-    )
-    .unwrap()
+    DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -30,14 +24,8 @@ fn test_filter_basic() {
     let filtered = df.filter(&mask).unwrap();
 
     assert_eq!(filtered.num_rows().unwrap(), 3);
-    assert_eq!(
-        filtered.column("id").unwrap().to_vec::<i32>().unwrap(),
-        vec![3, 4, 5]
-    );
-    assert_eq!(
-        filtered.column("score").unwrap().to_vec::<f64>().unwrap(),
-        vec![30.0, 40.0, 50.0]
-    );
+    assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
+    assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
 
 #[test]
@@ -131,11 +119,7 @@ fn test_filter_isin_float64() {
     let filtered = df.filter_isin("score", &values_view).unwrap();
 
     assert_eq!(filtered.num_rows().unwrap(), 2);
-    let mut scores = filtered
-        .column("score")
-        .unwrap()
-        .to_vec::<f64>()
-        .unwrap();
+    let mut scores = filtered.column("score").unwrap().to_vec::<f64>().unwrap();
     scores.sort_by(|a, b| a.partial_cmp(b).unwrap());
     assert_eq!(scores, vec![10.0, 50.0]);
 }
@@ -159,10 +143,7 @@ fn test_sort_single_column_ascending() {
     let df = sample_df();
     let sorted = df.sort(&["id"], &[Order::Ascending]).unwrap();
 
-    assert_eq!(
-        sorted.column("id").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 1, 3, 4, 5]
-    );
+    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
     assert_eq!(sorted.column_names(), vec!["id", "score"]);
 }
 
@@ -171,10 +152,7 @@ fn test_sort_single_column_descending() {
     let df = sample_df();
     let sorted = df.sort(&["score"], &[Order::Descending]).unwrap();
 
-    assert_eq!(
-        sorted.column("score").unwrap().to_vec::<f64>().unwrap(),
-        vec![50.0, 40.0, 30.0, 15.0, 10.0]
-    );
+    assert_eq!(sorted.column("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0, 30.0, 15.0, 10.0]);
 }
 
 #[test]
@@ -182,24 +160,12 @@ fn test_sort_by_subset_of_columns() {
     // Sort by id ascending, then score descending within each id group.
     let ids = Column::from_slice(&[2i32, 1, 2, 1]).unwrap();
     let scores = Column::from_slice(&[20.0f64, 10.0, 40.0, 30.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["id".to_string(), "score".to_string()],
-        vec![ids, scores],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "score".to_string()], vec![ids, scores]).unwrap();
 
-    let sorted = df
-        .sort(&["id", "score"], &[Order::Ascending, Order::Descending])
-        .unwrap();
+    let sorted = df.sort(&["id", "score"], &[Order::Ascending, Order::Descending]).unwrap();
 
-    assert_eq!(
-        sorted.column("id").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 1, 2, 2]
-    );
-    assert_eq!(
-        sorted.column("score").unwrap().to_vec::<f64>().unwrap(),
-        vec![30.0, 10.0, 40.0, 20.0]
-    );
+    assert_eq!(sorted.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
 #[test]
@@ -240,10 +206,7 @@ fn test_nlargest() {
     let top2 = df.nlargest(2, "score").unwrap();
 
     assert_eq!(top2.num_rows().unwrap(), 2);
-    assert_eq!(
-        top2.column("score").unwrap().to_vec::<f64>().unwrap(),
-        vec![50.0, 40.0]
-    );
+    assert_eq!(top2.column("score").unwrap().to_vec::<f64>().unwrap(), vec![50.0, 40.0]);
 }
 
 #[test]
@@ -252,10 +215,7 @@ fn test_nsmallest() {
     let bot2 = df.nsmallest(2, "id").unwrap();
 
     assert_eq!(bot2.num_rows().unwrap(), 2);
-    assert_eq!(
-        bot2.column("id").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 1]
-    );
+    assert_eq!(bot2.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1]);
 }
 
 #[test]
@@ -274,9 +234,7 @@ fn test_nlargest_nonexistent_column() {
 fn test_distinct_by_single_column() {
     // Duplicate ids: 3,1,4,1,5 → distinct ids should be {1,3,4,5}
     let df = sample_df();
-    let deduped = df
-        .distinct(&["id"], DuplicateKeepOption::KeepAny)
-        .unwrap();
+    let deduped = df.distinct(&["id"], DuplicateKeepOption::KeepAny).unwrap();
 
     assert_eq!(deduped.num_rows().unwrap(), 4); // 4 distinct ids
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
@@ -285,9 +243,7 @@ fn test_distinct_by_single_column() {
 #[test]
 fn test_distinct_preserves_schema() {
     let df = sample_df();
-    let deduped = df
-        .distinct(&["id"], DuplicateKeepOption::KeepFirst)
-        .unwrap();
+    let deduped = df.distinct(&["id"], DuplicateKeepOption::KeepFirst).unwrap();
     assert_eq!(deduped.column_names(), vec!["id", "score"]);
     assert_eq!(deduped.column_index("id"), Some(0));
     assert_eq!(deduped.column_index("score"), Some(1));
@@ -307,37 +263,22 @@ fn test_distinct_nonexistent_column() {
 
 #[test]
 fn test_drop_nulls_basic() {
-    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true])
-        .unwrap();
+    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids, vals],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
     let cleaned = df.drop_nulls(&["id"], 1).unwrap();
 
     assert_eq!(cleaned.num_rows().unwrap(), 3);
-    assert_eq!(
-        cleaned.column("id").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 3, 5]
-    );
-    assert_eq!(
-        cleaned.column("val").unwrap().to_vec::<f64>().unwrap(),
-        vec![10.0, 30.0, 50.0]
-    );
+    assert_eq!(cleaned.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
+    assert_eq!(cleaned.column("val").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0, 50.0]);
 }
 
 #[test]
 fn test_drop_nulls_preserves_schema() {
     let ids = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids, vals],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
     let cleaned = df.drop_nulls(&["id"], 1).unwrap();
     assert_eq!(cleaned.column_names(), vec!["id", "val"]);
@@ -359,14 +300,9 @@ fn test_drop_nulls_nonexistent_column() {
 
 #[test]
 fn test_drop_nulls_any_equivalent_to_drop_nulls_with_full_threshold() {
-    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true])
-        .unwrap();
+    let ids = Column::from_slice_nullable(&[1i32, 0, 3, 0, 5], &[true, false, true, false, true]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0, 50.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["id".to_string(), "val".to_string()],
-        vec![ids, vals],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids, vals]).unwrap();
 
     let subset = &["id"];
     let expected = df.drop_nulls(subset, subset.len() as i32).unwrap();
@@ -389,11 +325,7 @@ fn test_drop_nulls_any_mixed_null_patterns() {
     let a = Column::from_slice_nullable(&[1i32, 2, 3, 4], &[true, false, true, true]).unwrap();
     let b = Column::from_slice_nullable(&[10i32, 20, 0, 40], &[true, true, false, true]).unwrap();
     let c = Column::from_slice(&[100.0f64, 200.0, 300.0, 400.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string(), "c".to_string()],
-        vec![a, b, c],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string(), "b".to_string(), "c".to_string()], vec![a, b, c]).unwrap();
 
     // drop_nulls_any on ["a", "b"]: drop rows where ANY of a or b is null.
     // Row 0: a=1, b=10 → kept
@@ -403,18 +335,9 @@ fn test_drop_nulls_any_mixed_null_patterns() {
     let cleaned = df.drop_nulls_any(&["a", "b"]).unwrap();
 
     assert_eq!(cleaned.num_rows().unwrap(), 2);
-    assert_eq!(
-        cleaned.column("a").unwrap().to_vec::<i32>().unwrap(),
-        vec![1, 4]
-    );
-    assert_eq!(
-        cleaned.column("b").unwrap().to_vec::<i32>().unwrap(),
-        vec![10, 40]
-    );
-    assert_eq!(
-        cleaned.column("c").unwrap().to_vec::<f64>().unwrap(),
-        vec![100.0, 400.0]
-    );
+    assert_eq!(cleaned.column("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 4]);
+    assert_eq!(cleaned.column("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 40]);
+    assert_eq!(cleaned.column("c").unwrap().to_vec::<f64>().unwrap(), vec![100.0, 400.0]);
 }
 
 #[test]
@@ -449,11 +372,7 @@ fn test_drop_nulls_any_all_null() {
 fn test_drop_nulls_any_preserves_schema() {
     let a = Column::from_slice_nullable(&[1i32, 0], &[true, false]).unwrap();
     let b = Column::from_slice(&[10.0f64, 20.0]).unwrap();
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![a, b],
-    )
-    .unwrap();
+    let df = DataFrame::new(vec!["a".to_string(), "b".to_string()], vec![a, b]).unwrap();
 
     let cleaned = df.drop_nulls_any(&["a"]).unwrap();
     assert_eq!(cleaned.column_names(), vec!["a", "b"]);

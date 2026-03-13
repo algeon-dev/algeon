@@ -1,8 +1,6 @@
 //! Tests for Table and TableView.
 
-use cudf::column::Column;
-use cudf::table::Table;
-use cudf::types::TypeId;
+use cudf::{column::Column, table::Table, types::TypeId};
 
 #[test]
 fn test_create_table_from_columns() {

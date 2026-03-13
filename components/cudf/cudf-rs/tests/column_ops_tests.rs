@@ -1,9 +1,11 @@
 //! Tests for Column-level arithmetic, comparison, and scalar operations.
 
-use cudf::binary::BinaryOperator;
-use cudf::column::Column;
-use cudf::scalar::Scalar;
-use cudf::types::{DataType, TypeId};
+use cudf::{
+    binary::BinaryOperator,
+    column::Column,
+    scalar::Scalar,
+    types::{DataType, TypeId},
+};
 
 // ---------------------------------------------------------------------------
 // Task 14: Arithmetic methods on Column
@@ -84,9 +86,7 @@ fn test_column_binary_op_with_type() {
     // Explicit output type override
     let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let b = Column::from_slice(&[10i32, 20, 30]).unwrap();
-    let result = a
-        .binary_op_with_type(&b, BinaryOperator::Add, &DataType::new(TypeId::Int64))
-        .unwrap();
+    let result = a.binary_op_with_type(&b, BinaryOperator::Add, &DataType::new(TypeId::Int64)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 22, 33]);
@@ -104,10 +104,7 @@ fn test_column_binary_op_error_operation_context() {
 fn test_column_binary_op_scalar_error_operation_context() {
     let col = Column::from_strings(&["foo", "bar"]).unwrap();
     let scalar = Scalar::from_string("baz").unwrap();
-    let err = col
-        .binary_op_scalar(&scalar, BinaryOperator::Add)
-        .err()
-        .expect("expected error");
+    let err = col.binary_op_scalar(&scalar, BinaryOperator::Add).err().expect("expected error");
     assert_eq!(err.operation(), "column::binary_op_scalar");
 }
 
@@ -243,9 +240,9 @@ fn test_column_comparison_nullable() {
     let result = a.eq_col(&b).unwrap();
     let rv = result.view().unwrap();
     let validity = rv.validity().unwrap().unwrap();
-    assert!(validity[0]);  // non-null: 1 == 1 → true
+    assert!(validity[0]); // non-null: 1 == 1 → true
     assert!(!validity[1]); // null
-    assert!(validity[2]);  // non-null: 3 == 4 → false
+    assert!(validity[2]); // non-null: 3 == 4 → false
 }
 
 // ---------------------------------------------------------------------------
@@ -390,9 +387,7 @@ fn test_column_binary_op_scalar_with_type() {
     // Explicit output type override for scalar ops
     let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = Scalar::from_value(10i32).unwrap();
-    let result = col
-        .binary_op_scalar_with_type(&scalar, BinaryOperator::Add, &DataType::new(TypeId::Int64))
-        .unwrap();
+    let result = col.binary_op_scalar_with_type(&scalar, BinaryOperator::Add, &DataType::new(TypeId::Int64)).unwrap();
     let rv = result.view().unwrap();
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 12, 13]);

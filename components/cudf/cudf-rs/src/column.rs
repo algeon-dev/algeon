@@ -4,18 +4,18 @@ use crate::error::{self, Error, ErrorKind, Result};
 
 fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
     i32::try_from(len).map_err(|_| {
-        Error::new(
-            ErrorKind::InvalidOperation,
-            format!("{} length exceeds i32::MAX", what),
-        )
-        .with_operation(operation)
-        .with_context("len", len.to_string())
+        Error::new(ErrorKind::InvalidOperation, format!("{} length exceeds i32::MAX", what))
+            .with_operation(operation)
+            .with_context("len", len.to_string())
     })
 }
+use std::{
+    marker::PhantomData,
+    os::raw::{c_char, c_void},
+    ptr::{self, NonNull},
+};
+
 use crate::types::{CudfType, DataType, TypeId};
-use std::marker::PhantomData;
-use std::os::raw::{c_char, c_void};
-use std::ptr::{self, NonNull};
 
 /// An owned GPU column backed by a `cudf::column`.
 ///
@@ -35,9 +35,7 @@ impl Column {
             unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
             "column::empty",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create a column from a host slice of fixed-width elements.
@@ -63,9 +61,7 @@ impl Column {
             },
             "column::from_slice",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create a nullable column from host data and a validity mask.
@@ -73,13 +69,10 @@ impl Column {
     /// `validity[i]` is `true` if element `i` is valid (non-null).
     pub fn from_slice_nullable<T: CudfType>(data: &[T], validity: &[bool]) -> Result<Self> {
         if data.len() != validity.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "data and validity slices must have the same length",
-            )
-            .with_operation("column::from_slice_nullable")
-            .with_context("data_len", data.len().to_string())
-            .with_context("validity_len", validity.len().to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "data and validity slices must have the same length")
+                .with_operation("column::from_slice_nullable")
+                .with_context("data_len", data.len().to_string())
+                .with_context("validity_len", validity.len().to_string()));
         }
 
         let size = usize_to_i32_len(data.len(), "data", "column::from_slice_nullable")?;
@@ -100,9 +93,7 @@ impl Column {
             },
             "column::from_slice_nullable",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Deep-copy this column.
@@ -112,9 +103,7 @@ impl Column {
             unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
             "column::copy",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create an immutable view of this column.
@@ -126,10 +115,7 @@ impl Column {
             unsafe { cudf_sys::cudf_column_view(self.handle.as_ptr(), &mut view_handle) },
             "column::view",
         )?;
-        Ok(ColumnView {
-            handle: NonNull::new(view_handle).expect("null handle on success"),
-            _lifetime: PhantomData,
-        })
+        Ok(ColumnView { handle: NonNull::new(view_handle).expect("null handle on success"), _lifetime: PhantomData })
     }
 
     /// Returns the raw FFI handle. For internal use by `Table::from_columns`.
@@ -145,9 +131,7 @@ impl Column {
     /// The handle must be a valid `cudf_column_handle` and the caller must
     /// transfer ownership.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self {
-            handle: NonNull::new(handle).expect("null column handle"),
-        }
+        Self { handle: NonNull::new(handle).expect("null column handle") }
     }
 
     /// Create a column by copying data from an existing device (GPU) pointer.
@@ -166,50 +150,29 @@ impl Column {
     /// ordering if writes occurred on a different stream).
     ///
     /// Only fixed-width types are supported.
-    pub unsafe fn from_device_ptr(
-        device_ptr: *const c_void,
-        len: usize,
-        type_id: TypeId,
-    ) -> Result<Self> {
+    pub unsafe fn from_device_ptr(device_ptr: *const c_void, len: usize, type_id: TypeId) -> Result<Self> {
         if type_id.size_in_bytes()?.is_none() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "from_device_ptr only supports fixed-width types",
-            )
-            .with_operation("column::from_device_ptr")
-            .with_context("len", len.to_string())
-            .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "from_device_ptr only supports fixed-width types")
+                .with_operation("column::from_device_ptr")
+                .with_context("len", len.to_string())
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
         }
 
         if len > 0 && device_ptr.is_null() {
-            return Err(
-                Error::new(ErrorKind::NullError, "device_ptr is null but len > 0")
-                    .with_operation("column::from_device_ptr")
-                    .with_context("len", len.to_string())
-                    .with_context("type_id", format!("{:?}", type_id).to_lowercase()),
-            );
+            return Err(Error::new(ErrorKind::NullError, "device_ptr is null but len > 0")
+                .with_operation("column::from_device_ptr")
+                .with_context("len", len.to_string())
+                .with_context("type_id", format!("{:?}", type_id).to_lowercase()));
         }
 
         let size = usize_to_i32_len(len, "data", "column::from_device_ptr")?;
         let mut handle = ptr::null_mut();
         error::check_status_in_with(
-            unsafe {
-                cudf_sys::cudf_column_create_from_device_data(
-                    type_id.to_raw(),
-                    device_ptr,
-                    size,
-                    &mut handle,
-                )
-            },
+            unsafe { cudf_sys::cudf_column_create_from_device_data(type_id.to_raw(), device_ptr, size, &mut handle) },
             "column::from_device_ptr",
-            [
-                ("len", len.to_string()),
-                ("type_id", format!("{:?}", type_id).to_lowercase()),
-            ],
+            [("len", len.to_string()), ("type_id", format!("{:?}", type_id).to_lowercase())],
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
     /// Create a STRING type column from a slice of string references.
     ///
@@ -226,9 +189,7 @@ impl Column {
         let ptrs: Vec<*const c_char> = data.iter().map(|s| s.as_ptr() as *const c_char).collect();
         let lengths: Vec<i32> = data
             .iter()
-            .map(|s| {
-                usize_to_i32_len(s.len(), "string_element", "column::from_strings")
-            })
+            .map(|s| usize_to_i32_len(s.len(), "string_element", "column::from_strings"))
             .collect::<Result<Vec<_>>>()?;
 
         let mut handle = ptr::null_mut();
@@ -245,9 +206,7 @@ impl Column {
             },
             "column::from_strings",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 
     /// Create a nullable STRING type column from host string data and a validity mask.
@@ -256,13 +215,10 @@ impl Column {
     /// For null rows, the string content is ignored.
     pub fn from_strings_nullable(data: &[&str], validity: &[bool]) -> Result<Self> {
         if data.len() != validity.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "data and validity slices must have the same length",
-            )
-            .with_operation("column::from_strings_nullable")
-            .with_context("data_len", data.len().to_string())
-            .with_context("validity_len", validity.len().to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "data and validity slices must have the same length")
+                .with_operation("column::from_strings_nullable")
+                .with_context("data_len", data.len().to_string())
+                .with_context("validity_len", validity.len().to_string()));
         }
 
         let num_strings = usize_to_i32_len(data.len(), "data", "column::from_strings_nullable")?;
@@ -270,9 +226,7 @@ impl Column {
         let ptrs: Vec<*const c_char> = data.iter().map(|s| s.as_ptr() as *const c_char).collect();
         let lengths: Vec<i32> = data
             .iter()
-            .map(|s| {
-                usize_to_i32_len(s.len(), "string_element", "column::from_strings_nullable")
-            })
+            .map(|s| usize_to_i32_len(s.len(), "string_element", "column::from_strings_nullable"))
             .collect::<Result<Vec<_>>>()?;
 
         let null_mask = crate::types::validity_to_bitmask(validity);
@@ -285,20 +239,14 @@ impl Column {
                     ptrs.as_ptr(),
                     lengths.as_ptr(),
                     num_strings,
-                    if null_count > 0 {
-                        null_mask.as_ptr()
-                    } else {
-                        ptr::null()
-                    },
+                    if null_count > 0 { null_mask.as_ptr() } else { ptr::null() },
                     null_count,
                     &mut handle,
                 )
             },
             "column::from_strings_nullable",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("null handle on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
 }
 
@@ -312,17 +260,10 @@ impl Column {
         (|| {
             let lv = self.view()?;
             let rv = rhs.view()?;
-            let out_type = crate::binary::infer_binary_output_type(
-                lv.data_type()?.id(),
-                rv.data_type()?.id(),
-                op,
-            )?;
+            let out_type = crate::binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), op)?;
             crate::binary::binary_operation_vv(&lv, &rv, op, &out_type)
         })()
-        .map_err(|e| {
-            e.with_operation("column::binary_op")
-                .with_context("operator", format!("{:?}", op).to_lowercase())
-        })
+        .map_err(|e| e.with_operation("column::binary_op").with_context("operator", format!("{:?}", op).to_lowercase()))
     }
 
     /// Generic binary operation with explicit output type (escape hatch).
@@ -340,10 +281,7 @@ impl Column {
         .map_err(|e| {
             e.with_operation("column::binary_op_with_type")
                 .with_context("operator", format!("{:?}", op).to_lowercase())
-                .with_context(
-                    "output_type_id",
-                    format!("{:?}", output_type.id()).to_lowercase(),
-                )
+                .with_context("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
         })
     }
 
@@ -351,26 +289,22 @@ impl Column {
 
     /// Element-wise addition: `self + rhs`. Output type inferred.
     pub fn add(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Add)
-            .map_err(|e| e.with_operation("column::add"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Add).map_err(|e| e.with_operation("column::add"))
     }
 
     /// Element-wise subtraction: `self - rhs`. Output type inferred.
     pub fn sub(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Sub)
-            .map_err(|e| e.with_operation("column::sub"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Sub).map_err(|e| e.with_operation("column::sub"))
     }
 
     /// Element-wise multiplication: `self * rhs`. Output type inferred.
     pub fn mul(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Mul)
-            .map_err(|e| e.with_operation("column::mul"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Mul).map_err(|e| e.with_operation("column::mul"))
     }
 
     /// Element-wise division: `self / rhs`. Output type inferred.
     pub fn div(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Div)
-            .map_err(|e| e.with_operation("column::div"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Div).map_err(|e| e.with_operation("column::div"))
     }
 
     /// Element-wise true division (always float output).
@@ -379,89 +313,64 @@ impl Column {
             let lv = self.view()?;
             let rv = rhs.view()?;
             let out_type = DataType::new(TypeId::Float64);
-            crate::binary::binary_operation_vv(
-                &lv,
-                &rv,
-                crate::binary::BinaryOperator::TrueDiv,
-                &out_type,
-            )
+            crate::binary::binary_operation_vv(&lv, &rv, crate::binary::BinaryOperator::TrueDiv, &out_type)
         })()
-        .map_err(|e| {
-            e.with_operation("column::true_div")
-                .with_context("operator", "true_div")
-        })
+        .map_err(|e| e.with_operation("column::true_div").with_context("operator", "true_div"))
     }
 
     /// Element-wise floor division.
     pub fn floor_div(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::FloorDiv)
-            .map_err(|e| e.with_operation("column::floor_div"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::FloorDiv).map_err(|e| e.with_operation("column::floor_div"))
     }
 
     /// Element-wise modulo: `self % rhs`.
     pub fn modulo(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Mod)
-            .map_err(|e| e.with_operation("column::modulo"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Mod).map_err(|e| e.with_operation("column::modulo"))
     }
 
     // -- Comparison methods ---------------------------------------------------
 
     /// Element-wise equal: `self == rhs`. Returns Bool8 column.
     pub fn eq_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Equal)
-            .map_err(|e| e.with_operation("column::eq_col"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Equal).map_err(|e| e.with_operation("column::eq_col"))
     }
 
     /// Element-wise not-equal: `self != rhs`. Returns Bool8 column.
     pub fn ne_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::NotEqual)
-            .map_err(|e| e.with_operation("column::ne_col"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::NotEqual).map_err(|e| e.with_operation("column::ne_col"))
     }
 
     /// Element-wise less-than: `self < rhs`. Returns Bool8 column.
     pub fn lt_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Less)
-            .map_err(|e| e.with_operation("column::lt_col"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Less).map_err(|e| e.with_operation("column::lt_col"))
     }
 
     /// Element-wise greater-than: `self > rhs`. Returns Bool8 column.
     pub fn gt_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::Greater)
-            .map_err(|e| e.with_operation("column::gt_col"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::Greater).map_err(|e| e.with_operation("column::gt_col"))
     }
 
     /// Element-wise less-or-equal: `self <= rhs`. Returns Bool8 column.
     pub fn le_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::LessEqual)
-            .map_err(|e| e.with_operation("column::le_col"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::LessEqual).map_err(|e| e.with_operation("column::le_col"))
     }
 
     /// Element-wise greater-or-equal: `self >= rhs`. Returns Bool8 column.
     pub fn ge_col(&self, rhs: &Column) -> Result<Column> {
-        self.binary_op(rhs, crate::binary::BinaryOperator::GreaterEqual)
-            .map_err(|e| e.with_operation("column::ge_col"))
+        self.binary_op(rhs, crate::binary::BinaryOperator::GreaterEqual).map_err(|e| e.with_operation("column::ge_col"))
     }
 
     // -- Scalar operations ----------------------------------------------------
 
     /// Element-wise: `self op scalar`. Output type inferred.
-    pub fn binary_op_scalar(
-        &self,
-        rhs: &crate::scalar::Scalar,
-        op: crate::binary::BinaryOperator,
-    ) -> Result<Column> {
+    pub fn binary_op_scalar(&self, rhs: &crate::scalar::Scalar, op: crate::binary::BinaryOperator) -> Result<Column> {
         (|| {
             let lv = self.view()?;
-            let out_type = crate::binary::infer_binary_output_type(
-                lv.data_type()?.id(),
-                rhs.data_type()?.id(),
-                op,
-            )?;
+            let out_type = crate::binary::infer_binary_output_type(lv.data_type()?.id(), rhs.data_type()?.id(), op)?;
             crate::binary::binary_operation_vs(&lv, rhs, op, &out_type)
         })()
         .map_err(|e| {
-            e.with_operation("column::binary_op_scalar")
-                .with_context("operator", format!("{:?}", op).to_lowercase())
+            e.with_operation("column::binary_op_scalar").with_context("operator", format!("{:?}", op).to_lowercase())
         })
     }
 
@@ -479,10 +388,7 @@ impl Column {
         .map_err(|e| {
             e.with_operation("column::binary_op_scalar_with_type")
                 .with_context("operator", format!("{:?}", op).to_lowercase())
-                .with_context(
-                    "output_type_id",
-                    format!("{:?}", output_type.id()).to_lowercase(),
-                )
+                .with_context("output_type_id", format!("{:?}", output_type.id()).to_lowercase())
         })
     }
 
@@ -571,10 +477,7 @@ impl<'a> ColumnView<'a> {
     /// The handle must be a valid `cudf_column_view_handle` and must remain
     /// valid for lifetime `'a`.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self {
-            handle: NonNull::new(handle).expect("null view handle"),
-            _lifetime: PhantomData,
-        }
+        Self { handle: NonNull::new(handle).expect("null view handle"), _lifetime: PhantomData }
     }
 
     /// Returns the raw FFI handle pointer. For internal use by operations
@@ -641,25 +544,17 @@ impl<'a> ColumnView<'a> {
     /// Get a child column view by index.
     pub fn child(&self, index: i32) -> Result<ColumnView<'a>> {
         if index < 0 {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "column child index must be >= 0",
-            )
-            .with_operation("column_view::child")
-            .with_context("child_index", index.to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "column child index must be >= 0")
+                .with_operation("column_view::child")
+                .with_context("child_index", index.to_string()));
         }
 
         let mut child_handle = ptr::null_mut();
         error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle)
-            },
+            unsafe { cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle) },
             "column_view::child",
         )?;
-        Ok(ColumnView {
-            handle: NonNull::new(child_handle).expect("null handle on success"),
-            _lifetime: PhantomData,
-        })
+        Ok(ColumnView { handle: NonNull::new(child_handle).expect("null handle on success"), _lifetime: PhantomData })
     }
 
     /// Returns the raw device (GPU) data pointer of this column view.
@@ -704,16 +599,10 @@ impl<'a> ColumnView<'a> {
     pub fn to_vec<T: CudfType>(&self) -> Result<Vec<T>> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(
-                ErrorKind::TypeError,
-                "column type does not match requested type",
-            )
-            .with_operation("column_view::to_vec")
-            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-            .with_context(
-                "requested_type_id",
-                format!("{:?}", T::TYPE_ID).to_lowercase(),
-            ));
+            return Err(Error::new(ErrorKind::TypeError, "column type does not match requested type")
+                .with_operation("column_view::to_vec")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
 
         let size = self.len()? as usize;
@@ -722,11 +611,7 @@ impl<'a> ColumnView<'a> {
 
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_column_view_to_host(
-                    self.handle.as_ptr(),
-                    buf.as_mut_ptr() as *mut c_void,
-                    buf_size,
-                )
+                cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
             },
             "column_view::to_vec",
         )?;
@@ -751,19 +636,13 @@ impl<'a> ColumnView<'a> {
 
         error::check_status_in(
             unsafe {
-                cudf_sys::cudf_column_view_null_mask_to_host(
-                    self.handle.as_ptr(),
-                    mask.as_mut_ptr(),
-                    alloc_bytes,
-                )
+                cudf_sys::cudf_column_view_null_mask_to_host(self.handle.as_ptr(), mask.as_mut_ptr(), alloc_bytes)
             },
             "column_view::validity",
         )?;
 
         // Unpack bitmask to bool vec.
-        let validity: Vec<bool> = (0..size)
-            .map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0)
-            .collect();
+        let validity: Vec<bool> = (0..size).map(|i| (mask[i / 8] >> (i % 8)) & 1 != 0).collect();
 
         Ok(Some(validity))
     }
@@ -777,12 +656,9 @@ impl<'a> ColumnView<'a> {
     pub fn to_strings(&self) -> Result<Vec<String>> {
         let dt = self.data_type()?;
         if dt.id() != TypeId::String {
-            return Err(Error::new(
-                ErrorKind::TypeError,
-                "column type is not STRING",
-            )
-            .with_operation("column_view::to_strings")
-            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase()));
+            return Err(Error::new(ErrorKind::TypeError, "column type is not STRING")
+                .with_operation("column_view::to_strings")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase()));
         }
 
         let size = self.len()?;
@@ -806,8 +682,8 @@ impl<'a> ColumnView<'a> {
                     self.handle.as_ptr(),
                     offsets.as_mut_ptr(),
                     offsets_buf_size,
-                    ptr::null_mut(),          // chars_buf not needed yet for size query
-                    0,                        // chars_buf_size = 0
+                    ptr::null_mut(), // chars_buf not needed yet for size query
+                    0,               // chars_buf_size = 0
                     &mut total_chars_bytes,
                 )
             },
@@ -840,11 +716,8 @@ impl<'a> ColumnView<'a> {
             let start = offsets[i] as usize;
             let end = offsets[i + 1] as usize;
             let s = std::str::from_utf8(&chars[start..end]).map_err(|e| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("invalid UTF-8 in string column at row {}: {}", i, e),
-                )
-                .with_operation("column_view::to_strings")
+                Error::new(ErrorKind::InvalidOperation, format!("invalid UTF-8 in string column at row {}: {}", i, e))
+                    .with_operation("column_view::to_strings")
             })?;
             result.push(s.to_string());
         }
@@ -881,16 +754,10 @@ impl<'a> ColumnView<'a> {
     pub fn device_slice<T: CudfType>(&self) -> Result<DeviceSlice> {
         let dt = self.data_type()?;
         if dt.id() != T::TYPE_ID {
-            return Err(Error::new(
-                ErrorKind::TypeError,
-                "column type does not match requested type",
-            )
-            .with_operation("column_view::device_slice")
-            .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
-            .with_context(
-                "requested_type_id",
-                format!("{:?}", T::TYPE_ID).to_lowercase(),
-            ));
+            return Err(Error::new(ErrorKind::TypeError, "column type does not match requested type")
+                .with_operation("column_view::device_slice")
+                .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
+                .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
 
         let base_ptr = self.device_data_ptr()?;
@@ -906,12 +773,7 @@ impl<'a> ColumnView<'a> {
             unsafe { (base_ptr as *const u8).add(offset * elem_size) as *mut c_void }
         };
 
-        Ok(DeviceSlice {
-            ptr,
-            len,
-            type_id: T::TYPE_ID,
-            elem_size,
-        })
+        Ok(DeviceSlice { ptr, len, type_id: T::TYPE_ID, elem_size })
     }
 }
 
@@ -980,11 +842,7 @@ impl DeviceSlice {
     ///
     /// Panics if `mid > self.len`.
     pub fn split_at(&self, mid: usize) -> (DeviceSlice, DeviceSlice) {
-        assert!(
-            mid <= self.len,
-            "split_at: mid ({mid}) > len ({})",
-            self.len
-        );
+        assert!(mid <= self.len, "split_at: mid ({mid}) > len ({})", self.len);
 
         let right_ptr = if self.ptr.is_null() || self.elem_size == 0 {
             self.ptr
@@ -993,18 +851,8 @@ impl DeviceSlice {
         };
 
         (
-            DeviceSlice {
-                ptr: self.ptr,
-                len: mid,
-                type_id: self.type_id,
-                elem_size: self.elem_size,
-            },
-            DeviceSlice {
-                ptr: right_ptr,
-                len: self.len - mid,
-                type_id: self.type_id,
-                elem_size: self.elem_size,
-            },
+            DeviceSlice { ptr: self.ptr, len: mid, type_id: self.type_id, elem_size: self.elem_size },
+            DeviceSlice { ptr: right_ptr, len: self.len - mid, type_id: self.type_id, elem_size: self.elem_size },
         )
     }
 }
@@ -1026,31 +874,24 @@ impl ColumnView<'_> {
         let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
 
         let dict = crate::dictionary::encode(self, TypeId::Int32).map_err(|e| {
-            e.with_operation("column_view::factorize")
-                .with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
         })?;
         let dict_view = dict.view().map_err(|e| {
-            e.with_operation("column_view::factorize")
-                .with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
         })?;
 
         let indices_view = crate::dictionary::indices(&dict_view).map_err(|e| {
-            e.with_operation("column_view::factorize")
-                .with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
         })?;
         let keys_view = crate::dictionary::keys(&dict_view).map_err(|e| {
-            e.with_operation("column_view::factorize")
-                .with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
         })?;
 
         let codes = copy_view_to_owned(&indices_view).map_err(|e| {
-            e.with_operation("column_view::factorize")
-                .with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str.clone())
         })?;
-        let uniques = copy_view_to_owned(&keys_view).map_err(|e| {
-            e.with_operation("column_view::factorize")
-                .with_context("input_type_id", input_type_id_str)
-        })?;
+        let uniques = copy_view_to_owned(&keys_view)
+            .map_err(|e| e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str))?;
 
         Ok((codes, uniques))
     }
@@ -1070,8 +911,7 @@ impl ColumnView<'_> {
         let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
 
         let values_type_id = values.data_type().map_err(|e| {
-            e.with_operation("column_view::isin")
-                .with_context("input_type_id", input_type_id_str.clone())
+            e.with_operation("column_view::isin").with_context("input_type_id", input_type_id_str.clone())
         })?;
         let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
 

@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow = "1"
-arrow = { version = "53", optional = true }
+arrow = { version = "58", optional = true }
 cudf-sys = { path = "../cudf-sys" }
 indexmap = "2"
 

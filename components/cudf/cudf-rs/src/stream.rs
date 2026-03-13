@@ -4,8 +4,9 @@
 //! runtime and can call `stream.synchronize()` from within
 //! `tokio::task::spawn_blocking` or similar if desired.
 
-use crate::error::{self, Result};
 use std::ptr::{self, NonNull};
+
+use crate::error::{self, Result};
 
 /// An owned CUDA stream.
 ///
@@ -23,13 +24,8 @@ impl CudaStream {
     /// Create a new CUDA stream.
     pub fn new() -> Result<Self> {
         let mut handle = ptr::null_mut();
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_stream_create(&mut handle) },
-            "stream::new",
-        )?;
-        Ok(Self {
-            handle: NonNull::new(handle).expect("cudf_stream_create returned null on success"),
-        })
+        error::check_status_in(unsafe { cudf_sys::cudf_stream_create(&mut handle) }, "stream::new")?;
+        Ok(Self { handle: NonNull::new(handle).expect("cudf_stream_create returned null on success") })
     }
 
     /// Block the calling thread until all operations on this stream complete.

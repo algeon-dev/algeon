@@ -1,9 +1,12 @@
 //! GPU-accelerated sorting operations.
 
-use crate::column::Column;
-use crate::error::{self, Error, ErrorKind, Result};
-use crate::table::{Table, TableView};
 use std::ptr;
+
+use crate::{
+    column::Column,
+    error::{self, Error, ErrorKind, Result},
+    table::{Table, TableView},
+};
 
 /// Column sort order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,23 +31,16 @@ fn validate_sort_params(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<()> {
     let expected = usize::try_from(num_keys).map_err(|_| {
-        Error::new(
-            ErrorKind::InvalidOperation,
-            "number of sort keys must be >= 0",
-        )
-        .with_operation(operation)
-        .with_context("num_keys", num_keys.to_string())
+        Error::new(ErrorKind::InvalidOperation, "number of sort keys must be >= 0")
+            .with_operation(operation)
+            .with_context("num_keys", num_keys.to_string())
     })?;
 
     if let Some(orders) = column_order {
         if orders.len() != expected {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!(
-                    "column_order length ({}) must equal number of keys ({})",
-                    orders.len(),
-                    expected
-                ),
+                format!("column_order length ({}) must equal number of keys ({})", orders.len(), expected),
             )
             .with_operation(operation)
             .with_context("num_keys", num_keys.to_string())
@@ -56,11 +52,7 @@ fn validate_sort_params(
         if nulls.len() != expected {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!(
-                    "null_precedence length ({}) must equal number of keys ({})",
-                    nulls.len(),
-                    expected
-                ),
+                format!("null_precedence length ({}) must equal number of keys ({})", nulls.len(), expected),
             )
             .with_operation(operation)
             .with_context("num_keys", num_keys.to_string())
@@ -72,10 +64,7 @@ fn validate_sort_params(
 }
 
 /// Helper: convert Option slices to raw pointers.
-fn sort_params(
-    column_order: Option<&[Order]>,
-    null_precedence: Option<&[NullOrder]>,
-) -> (*const i32, *const i32) {
+fn sort_params(column_order: Option<&[Order]>, null_precedence: Option<&[NullOrder]>) -> (*const i32, *const i32) {
     let co = match column_order {
         Some(s) => s.as_ptr() as *const i32,
         None => ptr::null(),
@@ -106,10 +95,7 @@ pub fn sort(
         [
             ("num_keys", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
-            (
-                "null_precedence_provided",
-                null_precedence.is_some().to_string(),
-            ),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
     Ok(unsafe { Table::from_raw(out) })
@@ -122,12 +108,7 @@ pub fn stable_sort(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
     let num_keys = input.num_columns()?;
-    validate_sort_params(
-        "sorting::stable_sort",
-        num_keys,
-        column_order,
-        null_precedence,
-    )?;
+    validate_sort_params("sorting::stable_sort", num_keys, column_order, null_precedence)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
@@ -136,10 +117,7 @@ pub fn stable_sort(
         [
             ("num_keys", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
-            (
-                "null_precedence_provided",
-                null_precedence.is_some().to_string(),
-            ),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
     Ok(unsafe { Table::from_raw(out) })
@@ -153,33 +131,18 @@ pub fn sort_by_key(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
     let num_key_columns = keys.num_columns()?;
-    validate_sort_params(
-        "sorting::sort_by_key",
-        num_key_columns,
-        column_order,
-        null_precedence,
-    )?;
+    validate_sort_params("sorting::sort_by_key", num_key_columns, column_order, null_precedence)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
         unsafe {
-            cudf_sys::cudf_sort_by_key(
-                values.raw_handle(),
-                keys.raw_handle(),
-                co,
-                np,
-                num_key_columns,
-                &mut out,
-            )
+            cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
         },
         "sorting::sort_by_key",
         [
             ("num_key_columns", num_key_columns.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
-            (
-                "null_precedence_provided",
-                null_precedence.is_some().to_string(),
-            ),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
     Ok(unsafe { Table::from_raw(out) })
@@ -194,12 +157,7 @@ pub fn sorted_order(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Column> {
     let num_keys = input.num_columns()?;
-    validate_sort_params(
-        "sorting::sorted_order",
-        num_keys,
-        column_order,
-        null_precedence,
-    )?;
+    validate_sort_params("sorting::sorted_order", num_keys, column_order, null_precedence)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
@@ -208,10 +166,7 @@ pub fn sorted_order(
         [
             ("num_keys", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
-            (
-                "null_precedence_provided",
-                null_precedence.is_some().to_string(),
-            ),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
     Ok(unsafe { Column::from_raw(out) })
@@ -224,12 +179,7 @@ pub fn is_sorted(
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<bool> {
     let num_keys = input.num_columns()?;
-    validate_sort_params(
-        "sorting::is_sorted",
-        num_keys,
-        column_order,
-        null_precedence,
-    )?;
+    validate_sort_params("sorting::is_sorted", num_keys, column_order, null_precedence)?;
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out: i32 = 0;
     error::check_status_in_with(
@@ -238,10 +188,7 @@ pub fn is_sorted(
         [
             ("num_keys", num_keys.to_string()),
             ("column_order_provided", column_order.is_some().to_string()),
-            (
-                "null_precedence_provided",
-                null_precedence.is_some().to_string(),
-            ),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
     Ok(out != 0)

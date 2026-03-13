@@ -1,7 +1,8 @@
 //! Device memory resource management (RMM).
 
-use crate::error::{self, Result};
 use std::ptr::{self, NonNull};
+
+use crate::error::{self, Result};
 
 /// An owned device memory resource.
 ///
@@ -21,10 +22,7 @@ impl DeviceMemoryResource {
             unsafe { cudf_sys::cudf_memory_resource_create_cuda(&mut handle) },
             "memory::device_memory_resource::cuda",
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle)
-                .expect("cudf_memory_resource_create_cuda returned null on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("cudf_memory_resource_create_cuda returned null on success") })
     }
 
     /// Create a pool memory resource.
@@ -34,23 +32,14 @@ impl DeviceMemoryResource {
     pub fn pool(initial_pool_size: usize, maximum_pool_size: usize) -> Result<Self> {
         let mut handle = ptr::null_mut();
         error::check_status_in_with(
-            unsafe {
-                cudf_sys::cudf_memory_resource_create_pool(
-                    initial_pool_size,
-                    maximum_pool_size,
-                    &mut handle,
-                )
-            },
+            unsafe { cudf_sys::cudf_memory_resource_create_pool(initial_pool_size, maximum_pool_size, &mut handle) },
             "memory::device_memory_resource::pool",
             [
                 ("initial_pool_size", initial_pool_size.to_string()),
                 ("maximum_pool_size", maximum_pool_size.to_string()),
             ],
         )?;
-        Ok(Self {
-            handle: NonNull::new(handle)
-                .expect("cudf_memory_resource_create_pool returned null on success"),
-        })
+        Ok(Self { handle: NonNull::new(handle).expect("cudf_memory_resource_create_pool returned null on success") })
     }
 }
 

@@ -7,8 +7,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::column::Column;
-//! use cudf::dataframe::DataFrame;
+//! use cudf::{column::Column, dataframe::DataFrame};
 //!
 //! let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
 //! let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
@@ -16,29 +15,32 @@
 //! let df = DataFrame::new(
 //!     vec!["id".to_string(), "score".to_string()],
 //!     vec![ids, scores],
-//! ).unwrap();
+//! )
+//! .unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
 //! let col = df.column("score").unwrap();
 //! ```
 
-use indexmap::IndexMap;
 use std::path::Path;
 
-use crate::column::{Column, ColumnView};
-use crate::copying;
-use crate::error::{Error, ErrorKind, Result};
-use crate::filter;
-use crate::groupby::{self, Aggregation, AggregationRequest, NullPolicy};
-use crate::io::parquet::{self, ParquetReaderOptions, ParquetWriterOptions};
-use crate::join;
-use crate::replace;
-use crate::scalar::Scalar;
-use crate::sorting::{self, Order};
-use crate::stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality};
-use crate::table::Table;
-use crate::types::DataType;
-use crate::unary;
+use indexmap::IndexMap;
+
+use crate::{
+    column::{Column, ColumnView},
+    copying,
+    error::{Error, ErrorKind, Result},
+    filter,
+    groupby::{self, Aggregation, AggregationRequest, NullPolicy},
+    io::parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
+    join, replace,
+    scalar::Scalar,
+    sorting::{self, Order},
+    stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
+    table::Table,
+    types::DataType,
+    unary,
+};
 
 /// A GPU DataFrame: a named, ordered collection of GPU columns.
 ///
@@ -123,11 +125,7 @@ struct DisplayColumn {
 
 impl DisplayColumn {
     fn unknown() -> Self {
-        Self {
-            type_str: "?".to_string(),
-            validity: None,
-            values: DisplayColumnValues::Unknown,
-        }
+        Self { type_str: "?".to_string(), validity: None, values: DisplayColumnValues::Unknown }
     }
 
     fn cell(&self, row_idx: usize) -> String {
@@ -138,50 +136,17 @@ impl DisplayColumn {
         }
 
         match &self.values {
-            DisplayColumnValues::Int8(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Int16(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Int32(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Int64(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt8(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt16(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt32(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::UInt64(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Float32(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Float64(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
-            DisplayColumnValues::Bool8(v) => v
-                .get(row_idx)
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Int8(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Int16(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Int32(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Int64(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::UInt8(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::UInt16(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::UInt32(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::UInt64(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Float32(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Float64(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
+            DisplayColumnValues::Bool8(v) => v.get(row_idx).map(|x| x.to_string()).unwrap_or_else(|| "?".to_string()),
             DisplayColumnValues::Unknown => "?".to_string(),
         }
     }
@@ -203,69 +168,28 @@ fn build_display_column(df: &DataFrame, name: &str) -> DisplayColumn {
 
     use crate::types::TypeId;
     let values = match type_id {
-        TypeId::Int8 => cv
-            .to_vec::<i8>()
-            .map(DisplayColumnValues::Int8)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Int16 => cv
-            .to_vec::<i16>()
-            .map(DisplayColumnValues::Int16)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Int32 => cv
-            .to_vec::<i32>()
-            .map(DisplayColumnValues::Int32)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Int64 => cv
-            .to_vec::<i64>()
-            .map(DisplayColumnValues::Int64)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt8 => cv
-            .to_vec::<u8>()
-            .map(DisplayColumnValues::UInt8)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt16 => cv
-            .to_vec::<u16>()
-            .map(DisplayColumnValues::UInt16)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt32 => cv
-            .to_vec::<u32>()
-            .map(DisplayColumnValues::UInt32)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::UInt64 => cv
-            .to_vec::<u64>()
-            .map(DisplayColumnValues::UInt64)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Float32 => cv
-            .to_vec::<f32>()
-            .map(DisplayColumnValues::Float32)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Float64 => cv
-            .to_vec::<f64>()
-            .map(DisplayColumnValues::Float64)
-            .unwrap_or(DisplayColumnValues::Unknown),
-        TypeId::Bool8 => cv
-            .to_vec::<bool>()
-            .map(DisplayColumnValues::Bool8)
-            .unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Int8 => cv.to_vec::<i8>().map(DisplayColumnValues::Int8).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Int16 => cv.to_vec::<i16>().map(DisplayColumnValues::Int16).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Int32 => cv.to_vec::<i32>().map(DisplayColumnValues::Int32).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Int64 => cv.to_vec::<i64>().map(DisplayColumnValues::Int64).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::UInt8 => cv.to_vec::<u8>().map(DisplayColumnValues::UInt8).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::UInt16 => cv.to_vec::<u16>().map(DisplayColumnValues::UInt16).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::UInt32 => cv.to_vec::<u32>().map(DisplayColumnValues::UInt32).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::UInt64 => cv.to_vec::<u64>().map(DisplayColumnValues::UInt64).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Float32 => cv.to_vec::<f32>().map(DisplayColumnValues::Float32).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Float64 => cv.to_vec::<f64>().map(DisplayColumnValues::Float64).unwrap_or(DisplayColumnValues::Unknown),
+        TypeId::Bool8 => cv.to_vec::<bool>().map(DisplayColumnValues::Bool8).unwrap_or(DisplayColumnValues::Unknown),
         _ => DisplayColumnValues::Unknown,
     };
 
-    DisplayColumn {
-        type_str: format!("{:?}", type_id),
-        validity,
-        values,
-    }
+    DisplayColumn { type_str: format!("{:?}", type_id), validity, values }
 }
 
 /// Format a DataFrame as a human-readable table.
 ///
 /// Shows column names, types, up to `max_rows` of data, and a row-count
 /// summary line.
-fn display_dataframe(
-    df: &DataFrame,
-    f: &mut std::fmt::Formatter<'_>,
-    max_rows: usize,
-) -> std::fmt::Result {
+fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>, max_rows: usize) -> std::fmt::Result {
     let num_cols = df.num_columns();
     let num_rows = df.num_rows().unwrap_or(0);
 
@@ -276,10 +200,7 @@ fn display_dataframe(
     let names: Vec<&str> = df.column_names();
 
     // Materialize each display column ONCE (GPU -> host copy once per column).
-    let display_cols: Vec<DisplayColumn> = names
-        .iter()
-        .map(|&name| build_display_column(df, name))
-        .collect();
+    let display_cols: Vec<DisplayColumn> = names.iter().map(|&name| build_display_column(df, name)).collect();
 
     let types: Vec<String> = display_cols.iter().map(|c| c.type_str.clone()).collect();
 
@@ -331,11 +252,7 @@ fn display_dataframe(
 }
 
 /// Write one row of values, padded to column widths.
-fn write_row(
-    f: &mut std::fmt::Formatter<'_>,
-    values: &[String],
-    widths: &[usize],
-) -> std::fmt::Result {
+fn write_row(f: &mut std::fmt::Formatter<'_>, values: &[String], widths: &[usize]) -> std::fmt::Result {
     for (i, (val, &w)) in values.iter().zip(widths).enumerate() {
         if i > 0 {
             write!(f, "  ")?;
@@ -367,13 +284,10 @@ impl DataFrame {
     /// - Columns have different row counts (enforced by [`Table::from_columns`])
     pub fn new(names: Vec<String>, columns: Vec<Column>) -> Result<Self> {
         if names.len() != columns.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "number of names must equal number of columns",
-            )
-            .with_operation("dataframe::new")
-            .with_context("names_count", names.len().to_string())
-            .with_context("columns_count", columns.len().to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of columns")
+                .with_operation("dataframe::new")
+                .with_context("names_count", names.len().to_string())
+                .with_context("columns_count", columns.len().to_string()));
         }
 
         let schema = build_schema(&names, "dataframe::new")?;
@@ -399,13 +313,10 @@ impl DataFrame {
         let num_cols = table.view()?.num_columns()?;
         let expected = names.len() as i32;
         if expected != num_cols {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "number of names must equal number of table columns",
-            )
-            .with_operation("dataframe::from_table")
-            .with_context("names_count", names.len().to_string())
-            .with_context("table_columns", num_cols.to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "number of names must equal number of table columns")
+                .with_operation("dataframe::from_table")
+                .with_context("names_count", names.len().to_string())
+                .with_context("table_columns", num_cols.to_string()));
         }
 
         let schema = build_schema(&names, "dataframe::from_table")?;
@@ -437,12 +348,9 @@ impl DataFrame {
     /// Returns an error if `name` is not in the schema.
     pub fn column(&self, name: &str) -> Result<ColumnView<'_>> {
         let &idx = self.schema.get(name).ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                format!("column '{}' not found in schema", name),
-            )
-            .with_operation("dataframe::column")
-            .with_context("column_name", name.to_string())
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                .with_operation("dataframe::column")
+                .with_context("column_name", name.to_string())
         })?;
 
         let view = self.table.view()?;
@@ -466,11 +374,7 @@ impl DataFrame {
     pub fn factorize(&self, column: &str) -> Result<(Column, Column)> {
         let cv = self.column(column)?;
         cv.factorize().map_err(|e| {
-            let err = if e.operation().is_empty() {
-                e.with_operation("dataframe::factorize")
-            } else {
-                e
-            };
+            let err = if e.operation().is_empty() { e.with_operation("dataframe::factorize") } else { e };
             err.with_context("column_name", column.to_string())
         })
     }
@@ -562,10 +466,7 @@ impl DataFrame {
     pub fn filter(&self, mask: &ColumnView<'_>) -> Result<Self> {
         let table_view = self.table.view()?;
         let result_table = filter::apply_boolean_mask(&table_view, mask)?;
-        Ok(Self {
-            table: result_table,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table: result_table, schema: self.schema.clone() })
     }
 
     /// Filter rows to those where `column` values appear in `values`.
@@ -597,20 +498,17 @@ impl DataFrame {
     /// `by.len() != orders.len()`.
     pub fn sort(&self, by: &[&str], orders: &[Order]) -> Result<Self> {
         if by.len() != orders.len() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "number of sort columns must equal number of orders",
-            )
-            .with_operation("dataframe::sort")
-            .with_context("by_count", by.len().to_string())
-            .with_context("orders_count", orders.len().to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, "number of sort columns must equal number of orders")
+                .with_operation("dataframe::sort")
+                .with_context("by_count", by.len().to_string())
+                .with_context("orders_count", orders.len().to_string()));
         }
 
         let key_indices = resolve_column_names(&self.schema, by, "dataframe::sort")?;
 
         // Check whether `by` names are exactly all columns in table order.
-        let all_in_order = key_indices.len() == self.schema.len()
-            && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
+        let all_in_order =
+            key_indices.len() == self.schema.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
 
         let table_view = self.table.view()?;
 
@@ -622,17 +520,10 @@ impl DataFrame {
             let keys_view = keys_table.view()?;
             let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
             let order_view = order_col.view()?;
-            copying::gather(
-                &table_view,
-                &order_view,
-                copying::OutOfBoundsPolicy::DontCheck,
-            )?
+            copying::gather(&table_view, &order_view, copying::OutOfBoundsPolicy::DontCheck)?
         };
 
-        Ok(Self {
-            table: result_table,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table: result_table, schema: self.schema.clone() })
     }
 
     /// Return the `n` rows with the largest values in `column`.
@@ -661,17 +552,9 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.schema, subset, "dataframe::distinct")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let table_view = self.table.view()?;
-        let result_table = stream_compaction::distinct(
-            &table_view,
-            &key_i32,
-            keep,
-            NullEquality::Equal,
-            NanEquality::AllEqual,
-        )?;
-        Ok(Self {
-            table: result_table,
-            schema: self.schema.clone(),
-        })
+        let result_table =
+            stream_compaction::distinct(&table_view, &key_i32, keep, NullEquality::Equal, NanEquality::AllEqual)?;
+        Ok(Self { table: result_table, schema: self.schema.clone() })
     }
 
     /// Drop rows where the specified columns contain nulls.
@@ -687,12 +570,8 @@ impl DataFrame {
         let key_indices = resolve_column_names(&self.schema, subset, "dataframe::drop_nulls")?;
         let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
         let table_view = self.table.view()?;
-        let result_table =
-            stream_compaction::drop_nulls(&table_view, &key_i32, keep_threshold)?;
-        Ok(Self {
-            table: result_table,
-            schema: self.schema.clone(),
-        })
+        let result_table = stream_compaction::drop_nulls(&table_view, &key_i32, keep_threshold)?;
+        Ok(Self { table: result_table, schema: self.schema.clone() })
     }
 
     /// Drop rows where **any** of the specified `subset` columns contain nulls.
@@ -706,17 +585,13 @@ impl DataFrame {
     pub fn drop_nulls_any(&self, subset: &[&str]) -> Result<Self> {
         let subset_count = subset.len();
         let keep_threshold = i32::try_from(subset_count).map_err(|_| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                "subset length exceeds i32::MAX",
-            )
-            .with_operation("dataframe::drop_nulls_any")
-            .with_context("subset_count", subset_count.to_string())
+            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
+                .with_operation("dataframe::drop_nulls_any")
+                .with_context("subset_count", subset_count.to_string())
         })?;
 
         self.drop_nulls(subset, keep_threshold).map_err(|e| {
-            e.with_operation("dataframe::drop_nulls_any")
-                .with_context("subset_count", subset_count.to_string())
+            e.with_operation("dataframe::drop_nulls_any").with_context("subset_count", subset_count.to_string())
         })
     }
 
@@ -751,29 +626,17 @@ impl DataFrame {
     }
 
     /// Compatibility API: return split left/right join outputs.
-    pub fn inner_join_split(
-        &self,
-        right: &DataFrame,
-        on: &[&str],
-    ) -> Result<DataFrameJoinResult> {
+    pub fn inner_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
         self.join_split_on_impl(right, on, on, JoinKind::Inner, "dataframe::inner_join_split")
     }
 
     /// Compatibility API: return split left/right join outputs.
-    pub fn left_join_split(
-        &self,
-        right: &DataFrame,
-        on: &[&str],
-    ) -> Result<DataFrameJoinResult> {
+    pub fn left_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
         self.join_split_on_impl(right, on, on, JoinKind::Left, "dataframe::left_join_split")
     }
 
     /// Compatibility API: return split left/right join outputs.
-    pub fn full_join_split(
-        &self,
-        right: &DataFrame,
-        on: &[&str],
-    ) -> Result<DataFrameJoinResult> {
+    pub fn full_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
         self.join_split_on_impl(right, on, on, JoinKind::Full, "dataframe::full_join_split")
     }
 
@@ -784,38 +647,16 @@ impl DataFrame {
     /// positionally). Output key columns use the **left** key names.
     ///
     /// Output schema is: `left_keys + left_payload + right_payload`.
-    pub fn inner_join_on(
-        &self,
-        right: &DataFrame,
-        left_on: &[&str],
-        right_on: &[&str],
-    ) -> Result<Self> {
-        self.join_merged_on_impl(
-            right,
-            left_on,
-            right_on,
-            JoinKind::Inner,
-            "dataframe::inner_join_on",
-        )
+    pub fn inner_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
+        self.join_merged_on_impl(right, left_on, right_on, JoinKind::Inner, "dataframe::inner_join_on")
     }
 
     /// Left join with asymmetric key names.
     ///
     /// All left rows are preserved; the right side is null-padded for
     /// non-matching rows. Output key columns use the **left** key names.
-    pub fn left_join_on(
-        &self,
-        right: &DataFrame,
-        left_on: &[&str],
-        right_on: &[&str],
-    ) -> Result<Self> {
-        self.join_merged_on_impl(
-            right,
-            left_on,
-            right_on,
-            JoinKind::Left,
-            "dataframe::left_join_on",
-        )
+    pub fn left_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
+        self.join_merged_on_impl(right, left_on, right_on, JoinKind::Left, "dataframe::left_join_on")
     }
 
     /// Full (outer) join with asymmetric key names.
@@ -823,19 +664,8 @@ impl DataFrame {
     /// All rows from both sides are preserved, with null-padding where
     /// there is no match. Key columns are coalesced and use the **left**
     /// key names.
-    pub fn full_join_on(
-        &self,
-        right: &DataFrame,
-        left_on: &[&str],
-        right_on: &[&str],
-    ) -> Result<Self> {
-        self.join_merged_on_impl(
-            right,
-            left_on,
-            right_on,
-            JoinKind::Full,
-            "dataframe::full_join_on",
-        )
+    pub fn full_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
+        self.join_merged_on_impl(right, left_on, right_on, JoinKind::Full, "dataframe::full_join_on")
     }
 
     /// Internal merged-join implementation.
@@ -904,24 +734,14 @@ impl DataFrame {
         let rpv = rp_table.view()?;
 
         let result = match kind {
-            JoinKind::Inner => {
-                join::inner_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?
-            }
-            JoinKind::Left => {
-                join::left_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?
-            }
-            JoinKind::Full => {
-                join::full_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?
-            }
+            JoinKind::Inner => join::inner_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?,
+            JoinKind::Left => join::left_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?,
+            JoinKind::Full => join::full_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?,
         };
 
         // Build schemas: left side uses left key names, right side uses right key names.
-        let left_schema_names = build_join_schema_names(
-            &self.schema, &left_key_indices, &left_payload_indices,
-        );
-        let right_schema_names = build_join_schema_names(
-            &right.schema, &right_key_indices, &right_payload_indices,
-        );
+        let left_schema_names = build_join_schema_names(&self.schema, &left_key_indices, &left_payload_indices);
+        let right_schema_names = build_join_schema_names(&right.schema, &right_key_indices, &right_payload_indices);
 
         Ok(DataFrameJoinResult {
             left: DataFrame::from_table(result.left, left_schema_names)?,
@@ -948,18 +768,11 @@ impl DataFrame {
     /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
     /// #          Column::from_slice(&[10i64,20]).unwrap()],
     /// # ).unwrap();
-    /// let result = df
-    ///     .groupby(&["key"])
-    ///     .agg("val", Aggregation::Sum)
-    ///     .execute()
-    ///     .unwrap();
+    /// let result =
+    ///     df.groupby(&["key"]).agg("val", Aggregation::Sum).execute().unwrap();
     /// ```
     pub fn groupby<'a>(&'a self, keys: &[&str]) -> GroupByBuilder<'a> {
-        GroupByBuilder {
-            df: self,
-            key_names: keys.iter().map(|s| s.to_string()).collect(),
-            agg_requests: Vec::new(),
-        }
+        GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
     }
 
     // -- Concat, copy, rename, select ----------------------------------------
@@ -989,10 +802,7 @@ impl DataFrame {
             if left_name != right_name {
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
-                    format!(
-                        "schema mismatch: column '{}' vs '{}'",
-                        left_name, right_name
-                    ),
+                    format!("schema mismatch: column '{}' vs '{}'", left_name, right_name),
                 )
                 .with_operation("dataframe::concat")
                 .with_context("left_column", left_name.clone())
@@ -1007,11 +817,7 @@ impl DataFrame {
             let left_type = left_view.column(i as i32)?.data_type()?.id();
             let right_type = right_view.column(i as i32)?.data_type()?.id();
             if left_type != right_type {
-                let name = self
-                    .schema
-                    .get_index(i)
-                    .map(|(n, _)| n.as_str())
-                    .unwrap_or("<unknown>");
+                let name = self.schema.get_index(i).map(|(n, _)| n.as_str()).unwrap_or("<unknown>");
                 return Err(Error::new(
                     ErrorKind::InvalidOperation,
                     "cannot concatenate DataFrames with mismatched column types",
@@ -1024,22 +830,15 @@ impl DataFrame {
             }
         }
 
-        let result_table =
-            crate::concatenate::concatenate_tables(&[&left_view, &right_view])?;
+        let result_table = crate::concatenate::concatenate_tables(&[&left_view, &right_view])?;
 
-        Ok(Self {
-            table: result_table,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table: result_table, schema: self.schema.clone() })
     }
 
     /// Deep-copy this DataFrame (both the GPU table data and the schema).
     pub fn copy(&self) -> Result<Self> {
         let table_copy = self.table.copy()?;
-        Ok(Self {
-            table: table_copy,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table: table_copy, schema: self.schema.clone() })
     }
 
     /// Return a new DataFrame with one column renamed.
@@ -1054,21 +853,15 @@ impl DataFrame {
     /// exists in the schema.
     pub fn rename(&self, old: &str, new: &str) -> Result<Self> {
         if !self.schema.contains_key(old) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("column '{}' not found in schema", old),
-            )
-            .with_operation("dataframe::rename")
-            .with_context("column_name", old.to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
+                .with_operation("dataframe::rename")
+                .with_context("column_name", old.to_string()));
         }
 
         if old != new && self.schema.contains_key(new) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!(
-                    "cannot rename '{}' to '{}': target name already exists",
-                    old, new
-                ),
+                format!("cannot rename '{}' to '{}': target name already exists", old, new),
             )
             .with_operation("dataframe::rename")
             .with_context("old_name", old.to_string())
@@ -1086,10 +879,7 @@ impl DataFrame {
         }
 
         let table_copy = self.table.copy()?;
-        Ok(Self {
-            table: table_copy,
-            schema: new_schema,
-        })
+        Ok(Self { table: table_copy, schema: new_schema })
     }
 
     /// Return a new DataFrame with one column renamed, consuming `self`.
@@ -1097,21 +887,15 @@ impl DataFrame {
     /// This is a pure schema rewrite with **no GPU data copy**.
     pub fn rename_owned(self, old: &str, new: &str) -> Result<Self> {
         if !self.schema.contains_key(old) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("column '{}' not found in schema", old),
-            )
-            .with_operation("dataframe::rename_owned")
-            .with_context("column_name", old.to_string()));
+            return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
+                .with_operation("dataframe::rename_owned")
+                .with_context("column_name", old.to_string()));
         }
 
         if old != new && self.schema.contains_key(new) {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!(
-                    "cannot rename '{}' to '{}': target name already exists",
-                    old, new
-                ),
+                format!("cannot rename '{}' to '{}': target name already exists", old, new),
             )
             .with_operation("dataframe::rename_owned")
             .with_context("old_name", old.to_string())
@@ -1127,10 +911,7 @@ impl DataFrame {
             }
         }
 
-        Ok(Self {
-            table: self.table,
-            schema: new_schema,
-        })
+        Ok(Self { table: self.table, schema: new_schema })
     }
 
     /// Return a new DataFrame containing only the specified columns.
@@ -1147,13 +928,10 @@ impl DataFrame {
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for &name in columns {
             if !seen.insert(name) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    "selected columns must be unique",
-                )
-                .with_operation("dataframe::select")
-                .with_context("duplicate_column", name.to_string())
-                .with_context("selected_column_count", columns.len().to_string()));
+                return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
+                    .with_operation("dataframe::select")
+                    .with_context("duplicate_column", name.to_string())
+                    .with_context("selected_column_count", columns.len().to_string()));
             }
         }
 
@@ -1167,10 +945,7 @@ impl DataFrame {
             new_schema.insert(name.to_string(), i);
         }
 
-        Ok(Self {
-            table: selected_table,
-            schema: new_schema,
-        })
+        Ok(Self { table: selected_table, schema: new_schema })
     }
 
     // -- Column-level convenience --------------------------------------------
@@ -1194,10 +969,7 @@ impl DataFrame {
         if self.num_columns() > 0 && col_rows != self_rows {
             return Err(Error::new(
                 ErrorKind::InvalidOperation,
-                format!(
-                    "new column has {} rows but DataFrame has {} rows",
-                    col_rows, self_rows
-                ),
+                format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
             )
             .with_operation("dataframe::with_column")
             .with_context("column_name", name.to_string())
@@ -1210,11 +982,7 @@ impl DataFrame {
 
         let table_view = self.table.view()?;
         let num_existing = self.schema.len();
-        let new_count = if replace_idx.is_some() {
-            num_existing
-        } else {
-            num_existing + 1
-        };
+        let new_count = if replace_idx.is_some() { num_existing } else { num_existing + 1 };
 
         let mut columns: Vec<Column> = Vec::with_capacity(new_count);
         let mut schema = IndexMap::with_capacity(new_count);
@@ -1225,11 +993,8 @@ impl DataFrame {
                 let cv = col.view()?;
                 let type_id = cv.data_type()?.id();
                 let len = cv.len()?;
-                let owned = if len == 0 {
-                    Column::empty(type_id)?
-                } else {
-                    copy_column_view_to_owned(&cv, type_id, len)?
-                };
+                let owned =
+                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
                 schema.insert(name.to_string(), columns.len());
                 columns.push(owned);
             } else {
@@ -1237,11 +1002,8 @@ impl DataFrame {
                 let cv = table_view.column(idx as i32)?;
                 let type_id = cv.data_type()?.id();
                 let len = cv.len()?;
-                let owned = if len == 0 {
-                    Column::empty(type_id)?
-                } else {
-                    copy_column_view_to_owned(&cv, type_id, len)?
-                };
+                let owned =
+                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
                 schema.insert(col_name.clone(), columns.len());
                 columns.push(owned);
             }
@@ -1252,11 +1014,7 @@ impl DataFrame {
             let cv = col.view()?;
             let type_id = cv.data_type()?.id();
             let len = cv.len()?;
-            let owned = if len == 0 {
-                Column::empty(type_id)?
-            } else {
-                copy_column_view_to_owned(&cv, type_id, len)?
-            };
+            let owned = if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
             schema.insert(name.to_string(), columns.len());
             columns.push(owned);
         }
@@ -1276,12 +1034,9 @@ impl DataFrame {
     /// Returns an error if `column` is not in the schema.
     pub fn replace_nulls(&self, column: &str, value: &Scalar) -> Result<Self> {
         let &target_idx = self.schema.get(column).ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                format!("column '{}' not found in schema", column),
-            )
-            .with_operation("dataframe::replace_nulls")
-            .with_context("column_name", column.to_string())
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
+                .with_operation("dataframe::replace_nulls")
+                .with_context("column_name", column.to_string())
         })?;
 
         self.rebuild_with_replaced_column(target_idx, "dataframe::replace_nulls", |cv| {
@@ -1299,31 +1054,19 @@ impl DataFrame {
     /// is unsupported.
     pub fn cast_column(&self, column: &str, target_type: &DataType) -> Result<Self> {
         let &target_idx = self.schema.get(column).ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidOperation,
-                format!("column '{}' not found in schema", column),
-            )
-            .with_operation("dataframe::cast_column")
-            .with_context("column_name", column.to_string())
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
+                .with_operation("dataframe::cast_column")
+                .with_context("column_name", column.to_string())
         })?;
 
-        self.rebuild_with_replaced_column(target_idx, "dataframe::cast_column", |cv| {
-            unary::cast(cv, target_type)
-        })
+        self.rebuild_with_replaced_column(target_idx, "dataframe::cast_column", |cv| unary::cast(cv, target_type))
     }
 
     /// Internal helper: rebuild the table, replacing one column by applying
     /// a transformation function `f` to its view. All other columns are
     /// deep-copied.
-    fn rebuild_with_replaced_column<F>(
-        &self,
-        target_idx: usize,
-        _operation: &'static str,
-        f: F,
-    ) -> Result<Self>
-    where
-        F: FnOnce(&ColumnView<'_>) -> Result<Column>,
-    {
+    fn rebuild_with_replaced_column<F>(&self, target_idx: usize, _operation: &'static str, f: F) -> Result<Self>
+    where F: FnOnce(&ColumnView<'_>) -> Result<Column> {
         let table_view = self.table.view()?;
         let num_cols = self.schema.len();
         let mut columns: Vec<Column> = Vec::with_capacity(num_cols);
@@ -1332,27 +1075,19 @@ impl DataFrame {
         for (_, &idx) in &self.schema {
             let cv = table_view.column(idx as i32)?;
             if idx == target_idx {
-                let f = f_opt
-                    .take()
-                    .expect("rebuild_with_replaced_column: target_idx matched twice");
+                let f = f_opt.take().expect("rebuild_with_replaced_column: target_idx matched twice");
                 columns.push(f(&cv)?);
             } else {
                 let type_id = cv.data_type()?.id();
                 let len = cv.len()?;
-                let owned = if len == 0 {
-                    Column::empty(type_id)?
-                } else {
-                    copy_column_view_to_owned(&cv, type_id, len)?
-                };
+                let owned =
+                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
                 columns.push(owned);
             }
         }
 
         let table = Table::from_columns(columns)?;
-        Ok(Self {
-            table,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table, schema: self.schema.clone() })
     }
 }
 
@@ -1389,11 +1124,8 @@ impl<'a> GroupByBuilder<'a> {
     /// - Any key or value column name is not in the DataFrame's schema.
     pub fn execute(&self) -> Result<DataFrame> {
         if self.agg_requests.is_empty() {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                "at least one aggregation is required",
-            )
-            .with_operation("dataframe::groupby::execute"));
+            return Err(Error::new(ErrorKind::InvalidOperation, "at least one aggregation is required")
+                .with_operation("dataframe::groupby::execute"));
         }
 
         // Resolve key column names to indices.
@@ -1404,21 +1136,14 @@ impl<'a> GroupByBuilder<'a> {
         )?;
 
         // Resolve value column names to indices.
-        let value_col_names: Vec<&str> = self
-            .agg_requests
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect();
+        let value_col_names: Vec<&str> = self.agg_requests.iter().map(|(name, _)| name.as_str()).collect();
 
         // Validate all value column names exist.
         for &name in &value_col_names {
             if !self.df.schema.contains_key(name) {
-                return Err(Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("column '{}' not found in schema", name),
-                )
-                .with_operation("dataframe::groupby::execute")
-                .with_context("column_name", name.to_string()));
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                    .with_operation("dataframe::groupby::execute")
+                    .with_context("column_name", name.to_string()));
             }
         }
 
@@ -1459,11 +1184,8 @@ impl<'a> GroupByBuilder<'a> {
                 let cv = table_view.column(schema_idx as i32)?;
                 let type_id = cv.data_type()?.id();
                 let len = cv.len()?;
-                let owned = if len == 0 {
-                    Column::empty(type_id)?
-                } else {
-                    copy_column_view_to_owned(&cv, type_id, len)?
-                };
+                let owned =
+                    if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
                 let idx = owned_value_cols.len();
                 owned_value_cols.push(owned);
                 col_name_to_owned_idx.insert(col_name.clone(), idx);
@@ -1487,15 +1209,9 @@ impl<'a> GroupByBuilder<'a> {
         }
 
         // Build AggregationRequests.
-        let value_views: Vec<_> = owned_value_cols
-            .iter()
-            .map(|c| c.view())
-            .collect::<Result<Vec<_>>>()?;
+        let value_views: Vec<_> = owned_value_cols.iter().map(|c| c.view()).collect::<Result<Vec<_>>>()?;
 
-        let agg_slices: Vec<Vec<Aggregation>> = request_meta
-            .iter()
-            .map(|(_, aggs)| aggs.clone())
-            .collect();
+        let agg_slices: Vec<Vec<Aggregation>> = request_meta.iter().map(|(_, aggs)| aggs.clone()).collect();
 
         let requests: Vec<AggregationRequest<'_>> = request_meta
             .iter()
@@ -1506,52 +1222,39 @@ impl<'a> GroupByBuilder<'a> {
             })
             .collect();
 
-        let gb_result =
-            groupby::groupby_aggregate(&keys_view, &requests, NullPolicy::Exclude)?;
+        let gb_result = groupby::groupby_aggregate(&keys_view, &requests, NullPolicy::Exclude)?;
 
         // Reorder aggregate result columns to match original .agg() call order.
-        let mut grouped_results: Vec<Vec<Option<Column>>> = gb_result
-            .results
-            .into_iter()
-            .map(|cols| cols.into_iter().map(Some).collect())
-            .collect();
+        let mut grouped_results: Vec<Vec<Option<Column>>> =
+            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
 
         let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
         for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
             let group_count = grouped_results.len();
             let group = grouped_results.get_mut(*group_idx).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    "groupby aggregation result group index out of bounds",
-                )
-                .with_operation("dataframe::groupby::execute")
-                .with_context("request_index", request_index.to_string())
-                .with_context("group_index", group_idx.to_string())
-                .with_context("group_count", group_count.to_string())
+                Error::new(ErrorKind::InvalidOperation, "groupby aggregation result group index out of bounds")
+                    .with_operation("dataframe::groupby::execute")
+                    .with_context("request_index", request_index.to_string())
+                    .with_context("group_index", group_idx.to_string())
+                    .with_context("group_count", group_count.to_string())
             })?;
 
             let group_agg_count = group.len();
             let col_slot = group.get_mut(*agg_idx).ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    "groupby aggregation result index out of bounds",
-                )
-                .with_operation("dataframe::groupby::execute")
-                .with_context("request_index", request_index.to_string())
-                .with_context("group_index", group_idx.to_string())
-                .with_context("agg_index", agg_idx.to_string())
-                .with_context("group_agg_count", group_agg_count.to_string())
+                Error::new(ErrorKind::InvalidOperation, "groupby aggregation result index out of bounds")
+                    .with_operation("dataframe::groupby::execute")
+                    .with_context("request_index", request_index.to_string())
+                    .with_context("group_index", group_idx.to_string())
+                    .with_context("agg_index", agg_idx.to_string())
+                    .with_context("group_agg_count", group_agg_count.to_string())
             })?;
 
             let col = col_slot.take().ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    "groupby aggregation result column consumed more than once",
-                )
-                .with_operation("dataframe::groupby::execute")
-                .with_context("request_index", request_index.to_string())
-                .with_context("group_index", group_idx.to_string())
-                .with_context("agg_index", agg_idx.to_string())
+                Error::new(ErrorKind::InvalidOperation, "groupby aggregation result column consumed more than once")
+                    .with_operation("dataframe::groupby::execute")
+                    .with_context("request_index", request_index.to_string())
+                    .with_context("group_index", group_idx.to_string())
+                    .with_context("agg_index", agg_idx.to_string())
             })?;
 
             all_result_cols.push(col);
@@ -1560,27 +1263,20 @@ impl<'a> GroupByBuilder<'a> {
         // Build the key columns from the keys table via deep-copy.
         let result_keys_view = gb_result.keys.view()?;
         let num_key_cols = result_keys_view.num_columns()?;
-        let mut final_cols: Vec<Column> = Vec::with_capacity(
-            num_key_cols as usize + all_result_cols.len(),
-        );
+        let mut final_cols: Vec<Column> = Vec::with_capacity(num_key_cols as usize + all_result_cols.len());
 
         for i in 0..num_key_cols {
             let cv = result_keys_view.column(i)?;
             let type_id = cv.data_type()?.id();
             let len = cv.len()?;
-            let owned = if len == 0 {
-                Column::empty(type_id)?
-            } else {
-                copy_column_view_to_owned(&cv, type_id, len)?
-            };
+            let owned = if len == 0 { Column::empty(type_id)? } else { copy_column_view_to_owned(&cv, type_id, len)? };
             final_cols.push(owned);
         }
 
         final_cols.extend(all_result_cols);
 
         // Build schema: key names + result names.
-        let mut schema_names: Vec<String> =
-            Vec::with_capacity(self.key_names.len() + result_names.len());
+        let mut schema_names: Vec<String> = Vec::with_capacity(self.key_names.len() + result_names.len());
         schema_names.extend(self.key_names.clone());
         schema_names.extend(result_names);
 
@@ -1612,12 +1308,9 @@ fn build_schema(names: &[String], operation: &'static str) -> Result<IndexMap<St
     let mut schema = IndexMap::with_capacity(names.len());
     for (i, name) in names.iter().enumerate() {
         if schema.contains_key(name) {
-            return Err(Error::new(
-                ErrorKind::InvalidOperation,
-                format!("duplicate column name '{}'", name),
-            )
-            .with_operation(operation)
-            .with_context("duplicate_name", name.clone()));
+            return Err(Error::new(ErrorKind::InvalidOperation, format!("duplicate column name '{}'", name))
+                .with_operation(operation)
+                .with_context("duplicate_name", name.clone()));
         }
         schema.insert(name.clone(), i);
     }
@@ -1635,16 +1328,9 @@ impl DataFrame {
         let indices: Vec<i32> = (start as i32..(start + len) as i32).collect();
         let map = Column::from_slice(&indices)?;
         let table_view = self.table.view()?;
-        let result_table = copying::gather(
-            &table_view,
-            &map.view()?,
-            copying::OutOfBoundsPolicy::DontCheck,
-        )?;
+        let result_table = copying::gather(&table_view, &map.view()?, copying::OutOfBoundsPolicy::DontCheck)?;
 
-        Ok(Self {
-            table: result_table,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table: result_table, schema: self.schema.clone() })
     }
 
     /// Internal: build an empty DataFrame with the same schema (column names
@@ -1661,10 +1347,7 @@ impl DataFrame {
                 .collect::<Result<Vec<_>>>()?
         };
         let table = Table::from_columns(empty_cols)?;
-        Ok(Self {
-            table,
-            schema: self.schema.clone(),
-        })
+        Ok(Self { table, schema: self.schema.clone() })
     }
 }
 
@@ -1679,12 +1362,9 @@ fn resolve_column_names(
         .iter()
         .map(|&name| {
             schema.get(name).copied().ok_or_else(|| {
-                Error::new(
-                    ErrorKind::InvalidOperation,
-                    format!("column '{}' not found in schema", name),
-                )
-                .with_operation(operation)
-                .with_context("column_name", name.to_string())
+                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                    .with_operation(operation)
+                    .with_context("column_name", name.to_string())
             })
         })
         .collect()
@@ -1716,11 +1396,7 @@ fn build_keys_table(source: &crate::table::TableView<'_>, indices: &[usize]) -> 
 ///
 /// Uses `cudf_column_copy_from_view`, which supports fixed-width, string,
 /// and nested types.
-fn copy_column_view_to_owned(
-    cv: &ColumnView<'_>,
-    _type_id: crate::types::TypeId,
-    _len: i32,
-) -> Result<Column> {
+fn copy_column_view_to_owned(cv: &ColumnView<'_>, _type_id: crate::types::TypeId, _len: i32) -> Result<Column> {
     let mut handle = std::ptr::null_mut();
     crate::error::check_status_in(
         unsafe { cudf_sys::cudf_column_copy_from_view(cv.raw_handle(), &mut handle) },
@@ -1741,11 +1417,7 @@ enum JoinKind {
 /// in schema insertion order.
 fn payload_indices(schema: &IndexMap<String, usize>, key_indices: &[usize]) -> Vec<usize> {
     let key_set: std::collections::HashSet<usize> = key_indices.iter().copied().collect();
-    schema
-        .values()
-        .copied()
-        .filter(|idx| !key_set.contains(idx))
-        .collect()
+    schema.values().copied().filter(|idx| !key_set.contains(idx)).collect()
 }
 
 /// Build the schema name list for a join result side:
@@ -1792,26 +1464,20 @@ fn merge_join_result(
     let key_count = on.len();
 
     if left_cols.len() != left_names.len() || right_cols.len() != right_names.len() {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "join result schema/column count mismatch",
-        )
-        .with_operation(operation)
-        .with_context("left_columns", left_cols.len().to_string())
-        .with_context("left_names_count", left_names.len().to_string())
-        .with_context("right_columns", right_cols.len().to_string())
-        .with_context("right_names_count", right_names.len().to_string()));
+        return Err(Error::new(ErrorKind::InvalidOperation, "join result schema/column count mismatch")
+            .with_operation(operation)
+            .with_context("left_columns", left_cols.len().to_string())
+            .with_context("left_names_count", left_names.len().to_string())
+            .with_context("right_columns", right_cols.len().to_string())
+            .with_context("right_names_count", right_names.len().to_string()));
     }
 
     if key_count > left_cols.len() || key_count > right_cols.len() {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "join key count exceeds result column count",
-        )
-        .with_operation(operation)
-        .with_context("num_keys", key_count.to_string())
-        .with_context("left_columns", left_cols.len().to_string())
-        .with_context("right_columns", right_cols.len().to_string()));
+        return Err(Error::new(ErrorKind::InvalidOperation, "join key count exceeds result column count")
+            .with_operation(operation)
+            .with_context("num_keys", key_count.to_string())
+            .with_context("left_columns", left_cols.len().to_string())
+            .with_context("right_columns", right_cols.len().to_string()));
     }
 
     let mut out_cols: Vec<Column> = Vec::new();
@@ -1853,13 +1519,10 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     let ldt = lcv.data_type()?;
     let rdt = rcv.data_type()?;
     if ldt != rdt {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "cannot coalesce columns with different types",
-        )
-        .with_operation(operation)
-        .with_context("left_type_id", format!("{:?}", ldt.id()).to_lowercase())
-        .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
+        return Err(Error::new(ErrorKind::InvalidOperation, "cannot coalesce columns with different types")
+            .with_operation(operation)
+            .with_context("left_type_id", format!("{:?}", ldt.id()).to_lowercase())
+            .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
     }
 
     coalesce_columns_host_fallback(&lcv, &rcv, ldt.id(), operation)
@@ -1873,13 +1536,10 @@ fn coalesce_columns_host_fallback(
 ) -> Result<Column> {
     let len = left.len()?;
     if len != right.len()? {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "cannot coalesce columns with different lengths",
-        )
-        .with_operation(operation)
-        .with_context("left_len", left.len()?.to_string())
-        .with_context("right_len", right.len()?.to_string()));
+        return Err(Error::new(ErrorKind::InvalidOperation, "cannot coalesce columns with different lengths")
+            .with_operation(operation)
+            .with_context("left_len", left.len()?.to_string())
+            .with_context("right_len", right.len()?.to_string()));
     }
 
     let left_valid = left.validity()?;
@@ -1924,12 +1584,9 @@ fn coalesce_columns_host_fallback(
         TypeId::Float32 => coalesce_typed!(f32),
         TypeId::Float64 => coalesce_typed!(f64),
         TypeId::Bool8 => coalesce_typed!(bool),
-        _ => Err(Error::new(
-            ErrorKind::InvalidOperation,
-            "coalesce unsupported for non-fixed-width type",
-        )
-        .with_operation(operation)
-        .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
+        _ => Err(Error::new(ErrorKind::InvalidOperation, "coalesce unsupported for non-fixed-width type")
+            .with_operation(operation)
+            .with_context("type_id", format!("{:?}", type_id).to_lowercase())),
     }
 }
 

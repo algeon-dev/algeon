@@ -1,8 +1,11 @@
 //! GPU-accelerated search / set-membership operations.
 
-use crate::column::{Column, ColumnView};
-use crate::error::{self, Result};
 use std::ptr;
+
+use crate::{
+    column::{Column, ColumnView},
+    error::{self, Result},
+};
 
 /// Check if elements of `needles` exist in `haystack` (set membership / "isin").
 ///
@@ -17,15 +20,13 @@ use std::ptr;
 ///
 /// # Example
 /// ```no_run
-/// use cudf::column::Column;
-/// use cudf::search;
+/// use cudf::{column::Column, search};
 ///
 /// let haystack = Column::from_slice(&[10i32, 20, 30]).unwrap();
-/// let needles  = Column::from_slice(&[20i32, 40]).unwrap();
-/// let result = search::contains(
-///     &haystack.view().unwrap(),
-///     &needles.view().unwrap(),
-/// ).unwrap();
+/// let needles = Column::from_slice(&[20i32, 40]).unwrap();
+/// let result =
+///     search::contains(&haystack.view().unwrap(), &needles.view().unwrap())
+///         .unwrap();
 /// // result: [true, false]
 /// ```
 pub fn contains(haystack: &ColumnView<'_>, needles: &ColumnView<'_>) -> Result<Column> {

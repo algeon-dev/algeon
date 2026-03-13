@@ -2,8 +2,7 @@
 //! and an optional source — so that GPU pipeline failures are debuggable without
 //! guesswork.
 
-use std::ffi::CStr;
-use std::fmt;
+use std::{ffi::CStr, fmt};
 
 /// The kind of error that occurred.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -295,10 +294,7 @@ pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
     Err(err)
 }
 
-pub(crate) fn check_status_in(
-    status: cudf_sys::cudf_status_t,
-    operation: &'static str,
-) -> Result<()> {
+pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'static str) -> Result<()> {
     check_status(status).map_err(|e| e.with_operation(operation))
 }
 
@@ -310,11 +306,8 @@ pub(crate) fn check_status_in_with<I>(
 where
     I: IntoIterator<Item = (&'static str, String)>,
 {
-    check_status_in(status, operation).map_err(|err| {
-        context
-            .into_iter()
-            .fold(err, |acc, (k, v)| acc.with_context(k, v))
-    })
+    check_status_in(status, operation)
+        .map_err(|err| context.into_iter().fold(err, |acc, (k, v)| acc.with_context(k, v)))
 }
 
 #[cfg(test)]
@@ -387,9 +380,7 @@ mod tests {
 
     #[test]
     fn debug_is_multiline() {
-        let err = Error::new(ErrorKind::CudaError, "oom")
-            .with_operation("sort")
-            .with_context("rows", "1M");
+        let err = Error::new(ErrorKind::CudaError, "oom").with_operation("sort").with_context("rows", "1M");
 
         let s = format!("{:?}", err);
         assert!(s.contains("operation: sort"));
@@ -399,38 +390,20 @@ mod tests {
 
     #[test]
     fn default_status_cuda_is_temporary() {
-        assert_eq!(
-            default_status_for_kind(ErrorKind::CudaError),
-            ErrorStatus::Temporary
-        );
-        assert_eq!(
-            default_status_for_kind(ErrorKind::OutOfMemory),
-            ErrorStatus::Temporary
-        );
+        assert_eq!(default_status_for_kind(ErrorKind::CudaError), ErrorStatus::Temporary);
+        assert_eq!(default_status_for_kind(ErrorKind::OutOfMemory), ErrorStatus::Temporary);
     }
 
     #[test]
     fn default_status_fatal_cuda_is_persistent() {
-        assert_eq!(
-            default_status_for_kind(ErrorKind::FatalCudaError),
-            ErrorStatus::Persistent
-        );
+        assert_eq!(default_status_for_kind(ErrorKind::FatalCudaError), ErrorStatus::Persistent);
     }
 
     #[test]
     fn default_status_logic_errors_are_permanent() {
-        assert_eq!(
-            default_status_for_kind(ErrorKind::TypeError),
-            ErrorStatus::Permanent
-        );
-        assert_eq!(
-            default_status_for_kind(ErrorKind::InvalidOperation),
-            ErrorStatus::Permanent
-        );
-        assert_eq!(
-            default_status_for_kind(ErrorKind::IndexError),
-            ErrorStatus::Permanent
-        );
+        assert_eq!(default_status_for_kind(ErrorKind::TypeError), ErrorStatus::Permanent);
+        assert_eq!(default_status_for_kind(ErrorKind::InvalidOperation), ErrorStatus::Permanent);
+        assert_eq!(default_status_for_kind(ErrorKind::IndexError), ErrorStatus::Permanent);
     }
 
     #[test]
@@ -444,9 +417,7 @@ mod tests {
     #[test]
     fn display_with_source() {
         let cause = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file");
-        let err = Error::new(ErrorKind::IoError, "read failed")
-            .with_operation("read_csv")
-            .set_source(cause);
+        let err = Error::new(ErrorKind::IoError, "read failed").with_operation("read_csv").set_source(cause);
 
         let s = err.to_string();
         assert!(s.contains("source:"));
