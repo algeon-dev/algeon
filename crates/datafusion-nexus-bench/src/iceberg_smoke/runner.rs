@@ -577,6 +577,9 @@ pub(crate) async fn run_query_with_registered_native_tables(
     .into_iter()
     .next()
     .ok_or_else(|| smoke_error("native Iceberg smoke report produced no planning rows"))?;
+    if smoke_native_plan_debug_enabled() {
+        log_native_plan_debug_row(&query_id, &planning_row, physical_plan.as_ref());
+    }
     let records = staging_records_snapshot(&staging_records);
     let diagnostics = aggregate_scan_diagnostics(&records);
     let staging_summary = aggregate_staging_summary(&records);
@@ -815,6 +818,48 @@ fn iceberg_footer_pruning_enabled() -> bool {
     std::env::var("NEXUS_ICEBERG_FOOTER_PRUNING")
         .ok()
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true"))
+}
+
+fn smoke_native_plan_debug_enabled() -> bool {
+    std::env::var(DEBUG_NATIVE_PLAN_ENV)
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "on" | "yes"))
+}
+
+fn log_native_plan_debug_row(
+    query_id: &str,
+    planning_row: &datafusion_nexus::NativeDataFusionPlanningRow,
+    post_native_plan: &dyn ExecutionPlan,
+) {
+    eprintln!(
+        "[native_iceberg_smoke_report] stage=native_plan_debug query_id={} physical_root={} physical_shape={} native_candidate_shape={} native_candidate_shape_family={} outcome={} reason_code={} post_native_plan_root={} post_native_execution_path={} native_plan_fragment_count={} host_datafusion_boundary_count={}",
+        query_id,
+        stable_tsv_field(&planning_row.physical_root),
+        stable_tsv_field(&planning_row.physical_shape),
+        stable_tsv_field(planning_row.native_candidate_shape.as_deref().unwrap_or("none")),
+        stable_tsv_field(planning_row.native_candidate_shape_family.as_deref().unwrap_or("none")),
+        planning_row.outcome.as_str(),
+        stable_tsv_field(planning_row.reason_code.as_deref().unwrap_or("none")),
+        stable_tsv_field(&planning_row.post_native_plan_root),
+        planning_row.post_native_execution_path.as_str(),
+        planning_row.native_plan_fragment_count,
+        planning_row.host_datafusion_boundary_count,
+    );
+    eprintln!(
+        "[native_iceberg_smoke_report] stage=post_native_plan query_id={}\n{}",
+        query_id,
+        displayable(post_native_plan).indent(false)
+    );
+    let native_optimizer_rows = planning_row.native_optimizer.stable_rule_rows();
+    eprintln!(
+        "[native_iceberg_smoke_report] stage=native_optimizer_debug query_id={} rows={}",
+        query_id,
+        if native_optimizer_rows.is_empty() {
+            "none".to_string()
+        } else {
+            stable_tsv_field(&native_optimizer_rows.join(";"))
+        }
+    );
 }
 
 /// Registers a DataFusion object store for the S3 warehouse so footer-only

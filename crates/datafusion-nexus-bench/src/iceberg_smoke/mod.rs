@@ -21,7 +21,7 @@ use datafusion::{
     },
     execution::SessionStateBuilder,
     physical_plan::{
-        ExecutionPlan, collect,
+        ExecutionPlan, collect, displayable,
         metrics::{MetricValue, MetricsSet},
     },
     prelude::{SessionConfig, SessionContext},
@@ -54,7 +54,10 @@ use iceberg::{
 use nexus_query_engine::{ParquetReadStrategy, SourceSchedulerPolicy};
 use object_store::aws::AmazonS3Builder;
 
-use crate::{TPCDS_QUERIES, TPCDS_TABLES, TPCH_QUERIES, TPCH_TABLES, tpch_tuned_cpu_session_config};
+use crate::{
+    TPCDS_QUERIES, TPCDS_TABLES, TPCH_QUERIES, TPCH_TABLES, tpcds_native_report_session_config,
+    tpch_report_session_config, tpch_tuned_cpu_session_config,
+};
 
 type SmokeResult<T> = Result<T, Box<dyn StdError + Send + Sync>>;
 
@@ -130,6 +133,7 @@ const STREAM_TSV_ENV: &str = "NEXUS_ICEBERG_SMOKE_STREAM_TSV";
 const CONTINUE_ON_QUERY_ERROR_ENV: &str = "NEXUS_ICEBERG_SMOKE_CONTINUE_ON_QUERY_ERROR";
 const SMOKE_EXECUTION_MODE_ENV: &str = "NEXUS_ICEBERG_SMOKE_EXECUTION_MODE";
 const CPU_BASELINE_TIMEOUT_SECS_ENV: &str = "NEXUS_ICEBERG_SMOKE_CPU_BASELINE_TIMEOUT_SECS";
+const DEBUG_NATIVE_PLAN_ENV: &str = "NEXUS_ICEBERG_SMOKE_DEBUG_NATIVE_PLAN";
 const NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_ICEBERG_NATIVE_DEVICE_BUDGET_BYTES";
 const NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_SOURCE_CHUNK_BYTES";
 const NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_ICEBERG_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
@@ -180,7 +184,8 @@ mod tsv;
 pub use config::{
     CpuBaselineSessionProfile, CustomWorkload, IcebergNativeSmokeConfig, IcebergNativeSmokeFixture,
     NativeExecutionProfile, ObjectStoreStagingMode, SmokeQueryExecutionMode,
-    native_execution_config_for_profile_with_env, tpcds_glue_table_name, tpch_glue_table_name,
+    native_execution_config_for_profile_with_env, native_optimizer_options_for_profile,
+    native_session_config_for_profile, tpcds_glue_table_name, tpch_glue_table_name,
 };
 pub(crate) use config::{load_custom_query_manifest, native_session_context, table_ident_from_parts};
 pub(crate) use cpu_baseline::{

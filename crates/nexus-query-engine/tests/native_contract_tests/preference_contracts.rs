@@ -50,6 +50,24 @@ fn residual_join_over_tight_threshold_keeps_gpu_preferred() {
 }
 
 #[test]
+fn residual_join_can_use_profile_specific_row_group_threshold() {
+    let plan = residual_topk_join_plan(12);
+    let options = NativePlanPreferenceOptions {
+        max_small_selective_residual_join_row_groups: 24,
+        ..NativePlanPreferenceOptions::default()
+    };
+
+    let decision = native_plan_preference_decision(&plan, &options);
+
+    let NativePlanPreferenceDecision::CpuPreferred { reason, facts } = decision else {
+        panic!("profile-specific residual threshold should prefer CPU for a small low-byte residual join");
+    };
+    assert_eq!(reason, NativePlanCpuPreferenceReason::SmallSelectiveResidualJoin);
+    assert_eq!(facts.selected_row_groups, Some(24));
+    assert_eq!(facts.estimated_source_bytes, Some(2 * 1024 * 1024));
+}
+
+#[test]
 fn larger_topk_join_keeps_gpu_preferred() {
     let plan = topk_join_plan(254, 5_000_000, 512 * 1024 * 1024);
 

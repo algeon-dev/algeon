@@ -106,6 +106,32 @@ fn cpu_baseline_session_profiles_keep_native_smoke_and_tpch_cpu_configs_separate
 }
 
 #[test]
+fn iceberg_native_workload_session_profiles_preserve_native_scalar_subquery_contracts() {
+    let smoke = native_iceberg_smoke_report::native_session_config_for_profile(NativeExecutionProfile::Smoke);
+    assert!(
+        smoke.options().optimizer.enable_physical_uncorrelated_scalar_subquery,
+        "generic smoke profile keeps DataFusion's default physical scalar-subquery behavior"
+    );
+
+    let tpch = native_iceberg_smoke_report::native_session_config_for_profile(NativeExecutionProfile::TpchBenchmark);
+    assert!(
+        !tpch.options().optimizer.enable_physical_uncorrelated_scalar_subquery,
+        "TPC-H native Iceberg profile must use relationalized scalar subqueries for native admission"
+    );
+    assert!(!tpch.options().optimizer.repartition_joins);
+    assert_eq!(tpch.options().execution.target_partitions, 1);
+
+    let tpcds = native_iceberg_smoke_report::native_session_config_for_profile(NativeExecutionProfile::TpcdsBenchmark);
+    assert!(
+        !tpcds.options().optimizer.enable_physical_uncorrelated_scalar_subquery,
+        "TPC-DS native Iceberg profile must use relationalized scalar subqueries for native admission"
+    );
+    assert!(!tpcds.options().execution.collect_statistics);
+    assert!(!tpcds.options().optimizer.repartition_joins);
+    assert_eq!(tpcds.options().execution.target_partitions, 1);
+}
+
+#[test]
 fn tpch_native_execution_profile_uses_decision_grade_source_chunk_defaults() {
     let config = native_iceberg_smoke_report::native_execution_config_for_profile_with_env(
         NativeExecutionProfile::TpchBenchmark,
@@ -122,6 +148,40 @@ fn tpch_native_execution_profile_uses_decision_grade_source_chunk_defaults() {
     assert_eq!(max_source_chunk_bytes, 32 * 1024 * 1024 * 1024);
     assert_eq!(max_row_groups_per_chunk, 1024);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
+}
+
+#[test]
+fn iceberg_benchmark_native_optimizer_allows_source_reuse_up_to_profile_source_concurrency_budget() {
+    let config = native_iceberg_smoke_report::native_execution_config_for_profile_with_env(
+        NativeExecutionProfile::TpchBenchmark,
+        |_| None,
+    )
+    .unwrap();
+    let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } = config.memory_control_policy() else {
+        panic!("TPC-H Iceberg native profile must be bounded");
+    };
+    let options = native_iceberg_smoke_report::native_optimizer_options_for_profile(
+        NativeExecutionProfile::TpchBenchmark,
+        &config,
+    );
+
+    let max_source_reads_in_flight = config.source_scheduler_policy().max_source_reads_in_flight() as u64;
+    assert_eq!(
+        options.local_parquet_source_reuse.max_variant_selected_bytes,
+        max_source_chunk_bytes * max_source_reads_in_flight
+    );
+
+    let smoke_config = native_iceberg_smoke_report::native_execution_config_for_profile_with_env(
+        NativeExecutionProfile::Smoke,
+        |_| None,
+    )
+    .unwrap();
+    let smoke_options =
+        native_iceberg_smoke_report::native_optimizer_options_for_profile(NativeExecutionProfile::Smoke, &smoke_config);
+    assert_eq!(
+        smoke_options.local_parquet_source_reuse.max_variant_selected_bytes,
+        nexus_query_engine::LocalParquetSourceReuseOptions::default().max_variant_selected_bytes
+    );
 }
 
 #[test]

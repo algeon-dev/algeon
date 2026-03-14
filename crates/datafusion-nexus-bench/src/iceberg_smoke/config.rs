@@ -653,14 +653,42 @@ pub(crate) async fn native_session_context(
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
+    let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
     let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(
-        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred).with_native_execution_config(execution_config),
+        CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred)
+            .with_native_execution_config(execution_config)
+            .with_native_optimizer_options(native_optimizer_options),
     ));
     let state = SessionStateBuilder::new_with_default_features()
-        .with_config(smoke_session_config())
+        .with_config(native_session_config_for_profile(native_execution_profile))
         .with_cudf_native_rule(Arc::clone(&native_rule))
         .build();
     Ok((SessionContext::new_with_state(state), native_rule))
+}
+
+pub fn native_session_config_for_profile(profile: NativeExecutionProfile) -> SessionConfig {
+    match profile {
+        NativeExecutionProfile::Smoke => smoke_session_config(),
+        NativeExecutionProfile::TpchBenchmark => tpch_report_session_config(),
+        NativeExecutionProfile::TpcdsBenchmark => tpcds_native_report_session_config(),
+    }
+}
+
+pub fn native_optimizer_options_for_profile(
+    profile: NativeExecutionProfile,
+    execution_config: &NativeCudfExecutionConfig,
+) -> datafusion_nexus::NativeOptimizerOptions {
+    let mut options = datafusion_nexus::NativeOptimizerOptions::default();
+    if matches!(profile, NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark)
+        && let nexus_query_engine::MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } =
+            execution_config.memory_control_policy()
+    {
+        let max_source_reads_in_flight =
+            u64::try_from(execution_config.source_scheduler_policy().max_source_reads_in_flight()).unwrap_or(u64::MAX);
+        options.local_parquet_source_reuse.max_variant_selected_bytes =
+            max_source_chunk_bytes.saturating_mul(max_source_reads_in_flight);
+    }
+    options
 }
 
 async fn resolve_default_chain_source_storage_profile(

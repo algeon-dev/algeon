@@ -21,15 +21,25 @@
 
 #![cfg(all(feature = "iceberg", feature = "server"))]
 
-use std::sync::{Arc, Mutex};
+use std::{
+    fs::{self, File},
+    path::Path,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::{
+    array::Int64Array,
+    datatypes::{DataType, Field, Schema},
+    record_batch::RecordBatch,
+};
 use datafusion::{
     common::DataFusionError,
     execution::SessionStateBuilder,
+    parquet::arrow::ArrowWriter,
     physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{ExecutionPlan, displayable, sorts::sort_preserving_merge::SortPreservingMergeExec},
-    prelude::{SessionConfig, SessionContext},
+    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
@@ -294,6 +304,85 @@ async fn native_profile_iceberg_cte_aggregate_scalar_filter_plans_with_no_leftov
 }
 
 #[tokio::test]
+async fn native_profile_iceberg_physical_scalar_subquery_rewrites_children_with_no_leftover_leaf() {
+    let schema = iceberg_test_schema();
+    let mut session_config = apply_session_profile(SessionConfig::new(), ServerSessionProfile::Native);
+    session_config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = true;
+    let physical_plan = run_iceberg_sql_with_session_config(
+        &[
+            ("iceberg_t", native_admissible_scan_plan(Arc::clone(&schema))),
+            ("iceberg_u", native_admissible_scan_plan(schema)),
+        ],
+        "SELECT value, SUM(id) AS total_id \
+         FROM iceberg_t \
+         GROUP BY value \
+         HAVING SUM(id) > (SELECT SUM(id) FROM iceberg_u) \
+         ORDER BY total_id DESC",
+        session_config,
+    )
+    .await
+    .expect("native profile must rewrite table-format children under physical scalar subqueries");
+
+    assert!(
+        plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec"),
+        "test must exercise DataFusion's physical scalar-subquery wrapper"
+    );
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+}
+
+#[tokio::test]
+async fn native_profile_iceberg_scalar_subquery_scope_skips_mixed_regular_parquet_branch() {
+    let dir = unique_temp_dir("datafusion-nexus-iceberg-scalar-scope");
+    let parquet_path = dir.join("regular.parquet");
+    write_scalar_subquery_probe_parquet(&parquet_path);
+    let mut session_config = apply_session_profile(SessionConfig::new(), ServerSessionProfile::Native);
+    session_config.options_mut().optimizer.enable_physical_uncorrelated_scalar_subquery = true;
+    let physical_plan = run_mixed_iceberg_parquet_sql_with_session_config(
+        &[
+            ("iceberg_t", native_admissible_scan_plan(iceberg_test_schema())),
+            ("iceberg_u", native_admissible_scan_plan(iceberg_test_schema())),
+        ],
+        &[("regular_t", parquet_path.as_path())],
+        "SELECT value, SUM(id) AS total_id \
+         FROM iceberg_t \
+         GROUP BY value \
+         HAVING SUM(id) > ( \
+             SELECT SUM(x) FROM ( \
+                 SELECT id AS x FROM iceberg_u \
+                 UNION ALL \
+                 SELECT m00 AS x FROM regular_t \
+             ) mixed_scalar_input \
+         ) \
+         ORDER BY total_id DESC",
+        session_config,
+    )
+    .await
+    .expect("native profile must rewrite only table-format children under mixed physical scalar subqueries");
+
+    assert!(
+        plan_contains_operator(physical_plan.as_ref(), "ScalarSubqueryExec"),
+        "test must exercise DataFusion's physical scalar-subquery wrapper"
+    );
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_plan_contains_native_cudf_exec(physical_plan.as_ref());
+    let scalar_subquery = find_operator(physical_plan.as_ref(), "ScalarSubqueryExec")
+        .expect("physical scalar subquery should remain in the optimized plan");
+    let regular_parquet_subquery = scalar_subquery
+        .children()
+        .into_iter()
+        .find(|child| plan_contains_operator(child.as_ref(), "DataSourceExec"))
+        .expect("regular Parquet branch should remain under the mixed scalar-subquery child");
+    assert!(
+        plan_contains_operator(regular_parquet_subquery.as_ref(), "DataSourceExec"),
+        "regular Parquet branch should remain a DataFusion subtree even when its sibling table-format branch is rewritten:\n{}",
+        displayable(physical_plan.as_ref()).indent(false)
+    );
+
+    fs::remove_dir_all(dir).ok();
+}
+
+#[tokio::test]
 async fn cpu_style_profile_iceberg_group_by_order_by_rejected_by_leaf_guard() {
     // The CPU-style profile mirrors the pre-Milestone-2 audit scenario: DataFusion
     // is allowed to repartition sorts so an unbounded GROUP BY + ORDER BY plan
@@ -459,6 +548,35 @@ async fn run_iceberg_sql_with_session_config(
     df.create_physical_plan().await
 }
 
+async fn run_mixed_iceberg_parquet_sql_with_session_config(
+    iceberg_tables: &[(&str, TableFormatScanPlan)],
+    parquet_tables: &[(&str, &Path)],
+    sql: &str,
+    session_config: SessionConfig,
+) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+    let optimizer_config = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
+    let native_rule = Arc::new(CudfNativePhysicalOptimizerRule::new(optimizer_config));
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_config(session_config)
+        .with_cudf_native_rule(Arc::clone(&native_rule))
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+
+    for (name, plan) in iceberg_tables {
+        let schema = plan.logical_schema.clone();
+        let planner = Arc::new(RecordingPlanner::new(plan.clone()));
+        let provider = Arc::new(CudfIcebergTableProvider::from_table_format_planner(schema, planner));
+        ctx.register_table(*name, provider).expect("test should register a unique table name once");
+    }
+    for (name, path) in parquet_tables {
+        ctx.register_parquet(*name, path.to_str().expect("test path should be utf-8"), ParquetReadOptions::default())
+            .await?;
+    }
+
+    let df = ctx.sql(sql).await?;
+    df.create_physical_plan().await
+}
+
 fn assert_no_leftover_table_format_scan(plan: &dyn ExecutionPlan) {
     if find_table_format_scan(plan).is_some() {
         let rendered = displayable(plan).indent(false).to_string();
@@ -525,6 +643,13 @@ fn plan_contains_operator(plan: &dyn ExecutionPlan, operator: &str) -> bool {
     plan.name() == operator || plan.children().into_iter().any(|child| plan_contains_operator(child.as_ref(), operator))
 }
 
+fn find_operator<'a>(plan: &'a dyn ExecutionPlan, operator: &str) -> Option<&'a dyn ExecutionPlan> {
+    if plan.name() == operator {
+        return Some(plan);
+    }
+    plan.children().into_iter().find_map(|child| find_operator(child.as_ref(), operator))
+}
+
 struct NativeRootDescent {
     ancestor_names: Vec<String>,
 }
@@ -575,6 +700,22 @@ fn collect_facts(error: &datafusion_nexus::Error) -> std::collections::BTreeMap<
 
 fn iceberg_test_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false), Field::new("value", DataType::Utf8, true)]))
+}
+
+fn write_scalar_subquery_probe_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new("m00", DataType::Int64, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int64Array::from(vec![1_i64, 2, 3]))]).unwrap();
+    let file = File::create(path).unwrap();
+    let mut writer = ArrowWriter::try_new(file, schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+    let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
+    fs::create_dir_all(&path).unwrap();
+    path
 }
 
 fn native_admissible_scan_plan(schema: Arc<Schema>) -> TableFormatScanPlan {
