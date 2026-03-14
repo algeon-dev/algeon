@@ -314,7 +314,7 @@ fn output_schema_override_data_type_matches_source(source_type: &ArrowDataType, 
 
 fn source_column_ref_is_available(source: &LocalParquetSource, source_ref: SourceColumnRef) -> bool {
     match source_ref {
-        SourceColumnRef::File(index) => source.read_column_file_indices.iter().any(|read_index| *read_index == index),
+        SourceColumnRef::File(index) => source.read_column_file_indices.contains(&index),
         SourceColumnRef::Partition(index) => index < source.partition_columns.len(),
         SourceColumnRef::MissingNull(index) => index < source.missing_columns.len(),
     }

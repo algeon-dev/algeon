@@ -42,6 +42,7 @@ use scheduler::*;
 use stages::*;
 use stream::*;
 
+// Deferred Parquet leaf work that compiled join tasks can materialize in chunks.
 #[derive(Clone)]
 pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     source: LocalParquetSource,
@@ -54,6 +55,7 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourceStream {
     min_retry_chunk_row_groups: usize,
 }
 
+// In-flight source read parked until its leaf resource is consumed or cached.
 pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourcePrefetch {
     source: LocalParquetSource,
     node_id: NodeId,
@@ -61,6 +63,7 @@ pub(in crate::exec::bounded) struct BoundedJoinLeafLocalParquetSourcePrefetch {
     max_attempts: usize,
 }
 
+// Post-decode work that stays with the leaf stream because it cannot all be pushed into Parquet.
 #[derive(Clone)]
 enum BoundedJoinLeafSourceStreamStage {
     Filter {
@@ -74,6 +77,7 @@ enum BoundedJoinLeafSourceStreamStage {
     },
 }
 
+// Route/filter pair retained for reader-predicate and post-decode dynamic-filter metrics.
 #[derive(Clone)]
 struct BoundedJoinLeafSourceStreamDynamicFilterStage {
     route: DynamicFilterRoute,

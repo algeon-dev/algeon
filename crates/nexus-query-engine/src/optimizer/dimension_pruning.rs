@@ -1364,6 +1364,7 @@ fn scalar_to_f64(value: Scalar) -> Option<f64> {
     }
 }
 
+// Tokenized LIKE patterns let escaped literals and collapsed '%' runs share one matcher.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LikeToken {
     Literal(char),

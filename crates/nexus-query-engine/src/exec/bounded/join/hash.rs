@@ -14,6 +14,7 @@ use crate::{
     exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
 };
 
+// Reusable build artifact plus the reservation that keeps its hash table resident.
 pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
     build_side: JoinSide,
     probe_side: JoinSide,
@@ -30,6 +31,7 @@ pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {
     timer: Instant,
 }
 
+// Probe indices and reservations captured before materializing root hash-join output.
 pub(in crate::exec::bounded) struct BoundedRootHashJoinProbeState {
     build: BoundedRootHashJoinBuildState,
     probe: BoundedJoinSideFrame,

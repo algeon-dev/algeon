@@ -238,7 +238,7 @@ pub(super) fn aggregate_is_count_star_only(aggregate: &AggregateExec) -> bool {
     let [arg] = expressions.as_slice() else {
         return false;
     };
-    if !arg.downcast_ref::<Literal>().is_some_and(|literal| !literal.value().is_null()) {
+    if arg.downcast_ref::<Literal>().is_none_or(|literal| literal.value().is_null()) {
         return false;
     }
     let mut required_columns = BTreeSet::new();

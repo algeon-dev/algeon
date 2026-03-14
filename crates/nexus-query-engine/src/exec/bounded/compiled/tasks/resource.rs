@@ -6,7 +6,7 @@ pub struct CompiledGpuResource {
     pub(super) payload: CompiledGpuResourcePayload,
 }
 
-// Resource-table variants with different ownership and consumption contracts.
+// Payloads encode which tasks may consume a value and whether it owns a live reservation.
 pub(super) enum CompiledGpuResourcePayload {
     ResidentFrame { frame: Box<ResidentGpuFrame>, applied_limit: Option<NodeId> },
     ResidentFrameStream(ResidentFrameStreamPayload),

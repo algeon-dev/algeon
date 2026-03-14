@@ -1293,15 +1293,27 @@ fn table_format_source_contract_schema(
 ) -> Result<SchemaRef, FallbackReason> {
     let mut fields = Vec::new();
     let mut seen = BTreeSet::new();
-    for index in &requirements.read_column_file_indices {
-        let field = footer_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
-        if seen.insert(field.name().clone()) {
-            fields.push(table_format_file_read_contract_field(field));
-        }
-    }
+    let read_fields = requirements
+        .read_column_file_indices
+        .iter()
+        .map(|index| {
+            let field = footer_schema.fields().get(*index).ok_or(FallbackReason::NativeSourceSchemaMapping)?;
+            Ok((field.name().clone(), table_format_file_read_contract_field(field)))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     for field in output_schema.fields() {
         if seen.insert(field.name().clone()) {
-            fields.push(field.as_ref().clone());
+            let contract_field = read_fields
+                .iter()
+                .find_map(|(name, read_field)| (name == field.name()).then_some(read_field))
+                .cloned()
+                .unwrap_or_else(|| field.as_ref().clone());
+            fields.push(contract_field);
+        }
+    }
+    for (name, field) in read_fields {
+        if seen.insert(name) {
+            fields.push(field);
         }
     }
     Ok(Arc::new(Schema::new(fields)))
