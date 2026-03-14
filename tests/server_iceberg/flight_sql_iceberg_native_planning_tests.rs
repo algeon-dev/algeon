@@ -860,10 +860,10 @@ impl RecordingPlanner {
 }
 
 impl TableFormatPlanner for RecordingPlanner {
-    fn plan_scan<'a>(
-        &'a self,
+    fn plan_scan(
+        &self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
         let scan_limit = request.scan_limit;
         let high_branch_pruned = self.plan.snapshot_id.as_deref() == Some("high-empty")
             && matches!(

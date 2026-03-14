@@ -220,18 +220,18 @@ pub enum TableFormatLiteral {
 /// URLs, and unsupported features should map to stable fallback reasons.
 pub trait TableFormatPlanner {
     /// Resolves metadata into scan facts without reading table data.
-    fn plan_scan<'a>(&'a self, request: TableFormatScanRequest) -> BoxFuture<'a, Result<TableFormatScanPlan>>;
+    fn plan_scan(&self, request: TableFormatScanRequest) -> BoxFuture<'_, Result<TableFormatScanPlan>>;
 
     /// Resolves metadata with a caller-owned wall-clock deadline.
     ///
     /// The default implementation preserves existing planner behavior. Format
     /// planners with long synchronous or ready-loop sections should override
     /// this method and check the deadline at natural cancellation points.
-    fn plan_scan_with_deadline<'a>(
-        &'a self,
+    fn plan_scan_with_deadline(
+        &self,
         request: TableFormatScanRequest,
         _deadline: TableFormatPlanningDeadline,
-    ) -> BoxFuture<'a, Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, Result<TableFormatScanPlan>> {
         self.plan_scan(request)
     }
 

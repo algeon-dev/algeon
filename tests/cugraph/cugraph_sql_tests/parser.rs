@@ -39,8 +39,8 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     assert_eq!(spec.src_col, "src");
     assert_eq!(spec.dst_col, "dst");
     assert_eq!(spec.weight_col, None);
-    assert_eq!(spec.graph_options.directed, true);
-    assert_eq!(spec.graph_options.renumber, true);
+    assert!(spec.graph_options.directed);
+    assert!(spec.graph_options.renumber);
     assert_eq!(spec.graph_options.construction_policy, CugraphGraphConstructionPolicy::PythonCugraph);
 
     let spec = parse_cugraph_algorithm_spec(
@@ -59,20 +59,20 @@ fn cugraph_sql_planning_parses_defaults_explicit_columns_and_null_weight() {
     assert_eq!(spec.src_col, "from_id");
     assert_eq!(spec.dst_col, "to_id");
     assert_eq!(spec.weight_col, None);
-    assert_eq!(spec.graph_options.directed, false);
-    assert_eq!(spec.graph_options.renumber, false);
+    assert!(!spec.graph_options.directed);
+    assert!(!spec.graph_options.renumber);
 
     // WCC must default to directed=false since it requires a symmetric graph.
     let spec =
         parse_cugraph_algorithm_spec(CugraphAlgorithm::WeaklyConnectedComponents, &[lit("edges")], &config).unwrap();
-    assert_eq!(spec.graph_options.directed, false, "WCC must default to directed=false");
+    assert!(!spec.graph_options.directed, "WCC must default to directed=false");
 
     // triangle_count_all / core_number / k_core must also default to
     // directed=false so their parity oracles (which Python cuGraph forces
     // undirected) are computed under the same semantics as the adapter.
     for algorithm in [CugraphAlgorithm::TriangleCountAll, CugraphAlgorithm::CoreNumber, CugraphAlgorithm::KCore] {
         let spec = parse_cugraph_algorithm_spec(algorithm, &[lit("edges")], &config).unwrap();
-        assert_eq!(spec.graph_options.directed, false, "{} must default to directed=false", algorithm.function_name());
+        assert!(!spec.graph_options.directed, "{} must default to directed=false", algorithm.function_name());
     }
 }
 
@@ -163,7 +163,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     };
     assert_eq!(params.output.mode, CugraphBfsOutputMode::Normalized);
     assert!(!params.output.return_target_info);
-    assert_eq!(spec.output_schema.field_with_name("distance").unwrap().is_nullable(), true);
+    assert!(spec.output_schema.field_with_name("distance").unwrap().is_nullable());
     assert!(spec.output_schema.field_with_name("reachable").is_ok());
 
     let spec = parse_cugraph_algorithm_spec(
@@ -187,7 +187,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(params.output.mode, CugraphBfsOutputMode::Normalized);
     assert!(params.output.return_target_info);
     assert!(spec.output_schema.field_with_name("target_found").is_ok());
-    assert_eq!(spec.output_schema.field_with_name("target_distance").unwrap().is_nullable(), true);
+    assert!(spec.output_schema.field_with_name("target_distance").unwrap().is_nullable());
 
     let spec = parse_cugraph_algorithm_spec(
         CugraphAlgorithm::Bfs,

@@ -2212,7 +2212,7 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
         assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "old_status");
-        assert_eq!(groups[0].field_id_bindings[0][0].nullable, false);
+        assert!(!groups[0].field_id_bindings[0][0].nullable);
     }
 
     #[test]
@@ -2637,8 +2637,7 @@ mod tests {
         let mut builder = NativeQueryPlanBuilder::new();
 
         let error = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
-            .err()
-            .expect("field-id mismatch must reject COUNT(*) fallback carrier column");
+            .expect_err("field-id mismatch must reject COUNT(*) fallback carrier column");
 
         assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
         fs::remove_dir_all(dir).ok();
@@ -2654,8 +2653,7 @@ mod tests {
         let mut builder = NativeQueryPlanBuilder::new();
 
         let error = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
-            .err()
-            .expect("Iceberg COUNT(*) fallback must not synthesize a name-based carrier column");
+            .expect_err("Iceberg COUNT(*) fallback must not synthesize a name-based carrier column");
 
         assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
         fs::remove_dir_all(dir).ok();
@@ -2671,8 +2669,7 @@ mod tests {
         let mut builder = NativeQueryPlanBuilder::new();
 
         let error = lower_table_format_count_star_fallback_source_for_plan(&scan_plan, &mut builder)
-            .err()
-            .expect("COUNT(*) fallback must not treat missing/null materialization as row-presence proof");
+            .expect_err("COUNT(*) fallback must not treat missing/null materialization as row-presence proof");
 
         assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
         fs::remove_dir_all(dir).ok();
@@ -2772,8 +2769,7 @@ mod tests {
         let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
 
         let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
-            .err()
-            .expect("row-presence carrier must remain backed by a physical file read");
+            .expect_err("row-presence carrier must remain backed by a physical file read");
 
         assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
         fs::remove_dir_all(dir).ok();
@@ -2795,8 +2791,7 @@ mod tests {
             None,
             &RequiredFields::only(BTreeSet::new()),
         )
-        .err()
-        .expect("Iceberg empty required fields must not synthesize a name-based carrier column");
+        .expect_err("Iceberg empty required fields must not synthesize a name-based carrier column");
 
         assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
         fs::remove_dir_all(dir).ok();

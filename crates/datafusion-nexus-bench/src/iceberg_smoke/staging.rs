@@ -76,10 +76,10 @@ impl StagingTableFormatPlanner {
 }
 
 impl TableFormatPlanner for StagingTableFormatPlanner {
-    fn plan_scan<'a>(
-        &'a self,
+    fn plan_scan(
+        &self,
         request: TableFormatScanRequest,
-    ) -> BoxFuture<'a, datafusion_nexus::Result<TableFormatScanPlan>> {
+    ) -> BoxFuture<'_, datafusion_nexus::Result<TableFormatScanPlan>> {
         Box::pin(async move {
             eprintln!(
                 "[native_iceberg_smoke_report] stage=table_format_scan_planning_start table_name={} staging_mode={}",

@@ -1,71 +1,60 @@
 #[test]
 fn strict_admission_rejects_root_full_sort_join_aggregate_with_local_envelope_reason() {
-    for (label, plan, expected_subcontract, generic_single_join_overlap) in [(
-        "unproven keyless/cross full-sort",
-        root_full_sort_keyless_join_grouped_aggregate_plan(),
-        "keyless_or_cross_join",
-        false,
-    )] {
-        let analysis = plan.capability_analysis();
+    let label = "unproven keyless/cross full-sort";
+    let plan = root_full_sort_keyless_join_grouped_aggregate_plan();
+    let expected_subcontract = "keyless_or_cross_join";
+    let analysis = plan.capability_analysis();
 
-        assert!(!analysis.admits_root_join(), "{label}");
-        assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{label}");
-        assert!(!analysis.admits_root_full_sort_join_aggregate_pipeline(), "{label}");
-        assert_eq!(
-            analysis.root_full_sort_join_aggregate_admission.rejection_reason(),
-            Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract"),
-            "{label}"
-        );
-        if generic_single_join_overlap {
-            assert_eq!(
-                analysis.single_join_post_root_pipeline_admission,
-                CapabilityDecision::Satisfied,
-                "{label}: fixture must pin the overlap with generic single-join post-root admission"
-            );
-        }
+    assert!(!analysis.admits_root_join(), "{label}");
+    assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{label}");
+    assert!(!analysis.admits_root_full_sort_join_aggregate_pipeline(), "{label}");
+    assert_eq!(
+        analysis.root_full_sort_join_aggregate_admission.rejection_reason(),
+        Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract"),
+        "{label}"
+    );
 
-        let projection = analysis.first_rejection_projection().unwrap_or_else(|| {
-            panic!(
-                "{label}: full-sort envelope should project locally; admission={:?}",
-                analysis.strict_bounded_envelope_admission()
+    let projection = analysis.first_rejection_projection().unwrap_or_else(|| {
+        panic!(
+            "{label}: full-sort envelope should project locally; admission={:?}",
+            analysis.strict_bounded_envelope_admission()
+        )
+    });
+    assert!(
+        matches!(
+            projection.owner,
+            nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
+                "root_full_sort_join_aggregate_admission"
             )
-        });
-        assert!(
-            matches!(
-                projection.owner,
-                nexus_query_engine::capability::CapabilityRejectionOwner::Admission(
-                    "root_full_sort_join_aggregate_admission"
-                )
-            ),
-            "{label}"
-        );
-        assert_eq!(projection.memory_boundary, "admission_capability", "{label}");
-        assert_eq!(projection.category.as_str(), "missing_subgraph_invariant", "{label}");
-        assert_eq!(projection.reason, "root_full_sort_join_aggregate_rejects_unsupported_subcontract", "{label}");
-        assert_eq!(projection.facts.get("subcontract").map(String::as_str), Some(expected_subcontract), "{label}");
-        assert_ne!(
-            projection.reason, "root_join_admission_requires_sink_root_join",
-            "{label}: root full-sort candidates must not fall through to the generic root-join rejection"
-        );
+        ),
+        "{label}"
+    );
+    assert_eq!(projection.memory_boundary, "admission_capability", "{label}");
+    assert_eq!(projection.category.as_str(), "missing_subgraph_invariant", "{label}");
+    assert_eq!(projection.reason, "root_full_sort_join_aggregate_rejects_unsupported_subcontract", "{label}");
+    assert_eq!(projection.facts.get("subcontract").map(String::as_str), Some(expected_subcontract), "{label}");
+    assert_ne!(
+        projection.reason, "root_join_admission_requires_sink_root_join",
+        "{label}: root full-sort candidates must not fall through to the generic root-join rejection"
+    );
 
-        assert!(
-            strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
-            "{label}: Phase 1 owns and rejects the full-sort shape before whole-native execution"
-        );
+    assert!(
+        strict_bounded_pipeline_admission(&plan).expect("strict admission should not fail").is_none(),
+        "{label}: Phase 1 owns and rejects the full-sort shape before whole-native execution"
+    );
 
-        let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
-            .expect("rejected full-sort envelope should still produce a contract report");
-        let blocking_row = report
-            .gate_rows()
-            .iter()
-            .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
-            .expect("strict report should preserve the full-sort envelope rejection");
-        assert_eq!(
-            blocking_row.required_contract, "root_full_sort_join_aggregate_rejects_unsupported_subcontract",
-            "{label}"
-        );
-        assert_eq!(blocking_row.memory_boundary, "admission_capability", "{label}");
-    }
+    let report = StrictBoundedContractReport::from_capability_analysis(&analysis)
+        .expect("rejected full-sort envelope should still produce a contract report");
+    let blocking_row = report
+        .gate_rows()
+        .iter()
+        .find(|row| row.contract_status == ContractStatus::RejectedByCapability)
+        .expect("strict report should preserve the full-sort envelope rejection");
+    assert_eq!(
+        blocking_row.required_contract, "root_full_sort_join_aggregate_rejects_unsupported_subcontract",
+        "{label}"
+    );
+    assert_eq!(blocking_row.memory_boundary, "admission_capability", "{label}");
 }
 
 #[test]

@@ -379,8 +379,7 @@ fn filtered_global_strategy_rejects_large_distinct_state() {
         8 * 1024 * 1024 * 1024,
         AggregateExecutionStage::Single,
     )
-    .err()
-    .expect("large unsupported filtered state should be rejected");
+    .expect_err("large unsupported filtered state should be rejected");
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
@@ -413,8 +412,7 @@ fn filtered_global_strategy_rejects_large_statistical_state() {
         8 * 1024 * 1024 * 1024,
         AggregateExecutionStage::Single,
     )
-    .err()
-    .expect("large unsupported statistical filtered state should be rejected");
+    .expect_err("large unsupported statistical filtered state should be rejected");
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("global"));
@@ -545,8 +543,7 @@ fn filtered_grouped_strategy_rejects_large_nunique_state() {
         8 * 1024 * 1024 * 1024,
         AggregateExecutionStage::Single,
     )
-    .err()
-    .expect("large unsupported filtered grouped state should be rejected");
+    .expect_err("large unsupported filtered grouped state should be rejected");
 
     assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("grouped"));

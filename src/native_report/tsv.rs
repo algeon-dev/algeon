@@ -219,6 +219,78 @@ pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) ->
     format_stable_nested_metric_rows(rows, NativeGraphRuntimeMetricRow::to_stable_kv_row)
 }
 
+pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
+    format_stable_nested_metric_rows(rows, NativeTaskOperatorMetricRow::to_stable_kv_row)
+}
+
+pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
+    format_stable_nested_metric_rows(rows, NativeTaskRuntimeMetricRow::to_stable_kv_row)
+}
+
+pub(super) fn write_workload_dataset_metadata(output: &mut String, metadata: Option<&WorkloadDatasetMetadata>) {
+    let Some(metadata) = metadata else {
+        return;
+    };
+
+    let _ = writeln!(output, "# workload={}", metadata.workload);
+    let _ = writeln!(output, "# dataset_root={}", metadata.root.display());
+    let _ =
+        writeln!(output, "# dataset_scale_factor={}", metadata.scale_factor.as_deref().map_or("none", |value| value));
+    let _ = writeln!(output, "# dataset_provenance={}", metadata_value(&metadata.provenance));
+    let _ = writeln!(output, "# dataset_generation_command={}", metadata_value(&metadata.generation_command));
+    let _ = writeln!(output, "# dataset_table_count={}", metadata.table_count);
+    let _ = writeln!(output, "# dataset_file_count={}", metadata.file_count);
+    let _ = writeln!(output, "# dataset_total_rows={}", metadata.total_rows);
+    let _ = writeln!(output, "# dataset_total_bytes={}", metadata.total_bytes);
+    let _ = writeln!(output, "# dataset_metadata_fingerprint={}", metadata.metadata_fingerprint);
+    let _ = writeln!(
+        output,
+        "# dataset_content_fingerprint={}",
+        metadata.content_fingerprint.as_deref().unwrap_or("not_computed")
+    );
+    let _ = writeln!(output, "# dataset_table_file_counts={}", metadata.table_file_counts);
+    let _ = writeln!(output, "# dataset_table_row_counts={}", metadata.table_row_counts);
+    let _ = writeln!(output, "# dataset_table_byte_sizes={}", metadata.table_byte_sizes);
+    let _ = writeln!(output, "# dataset_table_row_group_counts={}", metadata.table_row_group_counts);
+}
+
+fn metadata_value(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+pub(super) fn stable_tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r'], " ")
+}
+
+fn stable_nested_tsv_field(value: &str) -> String {
+    value.replace(['\t', '\n', '\r', '|'], " ")
+}
+
+fn format_stable_nested_metric_rows<T>(rows: &[T], stable_row: impl Fn(&T) -> String) -> String {
+    if rows.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut rows = rows.iter().map(stable_row).collect::<Vec<_>>();
+    rows.sort();
+    rows.into_iter().map(|row| stable_nested_tsv_field(&row)).collect::<Vec<_>>().join("|")
+}
+
+pub(super) fn metric_count(metrics: &MetricsSet, name: &str) -> usize {
+    metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
+}
+
+pub(super) fn optional_observed_metric_count(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    let observed_name = format!("{name}_observed");
+    let observed = metrics.sum_by_name(&observed_name).map(|value| value.as_usize()).unwrap_or(0);
+    (observed > 0).then(|| metric_count(metrics, name))
+}
+
+pub(super) fn metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<usize> {
+    let nanos = metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0);
+    (nanos > 0).then_some(nanos)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,76 +402,4 @@ mod tests {
             .contains("join|1")
         );
     }
-}
-
-pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
-    format_stable_nested_metric_rows(rows, NativeTaskOperatorMetricRow::to_stable_kv_row)
-}
-
-pub(super) fn format_task_runtime_rows(rows: &[NativeTaskRuntimeMetricRow]) -> String {
-    format_stable_nested_metric_rows(rows, NativeTaskRuntimeMetricRow::to_stable_kv_row)
-}
-
-pub(super) fn write_workload_dataset_metadata(output: &mut String, metadata: Option<&WorkloadDatasetMetadata>) {
-    let Some(metadata) = metadata else {
-        return;
-    };
-
-    let _ = writeln!(output, "# workload={}", metadata.workload);
-    let _ = writeln!(output, "# dataset_root={}", metadata.root.display());
-    let _ =
-        writeln!(output, "# dataset_scale_factor={}", metadata.scale_factor.as_deref().map_or("none", |value| value));
-    let _ = writeln!(output, "# dataset_provenance={}", metadata_value(&metadata.provenance));
-    let _ = writeln!(output, "# dataset_generation_command={}", metadata_value(&metadata.generation_command));
-    let _ = writeln!(output, "# dataset_table_count={}", metadata.table_count);
-    let _ = writeln!(output, "# dataset_file_count={}", metadata.file_count);
-    let _ = writeln!(output, "# dataset_total_rows={}", metadata.total_rows);
-    let _ = writeln!(output, "# dataset_total_bytes={}", metadata.total_bytes);
-    let _ = writeln!(output, "# dataset_metadata_fingerprint={}", metadata.metadata_fingerprint);
-    let _ = writeln!(
-        output,
-        "# dataset_content_fingerprint={}",
-        metadata.content_fingerprint.as_deref().unwrap_or("not_computed")
-    );
-    let _ = writeln!(output, "# dataset_table_file_counts={}", metadata.table_file_counts);
-    let _ = writeln!(output, "# dataset_table_row_counts={}", metadata.table_row_counts);
-    let _ = writeln!(output, "# dataset_table_byte_sizes={}", metadata.table_byte_sizes);
-    let _ = writeln!(output, "# dataset_table_row_group_counts={}", metadata.table_row_group_counts);
-}
-
-fn metadata_value(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-pub(super) fn stable_tsv_field(value: &str) -> String {
-    value.replace(['\t', '\n', '\r'], " ")
-}
-
-fn stable_nested_tsv_field(value: &str) -> String {
-    value.replace(['\t', '\n', '\r', '|'], " ")
-}
-
-fn format_stable_nested_metric_rows<T>(rows: &[T], stable_row: impl Fn(&T) -> String) -> String {
-    if rows.is_empty() {
-        return "none".to_string();
-    }
-
-    let mut rows = rows.iter().map(stable_row).collect::<Vec<_>>();
-    rows.sort();
-    rows.into_iter().map(|row| stable_nested_tsv_field(&row)).collect::<Vec<_>>().join("|")
-}
-
-pub(super) fn metric_count(metrics: &MetricsSet, name: &str) -> usize {
-    metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0)
-}
-
-pub(super) fn optional_observed_metric_count(metrics: &MetricsSet, name: &str) -> Option<usize> {
-    let observed_name = format!("{name}_observed");
-    let observed = metrics.sum_by_name(&observed_name).map(|value| value.as_usize()).unwrap_or(0);
-    (observed > 0).then(|| metric_count(metrics, name))
-}
-
-pub(super) fn metric_duration_nanos(metrics: &MetricsSet, name: &str) -> Option<usize> {
-    let nanos = metrics.sum_by_name(name).map(|value| value.as_usize()).unwrap_or(0);
-    (nanos > 0).then_some(nanos)
 }

@@ -1,5 +1,7 @@
 use super::*;
 
+type RollupRankRow = (Option<String>, Option<String>, Option<String>, u32, i64, u64);
+
 #[test]
 fn bounded_native_query_executes_root_hash_join_under_aggregate_with_ordered_reservations() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
@@ -663,7 +665,7 @@ fn bounded_native_query_executes_rollup_rank_topk_after_aggregate_join_pushdown_
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn rollup_rank_rows(batch: &RecordBatch) -> Vec<(Option<String>, Option<String>, Option<String>, u32, i64, u64)> {
+fn rollup_rank_rows(batch: &RecordBatch) -> Vec<RollupRankRow> {
     let categories = batch.column(0).as_any().downcast_ref::<StringArray>().unwrap();
     let classes = batch.column(1).as_any().downcast_ref::<StringArray>().unwrap();
     let brands = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();

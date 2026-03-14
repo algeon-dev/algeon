@@ -149,7 +149,6 @@ pub(super) fn limit_root_projected_global_hash_join_aggregate_with_sibling_plan(
 }
 
 #[allow(dead_code)]
-
 pub(super) fn projection_root_global_limit_distinct_join_aggregate_plan() -> QueryPlan {
     projection_root_global_limit_join_aggregate_plan_with_variant(ProjectionGlobalLimitPlanVariant::Distinct)
 }

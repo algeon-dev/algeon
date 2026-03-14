@@ -184,15 +184,15 @@ async fn glue_local_backend_and_provider_discover_table() -> E2eResult<()> {
 async fn validate_provider(config: &GlueIcebergCatalogConfig, namespace: &NamespaceIdent) -> E2eResult<()> {
     let backend: Arc<dyn IcebergCatalogBackend> =
         Arc::new(GlueIcebergCatalogBackend::from_config(config.clone(), local_env).await?);
+    let namespace_name = namespace.to_string();
     let provider = build_scoped_catalog_provider_from_backend(
         Arc::clone(&backend),
         "glue",
-        &namespace.to_string(),
+        &namespace_name,
         IcebergProviderKind::Gpu,
     )
     .await?;
 
-    let namespace_name = namespace.to_string();
     let schema_names = provider.schema_names();
     if schema_names != vec![namespace_name.clone()] {
         return Err(format!("expected schema {namespace_name:?}, got {schema_names:?}").into());
@@ -207,5 +207,5 @@ async fn validate_provider(config: &GlueIcebergCatalogConfig, namespace: &Namesp
 
 async fn cleanup_tiny_table(catalog: &iceberg_catalog_glue::GlueCatalog, namespace: &NamespaceIdent, table: &str) {
     let _ = catalog.drop_table(&iceberg::TableIdent::new(namespace.clone(), table.to_string())).await;
-    let _ = catalog.drop_namespace(&namespace).await;
+    let _ = catalog.drop_namespace(namespace).await;
 }

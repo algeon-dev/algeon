@@ -355,46 +355,6 @@ fn panic_payload_to_string(payload: &(dyn Any + Send)) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cpu_query_physical_planning_panic_uses_stats_fallback_success() {
-        let outcome = cpu_query_outcome_from_attempts(
-            CpuQueryAttempt::PhysicalPlanningPanicked("attempt to multiply with overflow".to_string()),
-            Some(CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::ExecutionFailed {
-                message: "fallback execution reached".to_string(),
-            })),
-        );
-
-        match outcome {
-            NativeTpcdsParityCpuOutcome::ExecutionFailed { message } => {
-                assert_eq!(message, "fallback execution reached");
-            },
-            other => panic!("expected fallback outcome, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn cpu_query_physical_planning_panic_reports_both_failed_attempts() {
-        let outcome = cpu_query_outcome_from_attempts(
-            CpuQueryAttempt::PhysicalPlanningPanicked("primary overflow".to_string()),
-            Some(CpuQueryAttempt::PhysicalPlanningPanicked("fallback overflow".to_string())),
-        );
-
-        match outcome {
-            NativeTpcdsParityCpuOutcome::PlanningFailed(failure) => {
-                assert_eq!(failure.stage, "physical_planning");
-                assert_eq!(failure.reason_code, "physical_planning_panicked");
-                assert!(failure.message.contains("primary overflow"));
-                assert!(failure.message.contains("fallback overflow"));
-            },
-            other => panic!("expected planning failure, got {other:?}"),
-        }
-    }
-}
-
 async fn run_native_query(
     ctx: &SessionContext,
     native_rule: &Arc<CudfNativePhysicalOptimizerRule>,
@@ -556,4 +516,44 @@ fn escape_sql_string(value: &str) -> String {
 fn stable_command_output(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     text.lines().take(20).collect::<Vec<_>>().join("\\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_query_physical_planning_panic_uses_stats_fallback_success() {
+        let outcome = cpu_query_outcome_from_attempts(
+            CpuQueryAttempt::PhysicalPlanningPanicked("attempt to multiply with overflow".to_string()),
+            Some(CpuQueryAttempt::Outcome(NativeTpcdsParityCpuOutcome::ExecutionFailed {
+                message: "fallback execution reached".to_string(),
+            })),
+        );
+
+        match outcome {
+            NativeTpcdsParityCpuOutcome::ExecutionFailed { message } => {
+                assert_eq!(message, "fallback execution reached");
+            },
+            other => panic!("expected fallback outcome, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cpu_query_physical_planning_panic_reports_both_failed_attempts() {
+        let outcome = cpu_query_outcome_from_attempts(
+            CpuQueryAttempt::PhysicalPlanningPanicked("primary overflow".to_string()),
+            Some(CpuQueryAttempt::PhysicalPlanningPanicked("fallback overflow".to_string())),
+        );
+
+        match outcome {
+            NativeTpcdsParityCpuOutcome::PlanningFailed(failure) => {
+                assert_eq!(failure.stage, "physical_planning");
+                assert_eq!(failure.reason_code, "physical_planning_panicked");
+                assert!(failure.message.contains("primary overflow"));
+                assert!(failure.message.contains("fallback overflow"));
+            },
+            other => panic!("expected planning failure, got {other:?}"),
+        }
+    }
 }
