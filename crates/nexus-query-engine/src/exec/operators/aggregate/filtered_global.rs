@@ -25,19 +25,14 @@ pub(super) struct FilteredGlobalAggregateStrategyDecision {
 }
 
 #[derive(Debug, Clone, Default)]
-struct FilteredGlobalSegmentRuntimeStats {
-    chunk_count: u64,
-    segment_count: u64,
-    max_segment_rows: u64,
-    state_rows_merged: u64,
-    observed_temporary_peak_bytes: u64,
-    observed_retained_peak_bytes: u64,
-    unresolved_contracts: BTreeSet<String>,
-}
-
-struct SegmentedFilteredGlobalPartialState {
-    frame: GpuDataFrame,
-    stats: FilteredGlobalSegmentRuntimeStats,
+pub(super) struct FilteredGlobalSegmentRuntimeStats {
+    pub(super) chunk_count: u64,
+    pub(super) segment_count: u64,
+    pub(super) max_segment_rows: u64,
+    pub(super) state_rows_merged: u64,
+    pub(super) observed_temporary_peak_bytes: u64,
+    pub(super) observed_retained_peak_bytes: u64,
+    pub(super) unresolved_contracts: BTreeSet<String>,
 }
 
 struct FilteredGlobalPreparedChunk {
@@ -164,53 +159,78 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     let selection_elapsed = Duration::ZERO;
     let budget_event_start = metrics.budgeted_execution_events.len();
     let timer = Instant::now();
-    let state_schema = partial_global_aggregate_output_schema(spec, input_schema, output_schema)?;
-    let partial = execute_segmented_filtered_global_partial_state(
-        context,
-        spec,
-        input_schema,
-        input,
-        output_schema,
-        &state_schema,
-        token,
-        &decision,
-        metrics,
-    )?;
-    let partial_state = partial.frame;
-    let mut stats = partial.stats;
-    let partial_rows = partial_state.num_rows() as u64;
-    let merge_spec = final_global_aggregate_spec(spec);
-    let merge_schema = final_global_aggregate_state_output_schema(spec, input_schema, output_schema)?;
-    let mut output =
-        execute_global_aggregate_with_budget(context, &merge_spec, partial_state, &merge_schema, token, metrics)?
-            .into_frame();
-    output = finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?;
-    output = output
-        .select(output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>())
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.filtered_global_aggregate.select",
-                "failed to select segmented filtered global aggregate output columns",
-                error,
-            )
-        })?;
-    let output = GpuDataFrame::new(output);
+    let mut stats = FilteredGlobalSegmentRuntimeStats::default();
+    let result = (|| -> Result<(GpuDataFrame, u64, u64)> {
+        let state_schema = partial_global_aggregate_output_schema(spec, input_schema, output_schema)?;
+        let partial_state = execute_segmented_filtered_global_partial_state(
+            context,
+            spec,
+            input_schema,
+            input,
+            output_schema,
+            &state_schema,
+            token,
+            &decision,
+            &mut stats,
+            metrics,
+        )?;
+        let partial_rows = partial_state.num_rows() as u64;
+        let merge_spec = final_global_aggregate_spec(spec);
+        let merge_schema = final_global_aggregate_state_output_schema(spec, input_schema, output_schema)?;
+        let mut output =
+            execute_global_aggregate_with_budget(context, &merge_spec, partial_state, &merge_schema, token, metrics)?
+                .into_frame();
+        output = finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?;
+        output = output
+            .select(output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>())
+            .map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.filtered_global_aggregate.select",
+                    "failed to select segmented filtered global aggregate output columns",
+                    error,
+                )
+            })?;
+        let output = GpuDataFrame::new(output);
+        let output_rows = output.num_rows() as u64;
+        Ok((output, output_rows, partial_rows))
+    })();
     add_segmented_budgeted_execution_stats(&mut stats, metrics, budget_event_start);
-    record_segmented_filtered_global_aggregate_strategy(
-        metrics,
-        context,
-        node_id,
-        spec,
-        input_schema,
-        input_rows,
-        output.num_rows() as u64,
-        partial_rows,
-        stats,
-        decision,
-        selection_elapsed,
-        timer.elapsed(),
-    );
-    Ok(output)
+    match result {
+        Ok((output, output_rows, partial_rows)) => {
+            record_segmented_filtered_global_aggregate_strategy(
+                metrics,
+                context,
+                node_id,
+                spec,
+                input_schema,
+                input_rows,
+                output_rows,
+                partial_rows,
+                stats,
+                decision,
+                selection_elapsed,
+                timer.elapsed(),
+            );
+            Ok(output)
+        },
+        Err(error) => {
+            record_filtered_global_segmented_failure(
+                metrics,
+                context,
+                node_id,
+                AggregateExecutionStage::Single,
+                spec,
+                input_schema,
+                input_rows,
+                None,
+                decision,
+                stats,
+                &error,
+                timer.elapsed(),
+            );
+            Err(error)
+        },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -229,40 +249,65 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     let input_rows = input.num_rows() as u64;
     let budget_event_start = metrics.budgeted_execution_events.len();
     let timer = Instant::now();
-    let state_schema = partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)?;
-    let partial = execute_segmented_filtered_global_partial_state(
-        context,
-        spec,
-        input_schema,
-        input,
-        aggregate_output_schema,
-        &state_schema,
-        token,
-        &decision,
-        metrics,
-    )?;
-    let partial_state = partial.frame;
-    let mut stats = partial.stats;
-    let partial_rows = partial_state.num_rows() as u64;
-    let merge_spec = final_global_aggregate_spec(spec);
-    let output =
-        execute_global_aggregate_with_budget(context, &merge_spec, partial_state, &state_schema, token, metrics)?;
+    let mut stats = FilteredGlobalSegmentRuntimeStats::default();
+    let result = (|| -> Result<(GpuDataFrame, u64, u64)> {
+        let state_schema = partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)?;
+        let partial_state = execute_segmented_filtered_global_partial_state(
+            context,
+            spec,
+            input_schema,
+            input,
+            aggregate_output_schema,
+            &state_schema,
+            token,
+            &decision,
+            &mut stats,
+            metrics,
+        )?;
+        let partial_rows = partial_state.num_rows() as u64;
+        let merge_spec = final_global_aggregate_spec(spec);
+        let output =
+            execute_global_aggregate_with_budget(context, &merge_spec, partial_state, &state_schema, token, metrics)?;
+        let output_rows = output.num_rows() as u64;
+        Ok((output, output_rows, partial_rows))
+    })();
     add_segmented_budgeted_execution_stats(&mut stats, metrics, budget_event_start);
-    record_segmented_filtered_global_partial_strategy(
-        metrics,
-        context,
-        node_id,
-        spec,
-        input_schema,
-        input_rows,
-        output.num_rows() as u64,
-        partial_rows,
-        stats,
-        input_evidence,
-        decision,
-        timer.elapsed(),
-    );
-    Ok(output)
+    match result {
+        Ok((output, output_rows, partial_rows)) => {
+            record_segmented_filtered_global_partial_strategy(
+                metrics,
+                context,
+                node_id,
+                spec,
+                input_schema,
+                input_rows,
+                output_rows,
+                partial_rows,
+                stats,
+                input_evidence,
+                decision,
+                timer.elapsed(),
+            );
+            Ok(output)
+        },
+        Err(error) => {
+            record_filtered_global_segmented_failure(
+                metrics,
+                context,
+                node_id,
+                AggregateExecutionStage::Partial,
+                spec,
+                input_schema,
+                input_rows,
+                input_evidence,
+                decision,
+                stats,
+                &error,
+                timer.elapsed(),
+            );
+            Err(error)
+        },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -331,6 +376,72 @@ pub(super) fn record_filtered_global_aggregate_single_pass(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(super) fn record_filtered_global_segmented_failure(
+    metrics: &mut QueryMetrics,
+    context: &ExecutionContext,
+    node_id: Option<NodeId>,
+    stage: AggregateExecutionStage,
+    spec: &AggregateSpec,
+    input_schema: &ArrowSchemaRef,
+    input_rows: u64,
+    input_evidence: Option<PartialAggregateInputEvidence>,
+    mut decision: FilteredGlobalAggregateStrategyDecision,
+    mut stats: FilteredGlobalSegmentRuntimeStats,
+    error: &QueryError,
+    elapsed: Duration,
+) {
+    add_segmented_failure_error_facts(&mut decision.decision.facts, &mut stats, error);
+    if stats.unresolved_contracts.is_empty() {
+        stats.unresolved_contracts.insert("filtered_global_segmented_failure_budget_report_unavailable".to_string());
+    }
+    decision.decision.facts.insert("filtered_global_segmented_failure", "true".to_string());
+    add_segmented_runtime_facts(&mut decision.decision.facts, stats.state_rows_merged, stats);
+    record_grouped_aggregate_strategy_decision(
+        metrics,
+        node_id.map(|id| id.to_string()),
+        stage,
+        context.memory_control_policy().as_str(),
+        spec,
+        input_schema,
+        input_rows,
+        0,
+        decision.decision,
+        Duration::ZERO,
+        Duration::ZERO,
+        elapsed,
+        Duration::ZERO,
+        elapsed,
+        input_evidence,
+    );
+}
+
+fn add_segmented_failure_error_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    stats: &mut FilteredGlobalSegmentRuntimeStats,
+    error: &QueryError,
+) {
+    facts.insert("filtered_global_segmented_failure_operation", error.operation().to_string());
+    facts.insert("filtered_global_segmented_failure_error_code", error.code().to_string());
+    facts.insert("filtered_global_segmented_failure_error_kind", error.kind().to_string());
+    facts.insert("filtered_global_segmented_failure_error_status", error.status().to_string());
+    for (key, value) in error.facts().iter() {
+        if key.starts_with("budget_") {
+            facts.insert(key, value.to_string());
+        }
+    }
+    for key in ["budget_peak_bytes", "budget_peak_aligned_bytes"] {
+        if let Some(bytes) = error.fact_value(key).and_then(|value| value.parse::<u64>().ok()) {
+            stats.observed_temporary_peak_bytes = stats.observed_temporary_peak_bytes.max(bytes);
+        }
+    }
+    for key in ["budget_current_bytes", "budget_current_aligned_bytes"] {
+        if let Some(bytes) = error.fact_value(key).and_then(|value| value.parse::<u64>().ok()) {
+            stats.observed_retained_peak_bytes = stats.observed_retained_peak_bytes.max(bytes);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn execute_segmented_filtered_global_partial_state(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -340,13 +451,13 @@ fn execute_segmented_filtered_global_partial_state(
     state_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     decision: &FilteredGlobalAggregateStrategyDecision,
+    stats: &mut FilteredGlobalSegmentRuntimeStats,
     metrics: &mut QueryMetrics,
-) -> Result<SegmentedFilteredGlobalPartialState> {
+) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows();
     let frame = input.into_frame();
     let rows_per_chunk = usize::try_from(decision.rows_per_chunk).unwrap_or(usize::MAX).max(MIN_SEGMENT_ROWS as usize);
     let mut partial_frames = Vec::new();
-    let mut stats = FilteredGlobalSegmentRuntimeStats::default();
     let mut offset = 0usize;
     loop {
         let length = if input_rows == 0 { 0 } else { rows_per_chunk.min(input_rows.saturating_sub(offset)) };
@@ -366,7 +477,7 @@ fn execute_segmented_filtered_global_partial_state(
                 .with_fact("chunk_rows", length)
             })?
         };
-        let chunk_output = execute_filtered_global_partial_state_for_chunk(
+        let chunk_frame = execute_filtered_global_partial_state_for_chunk(
             context,
             spec,
             input_schema,
@@ -375,12 +486,13 @@ fn execute_segmented_filtered_global_partial_state(
             state_schema,
             token,
             decision.filtered_inputs_per_segment,
+            length,
+            stats,
             metrics,
         )?;
         stats.chunk_count = stats.chunk_count.saturating_add(1);
-        stats.segment_count = stats.segment_count.saturating_add(chunk_output.stats.segment_count);
         stats.max_segment_rows = stats.max_segment_rows.max(length as u64);
-        partial_frames.push(chunk_output.frame);
+        partial_frames.push(chunk_frame);
         if input_rows == 0 || offset + length >= input_rows {
             break;
         }
@@ -388,7 +500,7 @@ fn execute_segmented_filtered_global_partial_state(
     }
     let frame = concat_partial_state_frames(partial_frames, token)?;
     stats.state_rows_merged = frame.num_rows() as u64;
-    Ok(SegmentedFilteredGlobalPartialState { frame, stats })
+    Ok(frame)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -401,13 +513,14 @@ fn execute_filtered_global_partial_state_for_chunk(
     state_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     filtered_inputs_per_segment: usize,
+    chunk_rows: usize,
+    stats: &mut FilteredGlobalSegmentRuntimeStats,
     metrics: &mut QueryMetrics,
-) -> Result<SegmentedFilteredGlobalPartialState> {
+) -> Result<GpuDataFrame> {
     let prepared_chunk = prepare_filtered_global_predicates_for_chunk(&chunk, input_schema, spec, token, metrics)?;
     let mut output_series = Vec::with_capacity(state_schema.fields().len());
     let mut segment = Vec::<(usize, AggregateExpr)>::new();
     let mut segment_filtered_count = 0usize;
-    let mut stats = FilteredGlobalSegmentRuntimeStats::default();
     for (index, expr) in spec.aggr_exprs.iter().cloned().enumerate() {
         let is_filtered = expr.filter.is_some();
         if is_filtered && segment_filtered_count >= filtered_inputs_per_segment && !segment.is_empty() {
@@ -422,6 +535,7 @@ fn execute_filtered_global_partial_state_for_chunk(
                 metrics,
             )?;
             stats.segment_count = stats.segment_count.saturating_add(1);
+            stats.max_segment_rows = stats.max_segment_rows.max(chunk_rows as u64);
             segment.clear();
             segment_filtered_count = 0;
         }
@@ -440,6 +554,7 @@ fn execute_filtered_global_partial_state_for_chunk(
             metrics,
         )?;
         stats.segment_count = stats.segment_count.saturating_add(1);
+        stats.max_segment_rows = stats.max_segment_rows.max(chunk_rows as u64);
     }
     let mut output_by_name = output_series.into_iter().collect::<BTreeMap<_, _>>();
     let ordered = state_schema
@@ -465,7 +580,7 @@ fn execute_filtered_global_partial_state_for_chunk(
             error,
         )
     })?;
-    Ok(SegmentedFilteredGlobalPartialState { frame, stats })
+    Ok(frame)
 }
 
 fn append_filtered_global_partial_segment(

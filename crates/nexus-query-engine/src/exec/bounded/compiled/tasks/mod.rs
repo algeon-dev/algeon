@@ -24,10 +24,10 @@ use crate::{
     exec::{
         bounded::{
             ActiveReservation, BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput,
-            BoundedCompiledJoinProbeState, BoundedJoinLeafLocalParquetSourceStream, ReservationTracker,
-            ResidentGpuFrame, execute_bounded_compiled_join_build_from_frame,
-            execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
-            execute_bounded_compiled_join_materialize_preserving_stream,
+            BoundedCompiledJoinProbeState, BoundedJoinLeafLocalParquetSourcePrefetch,
+            BoundedJoinLeafLocalParquetSourceStream, ReservationTracker, ResidentGpuFrame,
+            execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
+            execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
             execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
             execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
             execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
@@ -39,7 +39,7 @@ use crate::{
             execute_final_sort_node_from_stream_with_retry, materialize_bounded_join_leaf_local_parquet_source_stream,
             plan_bounded_join_leaf_local_parquet_source_stream, release_bounded_compiled_join_build_state,
             release_bounded_compiled_join_probe_state, release_reservations_reverse,
-            reusable_hash_join_stream_target_output_bytes,
+            reusable_hash_join_stream_target_output_bytes, try_start_bounded_join_leaf_local_parquet_source_prefetch,
         },
         materialize_bounded_frame_to_host,
         types::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},

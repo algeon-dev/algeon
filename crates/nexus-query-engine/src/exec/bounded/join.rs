@@ -25,9 +25,10 @@ use hash::{
     release_bounded_root_hash_join_build_state, release_bounded_root_hash_join_probe_state,
 };
 pub(super) use leaf::{
-    BoundedJoinLeafLocalParquetSourceStream, execute_bounded_join_leaf_source,
-    materialize_bounded_join_leaf_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
-    stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
+    BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,
+    execute_bounded_join_leaf_source, materialize_bounded_join_leaf_local_parquet_source_stream,
+    plan_bounded_join_leaf_local_parquet_source_stream, stream_bounded_join_leaf_local_parquet_source,
+    stream_bounded_join_leaf_local_parquet_source_serial, try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 pub use sizing::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,

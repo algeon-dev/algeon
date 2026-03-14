@@ -302,6 +302,67 @@ fn native_optimizer_combines_q09_like_scalar_branches_with_different_read_column
 }
 
 #[test]
+fn native_optimizer_combines_full_q09_like_scalar_branch_shape() {
+    let plan = repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
+        &[
+            Q09ScalarBranch::Count,
+            Q09ScalarBranch::AvgDiscount,
+            Q09ScalarBranch::AvgNetPaid,
+        ],
+        5,
+    );
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(candidate.reuse_count, 15);
+    assert_eq!(candidate.filtered_aggregate_count, 15);
+    assert_eq!(candidate.filtered_aggregate_memory_shape, "runtime_budgeted_segmented_state_available");
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+
+    let aggregate_nodes = result
+        .plan
+        .nodes()
+        .iter()
+        .filter(|node| matches!(node.kind, PlanNode::Aggregate(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(aggregate_nodes.len(), 1);
+    let PlanNode::Aggregate(aggregate) = &aggregate_nodes[0].kind else {
+        unreachable!("aggregate node filter should only keep aggregate nodes");
+    };
+    assert_eq!(aggregate.spec.aggr_exprs.len(), 15);
+    assert_eq!(aggregate.spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Count).count(), 5);
+    assert_eq!(aggregate.spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg).count(), 10);
+    assert!(aggregate.spec.aggr_exprs.iter().all(|expr| expr.filter.is_some()));
+    let aggregate_output_fields = aggregate_nodes[0].output_schema().fields();
+    assert_eq!(aggregate_output_fields.len(), aggregate.spec.aggr_exprs.len());
+    let avg_output_types = aggregate
+        .spec
+        .aggr_exprs
+        .iter()
+        .zip(aggregate_output_fields.iter())
+        .filter_map(|(expr, field)| (expr.function == AggregateFunction::Avg).then_some(field.data_type()))
+        .collect::<Vec<_>>();
+    assert_eq!(avg_output_types.len(), 10);
+    assert!(
+        avg_output_types.iter().all(|data_type| matches!(data_type, DataType::Decimal128(11, 6))),
+        "q09-like AVG outputs should preserve Decimal128 output types:\n{}",
+        result.plan
+    );
+    let mut filters =
+        aggregate.spec.aggr_exprs.iter().filter_map(|expr| expr.filter.as_ref().map(ToString::to_string)).collect::<Vec<_>>();
+    filters.sort();
+    filters.dedup();
+    assert_eq!(filters.len(), 5);
+}
+
+#[test]
 fn native_optimizer_combines_q09_like_scalar_branches_when_projected_count_is_not_representative() {
     let plan = repeated_q09_like_scalar_materialization_plan_with_order(&[
         Q09ScalarBranch::AvgDiscount,
@@ -1238,10 +1299,17 @@ fn repeated_q09_like_scalar_materialization_plan() -> nexus_query_engine::QueryP
 fn repeated_q09_like_scalar_materialization_plan_with_order(
     branch_order: &[Q09ScalarBranch],
 ) -> nexus_query_engine::QueryPlan {
+    repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(branch_order, 2)
+}
+
+fn repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
+    branch_order: &[Q09ScalarBranch],
+    bucket_count: i32,
+) -> nexus_query_engine::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
     let mut branches = Vec::new();
     let mut branch_schemas = Vec::new();
-    for bucket in 0..2 {
+    for bucket in 0..bucket_count {
         for &branch in branch_order {
             let (aggregate_input, aggregate_expr, field_name, data_type) = match branch {
                 Q09ScalarBranch::Count => {
@@ -1280,7 +1348,7 @@ fn repeated_q09_like_scalar_materialization_plan_with_order(
                             format!("B{bucket}_AVG_DISCOUNT"),
                         ),
                         format!("B{bucket}_AVG_DISCOUNT"),
-                        DataType::Float64,
+                        DataType::Decimal128(11, 6),
                     )
                 },
                 Q09ScalarBranch::AvgNetPaid => {
@@ -1293,7 +1361,7 @@ fn repeated_q09_like_scalar_materialization_plan_with_order(
                             format!("B{bucket}_AVG_NET"),
                         ),
                         format!("B{bucket}_AVG_NET"),
-                        DataType::Float64,
+                        DataType::Decimal128(11, 6),
                     )
                 },
             };
@@ -1752,8 +1820,8 @@ fn q28_like_store_sales_source(bucket: i32) -> SourceNode {
 fn q09_like_store_sales_source(bucket: i32, branch: Q09ScalarBranch) -> SourceNode {
     let all_fields = [
         Field::new("ss_quantity", DataType::Int32, false),
-        Field::new("ss_ext_discount_amt", DataType::Float64, true),
-        Field::new("ss_net_paid", DataType::Float64, true),
+        Field::new("ss_ext_discount_amt", DataType::Decimal128(7, 2), true),
+        Field::new("ss_net_paid", DataType::Decimal128(7, 2), true),
     ];
     let read_columns = match branch {
         Q09ScalarBranch::Count => vec!["ss_quantity".to_string()],

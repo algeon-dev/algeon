@@ -144,7 +144,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     Ok(total.saturating_add(self.resource_admission_estimate_bytes(payload)))
                 },
                 CompiledGpuResourcePayload::ResidentFrame { .. }
-                | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => Ok(total),
+                | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+                | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => Ok(total),
             }
         })
     }
@@ -174,6 +175,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         match &resource.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.max_per_frame_reservation_bytes(),
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => prefetch.reservation_bytes(),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => stream
                 .estimated_source_read_bytes()
                 .unwrap_or_else(|| self.coarse_reservation_slot_bytes())
@@ -200,7 +202,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         }
         task.input_resources().iter().try_fold(false, |has_stream, resource| {
             let payload = state.resource_payload(*resource)?;
-            Ok(has_stream || matches!(&payload.payload, CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)))
+            Ok(has_stream
+                || matches!(
+                    &payload.payload,
+                    CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+                        | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_)
+                ))
         })
     }
 
@@ -229,6 +236,20 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         has_source_adjacent_stages,
                         self.metrics,
                     )?;
+                    if self.task_feeds_direct_join_input(task.id())
+                        && !self.source_has_dynamic_filter_routes(node_id)
+                        && let Some(prefetch) = try_start_bounded_join_leaf_local_parquet_source_prefetch(
+                            self.context,
+                            &stream,
+                            &mut self.reservations,
+                            self.metrics,
+                        )?
+                    {
+                        return Ok(CompiledTaskOutput::new(vec![(
+                            output,
+                            CompiledGpuResource::pending_join_leaf_local_parquet_source(prefetch),
+                        )]));
+                    }
                     if has_source_adjacent_stages
                         || stream.chunk_count() > 1
                         || self.source_has_dynamic_filter_routes(node_id)
@@ -350,6 +371,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                                 Ok(CompiledGpuResource::frame_stream_payload(stream))
                             }
                         },
+                        CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
+                            Err(invalid("compiled filter task cannot consume a pending source read")
+                                .with_fact("compiled_task_id", task.id())
+                                .with_fact("plan_node_id", node_id))
+                        },
                     }
                 } else {
                     let input_payload = state.resource_payload(input)?;
@@ -357,6 +383,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         Ok(CompiledGpuResource::join_leaf_local_parquet_source(
                             stream.with_filter_stage(node_id, filter.clone()),
                         ))
+                    } else if matches!(
+                        input_payload.payload,
+                        CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_)
+                    ) {
+                        Err(invalid("compiled filter task cannot share a pending source read")
+                            .with_fact("compiled_task_id", task.id())
+                            .with_fact("plan_node_id", node_id)
+                            .with_fact("resident_resource_id", input))
                     } else if let Some(frame) = self.apply_dynamic_filters_to_filter_shared_frame(
                         node_id,
                         filter,
@@ -448,6 +482,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                                 Ok(CompiledGpuResource::frame_stream_payload(stream))
                             }
                         },
+                        CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
+                            Err(invalid("compiled projection task cannot consume a pending source read")
+                                .with_fact("compiled_task_id", task.id())
+                                .with_fact("plan_node_id", node_id))
+                        },
                     }
                 } else {
                     let input_payload = state.resource_payload(input)?;
@@ -455,6 +494,14 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         Ok(CompiledGpuResource::join_leaf_local_parquet_source(
                             stream.with_projection_stage(node_id, projection.clone()),
                         ))
+                    } else if matches!(
+                        input_payload.payload,
+                        CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_)
+                    ) {
+                        Err(invalid("compiled projection task cannot share a pending source read")
+                            .with_fact("compiled_task_id", task.id())
+                            .with_fact("plan_node_id", node_id)
+                            .with_fact("resident_resource_id", input))
                     } else {
                         execute_bounded_generic_unary_from_frame(
                             self.context,
@@ -516,6 +563,9 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         self.metrics,
                     )
                 },
+                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
+                    prefetch.finish(self.context, &mut self.reservations, self.metrics)
+                },
                 CompiledGpuResourcePayload::ResidentFrame { frame, .. } => Ok(*frame),
                 CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                     Err(invalid("compiled join build task cannot consume a resident frame stream")
@@ -575,6 +625,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     &mut self.reservations,
                     self.metrics,
                 )
+            } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
+            {
+                Err(invalid("compiled join build cannot share a pending source read")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id)
+                    .with_fact("resident_resource_id", input))
             } else {
                 self.produce_hash_join_build_dynamic_filters(node_id, node, &input_payload.clone_frame())?;
                 let strategy = join_strategy(
@@ -637,6 +693,19 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                         node,
                         build,
                         stream,
+                        &mut self.reservations,
+                        self.metrics,
+                    )
+                },
+                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
+                    let frame = prefetch.finish(self.context, &mut self.reservations, self.metrics)?;
+                    let frame = self.apply_dynamic_filters_to_join_probe_frame(node_id, node, frame)?;
+                    execute_bounded_compiled_join_probe_from_resident_frame(
+                        self.context,
+                        node_id,
+                        node,
+                        build,
+                        frame,
                         &mut self.reservations,
                         self.metrics,
                     )
@@ -710,6 +779,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     &mut self.reservations,
                     self.metrics,
                 )
+            } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
+            {
+                release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
+                return Err(invalid("compiled join probe cannot share a pending source read")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id)
+                    .with_fact("resident_resource_id", input));
             } else {
                 if let Some(frame) = self.apply_dynamic_filters_to_join_probe_shared_frame(
                     node_id,
@@ -846,6 +922,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 },
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                     Err(invalid("compiled aggregate task cannot consume a deferred join leaf source stream")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id))
+                },
+                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
+                    Err(invalid("compiled aggregate task cannot consume a pending source read")
                         .with_fact("compiled_task_id", task.id())
                         .with_fact("plan_node_id", node_id))
                 },
@@ -1000,6 +1081,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 },
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                     Err(invalid("compiled final sort cannot consume a deferred join leaf source")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id))
+                },
+                CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
+                    Err(invalid("compiled final sort cannot consume a pending source read")
                         .with_fact("compiled_task_id", task.id())
                         .with_fact("plan_node_id", node_id))
                 },
@@ -1179,6 +1265,15 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     self.metrics,
                 )?);
             },
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
+                if !consumed {
+                    return Err(invalid("compiled union task cannot share a pending source read")
+                        .with_fact("compiled_task_id", task.id())
+                        .with_fact("plan_node_id", node_id)
+                        .with_fact("resident_resource_id", resource));
+                }
+                inputs.push(prefetch.finish(self.context, &mut self.reservations, self.metrics)?);
+            },
         }
         Ok(())
     }
@@ -1208,6 +1303,12 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                 return Err(invalid("compiled union task cannot share a deferred join leaf source")
+                    .with_fact("compiled_task_id", task.id())
+                    .with_fact("plan_node_id", node_id)
+                    .with_fact("resident_resource_id", resource));
+            },
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
+                return Err(invalid("compiled union task cannot share a pending source read")
                     .with_fact("compiled_task_id", task.id())
                     .with_fact("plan_node_id", node_id)
                     .with_fact("resident_resource_id", resource));
@@ -1508,6 +1609,11 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
                 self.reservations.clear_diagnostic_context();
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {},
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
+                self.reservations.set_diagnostic_context(None::<PipelineTaskId>, Some(resource));
+                prefetch.abandon(&mut self.reservations, self.metrics);
+                self.reservations.clear_diagnostic_context();
+            },
         }
         Ok(())
     }

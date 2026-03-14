@@ -11,6 +11,7 @@ pub(super) enum CompiledGpuResourcePayload {
     ResidentFrame { frame: Box<ResidentGpuFrame>, applied_limit: Option<NodeId> },
     ResidentFrameStream(ResidentFrameStreamPayload),
     JoinLeafLocalParquetSource(Box<BoundedJoinLeafLocalParquetSourceStream>),
+    PendingJoinLeafLocalParquetSource(Box<BoundedJoinLeafLocalParquetSourcePrefetch>),
 }
 
 impl CompiledGpuResource {
@@ -30,6 +31,12 @@ impl CompiledGpuResource {
         Self { payload: CompiledGpuResourcePayload::JoinLeafLocalParquetSource(Box::new(stream)) }
     }
 
+    pub(in crate::exec::bounded) fn pending_join_leaf_local_parquet_source(
+        prefetch: BoundedJoinLeafLocalParquetSourcePrefetch,
+    ) -> Self {
+        Self { payload: CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(Box::new(prefetch)) }
+    }
+
     pub(in crate::exec::bounded) fn frame_stream(frames: Vec<ResidentGpuFrame>) -> Self {
         Self { payload: CompiledGpuResourcePayload::ResidentFrameStream(ResidentFrameStreamPayload::new(frames)) }
     }
@@ -42,7 +49,8 @@ impl CompiledGpuResource {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_rows(),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.num_rows() as usize,
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => 0,
         }
     }
 
@@ -50,7 +58,8 @@ impl CompiledGpuResource {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.frame.num_columns(),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.num_columns(),
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => 0,
         }
     }
 
@@ -60,7 +69,8 @@ impl CompiledGpuResource {
             CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                 unreachable!("resident frame streams must be consumed by stream-aware compiled tasks")
             },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
                 unreachable!("deferred join leaf sources must be consumed by join probe tasks")
             },
         }
@@ -71,6 +81,7 @@ impl CompiledGpuResource {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => frame.reservation.bytes(),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => stream.live_reservation_bytes(),
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => 0,
+            CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => prefetch.reservation_bytes(),
         }
     }
 
@@ -80,7 +91,8 @@ impl CompiledGpuResource {
             CompiledGpuResourcePayload::ResidentFrameStream(_) => {
                 unreachable!("resident frame streams do not expose a single reservation")
             },
-            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
+            CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => {
                 unreachable!("deferred join leaf sources do not own a resident reservation")
             },
         }
@@ -89,9 +101,9 @@ impl CompiledGpuResource {
     pub(super) fn as_join_leaf_local_parquet_source(&self) -> Option<&BoundedJoinLeafLocalParquetSourceStream> {
         match &self.payload {
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => Some(stream),
-            CompiledGpuResourcePayload::ResidentFrame { .. } | CompiledGpuResourcePayload::ResidentFrameStream(_) => {
-                None
-            },
+            CompiledGpuResourcePayload::ResidentFrame { .. }
+            | CompiledGpuResourcePayload::ResidentFrameStream(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => None,
         }
     }
 
@@ -99,7 +111,8 @@ impl CompiledGpuResource {
         match &self.payload {
             CompiledGpuResourcePayload::ResidentFrame { applied_limit, .. } => *applied_limit,
             CompiledGpuResourcePayload::ResidentFrameStream(_)
-            | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => None,
+            | CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_)
+            | CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_) => None,
         }
     }
 }

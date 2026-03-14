@@ -194,6 +194,67 @@ fn write_dynamic_filter_probe_rows_parquet(path: &Path, order_ids: &[i32], quant
     schema
 }
 
+fn write_q72_sales_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("cs_sold_date_sk", DataType::Int32, false),
+        Field::new("cs_item_sk", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![1, 1])), Arc::new(Int32Array::from(vec![10, 20]))],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 2);
+    schema
+}
+
+fn write_q72_d1_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("d_date_sk", DataType::Int32, false),
+        Field::new("d_week_seq", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1])),
+            Arc::new(Int32Array::from(vec![100])),
+            Arc::new(Int32Array::from(vec![1999])),
+        ],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 1);
+    schema
+}
+
+fn write_q72_inventory_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("inv_item_sk", DataType::Int32, false),
+        Field::new("inv_date_sk", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![10, 10])), Arc::new(Int32Array::from(vec![5, 6]))],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 1);
+    schema
+}
+
+fn write_q72_d2_parquet(path: &Path) -> Arc<Schema> {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("d_date_sk", DataType::Int32, false),
+        Field::new("d_week_seq", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(vec![5, 6])), Arc::new(Int32Array::from(vec![100, 200]))],
+    )
+    .unwrap();
+    write_record_batch_with_row_group_rows(path, Arc::clone(&schema), batch, 1);
+    schema
+}
+
 fn write_row_grouped_join_left_with_payload_parquet(path: &Path) -> Arc<Schema> {
     let row_groups = 4;
     let rows_per_row_group = 256;

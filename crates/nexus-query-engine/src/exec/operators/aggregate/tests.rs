@@ -1,9 +1,16 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use arrow::datatypes::{DataType, Field, Schema};
 
 use super::{
-    filtered_global::select_filtered_global_aggregate_strategy,
+    filtered_global::{
+        FilteredGlobalSegmentRuntimeStats, record_filtered_global_segmented_failure,
+        select_filtered_global_aggregate_strategy,
+    },
     filtered_grouped::select_filtered_grouped_aggregate_strategy,
     partial_strategy::{
         EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS, EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS,
@@ -13,7 +20,12 @@ use super::{
     },
     *,
 };
-use crate::{capability::aggregate_strategy_capability_decision, error::QueryErrorCode, metrics::QueryMetrics};
+use crate::{
+    capability::aggregate_strategy_capability_decision,
+    error::{QueryError, QueryErrorCode},
+    metrics::QueryMetrics,
+    runtime::MemoryControlPolicy,
+};
 
 fn multi_key_sum_spec() -> (Schema, AggregateSpec) {
     let schema = Schema::new(vec![
@@ -115,6 +127,48 @@ fn filtered_global_q09_like_spec(filter_count: usize) -> (Arc<Schema>, Aggregate
             .push(AggregateExpr::new(function, value, format!("a{index}")).with_filter(Some(Expr::column("bucket"))));
     }
     (schema, AggregateSpec::new(Vec::new(), aggr_exprs))
+}
+
+fn filtered_global_tpcds_q09_sf100_spec() -> (Arc<Schema>, AggregateSpec) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("ss_quantity", DataType::Int32, false),
+        Field::new("ss_ext_discount_amt", DataType::Decimal128(7, 2), true),
+        Field::new("ss_net_paid", DataType::Decimal128(7, 2), true),
+    ]));
+    let mut aggr_exprs = Vec::new();
+    for (bucket, lower) in [1, 21, 41, 61, 81].into_iter().enumerate() {
+        let upper = lower + 19;
+        let filter = quantity_between(lower, upper);
+        aggr_exprs.push(
+            AggregateExpr::new(
+                AggregateFunction::Count,
+                Expr::literal(LiteralValue::Int64(1)),
+                format!("b{bucket}_cnt"),
+            )
+            .with_filter(Some(filter.clone())),
+        );
+        aggr_exprs.push(
+            AggregateExpr::new(
+                AggregateFunction::Avg,
+                Expr::column("ss_ext_discount_amt"),
+                format!("b{bucket}_avg_discount"),
+            )
+            .with_filter(Some(filter.clone())),
+        );
+        aggr_exprs.push(
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("ss_net_paid"), format!("b{bucket}_avg_net_paid"))
+                .with_filter(Some(filter)),
+        );
+    }
+    (schema, AggregateSpec::new(Vec::new(), aggr_exprs))
+}
+
+fn quantity_between(lower: i32, upper: i32) -> Expr {
+    Expr::binary(
+        Expr::binary(Expr::column("ss_quantity"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(lower))),
+        BinaryOp::And,
+        Expr::binary(Expr::column("ss_quantity"), BinaryOp::LtEq, Expr::literal(LiteralValue::Int32(upper))),
+    )
 }
 
 fn filtered_grouped_q09_like_spec(filter_count: usize) -> (Arc<Schema>, AggregateSpec) {
@@ -227,6 +281,57 @@ fn filtered_global_strategy_segments_large_unsafe_materialization() {
 }
 
 #[test]
+fn filtered_global_strategy_segments_exact_tpcds_q09_sf100_shape() {
+    let (schema, spec) = filtered_global_tpcds_q09_sf100_spec();
+    let decision = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        287_997_024,
+        80 * 1024 * 1024 * 1024,
+        AggregateExecutionStage::Single,
+    )
+    .unwrap();
+
+    assert!(decision.use_segmented);
+    assert_eq!(
+        decision.decision.facts.get("selected_strategy").map(String::as_str),
+        Some("filtered_global_segmented_state")
+    );
+    assert_eq!(
+        decision.decision.facts.get("filtered_input_materialization_strategy").map(String::as_str),
+        Some("row_chunked_segmented_state")
+    );
+    assert_eq!(decision.decision.facts.get("aggregate_filter_count").map(String::as_str), Some("15"));
+    assert_eq!(spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg).count(), 10);
+    assert_eq!(spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Count).count(), 5);
+    assert_eq!(decision.decision.facts.get("filtered_input_unique_predicate_count").map(String::as_str), Some("5"));
+    assert_eq!(
+        decision.decision.facts.get("filtered_global_retained_predicate_bytes_per_row").map(String::as_str),
+        Some("10")
+    );
+    let rows_per_chunk = decision
+        .decision
+        .facts
+        .get("filtered_global_rows_per_chunk")
+        .and_then(|rows| rows.parse::<u64>().ok())
+        .expect("rows per chunk fact should be present");
+    assert!(
+        rows_per_chunk < 287_997_024,
+        "SF100 q09 should be row-chunked even when the native execution budget is large"
+    );
+    let inputs_per_segment = decision
+        .decision
+        .facts
+        .get("filtered_global_inputs_per_segment")
+        .and_then(|inputs| inputs.parse::<usize>().ok())
+        .expect("inputs per segment fact should be present");
+    assert!(
+        inputs_per_segment < 15,
+        "SF100 q09 should segment masked aggregate inputs instead of materializing all 15 together"
+    );
+}
+
+#[test]
 fn filtered_global_strategy_caps_row_chunks_by_budget() {
     let (schema, spec) = filtered_global_q09_like_spec(15);
     let decision = select_filtered_global_aggregate_strategy(
@@ -315,6 +420,108 @@ fn filtered_global_strategy_rejects_large_statistical_state() {
     assert_eq!(error.fact_value("filtered_aggregate_scope"), Some("global"));
     assert_eq!(error.fact_value("filtered_input_unsupported_stateful_merge"), Some("true"));
     assert_eq!(error.fact_value("filtered_input_materialization_strategy"), Some("rejected"));
+}
+
+#[test]
+fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_evidence() {
+    let (schema, spec) = filtered_global_q09_like_spec(15);
+    let decision = select_filtered_global_aggregate_strategy(
+        &spec,
+        &schema,
+        60_000_000,
+        32 * 1024 * 1024,
+        AggregateExecutionStage::Partial,
+    )
+    .expect("q09-like spec should select a strategy");
+    assert_eq!(
+        decision.decision.facts.get("selected_strategy").map(String::as_str),
+        Some("filtered_global_segmented_state")
+    );
+
+    let context = ExecutionContext::builder()
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 32 * 1024 * 1024,
+            max_source_chunk_bytes: 8 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .expect("execution context builds");
+    let mut metrics = QueryMetrics::default();
+    let node_id = NodeId::from_index_for_internal_use(7);
+    let stats = FilteredGlobalSegmentRuntimeStats {
+        chunk_count: 2,
+        segment_count: 5,
+        max_segment_rows: 10_000,
+        state_rows_merged: 2,
+        observed_temporary_peak_bytes: 4096,
+        observed_retained_peak_bytes: 512,
+        unresolved_contracts: BTreeSet::from(["cudf_lower_level_contract_missing".to_string()]),
+    };
+    let error = QueryError::new(
+        QueryErrorCode::CudfResourceExhausted,
+        "nexus_query_engine.filtered_global_aggregate.filter_inputs",
+        "failed while testing segmented filtered global failure reporting",
+    )
+    .with_fact("budget_boundary", "test_boundary")
+    .with_fact("budget_bytes", 32 * 1024 * 1024)
+    .with_fact("budget_enforcement", "stream_bound_reservation")
+    .with_fact("budget_status", "exceeded_or_lower_layer_rejected")
+    .with_fact("budget_operation", "dataframe::with_columns_with_budget")
+    .with_fact("budget_peak_bytes", 8192)
+    .with_fact("budget_current_bytes", 2048);
+    let input_evidence = Some(source_adjacent_group_key_evidence(4, 3));
+
+    record_filtered_global_segmented_failure(
+        &mut metrics,
+        &context,
+        Some(node_id),
+        AggregateExecutionStage::Partial,
+        &spec,
+        &schema,
+        60_000_000,
+        input_evidence,
+        decision,
+        stats,
+        &error,
+        Duration::from_millis(3),
+    );
+
+    let recorded = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| decision.node_id == node_id.to_string())
+        .expect("segmented failure strategy should be recorded");
+    assert_eq!(recorded.facts.get("execution_stage").map(String::as_str), Some("partial"));
+    assert_eq!(recorded.facts.get("selected_strategy").map(String::as_str), Some("filtered_global_segmented_state"));
+    assert_eq!(recorded.facts.get("filtered_global_segmented_failure").map(String::as_str), Some("true"));
+    assert_eq!(
+        recorded.facts.get("filtered_input_materialization_strategy").map(String::as_str),
+        Some("row_chunked_segmented_state")
+    );
+    assert_eq!(recorded.facts.get("filtered_global_actual_chunk_count").map(String::as_str), Some("2"));
+    assert_eq!(recorded.facts.get("filtered_global_actual_segment_count").map(String::as_str), Some("5"));
+    assert_eq!(recorded.facts.get("filtered_global_state_rows_merged").map(String::as_str), Some("2"));
+    assert_eq!(
+        recorded.facts.get("filtered_global_segmented_failure_operation").map(String::as_str),
+        Some("nexus_query_engine.filtered_global_aggregate.filter_inputs")
+    );
+    assert_eq!(
+        recorded.facts.get("filtered_global_segmented_failure_error_code").map(String::as_str),
+        Some("cudf_resource_exhausted")
+    );
+    assert_eq!(recorded.facts.get("budget_status").map(String::as_str), Some("exceeded_or_lower_layer_rejected"));
+    assert_eq!(recorded.facts.get("budget_operation").map(String::as_str), Some("dataframe::with_columns_with_budget"));
+    assert_eq!(recorded.facts.get("budget_peak_bytes").map(String::as_str), Some("8192"));
+    assert_eq!(recorded.facts.get("filtered_global_observed_temporary_peak_bytes").map(String::as_str), Some("8192"));
+    assert_eq!(recorded.facts.get("filtered_global_observed_retained_peak_bytes").map(String::as_str), Some("2048"));
+    assert_eq!(
+        recorded.facts.get("filtered_input_lower_level_unresolved_contracts").map(String::as_str),
+        Some("cudf_lower_level_contract_missing")
+    );
+    assert_eq!(recorded.facts.get("source_adjacent_partial").map(String::as_str), Some("true"));
+    assert_eq!(recorded.facts.get("source_chunk_row_group_count").map(String::as_str), Some("4"));
 }
 
 #[test]

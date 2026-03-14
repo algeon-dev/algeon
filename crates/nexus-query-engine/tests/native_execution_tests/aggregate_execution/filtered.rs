@@ -582,6 +582,152 @@ fn bounded_native_global_filtered_aggregate_segments_large_materialization() {
 }
 
 #[test]
+fn bounded_native_global_filtered_aggregate_segments_q09_decimal_avg_shape() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::builder()
+        .with_shared_runtime(Arc::clone(&runtime))
+        .with_memory_control_policy(MemoryControlPolicy::Bounded {
+            device_budget_bytes: 32 * 1024 * 1024,
+            max_source_chunk_bytes: 8 * 1024 * 1024,
+            max_row_groups_per_chunk: 1,
+            max_retry_attempts: 1,
+            min_retry_chunk_row_groups: 1,
+        })
+        .build()
+        .unwrap();
+    let repeats_per_quantity = 700usize;
+    let row_count = 100 * repeats_per_quantity;
+    let schema = Arc::new(
+        Schema::new(vec![
+            Field::new("ss_quantity", DataType::Int32, false),
+            Field::new("ss_ext_discount_amt", DataType::Decimal128(7, 2), false),
+            Field::new("ss_net_paid", DataType::Decimal128(7, 2), false),
+        ])
+        .with_metadata(HashMap::from([(
+            "__nexus_filtered_global_segment_target_bytes".to_string(),
+            (1024 * 1024).to_string(),
+        )])),
+    );
+    let quantity = (0..row_count).map(|row| i32::try_from(row % 100 + 1).unwrap()).collect::<Vec<_>>();
+    let discount = quantity.iter().map(|value| i128::from(*value) * 100).collect::<Vec<_>>();
+    let net_paid = quantity.iter().map(|value| i128::from(*value) * 200).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(quantity)),
+            Arc::new(Decimal128Array::from_iter_values(discount).with_precision_and_scale(7, 2).unwrap()),
+            Arc::new(Decimal128Array::from_iter_values(net_paid).with_precision_and_scale(7, 2).unwrap()),
+        ],
+    )
+    .unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &batch).unwrap();
+    let mut inputs = GpuResidentInputMap::new();
+    inputs.insert(
+        "filtered".to_string(),
+        GpuResultHandle::new(&context, GpuDataFrame::new(frame), Arc::clone(&schema)).unwrap(),
+    );
+
+    let mut fields = Vec::new();
+    let mut aggr_exprs = Vec::new();
+    for (bucket, lower) in [1, 21, 41, 61, 81].into_iter().enumerate() {
+        let upper = lower + 19;
+        let filter = q09_quantity_between(lower, upper);
+        fields.push(Field::new(format!("b{bucket}_cnt"), DataType::Int64, false));
+        fields.push(Field::new(format!("b{bucket}_avg_discount"), DataType::Decimal128(11, 6), true));
+        fields.push(Field::new(format!("b{bucket}_avg_net_paid"), DataType::Decimal128(11, 6), true));
+        aggr_exprs.push(
+            AggregateExpr::new(
+                AggregateFunction::Count,
+                Expr::literal(LiteralValue::Int64(1)),
+                format!("b{bucket}_cnt"),
+            )
+            .with_filter(Some(filter.clone())),
+        );
+        aggr_exprs.push(
+            AggregateExpr::new(
+                AggregateFunction::Avg,
+                Expr::column("ss_ext_discount_amt"),
+                format!("b{bucket}_avg_discount"),
+            )
+            .with_filter(Some(filter.clone())),
+        );
+        aggr_exprs.push(
+            AggregateExpr::new(AggregateFunction::Avg, Expr::column("ss_net_paid"), format!("b{bucket}_avg_net_paid"))
+                .with_filter(Some(filter)),
+        );
+    }
+    let output_schema = Arc::new(Schema::new(fields));
+    let aggregate = AggregateSpec::new(Vec::new(), aggr_exprs);
+
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("filtered", Arc::clone(&schema))));
+    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&output_schema));
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.schema(), output_schema);
+    assert_eq!(batch.num_rows(), 1);
+    let expected_discount = [10_500_000, 30_500_000, 50_500_000, 70_500_000, 90_500_000];
+    let expected_net_paid = [21_000_000, 61_000_000, 101_000_000, 141_000_000, 181_000_000];
+    for bucket in 0..5 {
+        assert_eq!(int64_array(batch, bucket * 3).value(0), i64::try_from(20 * repeats_per_quantity).unwrap());
+        let avg_discount = decimal128_array(batch, bucket * 3 + 1);
+        assert_eq!(avg_discount.scale(), 6);
+        assert_eq!(avg_discount.value(0), expected_discount[bucket]);
+        let avg_net_paid = decimal128_array(batch, bucket * 3 + 2);
+        assert_eq!(avg_net_paid.scale(), 6);
+        assert_eq!(avg_net_paid.value(0), expected_net_paid[bucket]);
+    }
+    let strategy = result
+        .metrics()
+        .aggregate_strategy_decisions
+        .iter()
+        .find(|decision| {
+            decision.facts.get("selected_strategy").map(String::as_str) == Some("filtered_global_segmented_state")
+        })
+        .expect("segmented filtered global strategy should be reported");
+    assert_eq!(
+        strategy.facts.get("filtered_input_materialization_strategy").map(String::as_str),
+        Some("row_chunked_segmented_state")
+    );
+    assert_eq!(strategy.facts.get("aggregate_filter_count").map(String::as_str), Some("15"));
+    assert_eq!(strategy.facts.get("filtered_input_unique_predicate_count").map(String::as_str), Some("5"));
+    assert_eq!(strategy.facts.get("filtered_global_retained_predicate_bytes_per_row").map(String::as_str), Some("10"));
+    let actual_chunk_count = strategy
+        .facts
+        .get("filtered_global_actual_chunk_count")
+        .and_then(|count| count.parse::<u64>().ok())
+        .expect("segmented strategy should record actual chunk count");
+    let actual_segment_count = strategy
+        .facts
+        .get("filtered_global_actual_segment_count")
+        .and_then(|count| count.parse::<u64>().ok())
+        .expect("segmented strategy should record actual segment count");
+    let inputs_per_segment = strategy
+        .facts
+        .get("filtered_global_inputs_per_segment")
+        .and_then(|count| count.parse::<usize>().ok())
+        .expect("segmented strategy should record inputs per segment");
+    assert!(actual_chunk_count > 1, "test must exercise row-chunked state merge");
+    assert!(
+        actual_segment_count > actual_chunk_count,
+        "test must exercise filtered expression segmentation beyond row chunking"
+    );
+    assert!(inputs_per_segment < 15, "test should segment the 15 filtered aggregate inputs");
+}
+
+fn q09_quantity_between(lower: i32, upper: i32) -> Expr {
+    Expr::binary(
+        Expr::binary(Expr::column("ss_quantity"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int32(lower))),
+        BinaryOp::And,
+        Expr::binary(Expr::column("ss_quantity"), BinaryOp::LtEq, Expr::literal(LiteralValue::Int32(upper))),
+    )
+}
+
+#[test]
 fn bounded_native_partial_global_filtered_aggregate_segments_large_materialization() {
     let dir = unique_temp_dir("nexus-query-engine-filtered-global-partial-segmented");
     let path = dir.join("input.parquet");
