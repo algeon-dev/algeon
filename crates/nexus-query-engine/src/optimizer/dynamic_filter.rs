@@ -4,11 +4,14 @@ use super::rewrite;
 use crate::{
     datatypes::{is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone},
     dynamic_filter::{
-        DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage, DynamicFilterId,
-        DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
+        DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES, DynamicFilterConsumer, DynamicFilterConsumerLowering,
+        DynamicFilterConsumerReductionStage, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer,
+        DynamicFilterRoute, LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS, MAX_DYNAMIC_FILTER_BUILD_ROWS,
+        TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS,
+        dynamic_filter_consumer_source_feeds_downstream_work_fanout,
     },
     expr::{AggregateFunction, BinaryOp, ColumnQualifier, ColumnRef, Expr},
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan},
+    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows},
     source::{LocalParquetSource, SourceColumnRef, SourceNode},
 };
 
@@ -135,6 +138,13 @@ pub enum DynamicFilterRouteRejectedReason {
     /// SUM, where the route is optional and can pessimize the aggregate
     /// backend.
     PostDecodeConsumerFeedsScalarDecimalSum,
+    /// The producer is proven to exceed the runtime exact-keyset row cap, so
+    /// runtime would skip every route for this producer.
+    ProducerKeysetExceedsRuntimeLimit,
+    /// The consumer is already dimension-sized while the producer is expected
+    /// to exceed the large-keyset runtime threshold, so the route is likely to
+    /// be skipped at runtime or add more dependency cost than source work saved.
+    LargeKeysetDimensionSizedLocalParquetConsumer,
 }
 
 pub(crate) struct DynamicFilterRouteDiscoveryResult {
@@ -219,6 +229,11 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                     )
                 });
             let producer_dependency_root = aggregate_group_key_producer.unwrap_or(orientation.producer_input);
+            if producer_keyset_exceeds_runtime_limit(&plan, producer_dependency_root) {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
             let consumer_lineages = dedup_lineages(lineages_for_column(
                 &plan,
                 &parent_counts,
@@ -291,6 +306,17 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
             };
 
             let multiple_consumer_lineages = consumer_lineages.len() > 1;
+            let mixed_lineage_join_probe_route_available = multiple_consumer_lineages
+                && consumer_lineages.iter().any(|consumer_lineage| {
+                    local_parquet_source(&plan, consumer_lineage.source_node_id).is_some()
+                        && (input_reference_count(&plan, consumer_lineage.source_node_id) > 1
+                            || consumer_lineage.has_shared_path)
+                })
+                && post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
+                    .is_some_and(|(consumer, _)| {
+                        !post_decode_consumer_feeds_scalar_decimal_sum(&plan, &parent_counts, &consumer)
+                    });
+            let mut needs_mixed_lineage_join_probe_route = false;
             for consumer_lineage in consumer_lineages {
                 let mut candidate = candidate.clone();
                 candidate.consumer_source_node_id = Some(consumer_lineage.source_node_id);
@@ -316,6 +342,7 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                         || consumer_lineage.has_shared_path
                     {
                         if multiple_consumer_lineages {
+                            needs_mixed_lineage_join_probe_route = true;
                             candidate.rejected_reason =
                                 Some(DynamicFilterRouteRejectedReason::ConsumerSourceReusedInPlan);
                             diagnostics.candidates.push(candidate);
@@ -358,6 +385,23 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                         if !consumer_column_type_is_supported(consumer_source, &consumer_lineage.source_column) {
                             candidate.rejected_reason =
                                 Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
+                            diagnostics.candidates.push(candidate);
+                            continue;
+                        }
+                        if !mixed_lineage_join_probe_route_available
+                            && !producer_input_is_literal_batch_exact_keyset(&plan, orientation.producer_input)
+                            && !dynamic_filter_consumer_source_feeds_downstream_work_fanout(
+                                &plan,
+                                consumer_lineage.source_node_id,
+                            )
+                            && large_keyset_dimension_sized_local_parquet_consumer_is_not_promising(
+                                &plan,
+                                orientation.producer_input,
+                                consumer_source,
+                            )
+                        {
+                            candidate.rejected_reason =
+                                Some(DynamicFilterRouteRejectedReason::LargeKeysetDimensionSizedLocalParquetConsumer);
                             diagnostics.candidates.push(candidate);
                             continue;
                         }
@@ -439,6 +483,76 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
                 diagnostics.route_count += 1;
                 diagnostics.candidates.push(candidate);
             }
+            if needs_mixed_lineage_join_probe_route {
+                let Some((consumer, consumer_column)) =
+                    post_decode_consumer_for_orientation(&plan, &parent_counts, node.id, &orientation, true, true)
+                else {
+                    continue;
+                };
+                let mut candidate = candidate.clone();
+                if post_decode_consumer_feeds_scalar_decimal_sum(&plan, &parent_counts, &consumer) {
+                    populate_selected_consumer_diagnostics(
+                        &mut candidate,
+                        &consumer,
+                        &consumer_column,
+                        DynamicFilterConsumerLowering::PostDecodeOnly,
+                    );
+                    candidate.rejected_reason =
+                        Some(DynamicFilterRouteRejectedReason::PostDecodeConsumerFeedsScalarDecimalSum);
+                    diagnostics.candidates.push(candidate);
+                    continue;
+                }
+                let filter_kinds =
+                    vec![DynamicFilterKind::Range, DynamicFilterKind::SmallInList, DynamicFilterKind::HashSetContains];
+                let id = DynamicFilterId::new(routes.len());
+                let producer_column = if aggregate_group_key_producer.is_some() {
+                    producer_lineage.source_column.clone()
+                } else {
+                    orientation.producer_key.name().to_string()
+                };
+                let producer = aggregate_group_key_producer
+                    .map(|aggregate_node_id| DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id })
+                    .unwrap_or(DynamicFilterProducer::HashJoinBuild {
+                        join_node_id: node.id,
+                        build_side: join.spec.build_side,
+                        build_input: orientation.producer_input,
+                    });
+                let route = DynamicFilterRoute::new(
+                    id,
+                    producer,
+                    consumer,
+                    vec![producer_column],
+                    vec![consumer_column.clone()],
+                    filter_kinds.clone(),
+                    DynamicFilterConsumerLowering::PostDecodeOnly,
+                );
+                if routes.iter().any(|existing| dynamic_filter_route_equivalent(existing, &route)) {
+                    continue;
+                }
+                if dynamic_filter_route_would_create_node_cycle(&plan, &routes, &route) {
+                    populate_selected_consumer_diagnostics(
+                        &mut candidate,
+                        &route.consumer,
+                        &consumer_column,
+                        DynamicFilterConsumerLowering::PostDecodeOnly,
+                    );
+                    candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::DynamicFilterControlCycle);
+                    diagnostics.candidates.push(candidate);
+                    continue;
+                }
+                candidate.consumer_kind = Some(route.consumer.kind().to_string());
+                candidate.consumer_node_id = Some(route.consumer.node_id());
+                candidate.consumer_key_column = Some(consumer_column);
+                candidate.consumer_reduction_stage = Some(route.consumer_reduction_stage());
+                routes.push(route);
+
+                candidate.dynamic_filter_id = Some(id);
+                candidate.filter_kinds = filter_kinds;
+                candidate.consumer_lowering = Some(DynamicFilterConsumerLowering::PostDecodeOnly);
+                candidate.routed = true;
+                diagnostics.route_count += 1;
+                diagnostics.candidates.push(candidate);
+            }
         }
 
         for residual_candidate in residual_equality_route_candidates(&plan, &parent_counts, node.id, join) {
@@ -474,6 +588,11 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
             candidate.selected_source_bytes = stats.and_then(|stats| stats.selected_source_bytes());
             candidate.total_source_bytes = stats.and_then(|stats| stats.total_source_bytes());
 
+            if producer_keyset_exceeds_runtime_limit(&plan, residual_candidate.producer_input) {
+                candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
             if input_reference_count(&plan, residual_candidate.consumer_lineage.source_node_id) > 1
                 || residual_candidate.consumer_lineage.has_shared_path
             {
@@ -502,6 +621,22 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
             }
             if !consumer_column_type_is_supported(consumer_source, &residual_candidate.consumer_lineage.source_column) {
                 candidate.rejected_reason = Some(DynamicFilterRouteRejectedReason::UnsupportedConsumerColumnType);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+            if !producer_input_is_literal_batch_exact_keyset(&plan, residual_candidate.producer_input)
+                && !dynamic_filter_consumer_source_feeds_downstream_work_fanout(
+                    &plan,
+                    residual_candidate.consumer_lineage.source_node_id,
+                )
+                && large_keyset_dimension_sized_local_parquet_consumer_is_not_promising(
+                    &plan,
+                    residual_candidate.producer_input,
+                    consumer_source,
+                )
+            {
+                candidate.rejected_reason =
+                    Some(DynamicFilterRouteRejectedReason::LargeKeysetDimensionSizedLocalParquetConsumer);
                 diagnostics.candidates.push(candidate);
                 continue;
             }
@@ -546,6 +681,14 @@ pub(crate) fn optimize_dynamic_filter_route_discovery(
         if routes.is_empty() { super::NativeOptimizerChange::Unchanged } else { super::NativeOptimizerChange::Changed };
     let plan = plan.with_dynamic_filter_routes(routes);
     DynamicFilterRouteDiscoveryResult { plan, change, diagnostics }
+}
+
+fn producer_input_is_literal_batch_exact_keyset(plan: &QueryPlan, node_id: NodeId) -> bool {
+    match plan.node(node_id).map(|node| &node.kind) {
+        Some(PlanNode::Source(source)) => matches!(source.as_ref(), SourceNode::LiteralBatch(_)),
+        Some(PlanNode::Projection(projection)) => producer_input_is_literal_batch_exact_keyset(plan, projection.input),
+        _ => false,
+    }
 }
 
 fn join_shape_supported(join: &JoinNode) -> bool {
@@ -856,6 +999,72 @@ fn residual_equality_source_filter_is_promising(
         return producer_bytes < consumer_bytes;
     }
     false
+}
+
+fn large_keyset_dimension_sized_local_parquet_consumer_is_not_promising(
+    plan: &QueryPlan,
+    producer_input: NodeId,
+    consumer_source: &LocalParquetSource,
+) -> bool {
+    let Some(consumer_stats) = consumer_source.diagnostics.selected_row_group_stats.as_ref() else {
+        return false;
+    };
+    let Some(consumer_bytes) = consumer_stats.selected_source_bytes() else {
+        return false;
+    };
+    if consumer_bytes > DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES {
+        return false;
+    }
+
+    let Some(producer_rows) = estimated_output_rows(plan, producer_input) else {
+        return false;
+    };
+    if producer_rows <= LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS as u64 {
+        return false;
+    }
+
+    consumer_stats.selected_row_groups <= TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS
+        || estimated_output_bytes(plan, producer_input).is_some_and(|producer_bytes| producer_bytes > consumer_bytes)
+}
+
+fn producer_keyset_exceeds_runtime_limit(plan: &QueryPlan, producer_input: NodeId) -> bool {
+    exact_unfiltered_output_rows(plan, producer_input).is_some_and(|rows| rows > MAX_DYNAMIC_FILTER_BUILD_ROWS as u64)
+}
+
+fn exact_unfiltered_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    match &plan.node(node_id)?.kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) if source.reader_predicate.is_none() => {
+                let rows = source
+                    .files
+                    .iter()
+                    .map(|file| {
+                        file.row_group_rows.as_ref()?.iter().try_fold(0_u64, |sum, rows| sum.checked_add(*rows))
+                    })
+                    .try_fold(0_u64, |sum, rows| sum.checked_add(rows?))?;
+                Some(source.scan_limit.map_or(rows, |limit| rows.min(limit as u64)))
+            },
+            SourceNode::LiteralBatch(source) => Some(source.row_count() as u64),
+            SourceNode::LocalParquet(_) | SourceNode::GpuResident(_) => None,
+        },
+        PlanNode::Projection(projection) => exact_unfiltered_output_rows(plan, projection.input),
+        PlanNode::Sort(sort) => exact_unfiltered_output_rows(plan, sort.input),
+        PlanNode::Limit(limit) => exact_unfiltered_output_rows(plan, limit.input).map(|rows| {
+            limit.spec.fetch.map_or(rows.saturating_sub(limit.spec.skip as u64), |fetch| {
+                rows.min(limit.spec.skip.saturating_add(fetch) as u64).saturating_sub(limit.spec.skip as u64)
+            })
+        }),
+        PlanNode::Union(union) => union
+            .inputs
+            .iter()
+            .try_fold(0_u64, |total, input| total.checked_add(exact_unfiltered_output_rows(plan, *input)?)),
+        PlanNode::Filter(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
 }
 
 #[derive(Debug, Clone)]

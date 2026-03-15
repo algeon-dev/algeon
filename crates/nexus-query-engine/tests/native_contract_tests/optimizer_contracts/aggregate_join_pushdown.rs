@@ -101,6 +101,147 @@ fn aggregate_join_pushdown_reduces_plain_sum_inner_join_without_semijoining_dupl
 }
 
 #[test]
+fn aggregate_join_pushdown_preserves_grouping_id_output_schema_for_grouping_sets() {
+    let sales_schema = schema(&["store_sk", "state", "county", "net_profit"]);
+    let store_schema = schema(&["store_sk"]);
+    let join_schema = schema(&["state", "county", "net_profit"]);
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("state", DataType::Int32, true),
+        Field::new("county", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("sum_profit", DataType::Int32, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let sales = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sales", Arc::clone(&sales_schema))));
+    let store = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("store", Arc::clone(&store_schema))));
+    let join = builder.add_join(
+        sales,
+        store,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "store_sk", "store_sk"),
+                ColumnRef::input(1, "store_sk", "store_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "state", "state"), "state"),
+            JoinOutputColumn::left(ColumnRef::input(0, "county", "county"), "county"),
+            JoinOutputColumn::left(ColumnRef::input(0, "net_profit", "net_profit"), "net_profit"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("state"), Expr::column("county")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("net_profit"), "sum_profit")],
+        )
+        .with_grouping_sets(nexus_query_engine::GroupingSetsSpec::new(
+            vec![vec![true, true], vec![false, true], vec![false, false]],
+            "__grouping_id",
+        )),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "grouping-set aggregate-over-join should still be eligible for pre-aggregation");
+    assert_all_node_inputs_exist(&optimized.plan);
+    let root = optimized.plan.root_node();
+    let PlanNode::Aggregate(final_aggregate) = &root.kind else {
+        panic!("optimized root should remain a final grouping-sets aggregate");
+    };
+    assert!(
+        final_aggregate.spec.grouping_sets.is_some(),
+        "aggregate join pushdown must preserve the grouping-set contract"
+    );
+    assert_eq!(
+        root.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["state", "county", "__grouping_id", "sum_profit"],
+        "final aggregate schema must retain the generated grouping-id field consumed by downstream GROUPING() projections"
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_avg_grouping_sets_final_projection_facts_match_typed_outputs() {
+    let sales_schema = schema(&["store_sk", "state", "county", "qty"]);
+    let store_schema = schema(&["store_sk"]);
+    let join_schema = schema(&["state", "county", "qty"]);
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("state", DataType::Int32, true),
+        Field::new("county", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("avg_qty", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let sales = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sales", Arc::clone(&sales_schema))));
+    let store = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("store", Arc::clone(&store_schema))));
+    let join = builder.add_join(
+        sales,
+        store,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "store_sk", "store_sk"),
+                ColumnRef::input(1, "store_sk", "store_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "state", "state"), "state"),
+            JoinOutputColumn::left(ColumnRef::input(0, "county", "county"), "county"),
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("state"), Expr::column("county")],
+            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty")],
+        )
+        .with_grouping_sets(nexus_query_engine::GroupingSetsSpec::new(
+            vec![vec![true, true], vec![false, true], vec![false, false]],
+            "__grouping_id",
+        )),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "AVG grouping-set aggregate-over-join should be pre-aggregated");
+    let root = optimized.plan.root_node();
+    let PlanNode::Projection(final_projection) = &root.kind else {
+        panic!("AVG pushdown should project the public average after explicit state merge");
+    };
+    assert_eq!(
+        final_projection.output_schema().as_ref(),
+        root.facts.output_schema.as_ref(),
+        "optimizer-created final projection facts must mirror typed projection outputs"
+    );
+    assert_eq!(
+        final_projection.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+        vec!["state", "county", "__grouping_id", "avg_qty"],
+        "the AVG final projection must preserve the public grouping id after computing the public aggregate output"
+    );
+    let PlanNode::Aggregate(final_aggregate) =
+        &optimized.plan.node(final_projection.input).expect("final projection input should exist").kind
+    else {
+        panic!("AVG final projection should consume a state-merging grouping-set aggregate");
+    };
+    assert!(
+        final_aggregate.spec.grouping_sets.is_some(),
+        "the state-merging aggregate must keep the grouping-set contract"
+    );
+}
+
+#[test]
 fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     let left_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let right_schema = Arc::new(Schema::new(vec![
@@ -198,4 +339,380 @@ fn aggregate_join_pushdown_reduces_left_join_count_on_non_preserved_side() {
     assert_eq!(preaggregate.spec.aggr_exprs.len(), 1);
     assert_eq!(preaggregate.spec.aggr_exprs[0].function, AggregateFunction::Count);
     assert_eq!(preaggregate.spec.aggr_exprs[0].expr, Expr::column("o_orderkey"));
+}
+
+#[test]
+fn aggregate_join_pushdown_reduces_avg_inner_join_with_explicit_sum_count_state() {
+    let left_schema = Arc::new(Schema::new(vec![
+        Field::new("reason_sk", DataType::Int32, false),
+        Field::new("qty", DataType::Float64, true),
+    ]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("reason_sk", DataType::Int32, false),
+        Field::new("reason_desc", DataType::Utf8, true),
+    ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("qty", DataType::Float64, true),
+        Field::new("reason_desc", DataType::Utf8, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("reason_desc", DataType::Utf8, true),
+        Field::new("avg_qty", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("fact", Arc::clone(&left_schema))));
+    let reason =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("reason", Arc::clone(&right_schema))));
+    let join = builder.add_join(
+        fact,
+        reason,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "reason_sk", "reason_sk"),
+                ColumnRef::input(1, "reason_sk", "reason_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "qty", "qty"), "qty"),
+            JoinOutputColumn::right(ColumnRef::input(1, "reason_desc", "reason_desc"), "reason_desc"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("reason_desc")],
+            vec![AggregateExpr::new(AggregateFunction::Avg, Expr::column("qty"), "avg_qty")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "AVG aggregate-over-join should be pre-aggregated as sum/count state");
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert_all_node_inputs_exist(&optimized.plan);
+
+    let PlanNode::Projection(final_projection) = &optimized.plan.root_node().kind else {
+        panic!("AVG pushdown should project the public average after merging explicit state");
+    };
+    assert_eq!(final_projection.outputs.len(), 2);
+    assert_eq!(final_projection.outputs[1].field.name(), "avg_qty");
+    assert!(
+        matches!(&final_projection.outputs[1].expr, Expr::Alias { expr, alias }
+            if alias == "avg_qty" && matches!(expr.as_ref(), Expr::Case { .. })),
+        "AVG final projection must divide merged SUM by merged COUNT with null-on-zero handling"
+    );
+
+    let PlanNode::Aggregate(final_aggregate) =
+        &optimized.plan.node(final_projection.input).expect("final projection input should exist").kind
+    else {
+        panic!("AVG final projection should consume a state-merging aggregate");
+    };
+    assert_eq!(final_aggregate.spec.group_exprs, vec![Expr::column("reason_desc")]);
+    assert_eq!(
+        final_aggregate
+            .spec
+            .aggr_exprs
+            .iter()
+            .map(|expr| expr.function)
+            .collect::<Vec<_>>(),
+        vec![AggregateFunction::Sum, AggregateFunction::Sum],
+        "final AVG merge must sum partial SUM and COUNT state, not average partial averages"
+    );
+    assert!(final_aggregate.spec.aggr_exprs.iter().all(|expr| expr.alias.starts_with("__cudf_preagg_avg_")));
+
+    let PlanNode::Join(reduced_join) =
+        &optimized.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind
+    else {
+        panic!("state-merging aggregate should consume the reduced join");
+    };
+    let PlanNode::Aggregate(preaggregate) =
+        &optimized.plan.node(reduced_join.inputs[0]).expect("left pre-aggregate should exist").kind
+    else {
+        panic!("left input to reduced join should be the AVG state pre-aggregate");
+    };
+    assert_eq!(
+        preaggregate
+            .spec
+            .aggr_exprs
+            .iter()
+            .map(|expr| expr.function)
+            .collect::<Vec<_>>(),
+        vec![AggregateFunction::Sum, AggregateFunction::Count]
+    );
+    assert_eq!(
+        preaggregate.spec.group_exprs,
+        vec![Expr::column("reason_sk").alias("reason_sk")],
+        "pre-aggregate must retain the join key before joining the reason dimension"
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_splits_large_union_before_small_dimension_join_preaggregate() {
+    let branch_schema = schema(&["store_sk", "date_sk", "sales"]);
+    let date_join_schema = schema(&["store_sk", "sales"]);
+    let store_join_schema = schema(&["store_id", "sales"]);
+    let aggregate_schema = schema(&["store_id", "sum_sales"]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let sales_a = builder.add_source(estimated_local_source_with_fields(
+        "sales_a",
+        &["store_sk", "date_sk", "sales"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let sales_b = builder.add_source(estimated_local_source_with_fields(
+        "sales_b",
+        &["store_sk", "date_sk", "sales"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let sales_union = builder.add_union(vec![sales_a, sales_b], Arc::clone(&branch_schema));
+    let date_dim = builder.add_source(estimated_local_source_with_fields(
+        "date_dim",
+        &["date_sk"],
+        1024 * 1024,
+        365,
+    ));
+    let date_join = builder.add_join(
+        sales_union,
+        date_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "date_sk", "date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "store_sk", "store_sk"), "store_sk"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
+        ])
+        .with_build_side(JoinSide::Right),
+        date_join_schema,
+    );
+    let store = builder.add_source(estimated_local_source_with_fields(
+        "store",
+        &["store_sk", "store_id"],
+        16 * 1024,
+        1_000,
+    ));
+    let store_join = builder.add_join(
+        date_join,
+        store,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "store_sk", "store_sk"),
+                ColumnRef::input(1, "store_sk", "store_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "store_id", "store_id"), "store_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
+        ])
+        .with_build_side(JoinSide::Right),
+        store_join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        store_join,
+        AggregateSpec::new(
+            vec![Expr::column("store_id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    let optimized = optimize_query_plan(plan, &options);
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert_all_node_inputs_exist(&optimized.plan);
+
+    let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else {
+        panic!("optimized root should be the store-id final aggregate");
+    };
+    let PlanNode::Join(store_join) =
+        &optimized.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind
+    else {
+        panic!("final aggregate should consume the reduced store join");
+    };
+    let PlanNode::Aggregate(date_preaggregate_merge) = &optimized
+        .plan
+        .node(store_join.inputs[0])
+        .expect("store join should consume the date pre-aggregate merge")
+        .kind
+    else {
+        panic!("large union date pre-aggregate should be merged before the store join");
+    };
+    assert_eq!(date_preaggregate_merge.spec.group_exprs, vec![Expr::column("store_sk")]);
+    assert_eq!(date_preaggregate_merge.spec.aggr_exprs[0].function, AggregateFunction::Sum);
+
+    let PlanNode::Union(partial_union) = &optimized
+        .plan
+        .node(date_preaggregate_merge.input)
+        .expect("date pre-aggregate merge should consume branch partials")
+        .kind
+    else {
+        panic!("date pre-aggregate merge should consume a union of branch partial aggregates");
+    };
+    assert_eq!(partial_union.inputs.len(), 2);
+
+    let mut replayed_date_input = None;
+    for branch_preaggregate_id in &partial_union.inputs {
+        let PlanNode::Aggregate(branch_preaggregate) = &optimized
+            .plan
+            .node(*branch_preaggregate_id)
+            .expect("branch pre-aggregate should exist")
+            .kind
+        else {
+            panic!("partial union input should be a branch pre-aggregate");
+        };
+        let PlanNode::Join(branch_date_join) = &optimized
+            .plan
+            .node(branch_preaggregate.input)
+            .expect("branch pre-aggregate input should exist")
+            .kind
+        else {
+            panic!("branch pre-aggregate should consume a branch-local date join");
+        };
+        assert!(
+            !matches!(
+                optimized.plan.node(branch_date_join.inputs[0]).expect("branch date join input should exist").kind,
+                PlanNode::Union(_)
+            ),
+            "branch-local date joins must consume individual union branches"
+        );
+        if let Some(first_date_input) = replayed_date_input {
+            assert_eq!(
+                branch_date_join.inputs[1], first_date_input,
+                "branch-local date joins should share the same small dimension input"
+            );
+        } else {
+            replayed_date_input = Some(branch_date_join.inputs[1]);
+        }
+    }
+}
+
+#[test]
+fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown() {
+    let branch_schema = schema(&["store_sk", "date_sk", "sales"]);
+    let date_join_schema = schema(&["store_sk", "sales"]);
+    let store_join_schema = schema(&["store_id", "sales"]);
+    let aggregate_schema = schema(&["store_id", "sum_sales"]);
+
+    let mut builder = QueryPlanBuilder::new();
+    let known_sales = builder.add_source(estimated_local_source_with_fields(
+        "known_sales",
+        &["store_sk", "date_sk", "sales"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let unknown_sales = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "unknown_sales",
+        Arc::clone(&branch_schema),
+    )));
+    let sales_union = builder.add_union(vec![known_sales, unknown_sales], Arc::clone(&branch_schema));
+    let date_dim = builder.add_source(estimated_local_source_with_fields(
+        "date_dim_unknown_branch",
+        &["date_sk"],
+        1024 * 1024,
+        365,
+    ));
+    let date_join = builder.add_join(
+        sales_union,
+        date_dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "date_sk", "date_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "store_sk", "store_sk"), "store_sk"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
+        ])
+        .with_build_side(JoinSide::Right),
+        date_join_schema,
+    );
+    let store = builder.add_source(estimated_local_source_with_fields(
+        "store_unknown_branch",
+        &["store_sk", "store_id"],
+        16 * 1024,
+        1_000,
+    ));
+    let store_join = builder.add_join(
+        date_join,
+        store,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "store_sk", "store_sk"),
+                ColumnRef::input(1, "store_sk", "store_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "store_id", "store_id"), "store_id"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales", "sales"), "sales"),
+        ])
+        .with_build_side(JoinSide::Right),
+        store_join_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        store_join,
+        AggregateSpec::new(
+            vec![Expr::column("store_id")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales"), "sum_sales")],
+        ),
+        aggregate_schema,
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    let optimized = optimize_query_plan(plan, &options);
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+
+    let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else {
+        panic!("optimized root should be the store-id final aggregate");
+    };
+    let PlanNode::Join(store_join) =
+        &optimized.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind
+    else {
+        panic!("final aggregate should consume the reduced store join");
+    };
+    let PlanNode::Aggregate(preaggregate) = &optimized
+        .plan
+        .node(store_join.inputs[0])
+        .expect("store join should consume the date pre-aggregate")
+        .kind
+    else {
+        panic!("store join should consume the unsplit date pre-aggregate");
+    };
+    let PlanNode::Join(date_join) =
+        &optimized.plan.node(preaggregate.input).expect("date pre-aggregate input should exist").kind
+    else {
+        panic!("unsplit date pre-aggregate should still consume the date join");
+    };
+    assert!(
+        matches!(
+            optimized.plan.node(date_join.inputs[0]).expect("date join left input should exist").kind,
+            PlanNode::Union(_)
+        ),
+        "unknown union branch size should keep the original join-over-union pre-aggregate"
+    );
 }

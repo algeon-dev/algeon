@@ -13,10 +13,27 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     index_bytes: u64,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
-) -> Result<ResidentGpuFrame> {
+) -> Result<(ResidentGpuFrame, OneShotJoinChunkMetrics)> {
+    let mut txn = JoinMaterializationTxn::with_sides(left, right);
+    txn.set_gather_map_reservation(gather_map_reservation);
+    txn.set_indices(indices);
     let overrides = execution_overrides(context);
-    let residual_candidate = one_shot_residual_candidate_projection(node)?;
-    let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
+    let residual_candidate = match one_shot_residual_candidate_projection(node) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
+    let gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
+    debug_assert_eq!(gather_map_bytes, index_bytes);
+    let (left, right) = txn.sides();
     super::super::common::trace_preflight_entry(
         "materialize_compiled_one_shot_residual_output",
         "one_shot_residual",
@@ -29,7 +46,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         right.rows,
         right.bytes,
     );
-    let candidate_reservation_bytes = match indices.output_upper_bound_size_bytes(
+    let candidate_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
         context,
         node_id,
         &left.frame,
@@ -55,13 +72,11 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
                 reservations,
                 &error,
             );
+            txn.rollback(reservations, metrics);
             return Err(error);
         },
     };
-    metrics.record_one_shot_join();
-    metrics.record_one_shot_join_index_bytes(index_bytes);
-    metrics.record_one_shot_join_materialization_bytes(candidate_reservation_bytes);
-    let mut candidate_reservation = reservations.try_reserve(
+    let mut candidate_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_residual_candidate_output",
@@ -70,28 +85,55 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             node_id,
         ),
         metrics,
-    )?;
-    let candidate = indices.materialize_output(
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
+    let (left, right) = txn.sides();
+    let candidate = match txn.indices().materialize_output(
         &left.frame,
         &right.frame,
         &overrides,
         &residual_candidate.projection,
         node.spec.join_type,
-    )?;
+    ) {
+        Ok(candidate) => candidate,
+        Err(error) => {
+            reservations.release(candidate_reservation, metrics);
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
-    let candidate_output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), metrics)?;
-    reconcile_join_output_upper_bound(
+    let candidate_output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(candidate);
+            reservations.release(candidate_reservation, metrics);
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
+    if let Err(error) = reconcile_join_output_upper_bound(
         node_id,
         &mut candidate_reservation,
         candidate_output_bytes,
         reservations,
         metrics,
-    )?;
-    drop(indices);
-    reservations.release(gather_map_reservation, metrics);
+    ) {
+        drop(candidate);
+        reservations.release(candidate_reservation, metrics);
+        txn.rollback(reservations, metrics);
+        return Err(error);
+    }
+    txn.drop_indices();
+    txn.release_gather_map_reservation(reservations, metrics);
 
-    let mut filtered_reservation = match reservations.try_reserve(
+    let filtered_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,
             "join_residual_filter_output",
@@ -105,6 +147,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         Err(error) => {
             drop(candidate);
             reservations.release(candidate_reservation, metrics);
+            txn.rollback(reservations, metrics);
             return Err(error);
         },
     };
@@ -120,10 +163,20 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             drop(candidate);
             reservations.release(filtered_reservation, metrics);
             reservations.release(candidate_reservation, metrics);
+            txn.rollback(reservations, metrics);
             return Err(error);
         },
     };
-    let predicate = lower_expr(&residual_candidate.predicate)?;
+    let predicate = match lower_expr(&residual_candidate.predicate) {
+        Ok(predicate) => predicate,
+        Err(error) => {
+            drop(candidate);
+            reservations.release(filtered_reservation, metrics);
+            reservations.release(candidate_reservation, metrics);
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
     let filter_overrides = token.execution_overrides();
     let filtered = match candidate.with_execution(&filter_overrides).filter_expr(predicate) {
         Ok(filtered) => filtered,
@@ -131,6 +184,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             drop(candidate);
             reservations.release(filtered_reservation, metrics);
             reservations.release(candidate_reservation, metrics);
+            txn.rollback(reservations, metrics);
             return Err(attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.join.one_shot_residual_filter",
@@ -146,58 +200,55 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     };
     drop(candidate);
     reservations.release(candidate_reservation, metrics);
+    txn.set_output_reservation(filtered_reservation);
 
-    let output =
-        filtered.select(residual_candidate.final_output_names.iter().map(String::as_str)).map_err(|error| {
-            QueryError::from_cudf(
+    let output = match filtered.select(residual_candidate.final_output_names.iter().map(String::as_str)) {
+        Ok(output) => output,
+        Err(error) => {
+            drop(filtered);
+            txn.rollback(reservations, metrics);
+            return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.one_shot_residual_output_projection",
                 "failed to project compiled one-shot residual join output columns",
                 error,
-            )
-        })?;
+            ));
+        },
+    };
     drop(filtered);
     metrics.operator_time += timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
-    metrics.record_one_shot_join_output_bytes(output_bytes);
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output);
+            txn.rollback(reservations, metrics);
+            return Err(error);
+        },
+    };
     if let Err(error) =
-        reconcile_join_output_upper_bound(node_id, &mut filtered_reservation, output_bytes, reservations, metrics)
+        reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
     {
         drop(output);
-        reservations.release(filtered_reservation, metrics);
-        drop(left);
-        drop(right);
+        txn.rollback(reservations, metrics);
         return Err(error);
     }
-    let final_output_reservation_bytes = filtered_reservation.bytes();
+    let final_output_reservation_bytes = txn.output_reservation_mut().bytes();
     let build_side = node.spec.build_side;
     let probe_side = probe_side(build_side);
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
-        node_id,
-        crate::metrics::JoinOperatorMetrics {
-            join_type: node.spec.join_type.to_string(),
-            execution_strategy: "bounded_one_shot_equi_join".to_string(),
-            key_count: node.spec.keys.len(),
-            residual_predicate: true,
-            null_equality: node.spec.null_equality.to_string(),
-            build_side: build_side.to_string(),
-            probe_side: probe_side.to_string(),
-            build_rows: side_metric(build_side, left.rows, right.rows),
-            build_bytes: side_metric(build_side, left.bytes, right.bytes),
-            probe_rows: side_metric(probe_side, left.rows, right.rows),
-            probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
-            hash_table_bytes: 0,
-            filtered_probe_state_bytes: 0,
-            mixed_size_data_bytes: 0,
-            gather_map_bytes,
-            output_reservation_bytes: final_output_reservation_bytes,
-            output_rows,
-            output_bytes,
-        },
-    ));
-    drop(left);
-    drop(right);
-    Ok(ResidentGpuFrame { frame: GpuDataFrame::new(output), reservation: filtered_reservation })
+    let (left, right) = txn.sides();
+    let chunk_metrics = OneShotJoinChunkMetrics {
+        build_rows: side_metric(build_side, left.rows, right.rows),
+        build_bytes: side_metric(build_side, left.bytes, right.bytes),
+        probe_rows: side_metric(probe_side, left.rows, right.rows),
+        probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
+        index_bytes: gather_map_bytes,
+        materialization_bytes: candidate_reservation_bytes,
+        output_reservation_bytes: final_output_reservation_bytes,
+        output_rows,
+        output_bytes,
+    };
+    let output = txn.commit_frame(GpuDataFrame::new(output), reservations, metrics);
+    Ok((output, chunk_metrics))
 }
 
 // Candidate output layout that preserves columns needed to evaluate a residual predicate.

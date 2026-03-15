@@ -6,7 +6,9 @@ use crate::capability::aggregate_strategy_capability_decision;
 pub(super) const ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
 pub(super) const ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS: u64 = 100_000;
 pub(super) const EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 5;
+pub(super) const EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 100_000;
 pub(super) const EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
+pub(super) const EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
 pub(super) const EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
 pub(super) const EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
 pub(super) const EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
@@ -338,12 +340,14 @@ pub(super) fn exact_single_key_cardinality_probe_candidate<'a>(
             != Some("selected_libcudf_runtime_probe")
         || !prepared_sort_groupby_contract_available(decision)
         || spec.group_exprs.len() != 1
-        || input_rows < EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS
     {
         return None;
     }
     let key_column = plain_group_key_column_name(&spec.group_exprs[0])?;
     input_schema.field_with_name(key_column).ok()?;
+    if input_rows < exact_single_key_cardinality_probe_min_input_rows(decision, spec) {
+        return None;
+    }
     Some(key_column)
 }
 
@@ -358,7 +362,7 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
             != Some("selected_libcudf_runtime_probe")
         || !prepared_sort_groupby_contract_available(decision)
         || !(2..=EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS).contains(&spec.group_exprs.len())
-        || input_rows < EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS
+        || input_rows < EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS
     {
         return None;
     }
@@ -378,6 +382,23 @@ pub(super) fn exact_grouped_key_cardinality_probe_candidate(
         return None;
     }
     Some(key_columns)
+}
+
+fn exact_single_key_cardinality_probe_min_input_rows(
+    decision: &AggregateStrategyCapabilityDecision,
+    spec: &AggregateSpec,
+) -> u64 {
+    let single_stage = decision.facts.get("execution_stage").map(String::as_str) == Some("single");
+    let single_string_key = decision.facts.get("group_key_count").map(String::as_str) == Some("1")
+        && decision.facts.get("string_group_key_count").map(String::as_str) == Some("1")
+        && decision.facts.get("fixed_width_group_key_count").map(String::as_str) == Some("0");
+    let avg_only =
+        !spec.aggr_exprs.is_empty() && spec.aggr_exprs.iter().all(|expr| expr.function == AggregateFunction::Avg);
+    if single_stage && single_string_key && avg_only {
+        EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS
+    } else {
+        EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS
+    }
 }
 
 pub(super) fn exact_single_key_cardinality_probe(

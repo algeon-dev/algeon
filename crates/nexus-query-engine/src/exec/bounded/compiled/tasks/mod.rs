@@ -14,10 +14,16 @@ use super::{
     state::CompiledPipelineState,
 };
 use crate::{
-    capability::{KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan},
+    capability::{
+        KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan,
+        keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness,
+    },
     dynamic_filter::{
-        DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT, DynamicFilter, DynamicFilterConsumer, DynamicFilterProducer,
-        DynamicFilterRoute, DynamicFilterSet, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON, dynamic_filter_i64_values,
+        DEFAULT_SMALL_IN_LIST_DYNAMIC_FILTER_LIMIT, DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES, DynamicFilter,
+        DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute, DynamicFilterSet,
+        LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON, LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS,
+        MAX_DYNAMIC_FILTER_BUILD_ROWS, TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS,
+        dynamic_filter_consumer_source_feeds_downstream_work_fanout, dynamic_filter_i64_values,
         dynamic_filter_predicate_for_schema,
     },
     error::{QueryError, QueryErrorCode, Result},
@@ -58,9 +64,6 @@ use crate::{
 };
 
 const OPERATION: &str = "nexus_query_engine.exec.bounded.compiled.tasks";
-const MAX_DYNAMIC_FILTER_BUILD_ROWS: usize = 1_000_000;
-const LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS: usize = 4 * 1024;
-const DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES: u64 = 256 * 1024 * 1024;
 
 mod executor;
 mod frame_stream;
@@ -77,8 +80,9 @@ use frame_stream::{
     map_dynamic_filter_resident_frame_stream, map_filter_resident_frame_stream, map_projection_resident_frame_stream,
 };
 use helpers::{
-    attach_task_facts, invalid, join_node, join_strategy, limit_node, plan_node, single_input_resource,
-    single_output_resource, sort_node, task_diagnostic_resident_resource,
+    attach_task_facts, invalid, join_node, join_strategy, join_strategy_needs_build_key_uniqueness_probe, limit_node,
+    measure_join_build_key_unique, plan_node, single_input_resource, single_output_resource, sort_node,
+    task_diagnostic_resident_resource,
 };
 pub use resource::CompiledGpuResource;
 use resource::CompiledGpuResourcePayload;

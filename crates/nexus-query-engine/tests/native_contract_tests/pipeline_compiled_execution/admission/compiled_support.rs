@@ -442,6 +442,33 @@ fn compiled_bounded_support_accepts_d3_6_nonlinear_topk_and_subquery_filter_path
             2,
         ),
         (
+            "resident grouped-aggregate TopK direct aggregate input",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
+            ),
+            nexus_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&nexus_query_engine::capability::CapabilityAnalysis) -> bool,
+            2,
+        ),
+        (
+            "resident grouped-aggregate TopK filter-wrapped direct aggregate input",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput,
+            ),
+            nexus_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&nexus_query_engine::capability::CapabilityAnalysis) -> bool,
+            2,
+        ),
+        (
+            "resident grouped-aggregate TopK preaggregated filter-wrapped direct aggregate input",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
+            ),
+            nexus_query_engine::capability::CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&nexus_query_engine::capability::CapabilityAnalysis) -> bool,
+            3,
+        ),
+        (
             "resident grouped-aggregate subquery filter",
             resident_grouped_aggregate_subquery_filter_plan(),
             nexus_query_engine::capability::CapabilityAnalysis::admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline

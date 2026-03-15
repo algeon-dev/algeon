@@ -804,6 +804,32 @@ fn native_filter_predicate_uses_where_semantics_for_nullable_and_or_in_lists() {
     );
 }
 
+#[test]
+fn native_filter_predicate_executes_large_numeric_literal_in_list() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let schema =
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false), Field::new("key", DataType::Int64, true)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3, 4, 5, 6])),
+            Arc::new(Int64Array::from(vec![Some(2), Some(3), Some(128), None, Some(250), Some(260)])),
+        ],
+    )
+    .unwrap();
+    let list = (0..129).map(|value| Expr::literal(LiteralValue::Int64(value * 2))).collect();
+
+    assert_eq!(
+        execute_gpu_resident_filter_ids(
+            &runtime,
+            Arc::clone(&schema),
+            &batch,
+            Expr::in_list(Expr::column("key"), list)
+        ),
+        vec![1, 3, 5]
+    );
+}
+
 fn execute_gpu_resident_filter_ids(
     runtime: &Arc<cudf::Runtime>,
     schema: Arc<Schema>,

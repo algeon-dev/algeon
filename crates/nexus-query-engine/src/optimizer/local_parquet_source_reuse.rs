@@ -5,8 +5,9 @@ use std::{
 
 use arrow::datatypes::{DataType, Field, Schema};
 
-use super::rewrite;
+use super::{dynamic_filter as dynamic_filter_optimizer, rewrite};
 use crate::{
+    dynamic_filter::DynamicFilterConsumer,
     expr::{BinaryOp, CaseWhen, Expr},
     plan::{
         FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
@@ -99,6 +100,9 @@ pub enum LocalParquetSourceReuseRejectedReason {
     UnsupportedSourceContract,
     /// Reusing the group would require widening a large source variant.
     VariantTooLarge,
+    /// Reusing the group would merge source variants that need different
+    /// dynamic-filter consumer routes.
+    DynamicFilterConsumerConflict,
 }
 
 pub(crate) struct LocalParquetSourceReuseResult {
@@ -110,6 +114,7 @@ pub(crate) struct LocalParquetSourceReuseResult {
 pub(crate) fn optimize_local_parquet_source_reuse(
     plan: QueryPlan,
     options: &LocalParquetSourceReuseOptions,
+    dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
 ) -> LocalParquetSourceReuseResult {
     if !options.enabled {
         return LocalParquetSourceReuseResult {
@@ -119,7 +124,7 @@ pub(crate) fn optimize_local_parquet_source_reuse(
         };
     }
 
-    let discovery = discover_source_reuse_candidates(&plan, options);
+    let discovery = discover_source_reuse_candidates(&plan, options, dynamic_filter_options);
     if discovery.rewrites.is_empty() {
         return LocalParquetSourceReuseResult {
             plan,
@@ -146,6 +151,7 @@ struct SourceReuseDiscovery {
 fn discover_source_reuse_candidates(
     plan: &QueryPlan,
     options: &LocalParquetSourceReuseOptions,
+    dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
 ) -> SourceReuseDiscovery {
     let reachable = rewrite::sink_reachable_nodes(plan);
     let mut groups = BTreeMap::<SourceGroupKey, Vec<SourceVariant>>::new();
@@ -164,6 +170,11 @@ fn discover_source_reuse_candidates(
         }
     }
 
+    let dynamic_filter_routes_by_source = if groups.values().any(|variants| variants.len() >= 2) {
+        dynamic_filter_source_route_signatures(plan, dynamic_filter_options)
+    } else {
+        BTreeMap::new()
+    };
     let mut diagnostics = LocalParquetSourceReuseDiagnostics::default();
     let mut rewrites = Vec::new();
     for mut variants in groups.into_values() {
@@ -195,11 +206,15 @@ fn discover_source_reuse_candidates(
                 source_variant_feeds_source_adjacent_grouped_aggregate(plan, variant.source_node_id)
                     && source_reuse_would_widen_variant(variant, &superset_read_columns)
             });
+        let dynamic_filter_consumer_conflict =
+            source_group_has_dynamic_filter_consumer_conflict(&variants, &dynamic_filter_routes_by_source);
 
         let rejected_reason = if variants.iter().any(|variant| !variant.supported_contract)
             || source_group_has_conflicting_file_order(&variants)
         {
             Some(LocalParquetSourceReuseRejectedReason::UnsupportedSourceContract)
+        } else if dynamic_filter_consumer_conflict {
+            Some(LocalParquetSourceReuseRejectedReason::DynamicFilterConsumerConflict)
         } else if large_variant_blocks_source_adjacent_grouped_aggregate {
             Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge)
         } else if source_group_has_conflicting_file_columns(&variants) {
@@ -266,6 +281,48 @@ fn source_parent_map(plan: &QueryPlan) -> BTreeMap<NodeId, Vec<NodeId>> {
 
 fn source_reuse_would_widen_variant(variant: &SourceVariant, superset_read_columns: &[SupersetColumn]) -> bool {
     variant.reader_predicate.is_some() || !variant_read_columns_match_superset(variant, superset_read_columns)
+}
+
+fn dynamic_filter_source_route_signatures(
+    plan: &QueryPlan,
+    options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
+) -> BTreeMap<NodeId, BTreeSet<String>> {
+    if !options.enabled {
+        return BTreeMap::new();
+    }
+    let result = dynamic_filter_optimizer::optimize_dynamic_filter_route_discovery(plan.clone(), options);
+    let mut signatures = BTreeMap::<NodeId, BTreeSet<String>>::new();
+    for route in result.plan.dynamic_filter_routes() {
+        let DynamicFilterConsumer::LocalParquetSource { source_node_id } = &route.consumer else {
+            continue;
+        };
+        signatures.entry(*source_node_id).or_default().insert(dynamic_filter_source_route_signature(route));
+    }
+    signatures
+}
+
+fn dynamic_filter_source_route_signature(route: &crate::dynamic_filter::DynamicFilterRoute) -> String {
+    format!(
+        "producer_kind={};producer_node={};producer_columns={};consumer_columns={};lowering={}",
+        route.producer.kind(),
+        route.producer.node_id(),
+        route.producer_columns.join("+"),
+        route.consumer_columns.join("+"),
+        route.consumer_lowering,
+    )
+}
+
+fn source_group_has_dynamic_filter_consumer_conflict(
+    variants: &[SourceVariant],
+    dynamic_filter_routes_by_source: &BTreeMap<NodeId, BTreeSet<String>>,
+) -> bool {
+    let mut route_sets = variants
+        .iter()
+        .map(|variant| dynamic_filter_routes_by_source.get(&variant.source_node_id).cloned().unwrap_or_default());
+    let Some(first) = route_sets.next() else {
+        return false;
+    };
+    route_sets.any(|route_set| route_set != first)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]

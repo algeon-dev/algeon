@@ -26,6 +26,11 @@ pub(crate) const SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
 pub(crate) const SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
 /// Small probes avoid the scheduling overhead of the partitioned path.
 pub(crate) const SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
+/// Large-but-contained right builds can still be cheaper than partitioning when
+/// a left join's preserved probe side is already small.
+pub(crate) const MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD: u64 = 128_000_000;
+/// Byte guard paired with [`MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD`].
+pub(crate) const MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Node-local native join execution capability.
 ///
@@ -67,6 +72,9 @@ pub(crate) struct KeyedHashJoinStrategyInputFacts {
     pub(crate) observed_build_rows: Option<u64>,
     pub(crate) build_side_bytes: Option<u64>,
     pub(crate) probe_side_bytes: Option<u64>,
+    pub(crate) estimated_output_rows: Option<u64>,
+    pub(crate) estimated_output_bytes: Option<u64>,
+    pub(crate) build_key_unique: Option<bool>,
     pub(crate) probe_reuse_count: u64,
     pub(crate) reusable_prebuild_supported: bool,
 }
@@ -179,9 +187,12 @@ pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
             keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join),
         ));
     }
+    let input = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join);
+    if let Some(decision) = partitioned_mixed_keyed_residual_strategy_decision(join, input) {
+        return Some(decision);
+    }
     if one_shot_equi_join_supported(join) {
-        let decision =
-            keyed_hash_join_strategy_decision(join, keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, join));
+        let decision = keyed_hash_join_strategy_decision(join, input);
         if matches!(
             decision,
             KeyedHashJoinStrategyDecision::Selected {
@@ -197,7 +208,7 @@ pub(crate) fn keyed_hash_join_strategy_decision_for_plan(
 
 pub(crate) fn keyed_hash_join_strategy_input_facts_for_plan(
     plan: &QueryPlan,
-    _node_id: NodeId,
+    node_id: NodeId,
     join: &JoinNode,
 ) -> KeyedHashJoinStrategyInputFacts {
     let build_input = match join.spec.build_side {
@@ -209,6 +220,9 @@ pub(crate) fn keyed_hash_join_strategy_input_facts_for_plan(
         observed_build_rows: None,
         build_side_bytes: estimated_output_bytes(plan, build_input),
         probe_side_bytes: estimated_output_bytes(plan, probe_input_for_join(join)),
+        estimated_output_rows: estimated_output_rows(plan, node_id),
+        estimated_output_bytes: estimated_output_bytes(plan, node_id),
+        build_key_unique: None,
         probe_reuse_count: 1,
         reusable_prebuild_supported: reusable_hash_prebuild_supported_for_plan(plan, join),
     }
@@ -259,6 +273,12 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     let small_probe =
         !large_probe && input.probe_side_bytes.is_some_and(|bytes| bytes <= SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD);
     let single_use_without_artifact = join.spec.build_artifact_id.is_none() && input.probe_reuse_count <= 1;
+    let one_shot_contained_left_join_build = input
+        .observed_build_rows
+        .or(input.estimated_build_rows)
+        .is_some_and(|rows| rows <= MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD)
+        && input.build_side_bytes.is_some_and(|bytes| bytes <= MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD);
+    let one_shot_contained_left_join_output = input.build_key_unique == Some(true);
     let reusable_rejected_reason = if !input.reusable_prebuild_supported {
         Some("build_key_prebuild_reservation_unsupported")
     } else if large_build {
@@ -276,6 +296,33 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     } else {
         None
     };
+
+    if let Some(decision) = partitioned_mixed_keyed_residual_strategy_decision(join, input) {
+        return decision;
+    }
+
+    if one_shot_equi_join_supported(join)
+        && join.spec.join_type == JoinType::Left
+        && join.spec.build_side == JoinSide::Right
+        && input.reusable_prebuild_supported
+        && single_use_without_artifact
+        && !small_build
+        && small_probe
+        && one_shot_contained_left_join_build
+        && one_shot_contained_left_join_output
+    {
+        return KeyedHashJoinStrategyDecision::Selected {
+            strategy: KeyedHashJoinStrategy::OneShotEqui,
+            facts: strategy_facts(
+                join,
+                input,
+                KeyedHashJoinStrategy::OneShotEqui,
+                reusable_rejected_reason,
+                Some("small_preserved_probe_prefers_one_shot_left_join"),
+                None,
+            ),
+        };
+    }
 
     let prefer_reusable = join.spec.build_artifact_id.is_some()
         || input.probe_reuse_count > 1
@@ -356,6 +403,73 @@ pub(crate) fn keyed_hash_join_strategy_decision(
     }
 }
 
+fn partitioned_mixed_keyed_residual_strategy_decision(
+    join: &JoinNode,
+    input: KeyedHashJoinStrategyInputFacts,
+) -> Option<KeyedHashJoinStrategyDecision> {
+    if !partitioned_keyed_residual_join_supported(join) || join_residual_requires_post_join_filter(join) {
+        return None;
+    }
+    let large_build = input.observed_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
+        || input.estimated_build_rows.is_some_and(|rows| rows >= LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD)
+        || input.build_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD);
+    let large_probe = input.probe_side_bytes.is_some_and(|bytes| bytes >= LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD);
+    let small_build = !large_build
+        && (input.observed_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
+            || input.estimated_build_rows.is_some_and(|rows| rows <= SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD)
+            || input.build_side_bytes.is_some_and(|bytes| bytes <= SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD));
+    let build_size_known =
+        input.observed_build_rows.is_some() || input.estimated_build_rows.is_some() || input.build_side_bytes.is_some();
+    if !large_build && !large_probe && (!build_size_known || small_build) {
+        return None;
+    }
+    let reusable_rejected_reason = if !input.reusable_prebuild_supported {
+        Some("build_key_prebuild_reservation_unsupported")
+    } else if large_build {
+        Some("build_side_too_large")
+    } else if large_probe && !small_build {
+        Some("probe_side_too_large")
+    } else {
+        Some("keyed_residual_requires_partitioned_mixed_strategy")
+    };
+    Some(KeyedHashJoinStrategyDecision::Selected {
+        strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
+        facts: strategy_facts(
+            join,
+            input,
+            KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
+            reusable_rejected_reason,
+            None,
+            None,
+        ),
+    })
+}
+
+pub(crate) fn keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
+    join: &JoinNode,
+    input: KeyedHashJoinStrategyInputFacts,
+) -> bool {
+    if join.spec.join_type != JoinType::Left
+        || join.spec.build_side != JoinSide::Right
+        || input.build_key_unique.is_some()
+    {
+        return false;
+    }
+    if matches!(
+        keyed_hash_join_strategy_decision(join, input),
+        KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }
+    ) {
+        return false;
+    }
+    matches!(
+        keyed_hash_join_strategy_decision(
+            join,
+            KeyedHashJoinStrategyInputFacts { build_key_unique: Some(true), ..input },
+        ),
+        KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::OneShotEqui, .. }
+    )
+}
+
 pub(crate) fn partitioned_equi_join_supported(join: &JoinNode) -> bool {
     !join.spec.keys.is_empty()
         && join.spec.residual_predicate.is_none()
@@ -372,7 +486,8 @@ pub(crate) fn one_shot_equi_join_supported(join: &JoinNode) -> bool {
     !join.spec.keys.is_empty()
         && !join.spec.output_projection.is_empty()
         && matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::Full)
-        && (join.spec.residual_predicate.is_none() || join.spec.join_type == JoinType::Inner)
+        && (join.spec.residual_predicate.is_none()
+            || (join.spec.join_type == JoinType::Inner && join_residual_requires_post_join_filter(join)))
         && (join.spec.join_type != JoinType::Left || join.spec.build_side == JoinSide::Right)
 }
 
@@ -435,6 +550,14 @@ fn strategy_facts(
         ("small_reusable_hash_build_row_threshold", SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD.to_string()),
         ("small_reusable_hash_build_bytes_threshold", SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD.to_string()),
         ("small_one_shot_probe_bytes_threshold", SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD.to_string()),
+        (
+            "max_small_probe_left_one_shot_build_row_threshold",
+            MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD.to_string(),
+        ),
+        (
+            "max_small_probe_left_one_shot_build_bytes_threshold",
+            MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD.to_string(),
+        ),
     ]);
     if let Some(rows) = input.estimated_build_rows {
         facts.insert("estimated_build_rows", rows.to_string());
@@ -447,6 +570,15 @@ fn strategy_facts(
     }
     if let Some(bytes) = input.probe_side_bytes {
         facts.insert("probe_side_bytes", bytes.to_string());
+    }
+    if let Some(rows) = input.estimated_output_rows {
+        facts.insert("estimated_output_rows", rows.to_string());
+    }
+    if let Some(bytes) = input.estimated_output_bytes {
+        facts.insert("estimated_output_bytes", bytes.to_string());
+    }
+    if let Some(unique) = input.build_key_unique {
+        facts.insert("build_key_unique", unique.to_string());
     }
     if let Some(reason) = reusable_rejected_reason {
         facts.insert("reusable_hash_join_rejected_reason", reason.to_string());
@@ -556,5 +688,261 @@ pub(crate) fn multi_join_keyed_residual_mixed_join_capable(join: &JoinNode) -> b
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
         },
         JoinType::Left | JoinType::Full | JoinType::Cross | JoinType::LeftMark => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        expr::ColumnRef,
+        plan::{JoinKey, JoinOutputColumn, JoinSpec},
+    };
+
+    fn single_use_join(join_type: JoinType) -> JoinNode {
+        JoinNode {
+            inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
+            spec: JoinSpec::new(
+                join_type,
+                vec![JoinKey::new(
+                    ColumnRef::input(0, "join_key", "join_key"),
+                    ColumnRef::input(1, "join_key", "join_key"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "left_value", "left_value"), "left_value"),
+                JoinOutputColumn::right(ColumnRef::input(1, "right_value", "right_value"), "right_value"),
+            ]),
+        }
+    }
+
+    fn single_use_inner_join() -> JoinNode {
+        single_use_join(JoinType::Inner)
+    }
+
+    fn single_use_inner_join_with_residual(residual: Expr) -> JoinNode {
+        let mut join = single_use_inner_join();
+        join.spec = join.spec.with_residual_predicate(residual);
+        join
+    }
+
+    fn single_use_left_join() -> JoinNode {
+        single_use_join(JoinType::Left)
+    }
+
+    fn input_facts(
+        estimated_build_rows: Option<u64>,
+        observed_build_rows: Option<u64>,
+        probe_side_bytes: Option<u64>,
+    ) -> KeyedHashJoinStrategyInputFacts {
+        KeyedHashJoinStrategyInputFacts {
+            estimated_build_rows,
+            observed_build_rows,
+            build_side_bytes: Some(SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD / 2),
+            probe_side_bytes,
+            estimated_output_rows: None,
+            estimated_output_bytes: None,
+            build_key_unique: None,
+            probe_reuse_count: 1,
+            reusable_prebuild_supported: true,
+        }
+    }
+
+    fn selected_strategy(decision: KeyedHashJoinStrategyDecision) -> KeyedHashJoinStrategy {
+        match decision {
+            KeyedHashJoinStrategyDecision::Selected { strategy, .. } => strategy,
+            KeyedHashJoinStrategyDecision::Rejected { reason, facts } => {
+                panic!("expected selected strategy, got rejection {reason} with facts {facts:?}");
+            },
+        }
+    }
+
+    #[test]
+    fn known_small_probe_single_use_inner_join_stays_reusable() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            input_facts(Some(10), None, Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+    }
+
+    #[test]
+    fn supported_keyed_residual_inner_join_stays_on_mixed_strategy() {
+        let join = single_use_inner_join_with_residual(Expr::binary(
+            Expr::column("left_value"),
+            BinaryOp::Gt,
+            Expr::column("right_value"),
+        ));
+
+        assert!(!one_shot_equi_join_supported(&join));
+        assert_eq!(join_node_execution_capability(&join), Some(JoinExecutionCapability::KeyedResidualMixed));
+    }
+
+    #[test]
+    fn post_filter_only_keyed_residual_inner_join_uses_one_shot_filter_path() {
+        let join = single_use_inner_join_with_residual(Expr::is_distinct_from(
+            Expr::column("left_value"),
+            Expr::column("right_value"),
+        ));
+        let decision = keyed_hash_join_strategy_decision(
+            &join,
+            input_facts(Some(10), None, Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
+        );
+
+        assert!(one_shot_equi_join_supported(&join));
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::OneShotEqui);
+    }
+
+    #[test]
+    fn unknown_probe_medium_single_use_inner_join_stays_reusable() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            input_facts(Some(SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None, None),
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+    }
+
+    #[test]
+    fn unknown_probe_tiny_estimated_build_stays_reusable() {
+        let decision = keyed_hash_join_strategy_decision(&single_use_inner_join(), input_facts(Some(10), None, None));
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+    }
+
+    #[test]
+    fn unknown_probe_tiny_observed_without_estimate_stays_reusable() {
+        let decision = keyed_hash_join_strategy_decision(&single_use_inner_join(), input_facts(None, Some(31), None));
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+    }
+
+    #[test]
+    fn unknown_probe_medium_observed_without_estimate_stays_reusable() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_inner_join(),
+            input_facts(None, Some(SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None),
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+    }
+
+    #[test]
+    fn left_join_with_small_probe_unique_build_and_contained_large_build_prefers_one_shot() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_left_join(),
+            KeyedHashJoinStrategyInputFacts {
+                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                observed_build_rows: None,
+                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                estimated_output_rows: None,
+                estimated_output_bytes: None,
+                build_key_unique: Some(true),
+                probe_reuse_count: 1,
+                reusable_prebuild_supported: true,
+            },
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::OneShotEqui);
+    }
+
+    #[test]
+    fn left_join_with_small_probe_and_small_build_stays_reusable() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_left_join(),
+            KeyedHashJoinStrategyInputFacts {
+                estimated_build_rows: Some(10),
+                observed_build_rows: None,
+                build_side_bytes: Some(1024),
+                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                estimated_output_rows: None,
+                estimated_output_bytes: None,
+                build_key_unique: Some(true),
+                probe_reuse_count: 1,
+                reusable_prebuild_supported: true,
+            },
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
+    }
+
+    #[test]
+    fn left_join_with_small_probe_and_uncontained_large_build_stays_partitioned() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_left_join(),
+            KeyedHashJoinStrategyInputFacts {
+                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD + 1),
+                observed_build_rows: None,
+                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD + 1),
+                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                estimated_output_rows: None,
+                estimated_output_bytes: None,
+                build_key_unique: Some(true),
+                probe_reuse_count: 1,
+                reusable_prebuild_supported: true,
+            },
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::PartitionedHashEqui);
+    }
+
+    #[test]
+    fn left_join_with_small_probe_and_no_output_containment_evidence_stays_partitioned() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_left_join(),
+            KeyedHashJoinStrategyInputFacts {
+                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                observed_build_rows: None,
+                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                estimated_output_rows: None,
+                estimated_output_bytes: None,
+                build_key_unique: None,
+                probe_reuse_count: 1,
+                reusable_prebuild_supported: true,
+            },
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::PartitionedHashEqui);
+    }
+
+    #[test]
+    fn left_join_with_small_probe_and_contained_build_requests_uniqueness_probe() {
+        assert!(keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
+            &single_use_left_join(),
+            KeyedHashJoinStrategyInputFacts {
+                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                observed_build_rows: None,
+                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                estimated_output_rows: None,
+                estimated_output_bytes: None,
+                build_key_unique: None,
+                probe_reuse_count: 1,
+                reusable_prebuild_supported: true,
+            },
+        ));
+    }
+
+    #[test]
+    fn left_join_with_small_probe_and_contained_output_estimate_without_exact_proof_stays_partitioned() {
+        let decision = keyed_hash_join_strategy_decision(
+            &single_use_left_join(),
+            KeyedHashJoinStrategyInputFacts {
+                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                observed_build_rows: None,
+                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                estimated_output_rows: Some(1),
+                estimated_output_bytes: Some(1024),
+                build_key_unique: None,
+                probe_reuse_count: 1,
+                reusable_prebuild_supported: true,
+            },
+        );
+
+        assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::PartitionedHashEqui);
     }
 }

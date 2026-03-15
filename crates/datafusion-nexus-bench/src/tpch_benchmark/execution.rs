@@ -134,9 +134,31 @@ pub(super) fn select_benchmark_planning_row(
             }
             Ok(row)
         },
-        count => Err(plan_error(format!(
-            "native TPC-H benchmark requires exactly one native planning row per query; {query_id} produced {count}"
-        ))),
+        count => {
+            let mut whole_native_rows = Vec::new();
+            for row in rows {
+                if row.query_id != query_id {
+                    return Err(plan_error(format!(
+                        "native TPC-H benchmark planning row query_id mismatch; requested {query_id}, observed {}",
+                        row.query_id
+                    )));
+                }
+                if row.outcome == NativeDataFusionPlanningOutcome::AcceptedReplaced
+                    && row.post_native_execution_path == NativeDataFusionPostNativeExecutionPath::Native
+                    && row.native_plan_fragment_count == 1
+                    && row.host_datafusion_boundary_count == 0
+                    && !row.rejected_before_execution
+                {
+                    whole_native_rows.push(row);
+                }
+            }
+            match whole_native_rows.len() {
+                1 => Ok(whole_native_rows.pop().expect("one whole-native planning row should be present")),
+                accepted_count => Err(plan_error(format!(
+                    "native TPC-H benchmark requires exactly one whole-native accepted planning row when a query report has multiple rows; {query_id} produced {count} rows and {accepted_count} whole-native accepted rows"
+                ))),
+            }
+        },
     }
 }
 

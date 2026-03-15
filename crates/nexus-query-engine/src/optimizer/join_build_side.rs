@@ -197,16 +197,26 @@ fn select_build_side(
     if let Some(side) = smaller_known_side(left.rows, right.rows) {
         return Some(side);
     }
-    if let Some(side) = grouped_aggregate_keyset_side(left, right) {
-        return Some(side);
+    let current_estimate = match current {
+        JoinSide::Left => left,
+        JoinSide::Right => right,
+    };
+    if current_estimate.is_small(options) {
+        return Some(current);
     }
-
     let other = opposite_side(current);
     let other_estimate = match other {
         JoinSide::Left => left,
         JoinSide::Right => right,
     };
-    if other_estimate.is_small(options) { Some(other) } else { None }
+    if other_estimate.is_small(options) {
+        return Some(other);
+    }
+    if let Some(side) = grouped_aggregate_keyset_side(left, right) {
+        return Some(side);
+    }
+
+    None
 }
 
 fn grouped_aggregate_keyset_side(left: SideEstimate, right: SideEstimate) -> Option<JoinSide> {
@@ -243,8 +253,8 @@ impl SideEstimate {
     fn for_join_side(plan: &QueryPlan, join: &JoinNode, side: JoinSide) -> Self {
         let node_id = join.inputs[join_side_index(side)];
         Self {
-            rows: estimated_output_rows(plan, node_id),
-            bytes: estimated_output_bytes(plan, node_id),
+            rows: estimated_output_rows(plan, node_id).or_else(|| bounded_left_semijoin_rows(plan, node_id)),
+            bytes: estimated_output_bytes(plan, node_id).or_else(|| bounded_left_semijoin_bytes(plan, node_id)),
             has_grouped_aggregate_keyset: join_side_keys_are_grouped_aggregate_keyset(plan, join, side),
         }
     }
@@ -252,6 +262,56 @@ impl SideEstimate {
     fn is_small(self, options: &JoinBuildSideSelectionOptions) -> bool {
         self.bytes.is_some_and(|bytes| bytes <= options.small_build_side_bytes)
             || self.rows.is_some_and(|rows| rows <= options.small_build_side_rows)
+    }
+}
+
+fn bounded_left_semijoin_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Projection(projection) => bounded_left_semijoin_rows(plan, projection.input),
+        PlanNode::Filter(filter) => bounded_left_semijoin_rows(plan, filter.input),
+        PlanNode::Window(window) => bounded_left_semijoin_rows(plan, window.input),
+        PlanNode::Sort(sort) => bounded_left_semijoin_rows(plan, sort.input),
+        PlanNode::Limit(limit) => bounded_left_semijoin_rows(plan, limit.input).map(|rows| {
+            limit.spec.fetch.map_or(rows.saturating_sub(limit.spec.skip as u64), |fetch| {
+                rows.min(limit.spec.skip.saturating_add(fetch) as u64).saturating_sub(limit.spec.skip as u64)
+            })
+        }),
+        PlanNode::Join(join)
+            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
+        {
+            estimated_output_rows(plan, join.inputs[0]).or_else(|| bounded_left_semijoin_rows(plan, join.inputs[0]))
+        },
+        PlanNode::Source(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Union(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
+    }
+}
+
+fn bounded_left_semijoin_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    let node = plan.node(node_id)?;
+    match &node.kind {
+        PlanNode::Projection(projection) => bounded_left_semijoin_bytes(plan, projection.input),
+        PlanNode::Filter(filter) => bounded_left_semijoin_bytes(plan, filter.input),
+        PlanNode::Sort(sort) => bounded_left_semijoin_bytes(plan, sort.input),
+        PlanNode::Join(join)
+            if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
+        {
+            estimated_output_bytes(plan, join.inputs[0]).or_else(|| bounded_left_semijoin_bytes(plan, join.inputs[0]))
+        },
+        PlanNode::Source(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::Window(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_)
+        | PlanNode::Join(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_) => None,
     }
 }
 

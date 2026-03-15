@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
-use super::rewrite;
+use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
+
+use super::{dimension_pruning, rewrite};
 use crate::{
-    expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr},
+    expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr, LiteralValue},
     plan::{
         JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
         ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
@@ -13,6 +15,7 @@ use crate::{
 pub const JOIN_FILTER_REASSOCIATION_RULE_NAME: &str = "join_filter_reassociation";
 const RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_ROWS: u64 = 1_000_000;
 const RESIDUAL_FILTER_PUSHDOWN_MAX_TARGET_BYTES: u64 = 64 * 1024 * 1024;
+const RESIDUAL_SCALAR_RANGE_MAX_ROWS: u64 = 1_000_000;
 
 /// Configuration for moving filters across preserved-side join structure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -645,6 +648,9 @@ fn derive_side_necessary_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, 
     if expression_scope(plan, join, expr) == ExpressionScope::Side(side) {
         return Some(strip_input_qualifiers(expr));
     }
+    if let Some(filter) = derive_side_scalar_range_filter(plan, join, expr, side) {
+        return Some(filter);
+    }
 
     match expr {
         Expr::Binary { left, op: BinaryOp::And, right, output_type } => {
@@ -664,6 +670,182 @@ fn derive_side_necessary_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, 
         },
         _ => None,
     }
+}
+
+fn derive_side_scalar_range_filter(plan: &QueryPlan, join: &JoinNode, expr: &Expr, side: JoinSide) -> Option<Expr> {
+    let Expr::Binary { left, op, right, .. } = expr else {
+        return None;
+    };
+    if !matches!(op, BinaryOp::Eq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq) {
+        return None;
+    }
+
+    let left_scope = expression_scope(plan, join, left);
+    let right_scope = expression_scope(plan, join, right);
+    let opposite = opposite_side(side);
+    let (target_expr, scalar_expr, scalar_input, target_on_left) = match (left_scope, right_scope) {
+        (ExpressionScope::Side(left_side), ExpressionScope::Side(right_side))
+            if left_side == side && right_side == opposite =>
+        {
+            (left.as_ref(), right.as_ref(), join.inputs[join_side_index(opposite)], true)
+        },
+        (ExpressionScope::Side(left_side), ExpressionScope::Side(right_side))
+            if right_side == side && left_side == opposite =>
+        {
+            (right.as_ref(), left.as_ref(), join.inputs[join_side_index(opposite)], false)
+        },
+        _ => return None,
+    };
+
+    let target_expr = strip_input_qualifiers(target_expr);
+    let target_type = infer_expr_type(plan, join.inputs[join_side_index(side)], &target_expr)?;
+    let scalar_expr = strip_input_qualifiers(scalar_expr);
+    let scalar_range = dimension_pruning::derive_i64_expr_range_from_filtered_subtree(
+        plan,
+        scalar_input,
+        &scalar_expr,
+        RESIDUAL_SCALAR_RANGE_MAX_ROWS,
+    )??;
+    scalar_range_necessary_filter(target_expr, *op, target_on_left, scalar_range, &target_type)
+}
+
+fn scalar_range_necessary_filter(
+    target_expr: Expr,
+    op: BinaryOp,
+    target_on_left: bool,
+    range: dimension_pruning::KeyRange,
+    target_type: &ArrowDataType,
+) -> Option<Expr> {
+    match (target_on_left, op) {
+        (_, BinaryOp::Eq) => range_envelope_filter(target_expr, range, target_type),
+        (true, BinaryOp::Gt) => {
+            typed_i64_literal(range.min, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::Gt, literal))
+        },
+        (true, BinaryOp::GtEq) => {
+            typed_i64_literal(range.min, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::GtEq, literal))
+        },
+        (true, BinaryOp::Lt) => {
+            typed_i64_literal(range.max, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::Lt, literal))
+        },
+        (true, BinaryOp::LtEq) => {
+            typed_i64_literal(range.max, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::LtEq, literal))
+        },
+        (false, BinaryOp::Gt) => {
+            typed_i64_literal(range.max, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::Lt, literal))
+        },
+        (false, BinaryOp::GtEq) => {
+            typed_i64_literal(range.max, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::LtEq, literal))
+        },
+        (false, BinaryOp::Lt) => {
+            typed_i64_literal(range.min, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::Gt, literal))
+        },
+        (false, BinaryOp::LtEq) => {
+            typed_i64_literal(range.min, target_type).map(|literal| Expr::binary(target_expr, BinaryOp::GtEq, literal))
+        },
+        (_, _) => None,
+    }
+}
+
+fn range_envelope_filter(
+    target_expr: Expr,
+    range: dimension_pruning::KeyRange,
+    target_type: &ArrowDataType,
+) -> Option<Expr> {
+    let min = typed_i64_literal(range.min, target_type)?;
+    let max = typed_i64_literal(range.max, target_type)?;
+    if range.min == range.max {
+        return Some(Expr::binary(target_expr, BinaryOp::Eq, min));
+    }
+    Some(Expr::binary(
+        Expr::binary(target_expr.clone(), BinaryOp::GtEq, min),
+        BinaryOp::And,
+        Expr::binary(target_expr, BinaryOp::LtEq, max),
+    ))
+}
+
+fn typed_i64_literal(value: i64, data_type: &ArrowDataType) -> Option<Expr> {
+    let literal = match data_type {
+        ArrowDataType::Int8 => LiteralValue::Int8(i8::try_from(value).ok()?),
+        ArrowDataType::Int16 => LiteralValue::Int16(i16::try_from(value).ok()?),
+        ArrowDataType::Int32 => LiteralValue::Int32(i32::try_from(value).ok()?),
+        ArrowDataType::Int64 => LiteralValue::Int64(value),
+        ArrowDataType::UInt8 => LiteralValue::UInt8(u8::try_from(value).ok()?),
+        ArrowDataType::UInt16 => LiteralValue::UInt16(u16::try_from(value).ok()?),
+        ArrowDataType::UInt32 => LiteralValue::UInt32(u32::try_from(value).ok()?),
+        ArrowDataType::UInt64 => LiteralValue::UInt64(u64::try_from(value).ok()?),
+        ArrowDataType::Date32 => LiteralValue::Date32(i32::try_from(value).ok()?),
+        _ => return None,
+    };
+    Some(Expr::literal(literal))
+}
+
+fn infer_expr_type(plan: &QueryPlan, input: NodeId, expr: &Expr) -> Option<ArrowDataType> {
+    infer_expr_type_with_schema(expr, plan.node(input)?.output_schema())
+}
+
+fn infer_expr_type_with_schema(expr: &Expr, schema: &SchemaRef) -> Option<ArrowDataType> {
+    match expr {
+        Expr::Column(column) => Some(schema.field_with_name(column.name()).ok()?.data_type().clone()),
+        Expr::Literal(value) => Some(value.data_type()),
+        Expr::Alias { expr, .. } => infer_expr_type_with_schema(expr, schema),
+        Expr::Cast { target_type, .. } | Expr::TryCast { target_type, .. } => Some(target_type.clone()),
+        Expr::Binary { left, op, right, output_type } => {
+            infer_binary_expr_type(left, *op, right, output_type.as_ref(), schema)
+        },
+        Expr::Not(_)
+        | Expr::IsNull(_)
+        | Expr::IsNotNull(_)
+        | Expr::Like { .. }
+        | Expr::InList { .. }
+        | Expr::IsDistinctFrom { .. }
+        | Expr::IsNotDistinctFrom { .. } => Some(ArrowDataType::Boolean),
+        Expr::Lower(expr) | Expr::Upper(expr) | Expr::Abs(expr) => infer_expr_type_with_schema(expr, schema),
+        Expr::StringLength { output_type, .. }
+        | Expr::RegexpReplace { output_type, .. }
+        | Expr::Sqrt { output_type, .. }
+        | Expr::Round { output_type, .. }
+        | Expr::DateTrunc { output_type, .. } => Some(output_type.clone()),
+        Expr::Extract { .. } => Some(ArrowDataType::Int32),
+        Expr::Substring { .. } | Expr::Concat(_) | Expr::Case { .. } => None,
+    }
+}
+
+fn infer_binary_expr_type(
+    left: &Expr,
+    op: BinaryOp,
+    right: &Expr,
+    output_type: Option<&ArrowDataType>,
+    schema: &SchemaRef,
+) -> Option<ArrowDataType> {
+    if let Some(output_type) = output_type {
+        return Some(output_type.clone());
+    }
+    if matches!(op, BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq) {
+        return Some(ArrowDataType::Boolean);
+    }
+    if matches!(op, BinaryOp::And | BinaryOp::Or) {
+        return Some(ArrowDataType::Boolean);
+    }
+    let left_interval = is_interval_literal(left);
+    let right_interval = is_interval_literal(right);
+    let left_type = (!left_interval).then(|| infer_expr_type_with_schema(left, schema)).flatten();
+    let right_type = (!right_interval).then(|| infer_expr_type_with_schema(right, schema)).flatten();
+    match (op, left_interval, right_interval, left_type, right_type) {
+        (BinaryOp::Add | BinaryOp::Subtract, false, true, Some(data_type), _) if is_date_or_timestamp(&data_type) => {
+            Some(data_type)
+        },
+        (BinaryOp::Add, true, false, _, Some(data_type)) if is_date_or_timestamp(&data_type) => Some(data_type),
+        (_, _, _, Some(data_type), _) => Some(data_type),
+        _ => None,
+    }
+}
+
+fn is_interval_literal(expr: &Expr) -> bool {
+    matches!(expr, Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }))
+}
+
+fn is_date_or_timestamp(data_type: &ArrowDataType) -> bool {
+    matches!(data_type, ArrowDataType::Date32 | ArrowDataType::Timestamp(_, None))
 }
 
 fn remap_projection_predicate(predicate: &Expr, projection: &ProjectionNode) -> Option<Expr> {

@@ -495,6 +495,16 @@ pub struct NativeJoinStrategyMetricRow {
     pub build_side_bytes: Option<usize>,
     /// Probe-side input bytes, if known.
     pub probe_side_bytes: Option<usize>,
+    /// Estimated output rows, if known.
+    pub estimated_output_rows: Option<usize>,
+    /// Estimated output bytes, if known.
+    pub estimated_output_bytes: Option<usize>,
+    /// Exact build-key uniqueness proof, if measured.
+    pub build_key_unique: Option<String>,
+    /// Runtime build-key uniqueness probe status, if attempted.
+    pub build_key_uniqueness_probe_status: Option<String>,
+    /// Error code observed when a uniqueness probe fell back, if any.
+    pub build_key_uniqueness_probe_error_code: Option<String>,
     /// Probe reuse count, if known.
     pub probe_reuse_count: Option<usize>,
     /// Partition count for partitioned join strategies, if known.
@@ -551,7 +561,7 @@ impl NativeJoinStrategyMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "node_id={},join_strategy={},execution_strategy={},join_type={},build_side={},key_count={},estimated_build_rows={},observed_build_rows={},build_side_bytes={},probe_side_bytes={},probe_reuse_count={},partition_count={},partition_target_bytes={},build_partition_batch_count={},probe_partition_batch_count={},build_partitioned_bytes={},probe_partitioned_bytes={},reusable_hash_join_rejected_reason={},partitioned_hash_join_rejected_reason={},one_shot_equi_rejected_reason={},partitioned_hash_join_count={},hash_join_build_count={},hash_join_hash_table_bytes={},filtered_join_build_count={},filtered_join_hash_table_bytes={},filtered_join_probe_state_bytes={},mixed_join_size_data_bytes={},one_shot_join_count={},one_shot_join_index_bytes={},one_shot_join_materialization_bytes={},one_shot_join_output_bytes={},join_gather_map_bytes={},join_output_reservation_bytes={},join_output_rows={},join_output_bytes={}",
+            "node_id={},join_strategy={},execution_strategy={},join_type={},build_side={},key_count={},estimated_build_rows={},observed_build_rows={},build_side_bytes={},probe_side_bytes={},estimated_output_rows={},estimated_output_bytes={},build_key_unique={},build_key_uniqueness_probe_status={},build_key_uniqueness_probe_error_code={},probe_reuse_count={},partition_count={},partition_target_bytes={},build_partition_batch_count={},probe_partition_batch_count={},build_partitioned_bytes={},probe_partitioned_bytes={},reusable_hash_join_rejected_reason={},partitioned_hash_join_rejected_reason={},one_shot_equi_rejected_reason={},partitioned_hash_join_count={},hash_join_build_count={},hash_join_hash_table_bytes={},filtered_join_build_count={},filtered_join_hash_table_bytes={},filtered_join_probe_state_bytes={},mixed_join_size_data_bytes={},one_shot_join_count={},one_shot_join_index_bytes={},one_shot_join_materialization_bytes={},one_shot_join_output_bytes={},join_gather_map_bytes={},join_output_reservation_bytes={},join_output_rows={},join_output_bytes={}",
             self.node_id,
             self.join_strategy,
             self.execution_strategy,
@@ -562,6 +572,11 @@ impl NativeJoinStrategyMetricRow {
             optional_usize(self.observed_build_rows),
             optional_usize(self.build_side_bytes),
             optional_usize(self.probe_side_bytes),
+            optional_usize(self.estimated_output_rows),
+            optional_usize(self.estimated_output_bytes),
+            optional_str(self.build_key_unique.as_deref()),
+            optional_str(self.build_key_uniqueness_probe_status.as_deref()),
+            optional_str(self.build_key_uniqueness_probe_error_code.as_deref()),
             optional_usize(self.probe_reuse_count),
             optional_usize(self.partition_count),
             optional_usize(self.partition_target_bytes),
@@ -598,6 +613,11 @@ impl NativeJoinStrategyMetricRow {
             && self.build_side == other.build_side
             && self.key_count == other.key_count
             && self.estimated_build_rows == other.estimated_build_rows
+            && self.estimated_output_rows == other.estimated_output_rows
+            && self.estimated_output_bytes == other.estimated_output_bytes
+            && self.build_key_unique == other.build_key_unique
+            && self.build_key_uniqueness_probe_status == other.build_key_uniqueness_probe_status
+            && self.build_key_uniqueness_probe_error_code == other.build_key_uniqueness_probe_error_code
             && self.probe_reuse_count == other.probe_reuse_count
             && self.partition_count == other.partition_count
             && self.partition_target_bytes == other.partition_target_bytes
@@ -610,6 +630,8 @@ impl NativeJoinStrategyMetricRow {
         self.observed_build_rows = max_optional_usize(self.observed_build_rows, other.observed_build_rows);
         self.build_side_bytes = max_optional_usize(self.build_side_bytes, other.build_side_bytes);
         self.probe_side_bytes = max_optional_usize(self.probe_side_bytes, other.probe_side_bytes);
+        self.estimated_output_rows = max_optional_usize(self.estimated_output_rows, other.estimated_output_rows);
+        self.estimated_output_bytes = max_optional_usize(self.estimated_output_bytes, other.estimated_output_bytes);
         self.build_partition_batch_count =
             max_optional_usize(self.build_partition_batch_count, other.build_partition_batch_count);
         self.probe_partition_batch_count =
@@ -687,6 +709,11 @@ fn labels_to_join_strategy_row(labels: BTreeMap<&str, &str>) -> NativeJoinStrate
         observed_build_rows: optional_usize_label(&labels, "observed_build_rows"),
         build_side_bytes: optional_usize_label(&labels, "build_side_bytes"),
         probe_side_bytes: optional_usize_label(&labels, "probe_side_bytes"),
+        estimated_output_rows: optional_usize_label(&labels, "estimated_output_rows"),
+        estimated_output_bytes: optional_usize_label(&labels, "estimated_output_bytes"),
+        build_key_unique: optional_string_label(&labels, "build_key_unique"),
+        build_key_uniqueness_probe_status: optional_string_label(&labels, "build_key_uniqueness_probe_status"),
+        build_key_uniqueness_probe_error_code: optional_string_label(&labels, "build_key_uniqueness_probe_error_code"),
         probe_reuse_count: optional_usize_label(&labels, "probe_reuse_count"),
         partition_count: optional_usize_label(&labels, "partition_count"),
         partition_target_bytes: optional_usize_label(&labels, "partition_target_bytes"),

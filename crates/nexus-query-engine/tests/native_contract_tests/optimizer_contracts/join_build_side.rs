@@ -120,6 +120,488 @@ fn join_build_side_selection_prefers_grouped_aggregate_keyset_side_when_size_is_
 }
 
 #[test]
+fn join_build_side_selection_keeps_small_current_build_side_over_grouped_aggregate_keyset() {
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "sales_for_grouped_date_keyset",
+        &["sold_date_sk", "sales_price"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let grouped_fact = builder.add_aggregate(
+        fact,
+        AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
+        schema(&["date_sk"]),
+    );
+    let date = builder.add_source(estimated_local_source("small_date_dim", "d_date_sk", 1024 * 1024, 365));
+    let join = builder.add_join(
+        grouped_fact,
+        date,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "date_sk", "date_sk"),
+            "date_sk",
+        )])
+        .with_build_side(JoinSide::Right),
+        schema(&["date_sk"]),
+    );
+    let plan = builder.finish_gpu_resident(join);
+    let options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join)
+        .expect("date join candidate should be considered");
+    assert!(!candidate.applied);
+    assert_eq!(candidate.before_build_side, JoinSide::Right);
+    assert_eq!(candidate.after_build_side, None);
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.left_estimated_bytes, None);
+    assert_eq!(candidate.right_estimated_rows, Some(365));
+    assert_eq!(candidate.right_estimated_bytes, Some(1024 * 1024));
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the date join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Right);
+}
+
+#[test]
+fn join_build_side_selection_prefers_small_other_side_over_grouped_aggregate_keyset() {
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "sales_for_grouped_week_keyset",
+        &["sold_date_sk", "sales_price"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let grouped_fact = builder.add_aggregate(
+        fact,
+        AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
+        schema(&["date_sk"]),
+    );
+    let week_keyset = builder.add_source(estimated_local_source("tiny_week_keyset", "d_date_sk", 1024, 7));
+    let join = builder.add_join(
+        grouped_fact,
+        week_keyset,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "date_sk", "date_sk"),
+            "date_sk",
+        )])
+        .with_build_side(JoinSide::Left),
+        schema(&["date_sk"]),
+    );
+    let plan = builder.finish_gpu_resident(join);
+    let options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join)
+        .expect("date keyset join candidate should be considered");
+    assert!(candidate.applied);
+    assert_eq!(candidate.before_build_side, JoinSide::Left);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Right));
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.left_estimated_bytes, None);
+    assert_eq!(candidate.right_estimated_rows, Some(7));
+    assert_eq!(candidate.right_estimated_bytes, Some(1024));
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the date keyset join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Right);
+}
+
+#[test]
+fn join_build_side_selection_prefers_bounded_left_semi_other_side_over_grouped_aggregate_keyset() {
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "sales_for_left_semi_week_keyset",
+        &["sold_date_sk", "sales_price"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let grouped_fact = builder.add_aggregate(
+        fact,
+        AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
+        schema(&["date_sk"]),
+    );
+    let dates = builder.add_source(estimated_local_source_with_fields(
+        "date_dim_for_week_keyset",
+        &["d_date_sk", "d_week_seq"],
+        1024 * 1024,
+        365,
+    ));
+    let week = builder.add_source(estimated_local_source("week_seq_keyset", "week_seq", 1024, 1));
+    let week_dates = builder.add_join(
+        dates,
+        week,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "d_week_seq", "d_week_seq"),
+                ColumnRef::input(1, "week_seq", "week_seq"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "d_date_sk", "d_date_sk"),
+            "d_date_sk",
+        )])
+        .with_build_side(JoinSide::Right),
+        schema(&["d_date_sk"]),
+    );
+    let join = builder.add_join(
+        grouped_fact,
+        week_dates,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "date_sk", "date_sk"),
+            "date_sk",
+        )])
+        .with_build_side(JoinSide::Left),
+        schema(&["date_sk"]),
+    );
+    let plan = builder.finish_gpu_resident(join);
+    let options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join)
+        .expect("left-semi keyset join candidate should be considered");
+    assert!(candidate.applied);
+    assert_eq!(candidate.before_build_side, JoinSide::Left);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Right));
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.left_estimated_bytes, None);
+    assert_eq!(candidate.right_estimated_rows, Some(365));
+    assert_eq!(candidate.right_estimated_bytes, Some(1024 * 1024));
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the grouped fact/date keyset join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Right);
+}
+
+#[test]
+fn join_build_side_selection_prefers_bounded_left_anti_other_side_over_grouped_aggregate_keyset() {
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(estimated_local_source_with_fields(
+        "sales_for_left_anti_week_keyset",
+        &["sold_date_sk", "sales_price"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let grouped_fact = builder.add_aggregate(
+        fact,
+        AggregateSpec::new(vec![Expr::column("sold_date_sk").alias("date_sk")], Vec::new()),
+        schema(&["date_sk"]),
+    );
+    let dates = builder.add_source(estimated_local_source_with_fields(
+        "date_dim_for_anti_week_keyset",
+        &["d_date_sk", "d_week_seq"],
+        1024 * 1024,
+        365,
+    ));
+    let excluded_week = builder.add_source(estimated_local_source("excluded_week_seq_keyset", "week_seq", 1024, 1));
+    let remaining_dates = builder.add_join(
+        dates,
+        excluded_week,
+        JoinSpec::new(
+            JoinType::LeftAnti,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "d_week_seq", "d_week_seq"),
+                ColumnRef::input(1, "week_seq", "week_seq"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "d_date_sk", "d_date_sk"),
+            "d_date_sk",
+        )])
+        .with_build_side(JoinSide::Right),
+        schema(&["d_date_sk"]),
+    );
+    let join = builder.add_join(
+        grouped_fact,
+        remaining_dates,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "date_sk", "date_sk"),
+                ColumnRef::input(1, "d_date_sk", "d_date_sk"),
+            )],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "date_sk", "date_sk"),
+            "date_sk",
+        )])
+        .with_build_side(JoinSide::Left),
+        schema(&["date_sk"]),
+    );
+    let plan = builder.finish_gpu_resident(join);
+    let options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join)
+        .expect("left-anti keyset join candidate should be considered");
+    assert!(candidate.applied);
+    assert_eq!(candidate.before_build_side, JoinSide::Left);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Right));
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.left_estimated_bytes, None);
+    assert_eq!(candidate.right_estimated_rows, Some(365));
+    assert_eq!(candidate.right_estimated_bytes, Some(1024 * 1024));
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the grouped fact/date keyset join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Right);
+}
+
+#[test]
+fn native_optimizer_revisits_build_side_after_aggregate_join_pushdown_creates_grouped_keyset() {
+    let mut builder = QueryPlanBuilder::new();
+    let sales = builder.add_source(estimated_local_source_with_fields(
+        "sales",
+        &["item_sk", "sales_price"],
+        512 * 1024 * 1024,
+        10_000_000,
+    ));
+    let item = builder.add_source(estimated_local_source_with_fields(
+        "item",
+        &["i_item_sk", "i_class"],
+        256 * 1024 * 1024,
+        2_000_000,
+    ));
+    let join = builder.add_join(
+        sales,
+        item,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "item_sk", "item_sk"),
+                ColumnRef::input(1, "i_item_sk", "i_item_sk"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(ColumnRef::input(1, "i_class", "i_class"), "i_class"),
+            JoinOutputColumn::left(ColumnRef::input(0, "sales_price", "sales_price"), "sales_price"),
+        ])
+        .with_build_side(JoinSide::Right),
+        schema(&["i_class", "sales_price"]),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("i_class")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("sales_price"), "class_sales")],
+        ),
+        schema(&["i_class", "class_sales"]),
+    );
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    assert!(
+        result
+            .diagnostics
+            .join_build_side_selection
+            .candidates
+            .iter()
+            .any(|candidate| {
+                candidate.applied
+                    && candidate.before_build_side == JoinSide::Right
+                    && candidate.after_build_side == Some(JoinSide::Left)
+            }),
+        "post-aggregate build-side selection should flip the reduced join to the grouped keyset side"
+    );
+
+    let PlanNode::Aggregate(final_aggregate) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the final aggregate");
+    };
+    let PlanNode::Join(reduced_join) =
+        &result.plan.node(final_aggregate.input).expect("final aggregate input should exist").kind
+    else {
+        panic!("final aggregate should consume the reduced join");
+    };
+    assert_eq!(reduced_join.spec.build_side, JoinSide::Left);
+    let PlanNode::Aggregate(preaggregate) =
+        &result.plan.node(reduced_join.inputs[0]).expect("left reduced-join input should exist").kind
+    else {
+        panic!("left reduced-join input should be the pushed aggregate");
+    };
+    assert!(preaggregate.spec.group_exprs.iter().any(|expr| matches!(
+        expr,
+        Expr::Alias { alias, .. } if alias == "item_sk"
+    )));
+}
+
+#[test]
+fn native_optimizer_revisits_build_side_after_dimension_pruning_changes_source_size() {
+    let dir = unique_contract_temp_dir("dimension-pruning-build-side");
+    let fact_path = dir.join("fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let fact_schema = Arc::new(Schema::new(vec![Field::new("fact_key", DataType::Int32, false)]));
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("dim_key", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    write_i32_record_batch_parquet(
+        &fact_path,
+        Arc::clone(&fact_schema),
+        vec![Int32Array::from(vec![1, 100, 200, 300])],
+        1,
+    );
+    write_i32_record_batch_parquet(
+        &dim_path,
+        Arc::clone(&dim_schema),
+        vec![Int32Array::from(vec![100]), Int32Array::from(vec![2000])],
+        1,
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new(&fact_path)
+                .with_projected_row_group_bytes(
+                    vec![80 * 1024 * 1024; 4],
+                    vec![80 * 1024 * 1024; 4],
+                )
+                .with_row_group_rows(vec![1; 4]),
+        ],
+        Arc::clone(&fact_schema),
+        vec!["fact_key".to_string()],
+    )));
+    let dim = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(&dim_path)
+                    .with_projected_row_group_bytes(vec![96 * 1024 * 1024], vec![96 * 1024 * 1024])
+                    .with_row_group_rows(vec![1]),
+            ],
+            Arc::clone(&dim_schema),
+            vec!["dim_key".to_string(), "d_year".to_string()],
+        )
+        .with_reader_predicate(Expr::binary(
+            Expr::column("d_year"),
+            BinaryOp::Eq,
+            Expr::literal(LiteralValue::Int32(2000)),
+        )),
+    ));
+    let join = builder.add_join(
+        fact,
+        dim,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "fact_key", "fact_key"), ColumnRef::input(1, "dim_key", "dim_key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "fact_key", "fact_key"),
+            "fact_key",
+        )])
+        .with_build_side(JoinSide::Right),
+        Arc::clone(&fact_schema),
+    );
+    let plan = builder.finish_gpu_resident(join);
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 1);
+    let first_build_side_candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join && !candidate.applied)
+        .expect("initial build-side pass should keep the smaller unpruned dimension side");
+    assert_eq!(first_build_side_candidate.left_estimated_bytes, Some(320 * 1024 * 1024));
+    assert_eq!(first_build_side_candidate.right_estimated_bytes, Some(96 * 1024 * 1024));
+
+    let post_pruning_candidate = result
+        .diagnostics
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_node_id == join && candidate.applied)
+        .expect("post-pruning build-side pass should reconsider the pruned fact side");
+    assert_eq!(post_pruning_candidate.before_build_side, JoinSide::Right);
+    assert_eq!(post_pruning_candidate.after_build_side, Some(JoinSide::Left));
+    assert_eq!(post_pruning_candidate.left_estimated_bytes, Some(80 * 1024 * 1024));
+    assert_eq!(post_pruning_candidate.right_estimated_bytes, Some(96 * 1024 * 1024));
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the fact/dimension join");
+    };
+    assert_eq!(join.spec.build_side, JoinSide::Left);
+
+    let PlanNode::Source(source) = &result.plan.node(fact).expect("fact source should remain").kind else {
+        panic!("fact node should remain a source");
+    };
+    let SourceNode::LocalParquet(source) = source.as_ref() else {
+        panic!("fact node should remain local parquet");
+    };
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1][..]));
+
+    fs::remove_dir_all(dir).expect("temporary build-side pruning fixture should be removable");
+}
+
+#[test]
 fn join_build_side_selection_does_not_prefer_grouped_aggregate_side_when_join_key_is_measure() {
     let mut builder = QueryPlanBuilder::new();
     let sales = builder.add_source(estimated_sales_source_with_quarter_predicate(1, 512 * 1024 * 1024));

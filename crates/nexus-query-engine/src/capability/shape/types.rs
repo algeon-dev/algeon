@@ -20,12 +20,13 @@ pub(in crate::capability) struct MixedResidualResidentGroupedAggregateInputShape
 }
 
 /// Left-semi hash join from a resident multi-join subtree into a resident
-/// grouped aggregate, followed by post-join projection, grouped aggregate,
-/// projection, sort, and limit.
+/// grouped aggregate, followed by an optional post-join projection, grouped
+/// aggregate, projection, sort, and limit.
 ///
 /// The stored ids identify the join, the aggregate-side resident producer and
 /// projection, plus the post-root aggregate/top-k chain admitted as one
-/// compiled pipeline envelope.
+/// compiled pipeline envelope. `post_root_projection_id` equals `root_join_id`
+/// when the grouped aggregate consumes the join directly.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::capability) struct HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape {
     pub(in crate::capability) root_join_id: NodeId,

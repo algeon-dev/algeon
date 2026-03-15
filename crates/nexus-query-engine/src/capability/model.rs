@@ -1112,6 +1112,10 @@ impl CapabilityAnalysis {
                 StrictBoundedEnvelope::MultiJoinAggregateOverJoinSubplanTopK,
                 &self.multi_join_aggregate_over_join_subplan_topk_admission,
             ),
+            (
+                StrictBoundedEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
+                &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
+            ),
             (StrictBoundedEnvelope::RootTopKJoinAggregate, &self.root_topk_join_aggregate_admission),
             (
                 StrictBoundedEnvelope::ExactStatisticalJoinFinalFullSort,
@@ -1122,10 +1126,6 @@ impl CapabilityAnalysis {
             (
                 StrictBoundedEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
                 &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
-            ),
-            (
-                StrictBoundedEnvelope::HashJoinResidentGroupedAggregateInputPostJoinAggregateTopK,
-                &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
             ),
             (
                 StrictBoundedEnvelope::RollupRankTopKAfterAggregateJoinPushdown,

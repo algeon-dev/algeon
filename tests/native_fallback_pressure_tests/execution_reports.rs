@@ -202,9 +202,14 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
         row.metrics.join_strategy_rows[0].reusable_hash_join_rejected_reason.as_deref(),
         Some("build_side_too_large")
     );
+    assert_eq!(row.metrics.join_strategy_rows[0].estimated_output_rows, Some(102));
+    assert_eq!(row.metrics.join_strategy_rows[0].estimated_output_bytes, Some(4096));
+    assert_eq!(row.metrics.join_strategy_rows[0].build_key_unique.as_deref(), Some("true"));
+    assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_status.as_deref(), Some("measured"));
+    assert_eq!(row.metrics.join_strategy_rows[0].build_key_uniqueness_probe_error_code, None);
 
     let text = report.to_tsv();
-    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 42);
+    assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_SCHEMA_VERSION, 43);
     assert_eq!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.split('\t').count(), 130);
     assert!(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER.contains(
         "\treservation_requested_bytes\treservation_granted_bytes\treservation_live_peak_bytes\treservation_denied_count\t"

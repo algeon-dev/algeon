@@ -7,12 +7,14 @@ use crate::{
     expr::{ColumnRef, Expr},
     plan::{
         FilterNode, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        QueryPlan, SchemaBehavior,
+        QueryPlan, SchemaBehavior, estimated_output_bytes,
     },
 };
 
 /// Stable rule name used in optimizer diagnostics.
 pub const OUTER_JOIN_NULL_REJECTION_RULE_NAME: &str = "outer_join_null_rejection";
+
+const LARGE_NULL_REJECTED_RIGHT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Configuration for rewriting null-rejected outer joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +89,9 @@ pub enum OuterJoinNullRejectionRejectedReason {
     NoRightSideNullRejectingKey,
     /// Outer-join output is shared, so rewriting would affect another consumer.
     SharedOuterJoinOutput,
+    /// The null-introducing right input is large enough that preserving the
+    /// original outer-join execution shape is preferred.
+    LargeNullIntroducingInput,
 }
 
 pub(crate) struct OuterJoinNullRejectionResult {
@@ -208,6 +213,13 @@ pub(crate) fn optimize_outer_join_null_rejection(
 
             if !path_is_exclusive(&consumer_counts, &first_trace.path) {
                 candidate.rejected_reason = Some(OuterJoinNullRejectionRejectedReason::SharedOuterJoinOutput);
+                diagnostics.candidates.push(candidate);
+                continue;
+            }
+
+            if large_null_introducing_input_requires_preserved_shape(&plan, &nodes, first_trace.outer_join_id, &traces)
+            {
+                candidate.rejected_reason = Some(OuterJoinNullRejectionRejectedReason::LargeNullIntroducingInput);
                 diagnostics.candidates.push(candidate);
                 continue;
             }
@@ -397,8 +409,8 @@ fn right_side_null_rejecting_traces(
     let input = join.inputs[join_side_index(side)];
     parent_key_columns(join, side)
         .iter()
-        .filter_map(|column| {
-            trace_right_origin(nodes, input, column.name()).map(|mut trace| {
+        .flat_map(|column| {
+            trace_right_origins(nodes, input, column.name()).into_iter().map(|mut trace| {
                 trace.rejecting_column = column.name().to_string();
                 trace
             })
@@ -424,51 +436,97 @@ struct NullRejectingTrace {
     path: Vec<NodeId>,
 }
 
-fn trace_right_origin(
+fn trace_right_origins(
     nodes: &[crate::plan::QueryNode],
-    mut node_id: NodeId,
+    node_id: NodeId,
     column_name: &str,
-) -> Option<NullRejectingTrace> {
-    let mut current_column = column_name.to_string();
-    let mut path = Vec::new();
+) -> Vec<NullRejectingTrace> {
+    let mut traces = Vec::new();
+    trace_right_origins_inner(nodes, node_id, column_name, &mut Vec::new(), &mut traces);
+    traces
+}
 
-    loop {
-        path.push(node_id);
-        let node = nodes.get(node_id.index()).filter(|node| node.id == node_id)?;
-        match &node.kind {
-            PlanNode::Projection(projection) => {
-                let expr = unique_projection_expr_for_output(projection, &current_column)?;
-                let column = simple_projection_column(expr)?;
-                current_column = column.name().to_string();
-                node_id = projection.input;
-            },
-            PlanNode::Filter(filter) => {
-                node_id = filter.input;
-            },
-            PlanNode::Sort(sort) => {
-                node_id = sort.input;
-            },
-            PlanNode::Limit(limit) => {
-                node_id = limit.input;
-            },
-            PlanNode::Join(join) => {
-                if join.spec.join_type != JoinType::Left {
-                    return None;
+fn trace_right_origins_inner(
+    nodes: &[crate::plan::QueryNode],
+    node_id: NodeId,
+    column_name: &str,
+    path: &mut Vec<NodeId>,
+    traces: &mut Vec<NullRejectingTrace>,
+) {
+    if path.contains(&node_id) {
+        return;
+    }
+    let Some(node) = nodes.get(node_id.index()).filter(|node| node.id == node_id) else {
+        return;
+    };
+
+    path.push(node_id);
+    match &node.kind {
+        PlanNode::Projection(projection) => {
+            if let Some(expr) = unique_projection_expr_for_output(projection, column_name)
+                && let Some(column) = simple_projection_column(expr)
+            {
+                trace_right_origins_inner(nodes, projection.input, column.name(), path, traces);
+            }
+        },
+        PlanNode::Filter(filter) => {
+            trace_right_origins_inner(nodes, filter.input, column_name, path, traces);
+        },
+        PlanNode::Aggregate(aggregate) => {
+            if let Some(column) = aggregate_group_input_column_for_output(node, aggregate, column_name) {
+                trace_right_origins_inner(nodes, aggregate.input, column.name(), path, traces);
+            }
+        },
+        PlanNode::Sort(sort) => {
+            trace_right_origins_inner(nodes, sort.input, column_name, path, traces);
+        },
+        // Limit is not transparent to this rewrite: null-rejected rows can
+        // consume limit slots before a downstream join removes them.
+        PlanNode::Limit(_) => {},
+        PlanNode::Join(join) => {
+            if let Some(output) = unique_join_output_for_name(join, column_name) {
+                match join.spec.join_type {
+                    JoinType::Left if output.side == JoinSide::Right => {
+                        traces.push(NullRejectingTrace {
+                            outer_join_id: node_id,
+                            rejecting_column: String::new(),
+                            path: path.clone(),
+                        });
+                    },
+                    JoinType::Inner => {
+                        let input = join.inputs[join_side_index(output.side)];
+                        trace_right_origins_inner(nodes, input, output.column.name(), path, traces);
+                    },
+                    _ => {},
                 }
-                let output = unique_join_output_for_name(join, &current_column)?;
-                if output.side != JoinSide::Right {
-                    return None;
-                }
-                return Some(NullRejectingTrace { outer_join_id: node_id, rejecting_column: String::new(), path });
-            },
-            PlanNode::Source(_)
-            | PlanNode::Aggregate(_)
-            | PlanNode::Window(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_) => return None,
+            }
+        },
+        PlanNode::Union(union) => {
+            for input in &union.inputs {
+                trace_right_origins_inner(nodes, *input, column_name, path, traces);
+            }
+        },
+        PlanNode::Source(_) | PlanNode::Window(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {},
+    }
+    path.pop();
+}
+
+fn aggregate_group_input_column_for_output<'a>(
+    node: &'a crate::plan::QueryNode,
+    aggregate: &'a crate::plan::AggregateNode,
+    output_name: &str,
+) -> Option<&'a ColumnRef> {
+    if aggregate.spec.grouping_sets.is_some() {
+        return None;
+    }
+
+    for (index, expr) in aggregate.spec.group_exprs.iter().enumerate() {
+        let field = node.output_schema().fields().get(index)?;
+        if field.name() == output_name {
+            return simple_projection_column(expr);
         }
     }
+    None
 }
 
 fn unique_projection_expr_for_output<'a>(
@@ -537,6 +595,40 @@ fn expr_references_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
 
 fn path_is_exclusive(consumer_counts: &[usize], path: &[NodeId]) -> bool {
     path.iter().all(|node_id| consumer_counts.get(node_id.index()).copied().unwrap_or_default() <= 1)
+}
+
+fn large_null_introducing_input_requires_preserved_shape(
+    plan: &QueryPlan,
+    nodes: &[crate::plan::QueryNode],
+    outer_join_id: NodeId,
+    traces: &[NullRejectingTrace],
+) -> bool {
+    // Keep the large-input guard for direct consumers. When aggregate pushdown
+    // has carried the rejected right key as a group key, null-extended rows
+    // can only form groups that the downstream inner join discards.
+    null_introducing_input_is_large(plan, outer_join_id) && !traces_cross_group_key_aggregate(nodes, traces)
+}
+
+fn traces_cross_group_key_aggregate(nodes: &[crate::plan::QueryNode], traces: &[NullRejectingTrace]) -> bool {
+    traces.iter().any(|trace| {
+        trace.path.iter().any(|node_id| {
+            nodes
+                .get(node_id.index())
+                .filter(|node| node.id == *node_id)
+                .is_some_and(|node| matches!(&node.kind, PlanNode::Aggregate(_)))
+        })
+    })
+}
+
+fn null_introducing_input_is_large(plan: &QueryPlan, outer_join_id: NodeId) -> bool {
+    let Some(node) = plan.node(outer_join_id) else {
+        return false;
+    };
+    let PlanNode::Join(join) = &node.kind else {
+        return false;
+    };
+    let right_input = join.inputs[join_side_index(JoinSide::Right)];
+    estimated_output_bytes(plan, right_input).is_some_and(|bytes| bytes > LARGE_NULL_REJECTED_RIGHT_INPUT_BYTES)
 }
 
 fn consumer_counts(plan: &QueryPlan) -> Vec<usize> {

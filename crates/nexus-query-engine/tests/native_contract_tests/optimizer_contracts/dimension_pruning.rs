@@ -77,6 +77,145 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
 }
 
 #[test]
+fn dimension_pruning_traces_target_union_branch_aliases() {
+    let dir = unique_contract_temp_dir("dimension-union-target-aliases");
+    let fact_a_path = dir.join("fact_a.parquet");
+    let fact_b_path = dir.join("fact_b.parquet");
+    let date_path = dir.join("date_dim.parquet");
+    let fact_a_schema = Arc::new(Schema::new(vec![Field::new("a_date_sk", DataType::Int32, false)]));
+    let fact_b_schema = Arc::new(Schema::new(vec![Field::new("b_date_sk", DataType::Int32, false)]));
+    let date_schema = Arc::new(Schema::new(vec![
+        Field::new("d_date_sk", DataType::Int32, false),
+        Field::new("d_year", DataType::Int32, false),
+    ]));
+    write_i32_record_batch_parquet(
+        &fact_a_path,
+        Arc::clone(&fact_a_schema),
+        vec![Int32Array::from(vec![1, 2, 3, 4])],
+        1,
+    );
+    write_i32_record_batch_parquet(
+        &fact_b_path,
+        Arc::clone(&fact_b_schema),
+        vec![Int32Array::from(vec![3, 5, 2, 6])],
+        1,
+    );
+    write_i32_record_batch_parquet(
+        &date_path,
+        Arc::clone(&date_schema),
+        vec![Int32Array::from(vec![1, 2, 3, 4]), Int32Array::from(vec![1999, 2000, 2000, 2001])],
+        1,
+    );
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact_a = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_a_path)],
+        Arc::clone(&fact_a_schema),
+        vec!["a_date_sk".to_string()],
+    )));
+    let fact_b = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_b_path)],
+        Arc::clone(&fact_b_schema),
+        vec!["b_date_sk".to_string()],
+    )));
+    let union_schema = Arc::new(Schema::new(vec![Field::new("date_sk", DataType::Int32, false)]));
+    let fact_a_projected = builder.add_projection(
+        fact_a,
+        projection_outputs(vec![Expr::column("a_date_sk").alias("date_sk")], Arc::clone(&union_schema)),
+    );
+    let fact_b_projected = builder.add_projection(
+        fact_b,
+        projection_outputs(vec![Expr::column("b_date_sk").alias("date_sk")], Arc::clone(&union_schema)),
+    );
+    let union = builder.add_union(vec![fact_a_projected, fact_b_projected], Arc::clone(&union_schema));
+    let date = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![LocalParquetFile::new(&date_path)],
+            Arc::clone(&date_schema),
+            vec!["d_date_sk".to_string(), "d_year".to_string()],
+        )
+        .with_reader_predicate(Expr::binary(
+            Expr::column("d_year"),
+            BinaryOp::Eq,
+            Expr::literal(LiteralValue::Int32(2000)),
+        )),
+    ));
+    let date_key_schema = Arc::new(Schema::new(vec![Field::new("d_date_sk", DataType::Int32, false)]));
+    let date_projected = builder.add_projection(
+        date,
+        projection_outputs(vec![Expr::column("d_date_sk")], Arc::clone(&date_key_schema)),
+    );
+    let joined = builder.add_join(
+        union,
+        date_projected,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "date_sk", "date_sk"), ColumnRef::input(1, "d_date_sk", "d_date_sk"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(
+            ColumnRef::input(0, "date_sk", "date_sk"),
+            "date_sk",
+        )]),
+        Arc::clone(&union_schema),
+    );
+    let plan = builder.finish_gpu_resident(joined);
+
+    let requests = discover_dimension_derived_pruning_requests(&plan);
+    assert_eq!(requests.len(), 2);
+    let mut request_target_columns =
+        requests.iter().map(|request| request.target_key_column.as_str()).collect::<Vec<_>>();
+    request_target_columns.sort_unstable();
+    assert_eq!(request_target_columns, vec!["a_date_sk", "b_date_sk"]);
+
+    let options = NativeOptimizerOptions {
+        dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
+        ..NativeOptimizerOptions::disabled()
+    };
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
+    assert_eq!(diagnostics.considered_count, 3);
+    assert_eq!(diagnostics.applied_count, 2);
+    assert_eq!(
+        diagnostics.candidates[0].rejected_reason,
+        Some(DimensionDerivedRowGroupPruningRejectedReason::DimensionKeyLineageUnavailable)
+    );
+    assert_eq!(diagnostics.candidates[1].target_source_node_id, Some(fact_a));
+    assert_eq!(diagnostics.candidates[2].target_source_node_id, Some(fact_b));
+    assert!(diagnostics.candidates.iter().any(|candidate| {
+        candidate.applied
+            && candidate.target_source_node_id == Some(fact_a)
+            && candidate.target_key_column.as_deref() == Some("a_date_sk")
+            && candidate.selected_row_groups_after == Some(2)
+    }));
+    assert!(diagnostics.candidates.iter().any(|candidate| {
+        candidate.applied
+            && candidate.target_source_node_id == Some(fact_b)
+            && candidate.target_key_column.as_deref() == Some("b_date_sk")
+            && candidate.selected_row_groups_after == Some(2)
+    }));
+
+    let PlanNode::Source(source) = &result.plan.node(fact_a).expect("fact_a source should remain").kind else {
+        panic!("fact_a node should remain a source");
+    };
+    let SourceNode::LocalParquet(source) = source.as_ref() else {
+        panic!("fact_a node should remain local parquet");
+    };
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[1, 2][..]));
+
+    let PlanNode::Source(source) = &result.plan.node(fact_b).expect("fact_b source should remain").kind else {
+        panic!("fact_b node should remain a source");
+    };
+    let SourceNode::LocalParquet(source) = source.as_ref() else {
+        panic!("fact_b node should remain local parquet");
+    };
+    assert_eq!(source.files[0].row_groups.as_deref(), Some(&[0, 2][..]));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning fixture should be removable");
+}
+
+#[test]
 fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
     let dir = unique_contract_temp_dir("dimension-nested-fact");
     let fact_path = dir.join("fact.parquet");

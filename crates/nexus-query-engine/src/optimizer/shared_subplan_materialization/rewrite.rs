@@ -184,60 +184,21 @@ fn shared_aggregate_family_rewrite_plan(
     }
 
     let mut widened_source_predicates = BTreeMap::new();
-    let mut branch_filters = BTreeMap::new();
+    let mut branch_filter_parts =
+        family.iter().map(|signature| (signature.aggregate_node_id, Vec::new())).collect::<BTreeMap<_, _>>();
     for fingerprint in &widened_source_fingerprints {
-        let mut predicates = Vec::new();
-        let mut seen = BTreeSet::new();
-        for signature in family {
-            let source = signature
-                .source_predicates
-                .iter()
-                .find(|source| &source.abstract_fingerprint == fingerprint)
-                .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-            let predicate = source
-                .predicate
-                .clone()
-                .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-            if !predicate_references_only_source_filterable_columns(&predicate, signature, fingerprint) {
-                return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
-            }
-            if seen.insert(predicate.to_string()) {
-                predicates.push(predicate);
+        let factored = factored_grouped_source_predicate(family, fingerprint)?;
+        widened_source_predicates.insert(fingerprint.clone(), factored.widened_source_predicate);
+        for (node_id, predicate) in factored.branch_predicates {
+            if let Some(predicate) = predicate {
+                branch_filter_parts.entry(node_id).or_default().push(predicate);
             }
         }
-        widened_source_predicates.insert(
-            fingerprint.clone(),
-            disjunction(predicates)
-                .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?,
-        );
     }
-    for signature in family {
-        let mut predicates = Vec::new();
-        for source in &signature.source_predicates {
-            if !widened_source_fingerprints.contains(&source.abstract_fingerprint) {
-                continue;
-            }
-            let predicate = source
-                .predicate
-                .clone()
-                .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
-            if !predicate_references_only_source_filterable_columns(&predicate, signature, &source.abstract_fingerprint)
-            {
-                return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
-            }
-            predicates.push(predicate);
-        }
-        if predicates.is_empty() {
-            return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
-        }
-        branch_filters.insert(
-            signature.aggregate_node_id,
-            Some(
-                conjunction(predicates)
-                    .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?,
-            ),
-        );
-    }
+    let branch_filters = branch_filter_parts
+        .into_iter()
+        .map(|(node_id, predicates)| (node_id, conjunction(predicates)))
+        .collect::<BTreeMap<_, _>>();
 
     Ok(SharedAggregateFamilyRewrite {
         family_key: representative.family_key.clone(),
@@ -246,6 +207,92 @@ fn shared_aggregate_family_rewrite_plan(
         widened_source_columns: BTreeMap::new(),
         kind: SharedAggregateFamilyRewriteKind::Grouped { branch_filters },
     })
+}
+
+struct FactoredGroupedSourcePredicate {
+    widened_source_predicate: Expr,
+    branch_predicates: BTreeMap<NodeId, Option<Expr>>,
+}
+
+fn factored_grouped_source_predicate(
+    family: &[AggregateMaterializationSignature],
+    fingerprint: &str,
+) -> Result<FactoredGroupedSourcePredicate, SharedSubplanMaterializationRejectedReason> {
+    let mut branches = Vec::with_capacity(family.len());
+    for signature in family {
+        let source = signature
+            .source_predicates
+            .iter()
+            .find(|source| source.abstract_fingerprint == fingerprint)
+            .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
+        let predicate = source
+            .predicate
+            .clone()
+            .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
+        let conjuncts = split_conjuncts(predicate);
+        let keys = conjuncts.iter().map(ToString::to_string).collect::<BTreeSet<_>>();
+        branches.push((signature, conjuncts, keys));
+    }
+
+    let mut common_keys = branches
+        .first()
+        .map(|(_, _, keys)| keys.clone())
+        .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
+    for (_, _, keys) in branches.iter().skip(1) {
+        common_keys = common_keys.intersection(keys).cloned().collect();
+    }
+
+    let mut common_seen = BTreeSet::new();
+    let common_predicates = branches
+        .first()
+        .map(|(_, conjuncts, _)| {
+            conjuncts
+                .iter()
+                .filter(|expr| common_keys.contains(&expr.to_string()))
+                .filter(|expr| common_seen.insert(expr.to_string()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut branch_predicates = BTreeMap::new();
+    let mut varying_predicates = Vec::new();
+    let mut branch_without_varying_predicate = false;
+    for (signature, conjuncts, _) in branches {
+        let varying = conjuncts.into_iter().filter(|expr| !common_keys.contains(&expr.to_string())).collect::<Vec<_>>();
+        let branch_predicate = conjunction(varying);
+        if let Some(predicate) = &branch_predicate {
+            if !predicate_references_only_source_filterable_columns(predicate, signature, fingerprint) {
+                return Err(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable);
+            }
+            varying_predicates.push(predicate.clone());
+        } else {
+            branch_without_varying_predicate = true;
+        }
+        branch_predicates.insert(signature.aggregate_node_id, branch_predicate);
+    }
+
+    let mut widened_predicates = common_predicates;
+    if !branch_without_varying_predicate {
+        let varying_union = disjunction(varying_predicates)
+            .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
+        widened_predicates.push(varying_union);
+    }
+    let widened_source_predicate = conjunction(widened_predicates)
+        .ok_or(SharedSubplanMaterializationRejectedReason::PredicateNotPostAggregateFilterable)?;
+
+    Ok(FactoredGroupedSourcePredicate { widened_source_predicate, branch_predicates })
+}
+
+fn split_conjuncts(predicate: Expr) -> Vec<Expr> {
+    match predicate {
+        Expr::Binary { left, op: BinaryOp::And, right, output_type: None } => {
+            let mut conjuncts = split_conjuncts(*left);
+            conjuncts.extend(split_conjuncts(*right));
+            conjuncts
+        },
+        other => vec![other],
+    }
 }
 
 fn shared_scalar_filtered_aggregate_rewrite_plan(

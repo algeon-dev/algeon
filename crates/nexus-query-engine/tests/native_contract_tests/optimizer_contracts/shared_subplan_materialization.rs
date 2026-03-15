@@ -56,6 +56,65 @@ fn native_optimizer_materializes_aliased_grouped_aggregates_when_branch_replay_i
 }
 
 #[test]
+fn native_optimizer_materializes_grouped_aggregates_with_equivalent_projected_argument_aliases() {
+    let plan = repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan();
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_ne!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 1);
+    assert_eq!(diagnostics.applied_count, 1);
+    let candidate = &diagnostics.candidates[0];
+    assert_eq!(candidate.reuse_count, 2);
+    assert!(candidate.applied);
+    assert_eq!(candidate.rejected_reason, None);
+    assert!(
+        candidate.aggregate_exprs.iter().any(|expr| expr.contains("arg=CAST(sales AS Float64)")),
+        "aggregate argument signature should resolve generated projection aliases: {:?}",
+        candidate.aggregate_exprs
+    );
+    assert!(
+        candidate.aggregate_exprs.iter().all(|expr| !expr.contains("__common_expr_")),
+        "generated projection aliases must not split equivalent aggregate families: {:?}",
+        candidate.aggregate_exprs
+    );
+    assert_eq!(plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(), 2);
+    assert_eq!(result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).count(), 1);
+    let widened_predicate = result
+        .plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LocalParquet(source) => source.reader_predicate.as_ref().map(ToString::to_string),
+                _ => None,
+            },
+            _ => None,
+        })
+        .next()
+        .expect("rewritten plan should retain a widened reader predicate");
+    assert!(widened_predicate.contains("sales > 0"), "{widened_predicate}");
+    assert!(widened_predicate.contains(" OR "), "{widened_predicate}");
+}
+
+#[test]
+fn native_optimizer_does_not_materialize_projected_aliases_across_different_local_filters() {
+    let plan = repeated_grouped_projected_alias_materialization_with_local_filters_plan();
+
+    let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
+
+    assert_eq!(result.plan, plan);
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    let diagnostics = &result.diagnostics.shared_subplan_materialization;
+    assert_eq!(diagnostics.considered_count, 2);
+    assert_eq!(diagnostics.candidate_count, 0);
+    assert_eq!(diagnostics.applied_count, 0);
+}
+
+#[test]
 fn native_optimizer_combines_repeated_scalar_count_branches_with_filtered_aggregate() {
     let plan = repeated_scalar_count_materialization_plan();
 
@@ -304,11 +363,7 @@ fn native_optimizer_combines_q09_like_scalar_branches_with_different_read_column
 #[test]
 fn native_optimizer_combines_full_q09_like_scalar_branch_shape() {
     let plan = repeated_q09_like_scalar_materialization_plan_with_order_and_bucket_count(
-        &[
-            Q09ScalarBranch::Count,
-            Q09ScalarBranch::AvgDiscount,
-            Q09ScalarBranch::AvgNetPaid,
-        ],
+        &[Q09ScalarBranch::Count, Q09ScalarBranch::AvgDiscount, Q09ScalarBranch::AvgNetPaid],
         5,
     );
 
@@ -326,12 +381,8 @@ fn native_optimizer_combines_full_q09_like_scalar_branch_shape() {
     assert!(candidate.applied);
     assert_eq!(candidate.rejected_reason, None);
 
-    let aggregate_nodes = result
-        .plan
-        .nodes()
-        .iter()
-        .filter(|node| matches!(node.kind, PlanNode::Aggregate(_)))
-        .collect::<Vec<_>>();
+    let aggregate_nodes =
+        result.plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Aggregate(_))).collect::<Vec<_>>();
     assert_eq!(aggregate_nodes.len(), 1);
     let PlanNode::Aggregate(aggregate) = &aggregate_nodes[0].kind else {
         unreachable!("aggregate node filter should only keep aggregate nodes");
@@ -355,8 +406,12 @@ fn native_optimizer_combines_full_q09_like_scalar_branch_shape() {
         "q09-like AVG outputs should preserve Decimal128 output types:\n{}",
         result.plan
     );
-    let mut filters =
-        aggregate.spec.aggr_exprs.iter().filter_map(|expr| expr.filter.as_ref().map(ToString::to_string)).collect::<Vec<_>>();
+    let mut filters = aggregate
+        .spec
+        .aggr_exprs
+        .iter()
+        .filter_map(|expr| expr.filter.as_ref().map(ToString::to_string))
+        .collect::<Vec<_>>();
     filters.sort();
     filters.dedup();
     assert_eq!(filters.len(), 5);
@@ -790,6 +845,122 @@ fn repeated_aliased_grouped_aggregate_materialization_plan() -> nexus_query_engi
     let aggregates = vec![aggregate, sorted_aggregate];
     let union = builder.add_union(aggregates, aggregate_schema);
     builder.finish_gpu_resident(union)
+}
+
+fn repeated_grouped_aggregate_materialization_with_projected_argument_aliases_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("county", DataType::Int32, false),
+        Field::new("quarter", DataType::Int32, false),
+        Field::new("year", DataType::Int32, false),
+        Field::new("store_sales", DataType::Float64, true),
+    ]));
+    let mut aggregates = Vec::new();
+    for quarter in 1..=2 {
+        let source = builder
+            .add_source(estimated_sales_source_with_common_sales_and_quarter_predicate(quarter, 512 * 1024 * 1024));
+        let projected_sales = format!("__common_expr_{quarter}");
+        let projection = builder.add_projection(
+            source,
+            vec![
+                ProjectionOutput::new(Expr::column("county"), Field::new("county", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("quarter"), Field::new("quarter", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("year"), Field::new("year", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::Cast { expr: Box::new(Expr::column("sales")), target_type: DataType::Float64 }
+                        .alias(projected_sales.clone()),
+                    Field::new(projected_sales.as_str(), DataType::Float64, true),
+                ),
+            ],
+        );
+        let aggregate = builder.add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column("county"), Expr::column("quarter"), Expr::column("year")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(projected_sales), "store_sales")],
+            ),
+            Arc::clone(&aggregate_schema),
+        );
+        aggregates.push(aggregate);
+    }
+    let union = builder.add_union(aggregates, aggregate_schema);
+    builder.finish_gpu_resident(union)
+}
+
+fn repeated_grouped_projected_alias_materialization_with_local_filters_plan() -> nexus_query_engine::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source_schema = schema(&["county", "quarter", "year", "sales"]);
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("county", DataType::Int32, false),
+        Field::new("quarter", DataType::Int32, false),
+        Field::new("year", DataType::Int32, false),
+        Field::new("store_sales", DataType::Float64, true),
+    ]));
+    let mut aggregates = Vec::new();
+    for quarter in 1..=2 {
+        let source = builder.add_source(estimated_sales_source_without_reader_predicate(512 * 1024 * 1024));
+        let filtered = builder.add_filter(
+            source,
+            Expr::binary(Expr::column("quarter"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(quarter))),
+            Arc::clone(&source_schema),
+        );
+        let projected_sales = format!("__common_expr_{quarter}");
+        let projection = builder.add_projection(
+            filtered,
+            vec![
+                ProjectionOutput::new(Expr::column("county"), Field::new("county", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("quarter"), Field::new("quarter", DataType::Int32, false)),
+                ProjectionOutput::new(Expr::column("year"), Field::new("year", DataType::Int32, false)),
+                ProjectionOutput::new(
+                    Expr::Cast { expr: Box::new(Expr::column("sales")), target_type: DataType::Float64 }
+                        .alias(projected_sales.clone()),
+                    Field::new(projected_sales.as_str(), DataType::Float64, true),
+                ),
+            ],
+        );
+        let aggregate = builder.add_aggregate(
+            projection,
+            AggregateSpec::new(
+                vec![Expr::column("county"), Expr::column("quarter"), Expr::column("year")],
+                vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column(projected_sales), "store_sales")],
+            ),
+            Arc::clone(&aggregate_schema),
+        );
+        aggregates.push(aggregate);
+    }
+    let union = builder.add_union(aggregates, aggregate_schema);
+    builder.finish_gpu_resident(union)
+}
+
+fn estimated_sales_source_with_common_sales_and_quarter_predicate(quarter: i32, bytes: u64) -> SourceNode {
+    let source_schema = schema(&["county", "quarter", "year", "sales"]);
+    let file = LocalParquetFile::new("/tmp/store_sales.parquet")
+        .with_stable_id("store_sales")
+        .with_projected_row_group_bytes(vec![bytes], vec![bytes])
+        .with_row_group_rows(vec![10_000_000]);
+    let common = Expr::binary(Expr::column("sales"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0)));
+    let varying = Expr::binary(Expr::column("quarter"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(quarter)));
+    SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![file],
+            source_schema,
+            vec!["county".to_string(), "quarter".to_string(), "year".to_string(), "sales".to_string()],
+        )
+        .with_reader_predicate(Expr::binary(common, BinaryOp::And, varying)),
+    )
+}
+
+fn estimated_sales_source_without_reader_predicate(bytes: u64) -> SourceNode {
+    let source_schema = schema(&["county", "quarter", "year", "sales"]);
+    let file = LocalParquetFile::new("/tmp/store_sales.parquet")
+        .with_stable_id("store_sales")
+        .with_projected_row_group_bytes(vec![bytes], vec![bytes])
+        .with_row_group_rows(vec![10_000_000]);
+    SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![file],
+        source_schema,
+        vec!["county".to_string(), "quarter".to_string(), "year".to_string(), "sales".to_string()],
+    ))
 }
 
 fn repeated_grouped_aggregate_predicate_alias_collision_plan() -> nexus_query_engine::QueryPlan {

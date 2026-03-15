@@ -4,6 +4,7 @@ fn compiled_bounded_support_accepts_root_topk_shared_resident_fanout_graph() {
         RootTopKJoinAggregateVariant::SharedComputedFanout,
         RootTopKJoinAggregateVariant::SharedGroupedAggregateFanout,
         RootTopKJoinAggregateVariant::SharedProjectionAggregateFanout,
+        RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
         let analysis = plan.capability_analysis();
@@ -256,6 +257,67 @@ fn compiled_bounded_support_accepts_root_topk_rtk9_subcontract_graphs() {
 }
 
 #[test]
+fn compiled_bounded_support_accepts_rollup_topk_without_rank_after_aggregate_join_pushdown() {
+    let plan = selected_q22_class_rollup_topk_after_pushdown_plan();
+    let optimized = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert!(optimized.changed(), "q22-class rollup TopK should be source-reduced by aggregate-join pushdown");
+    assert!(
+        optimized
+            .plan
+            .nodes()
+            .iter()
+            .any(|node| matches!(&node.kind, PlanNode::Aggregate(aggregate) if aggregate.spec.grouping_sets.is_some())),
+        "optimized q22-class plan should retain the final grouping-set aggregate"
+    );
+    assert!(
+        !optimized.plan.nodes().iter().any(|node| matches!(&node.kind, PlanNode::Window(_))),
+        "q22-class rollup TopK has no rank/window subcontract"
+    );
+
+    let analysis = optimized.plan.capability_analysis();
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "q22-class rollup TopK should use the root TopK envelope; root_decision={:?}; first_rejection={:?}",
+        analysis.root_topk_join_aggregate_admission,
+        analysis.first_rejection_projection()
+    );
+    assert!(
+        !analysis.admits_rollup_rank_topk_after_aggregate_join_pushdown_pipeline(),
+        "rankless rollup TopK must not be mislabeled as the rollup/rank envelope"
+    );
+    let pipeline = compile_pipeline(&optimized.plan, &analysis).expect("q22-class rollup TopK plan should compile");
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 2);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
+    assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
+    assert_eq!(
+        compiled_bounded_query_plan_support(&optimized.plan, &pipeline)
+            .expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported,
+    );
+
+    let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
+        .expect("q22-class rollup TopK compiled report should be valid");
+    assert_modeled_gate_row("q22-class rollup TopK", &report, ReservationKind::OperatorOutput, "aggregate_contract");
+    assert_modeled_gate_row("q22-class rollup TopK", &report, ReservationKind::FinalSort, "final_sort_contract");
+}
+
+#[test]
+fn compiled_bounded_support_rejects_rankless_non_rollup_grouping_sets_root_topk() {
+    let plan = rankless_non_rollup_grouping_sets_root_topk_plan();
+    let analysis = plan.capability_analysis();
+
+    let CapabilityDecision::Rejected { reason, facts } = &analysis.root_topk_join_aggregate_admission else {
+        panic!(
+            "rankless non-rollup grouping sets must not enter the generic root TopK envelope: {:?}",
+            analysis.root_topk_join_aggregate_admission
+        );
+    };
+    assert_eq!(*reason, "root_topk_join_aggregate_requires_rankless_rollup_grouping_sets_contract");
+    assert_eq!(facts.get("required_grouping_mask_contract").map(String::as_str), Some("suffix_rollup"));
+}
+
+#[test]
 fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_in_graph() {
     let optimized = optimize_query_plan(
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn),
@@ -404,4 +466,121 @@ fn compiled_bounded_support_accepts_root_topk_window_subcontract_graphs() {
             "query_engine_final_topk_output_boundary",
         );
     }
+}
+
+fn rankless_non_rollup_grouping_sets_root_topk_plan() -> QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("d1", DataType::Int32, false),
+        Field::new("d2", DataType::Int32, false),
+        Field::new("k1", DataType::Int32, true),
+        Field::new("k2", DataType::Int32, true),
+        Field::new("k3", DataType::Int32, true),
+        Field::new("m", DataType::Int64, true),
+    ]));
+    let dim1_schema = Arc::new(Schema::new(vec![Field::new("d1", DataType::Int32, false)]));
+    let dim2_schema = Arc::new(Schema::new(vec![Field::new("d2", DataType::Int32, false)]));
+    let join1_schema = Arc::new(Schema::new(vec![
+        Field::new("d2", DataType::Int32, false),
+        Field::new("k1", DataType::Int32, true),
+        Field::new("k2", DataType::Int32, true),
+        Field::new("k3", DataType::Int32, true),
+        Field::new("m", DataType::Int64, true),
+    ]));
+    let join2_schema = Arc::new(Schema::new(vec![
+        Field::new("k1", DataType::Int32, true),
+        Field::new("k2", DataType::Int32, true),
+        Field::new("k3", DataType::Int32, true),
+        Field::new("m", DataType::Int64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("k1", DataType::Int32, true),
+        Field::new("k2", DataType::Int32, true),
+        Field::new("k3", DataType::Int32, true),
+        Field::new("__grouping_id", DataType::UInt32, false),
+        Field::new("total", DataType::Int64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("k1", DataType::Int32, true),
+        Field::new("k2", DataType::Int32, true),
+        Field::new("k3", DataType::Int32, true),
+        Field::new("total", DataType::Int64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/rankless-non-rollup-root-topk-fact.parquet",
+        fact_schema,
+        vec!["d1".into(), "d2".into(), "k1".into(), "k2".into(), "k3".into(), "m".into()],
+    )));
+    let dim1 = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/rankless-non-rollup-root-topk-dim1.parquet",
+        dim1_schema,
+        vec!["d1".into()],
+    )));
+    let dim2 = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/rankless-non-rollup-root-topk-dim2.parquet",
+        dim2_schema,
+        vec!["d2".into()],
+    )));
+    let join1 = builder.add_join(
+        fact,
+        dim1,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "d1", "d1"), ColumnRef::input(1, "d1", "d1"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "d2", "d2"), "d2"),
+            JoinOutputColumn::left(ColumnRef::input(0, "k1", "k1"), "k1"),
+            JoinOutputColumn::left(ColumnRef::input(0, "k2", "k2"), "k2"),
+            JoinOutputColumn::left(ColumnRef::input(0, "k3", "k3"), "k3"),
+            JoinOutputColumn::left(ColumnRef::input(0, "m", "m"), "m"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join1_schema,
+    );
+    let join2 = builder.add_join(
+        join1,
+        dim2,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "d2", "d2"), ColumnRef::input(1, "d2", "d2"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "k1", "k1"), "k1"),
+            JoinOutputColumn::left(ColumnRef::input(0, "k2", "k2"), "k2"),
+            JoinOutputColumn::left(ColumnRef::input(0, "k3", "k3"), "k3"),
+            JoinOutputColumn::left(ColumnRef::input(0, "m", "m"), "m"),
+        ])
+        .with_build_side(JoinSide::Right),
+        join2_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        join2,
+        AggregateSpec::new(
+            vec![Expr::column("k1"), Expr::column("k2"), Expr::column("k3")],
+            vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m"), "total")],
+        )
+        .with_grouping_sets(GroupingSetsSpec::new(
+            vec![vec![true, true, true], vec![true, false, true], vec![false, false, false]],
+            "__grouping_id",
+        )),
+        Arc::clone(&aggregate_schema),
+    );
+    let projection = builder.add_projection(
+        aggregate,
+        vec![
+            ProjectionOutput::new(Expr::column("k1"), output_schema.field(0).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("k2"), output_schema.field(1).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("k3"), output_schema.field(2).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("total"), output_schema.field(3).as_ref().clone()),
+        ],
+    );
+    let sort = builder.add_sort(
+        projection,
+        SortSpec::new(vec![SortExpr::new(Expr::column("total"), true, false)]),
+        Arc::clone(&output_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100), output_schema);
+    builder.finish_with_host_sink(limit)
 }

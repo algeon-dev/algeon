@@ -43,16 +43,23 @@ fn allocator_high_water_placeholder_is_none_without_runtime_contract() {
 }
 
 #[test]
-fn benchmark_planning_row_selection_rejects_ambiguous_reports() {
+fn benchmark_planning_row_selection_handles_multi_candidate_reports() {
     let selected = execution::select_benchmark_planning_row("q01", vec![accepted_planning_row("q01")]).unwrap();
+    assert_eq!(selected.query_id, "q01");
+
+    let selected = execution::select_benchmark_planning_row(
+        "q01",
+        vec![accepted_planning_row("q01"), rejected_planning_row("q01")],
+    )
+    .expect("benchmark planning should select a unique whole-native accepted row from retained candidate reports");
     assert_eq!(selected.query_id, "q01");
 
     let error = execution::select_benchmark_planning_row(
         "q01",
-        vec![accepted_planning_row("q01"), rejected_planning_row("q01")],
+        vec![accepted_planning_row("q01"), accepted_planning_row("q01"), rejected_planning_row("q01")],
     )
-    .expect_err("benchmark planning must not silently choose one row from an ambiguous report");
-    assert!(error.to_string().contains("requires exactly one native planning row per query"));
+    .expect_err("benchmark planning must reject genuinely ambiguous accepted reports");
+    assert!(error.to_string().contains("requires exactly one whole-native accepted planning row"));
 
     let error = execution::select_benchmark_planning_row("q01", Vec::new())
         .expect_err("benchmark planning must reject empty reports explicitly");
@@ -174,7 +181,7 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     let header = lines.next().expect("benchmark report should contain a TSV header");
     let header_fields = header.split('\t').collect::<Vec<_>>();
     assert_eq!(header, NATIVE_TPCH_BENCHMARK_TSV_HEADER);
-    assert_eq!(NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION, 35);
+    assert_eq!(NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION, 36);
     assert_eq!(NativeTpchBenchmarkTsvRow::COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
     assert_eq!(NativeTpchBenchmarkTsvRow::SCHEMA_VERSION, NATIVE_TPCH_BENCHMARK_TSV_SCHEMA_VERSION);
     assert!(NATIVE_TPCH_BENCHMARK_TSV_HEADER.contains("\tgraph_runtime_rows\ttask_operator_rows\t"));

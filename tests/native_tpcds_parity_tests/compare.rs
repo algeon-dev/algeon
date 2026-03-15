@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{Decimal128Array, Float64Array, Int64Array, StringArray},
+    array::{Decimal128Array, Float32Array, Float64Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -180,6 +180,18 @@ fn compare_record_batches_float_tolerance_rejects_distant_values() {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float64, false)]));
     let cpu = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Float64Array::from(vec![1.0_f64]))]).unwrap();
     let native = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Float64Array::from(vec![2.0_f64]))]).unwrap();
+
+    let result =
+        compare_record_batches(&schema, &[cpu], &schema, &[native], true, ParityFloatTolerance::new(1e-3, 1e-3));
+    assert_eq!(result.status, ParityStatus::Mismatched);
+    assert_eq!(result.mode, ParityComparisonMode::OrderedFloatTolerant);
+}
+
+#[test]
+fn compare_record_batches_float32_tolerance_rejects_distant_values() {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Float32, false)]));
+    let cpu = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Float32Array::from(vec![1.0_f32]))]).unwrap();
+    let native = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Float32Array::from(vec![42.0_f32]))]).unwrap();
 
     let result =
         compare_record_batches(&schema, &[cpu], &schema, &[native], true, ParityFloatTolerance::new(1e-3, 1e-3));

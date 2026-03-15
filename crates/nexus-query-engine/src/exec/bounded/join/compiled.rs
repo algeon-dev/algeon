@@ -148,6 +148,19 @@ pub(in crate::exec::bounded) struct StreamedOneShotJoinSummary {
     probe_rows: u64,
     probe_bytes: u64,
     index_bytes: u64,
+    materialization_bytes: u64,
+    output_reservation_bytes: u64,
+    output_rows: u64,
+    output_bytes: u64,
+}
+
+struct OneShotJoinChunkMetrics {
+    build_rows: u64,
+    build_bytes: u64,
+    probe_rows: u64,
+    probe_bytes: u64,
+    index_bytes: u64,
+    materialization_bytes: u64,
     output_reservation_bytes: u64,
     output_rows: u64,
     output_bytes: u64,
@@ -208,6 +221,7 @@ impl StreamedOneShotJoinSummary {
             probe_rows: 0,
             probe_bytes: 0,
             index_bytes: 0,
+            materialization_bytes: 0,
             output_reservation_bytes: 0,
             output_rows: 0,
             output_bytes: 0,
@@ -219,6 +233,7 @@ impl StreamedOneShotJoinSummary {
         probe_rows: u64,
         probe_bytes: u64,
         index_bytes: u64,
+        materialization_bytes: u64,
         output_reservation_bytes: u64,
         output_rows: u64,
         output_bytes: u64,
@@ -226,9 +241,22 @@ impl StreamedOneShotJoinSummary {
         self.probe_rows = self.probe_rows.saturating_add(probe_rows);
         self.probe_bytes = self.probe_bytes.saturating_add(probe_bytes);
         self.index_bytes = self.index_bytes.saturating_add(index_bytes);
+        self.materialization_bytes = self.materialization_bytes.saturating_add(materialization_bytes);
         self.output_reservation_bytes = self.output_reservation_bytes.saturating_add(output_reservation_bytes);
         self.output_rows = self.output_rows.saturating_add(output_rows);
         self.output_bytes = self.output_bytes.saturating_add(output_bytes);
+    }
+
+    fn record_chunk_metrics(&mut self, metrics: &OneShotJoinChunkMetrics) {
+        self.record_chunk(
+            metrics.probe_rows,
+            metrics.probe_bytes,
+            metrics.index_bytes,
+            metrics.materialization_bytes,
+            metrics.output_reservation_bytes,
+            metrics.output_rows,
+            metrics.output_bytes,
+        );
     }
 }
 
@@ -622,42 +650,43 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             }
         },
         BoundedCompiledJoinBuildState::Prepared(build)
-            if matches!(
-                build.strategy,
-                CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui
-            ) && node.spec.residual_predicate.is_none()
+            if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
                 && stateless_streaming_probe_supported(node) =>
         {
-            if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui {
-                if partitioned_streaming_probe_supported(node) {
-                    return execute_compiled_partitioned_hash_equi_join_probe_from_stream(
-                        context,
-                        node_id,
-                        node,
-                        build,
-                        stream,
-                        reservations,
-                        metrics,
-                    );
-                }
-                let input =
-                    materialize_bounded_join_leaf_local_parquet_source_stream(context, stream, reservations, metrics)?;
-                return execute_bounded_compiled_join_probe_from_resident_frame(
-                    context,
-                    node_id,
-                    node,
-                    BoundedCompiledJoinBuildState::Prepared(build),
-                    input,
-                    reservations,
-                    metrics,
-                );
-            }
             execute_compiled_one_shot_equi_join_probe_from_stream(
                 context,
                 node_id,
                 node,
                 build,
                 stream,
+                reservations,
+                metrics,
+            )
+        },
+        BoundedCompiledJoinBuildState::Prepared(build)
+            if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
+                && node.spec.residual_predicate.is_none()
+                && stateless_streaming_probe_supported(node) =>
+        {
+            if partitioned_streaming_probe_supported(node) {
+                return execute_compiled_partitioned_hash_equi_join_probe_from_stream(
+                    context,
+                    node_id,
+                    node,
+                    build,
+                    stream,
+                    reservations,
+                    metrics,
+                );
+            }
+            let input =
+                materialize_bounded_join_leaf_local_parquet_source_stream(context, stream, reservations, metrics)?;
+            execute_bounded_compiled_join_probe_from_resident_frame(
+                context,
+                node_id,
+                node,
+                BoundedCompiledJoinBuildState::Prepared(build),
+                input,
                 reservations,
                 metrics,
             )
@@ -730,6 +759,20 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
             }
             inputs.release_producer_reservations(reservations, metrics);
             Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs })
+        },
+        BoundedCompiledJoinBuildState::Prepared(build)
+            if build.strategy == CompiledJoinExecutionStrategy::OneShotEqui
+                && stateless_streaming_probe_supported(node) =>
+        {
+            execute_compiled_one_shot_equi_join_probe_from_frame_stream(
+                context,
+                node_id,
+                node,
+                build,
+                inputs,
+                reservations,
+                metrics,
+            )
         },
         BoundedCompiledJoinBuildState::Prepared(build)
             if build.strategy == CompiledJoinExecutionStrategy::PartitionedHashEqui
@@ -888,11 +931,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary } => {
-            let build_side = build.side;
+            let BoundedCompiledPreparedJoinBuildState { side: build_side, input, .. } = build;
             let probe_side = probe_side(build_side);
-            let build_rows = build.input.rows;
-            let build_bytes = build.input.bytes;
-            drop(build);
+            let build_rows = input.rows;
+            let build_bytes = input.bytes;
+            release_bounded_join_side_frame(input, reservations, metrics);
             record_streamed_one_shot_join_metrics(
                 node_id,
                 node,

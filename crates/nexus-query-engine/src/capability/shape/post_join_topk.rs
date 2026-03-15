@@ -17,21 +17,31 @@ pub(in crate::capability) fn hash_join_resident_grouped_aggregate_input_post_joi
     )?;
     let post_root_aggregate_input =
         grouped_aggregate_input(plan, post_root_aggregate_id, "post_join_topk_requires_grouped_aggregate")?;
-    let post_root_projection_id = post_root_aggregate_input;
-    let root_join_id = projection_input_with_missing_reason(
-        plan,
-        post_root_projection_id,
-        "hash_resident_grouped_aggregate_topk_missing_node",
-        "post_join_topk_requires_projection_before_grouped_aggregate",
-        "pre_aggregate_projection",
-    )?;
+    let (root_join_id, post_root_projection_id) = match plan.node(post_root_aggregate_input).map(|node| &node.kind) {
+        Some(PlanNode::Projection(projection)) => (projection.input, post_root_aggregate_input),
+        Some(PlanNode::Join(_)) => (post_root_aggregate_input, post_root_aggregate_input),
+        Some(node) => {
+            return Err(CapabilityDecision::rejected(
+                "post_join_topk_requires_projection_or_join_before_grouped_aggregate",
+                [
+                    ("node_id", post_root_aggregate_input.to_string()),
+                    ("operator", node_operator_fact(node).to_string()),
+                ],
+            ));
+        },
+        None => {
+            return Err(CapabilityDecision::rejected(
+                "hash_resident_grouped_aggregate_topk_missing_node",
+                [("node_id", post_root_aggregate_input.to_string()), ("role", "pre_aggregate_input".to_string())],
+            ));
+        },
+    };
 
     let root_join = generic_join_node(plan, root_join_id, "post_join_topk_requires_root_join_below_projection")?;
     require_left_semi_keyed_hash_join_with_right_build(root_join_id, root_join)?;
 
     let join_subtree_root_id = root_join.inputs[join_side_index(JoinSide::Left)];
-    let mut join_count = 0;
-    validate_bounded_join_subtree_for_capability(plan, join_subtree_root_id, &mut join_count)?;
+    let join_count = validate_hash_resident_grouped_aggregate_topk_preserved_side(plan, join_subtree_root_id)?;
     if join_count < 2 {
         return Err(CapabilityDecision::rejected(
             "hash_resident_grouped_aggregate_topk_requires_multi_join_subtree",
@@ -53,6 +63,38 @@ pub(in crate::capability) fn hash_join_resident_grouped_aggregate_input_post_joi
         final_sort_id,
         final_limit_id,
     })
+}
+
+fn validate_hash_resident_grouped_aggregate_topk_preserved_side(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Result<usize, CapabilityDecision> {
+    let mut join_count = 0;
+    match plan.node(node_id).map(|node| &node.kind) {
+        Some(PlanNode::Aggregate(aggregate)) => {
+            if aggregate.spec.group_exprs.is_empty() || aggregate.spec.grouping_sets.is_some() {
+                return Err(CapabilityDecision::rejected(
+                    "hash_resident_grouped_aggregate_topk_requires_grouped_preserved_aggregate",
+                    [
+                        ("node_id", node_id.to_string()),
+                        ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
+                        ("has_grouping_sets", aggregate.spec.grouping_sets.is_some().to_string()),
+                    ],
+                ));
+            }
+            validate_bounded_join_subtree_for_capability(plan, aggregate.input, &mut join_count)?;
+        },
+        Some(_) => {
+            validate_bounded_join_subtree_for_capability(plan, node_id, &mut join_count)?;
+        },
+        None => {
+            return Err(CapabilityDecision::rejected(
+                "hash_resident_grouped_aggregate_topk_missing_preserved_side",
+                [("node_id", node_id.to_string())],
+            ));
+        },
+    }
+    Ok(join_count)
 }
 
 pub(in crate::capability) fn multi_join_aggregate_over_join_subplan_topk_shape_decision(

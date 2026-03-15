@@ -432,10 +432,10 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
         let q39 = report.rows.iter().find(|row| row.query_id == "q39").unwrap_or_else(|| panic!("q39 is missing"));
         assert_eq!(q39.strict_bounded_compiled_graphs.len(), 1, "q39 should expose one accepted strict graph");
         let q39_graph = &q39.strict_bounded_compiled_graphs[0];
-        assert_eq!(q39_graph.task_count, 46, "q39 compiled graph task count drifted");
-        assert_eq!(q39_graph.edge_count, 49, "q39 compiled graph edge count drifted");
-        assert_eq!(q39_graph.barrier_count, 22, "q39 compiled graph barrier count drifted");
-        assert_eq!(q39_graph.resource_count, 31, "q39 compiled graph resource count drifted");
+        assert_eq!(q39_graph.task_count, 47, "q39 compiled graph task count drifted");
+        assert_eq!(q39_graph.edge_count, 55, "q39 compiled graph edge count drifted");
+        assert_eq!(q39_graph.barrier_count, 23, "q39 compiled graph barrier count drifted");
+        assert_eq!(q39_graph.resource_count, 32, "q39 compiled graph resource count drifted");
         assert_eq!(q39_graph.gate_count, 50, "q39 compiled graph gate count drifted");
         assert_eq!(
             q39_graph.sink_kind, "host_arrow_materialization",
@@ -1129,9 +1129,16 @@ async fn tpcds_sf1_distributed_aggregate_lowering_admits_shared_resident_groupin
             assert!(rendered.contains("CONCAT("), "q05 should lower scalar concat into native projection:\n{rendered}");
         }
         if query_id == "q18" {
-            assert!(rendered.contains("Avg("), "q18 grouping-set AVG state should lower natively:\n{rendered}");
             assert!(
-                rendered.contains("__cudf_aggregate_arg_"),
+                rendered.contains("__cudf_preagg_avg_"),
+                "q18 grouping-set AVG should lower to explicit native SUM/COUNT state:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("__grouping_id"),
+                "q18 grouping-set AVG final projection must preserve the grouping id output:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("__cudf_preagg_arg_"),
                 "q18 AVG inputs should be materialized as reusable native aggregate arguments:\n{rendered}"
             );
         }

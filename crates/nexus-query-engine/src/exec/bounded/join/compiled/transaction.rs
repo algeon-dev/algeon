@@ -103,6 +103,10 @@ impl JoinMaterializationTxn {
         self.indices.as_ref().expect("join materialization transaction indices should be set")
     }
 
+    pub(in crate::exec::bounded::join::compiled) fn drop_indices(&mut self) {
+        drop(self.indices.take());
+    }
+
     pub(in crate::exec) fn set_output_reservation(&mut self, reservation: ActiveReservation) {
         assert!(self.output_reservation.is_none(), "join materialization txn output reservation already set");
         self.output_reservation = Some(reservation);

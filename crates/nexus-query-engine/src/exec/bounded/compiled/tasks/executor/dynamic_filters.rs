@@ -114,10 +114,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         if producer_frame.num_rows() > LARGE_LOCAL_PARQUET_RANGE_DYNAMIC_FILTER_PRODUCER_ROWS
             && routes.iter().all(route_targets_local_parquet_source)
         {
+            let producer_frame_bytes = producer_frame.device_allocated_size_bytes().ok();
             let range_routes = routes
                 .iter()
                 .filter_map(|route| {
-                    if self.route_targets_dimension_sized_local_parquet_source(route) {
+                    if self
+                        .large_keyset_dimension_sized_local_parquet_route_is_not_promising(route, producer_frame_bytes)
+                    {
                         self.dynamic_filters.insert_skipped(route.id, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON);
                         self.metrics.record_dynamic_filter_skipped(route, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON);
                         None
@@ -249,7 +252,11 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         Ok(())
     }
 
-    fn route_targets_dimension_sized_local_parquet_source(&self, route: &DynamicFilterRoute) -> bool {
+    fn large_keyset_dimension_sized_local_parquet_route_is_not_promising(
+        &self,
+        route: &DynamicFilterRoute,
+        producer_frame_bytes: Option<u64>,
+    ) -> bool {
         let DynamicFilterConsumer::LocalParquetSource { source_node_id } = &route.consumer else {
             return false;
         };
@@ -262,12 +269,20 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         }) else {
             return false;
         };
-        source
-            .diagnostics
-            .selected_row_group_stats
-            .as_ref()
-            .and_then(|stats| stats.selected_source_bytes())
-            .is_some_and(|bytes| bytes <= DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES)
+        let Some(stats) = source.diagnostics.selected_row_group_stats.as_ref() else {
+            return false;
+        };
+        let Some(consumer_bytes) = stats.selected_source_bytes() else {
+            return false;
+        };
+        if dynamic_filter_consumer_source_feeds_downstream_work_fanout(self.plan, *source_node_id) {
+            return false;
+        }
+        if consumer_bytes > DIMENSION_SIZED_DYNAMIC_FILTER_CONSUMER_BYTES {
+            return false;
+        }
+        stats.selected_row_groups <= TINY_LOCAL_PARQUET_DYNAMIC_FILTER_CONSUMER_ROW_GROUPS
+            || producer_frame_bytes.is_some_and(|producer_bytes| producer_bytes > consumer_bytes)
     }
 
     pub(super) fn apply_dynamic_filters_to_join_leaf_stream(

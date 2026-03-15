@@ -19,9 +19,11 @@ use crate::bounded_join_admission::{
     AggregateOverJoinSubplanInputsVariant, ResidualResidentGroupedAggregateInputVariant,
     keyless_conditional_aggregate_over_join_subplan_inputs_plan,
     plans::{
-        KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant, aggregate_over_join_subplan_topk_plan,
+        KeyedHashJoinResidentSubplanPipelineVariant, KeylessInputSubplanVariant,
+        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant, aggregate_over_join_subplan_topk_plan,
         keyed_hash_join_resident_subplan_pipeline_plan, keyless_conditional_join_input_subplan_plan,
         resident_grouped_aggregate_input_post_join_aggregate_topk_plan,
+        resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan,
         resident_grouped_aggregate_subquery_filter_plan, serial_aggregate_multi_join_spine_plan,
         serial_aggregate_single_join_spine_plan, single_join_post_root_aggregate_sort_limit_plan,
     },
@@ -591,6 +593,33 @@ fn compile_pipeline_topk_bounded_paths_compile_aggregate_sort_limit_structure() 
             CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
                 as fn(&CapabilityAnalysis) -> bool,
             2,
+        ),
+        (
+            "resident grouped-aggregate TopK direct aggregate input",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
+            ),
+            CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&CapabilityAnalysis) -> bool,
+            2,
+        ),
+        (
+            "resident grouped-aggregate TopK filter-wrapped direct aggregate input",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput,
+            ),
+            CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&CapabilityAnalysis) -> bool,
+            2,
+        ),
+        (
+            "resident grouped-aggregate TopK preaggregated filter-wrapped direct aggregate input",
+            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
+                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
+            ),
+            CapabilityAnalysis::admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline
+                as fn(&CapabilityAnalysis) -> bool,
+            3,
         ),
     ] {
         let (_plan, _analysis, pipeline) = compile_admitted_join_case(label, plan, admits);
