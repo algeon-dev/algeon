@@ -1,0 +1,385 @@
+use super::*;
+
+pub(super) fn record_background_cache_file_fill_enqueue_runtime(
+    source_node_id: NodeId,
+    source: &LocalParquetSource,
+    file: &LocalParquetFile,
+    file_index: usize,
+    outcome: String,
+    metrics: &mut QueryMetrics,
+) {
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: source_node_id.to_string(),
+        read_kind: "background_cache_fill_file".to_string(),
+        read_strategy: file.resolved_source.read_strategy.as_str().to_string(),
+        host_buffer_fetch_mode: "none".to_string(),
+        host_buffer_payload_bytes: 0,
+        host_buffer_requested_range_count: 0,
+        host_buffer_requested_range_bytes: 0,
+        host_buffer_original_file_bytes: file.file_size_bytes.unwrap_or(0),
+        host_buffer_mini_parquet_footer_bytes: 0,
+        parquet_read_evidence: SourceReadParquetEvidenceMetrics::default(),
+        batch_index: file_index as u64,
+        chunk_count: 0,
+        first_chunk_index: file_index as u64,
+        last_chunk_index: file_index as u64,
+        first_file_index: file_index as u64,
+        last_file_index: file_index as u64,
+        file_count: 1,
+        row_group_count: file.row_groups.as_ref().map_or(0, |row_groups| row_groups.len() as u64),
+        read_columns_per_file: source.read_columns.len() as u64,
+        read_columns_total: source.read_columns.len() as u64,
+        known_file_bytes: file.file_size_bytes.unwrap_or(0),
+        estimated_source_read_bytes: file.file_size_bytes.unwrap_or(0),
+        known_row_group_bytes: selected_file_metadata_sum(file.row_group_bytes.as_deref(), file.row_groups.as_deref()),
+        known_projected_compressed_bytes: selected_file_metadata_sum(
+            file.projected_row_group_compressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        known_projected_uncompressed_bytes: selected_file_metadata_sum(
+            file.projected_row_group_uncompressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        known_pure_filter_compressed_bytes: selected_file_metadata_sum(
+            file.pure_filter_row_group_compressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        known_pure_filter_uncompressed_bytes: selected_file_metadata_sum(
+            file.pure_filter_row_group_uncompressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        output_rows: 0,
+        reader_predicate: false,
+        reader_dynamic_filter_count: 0,
+        source_batching_reason: outcome,
+        source_chunk_planning_mode: "background_cache_fill".to_string(),
+        source_chunk_planning_reason: file.resolved_source.lakehouse_cache_fill_mode.as_str().to_string(),
+        elapsed: Duration::ZERO,
+    });
+}
+
+pub(super) fn record_background_cache_chunk_fill_enqueue_runtime(
+    chunk: &SourceChunk,
+    outcome: String,
+    metrics: &mut QueryMetrics,
+) {
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: chunk.source_node_id.to_string(),
+        read_kind: "background_cache_fill_chunk".to_string(),
+        read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
+        host_buffer_fetch_mode: "none".to_string(),
+        host_buffer_payload_bytes: 0,
+        host_buffer_requested_range_count: 0,
+        host_buffer_requested_range_bytes: 0,
+        host_buffer_original_file_bytes: chunk.known_file_bytes.unwrap_or(0),
+        host_buffer_mini_parquet_footer_bytes: 0,
+        parquet_read_evidence: SourceReadParquetEvidenceMetrics::default(),
+        batch_index: chunk.chunk_index as u64,
+        chunk_count: 0,
+        first_chunk_index: chunk.chunk_index as u64,
+        last_chunk_index: chunk.chunk_index as u64,
+        first_file_index: chunk.file_index as u64,
+        last_file_index: chunk.file_index as u64,
+        file_count: 1,
+        row_group_count: chunk.row_group_count() as u64,
+        read_columns_per_file: chunk.read_columns.len() as u64,
+        read_columns_total: chunk.read_columns.len() as u64,
+        known_file_bytes: chunk.known_file_bytes.unwrap_or(0),
+        estimated_source_read_bytes: chunk.known_file_bytes.unwrap_or(0),
+        known_row_group_bytes: chunk.known_row_group_bytes.unwrap_or(0),
+        known_projected_compressed_bytes: chunk.known_projected_compressed_bytes.unwrap_or(0),
+        known_projected_uncompressed_bytes: chunk.known_projected_uncompressed_bytes.unwrap_or(0),
+        known_pure_filter_compressed_bytes: chunk.known_pure_filter_compressed_bytes.unwrap_or(0),
+        known_pure_filter_uncompressed_bytes: chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0),
+        output_rows: 0,
+        reader_predicate: false,
+        reader_dynamic_filter_count: 0,
+        source_batching_reason: outcome,
+        source_chunk_planning_mode: "background_cache_fill".to_string(),
+        source_chunk_planning_reason: chunk.resolved_source.lakehouse_cache_fill_mode.as_str().to_string(),
+        elapsed: Duration::ZERO,
+    });
+}
+
+pub(super) fn record_source_chunk_read_runtime(
+    source: &LocalParquetSource,
+    chunk: &SourceChunk,
+    observed_row_group_count: Option<usize>,
+    output_rows: u64,
+    elapsed: Duration,
+    reader_dynamic_filter_count: usize,
+    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
+    read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    metrics: &mut QueryMetrics,
+) {
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: chunk.source_node_id.to_string(),
+        read_kind: "chunk".to_string(),
+        read_strategy: chunk.resolved_source.read_strategy.as_str().to_string(),
+        host_buffer_fetch_mode: if host_buffer_fetch.fetch_mode.is_empty() {
+            "none".to_string()
+        } else {
+            host_buffer_fetch.fetch_mode.clone()
+        },
+        host_buffer_payload_bytes: host_buffer_fetch.payload_bytes,
+        host_buffer_requested_range_count: host_buffer_fetch.requested_range_count,
+        host_buffer_requested_range_bytes: host_buffer_fetch.requested_range_bytes,
+        host_buffer_original_file_bytes: host_buffer_fetch.original_file_bytes,
+        host_buffer_mini_parquet_footer_bytes: host_buffer_fetch.mini_parquet_footer_bytes,
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence, host_buffer_fetch),
+        batch_index: chunk.chunk_index as u64,
+        chunk_count: 1,
+        first_chunk_index: chunk.chunk_index as u64,
+        last_chunk_index: chunk.chunk_index as u64,
+        first_file_index: chunk.file_index as u64,
+        last_file_index: chunk.file_index as u64,
+        file_count: 1,
+        row_group_count: observed_row_group_count
+            .or_else(|| observed_chunk_row_group_count(chunk))
+            .unwrap_or_else(|| chunk.row_group_count()) as u64,
+        read_columns_per_file: chunk.read_columns.len() as u64,
+        read_columns_total: chunk.read_columns.len() as u64,
+        known_file_bytes: chunk.known_file_bytes.unwrap_or(0),
+        estimated_source_read_bytes: best_chunk_source_read_bytes(chunk),
+        known_row_group_bytes: chunk.known_row_group_bytes.unwrap_or(0),
+        known_projected_compressed_bytes: chunk.known_projected_compressed_bytes.unwrap_or(0),
+        known_projected_uncompressed_bytes: chunk.known_projected_uncompressed_bytes.unwrap_or(0),
+        known_pure_filter_compressed_bytes: chunk.known_pure_filter_compressed_bytes.unwrap_or(0),
+        known_pure_filter_uncompressed_bytes: chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0),
+        output_rows,
+        reader_predicate: source.reader_predicate.is_some(),
+        reader_dynamic_filter_count: reader_dynamic_filter_count as u64,
+        source_batching_reason: chunk.source_batching_reason.clone().unwrap_or_else(|| "not_evaluated".to_string()),
+        source_chunk_planning_mode: chunk.source_chunk_planning_mode.as_str().to_string(),
+        source_chunk_planning_reason: chunk.source_chunk_planning_reason.clone(),
+        elapsed,
+    });
+}
+
+pub(super) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Option<usize> {
+    chunk.known_read_row_group_count().or_else(|| {
+        (chunk.reads_all_row_groups && chunk.path.is_file())
+            .then(|| {
+                parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
+                    .ok()
+                    .map(|reader| reader.metadata().num_row_groups())
+            })
+            .flatten()
+    })
+}
+
+pub(super) fn record_source_chunk_batch_read_runtime(
+    source: &LocalParquetSource,
+    batch: &crate::chunk::SourceChunkBatch,
+    read_kind: &'static str,
+    output_rows: u64,
+    elapsed: Duration,
+    reader_dynamic_filter_count: usize,
+    read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    metrics: &mut QueryMetrics,
+) {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    let last_chunk = batch.chunks.last().expect("source chunk batch is non-empty");
+    let file_count = batch.chunks.iter().map(|chunk| chunk.file_index).collect::<BTreeSet<_>>().len();
+    let estimated_source_read_bytes = batch
+        .estimated_source_read_bytes
+        .unwrap_or_else(|| batch.chunks.iter().map(best_chunk_source_read_bytes).sum());
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: first_chunk.source_node_id.to_string(),
+        read_kind: read_kind.to_string(),
+        read_strategy: first_chunk.resolved_source.read_strategy.as_str().to_string(),
+        host_buffer_fetch_mode: "none".to_string(),
+        host_buffer_payload_bytes: 0,
+        host_buffer_requested_range_count: 0,
+        host_buffer_requested_range_bytes: 0,
+        host_buffer_original_file_bytes: 0,
+        host_buffer_mini_parquet_footer_bytes: 0,
+        parquet_read_evidence: source_read_parquet_evidence_metrics(
+            read_evidence,
+            &HostBufferFetchRuntimeMetrics::default(),
+        ),
+        batch_index: batch.batch_index as u64,
+        chunk_count: batch.chunk_count() as u64,
+        first_chunk_index: first_chunk.chunk_index as u64,
+        last_chunk_index: last_chunk.chunk_index as u64,
+        first_file_index: first_chunk.file_index as u64,
+        last_file_index: last_chunk.file_index as u64,
+        file_count: file_count as u64,
+        row_group_count: batch.row_group_count() as u64,
+        read_columns_per_file: source.read_column_count() as u64,
+        read_columns_total: batch.chunks.iter().map(|chunk| chunk.read_columns.len() as u64).sum(),
+        known_file_bytes: batch.chunks.iter().map(|chunk| chunk.known_file_bytes.unwrap_or(0)).sum(),
+        estimated_source_read_bytes,
+        known_row_group_bytes: batch.chunks.iter().map(|chunk| chunk.known_row_group_bytes.unwrap_or(0)).sum(),
+        known_projected_compressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_projected_compressed_bytes.unwrap_or(0))
+            .sum(),
+        known_projected_uncompressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_projected_uncompressed_bytes.unwrap_or(0))
+            .sum(),
+        known_pure_filter_compressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_pure_filter_compressed_bytes.unwrap_or(0))
+            .sum(),
+        known_pure_filter_uncompressed_bytes: batch
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_pure_filter_uncompressed_bytes.unwrap_or(0))
+            .sum(),
+        output_rows,
+        reader_predicate: source.reader_predicate.is_some(),
+        reader_dynamic_filter_count: reader_dynamic_filter_count as u64,
+        source_batching_reason: batch.source_batching_reason.clone(),
+        source_chunk_planning_mode: first_chunk.source_chunk_planning_mode.as_str().to_string(),
+        source_chunk_planning_reason: first_chunk.source_chunk_planning_reason.clone(),
+        elapsed,
+    });
+}
+
+pub(super) fn record_source_file_read_runtime(
+    source: &LocalParquetSource,
+    source_node_id: NodeId,
+    file: &LocalParquetFile,
+    file_index: usize,
+    chunk_index: usize,
+    observed_row_group_count: u64,
+    output_rows: u64,
+    elapsed: Duration,
+    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
+    read_evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    metrics: &mut QueryMetrics,
+) {
+    metrics.record_source_read_runtime(SourceReadRuntimeMetrics {
+        source_node_id: source_node_id.to_string(),
+        read_kind: "file".to_string(),
+        read_strategy: file.resolved_source.read_strategy.as_str().to_string(),
+        host_buffer_fetch_mode: if host_buffer_fetch.fetch_mode.is_empty() {
+            "none".to_string()
+        } else {
+            host_buffer_fetch.fetch_mode.clone()
+        },
+        host_buffer_payload_bytes: host_buffer_fetch.payload_bytes,
+        host_buffer_requested_range_count: host_buffer_fetch.requested_range_count,
+        host_buffer_requested_range_bytes: host_buffer_fetch.requested_range_bytes,
+        host_buffer_original_file_bytes: host_buffer_fetch.original_file_bytes,
+        host_buffer_mini_parquet_footer_bytes: host_buffer_fetch.mini_parquet_footer_bytes,
+        parquet_read_evidence: source_read_parquet_evidence_metrics(read_evidence, host_buffer_fetch),
+        batch_index: chunk_index as u64,
+        chunk_count: 1,
+        first_chunk_index: chunk_index as u64,
+        last_chunk_index: chunk_index as u64,
+        first_file_index: file_index as u64,
+        last_file_index: file_index as u64,
+        file_count: 1,
+        row_group_count: observed_row_group_count,
+        read_columns_per_file: source.read_columns.len() as u64,
+        read_columns_total: source.read_columns.len() as u64,
+        known_file_bytes: file.file_size_bytes.unwrap_or(0),
+        estimated_source_read_bytes: best_file_source_read_bytes(file),
+        known_row_group_bytes: selected_file_metadata_sum(file.row_group_bytes.as_deref(), file.row_groups.as_deref()),
+        known_projected_compressed_bytes: selected_file_metadata_sum(
+            file.projected_row_group_compressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        known_projected_uncompressed_bytes: selected_file_metadata_sum(
+            file.projected_row_group_uncompressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        known_pure_filter_compressed_bytes: selected_file_metadata_sum(
+            file.pure_filter_row_group_compressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        known_pure_filter_uncompressed_bytes: selected_file_metadata_sum(
+            file.pure_filter_row_group_uncompressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ),
+        output_rows,
+        reader_predicate: source.reader_predicate.is_some(),
+        reader_dynamic_filter_count: 0,
+        source_batching_reason: "not_evaluated".to_string(),
+        source_chunk_planning_mode: "whole_file".to_string(),
+        source_chunk_planning_reason: "whole_file_read".to_string(),
+        elapsed,
+    });
+}
+
+pub(super) fn source_read_parquet_evidence_metrics(
+    evidence: Option<&cudf::io::parquet::ParquetReadEvidence>,
+    host_buffer_fetch: &HostBufferFetchRuntimeMetrics,
+) -> SourceReadParquetEvidenceMetrics {
+    let ranged_mini_parquet_bloom_status =
+        (host_buffer_fetch.fetch_mode == "ranged_parquet").then_some("bloom_ineligible_ranged_mini_parquet");
+    let Some(evidence) = evidence else {
+        let mut metrics = SourceReadParquetEvidenceMetrics::default();
+        if let Some(status) = ranged_mini_parquet_bloom_status {
+            metrics.bloom_pruning_status = status.to_string();
+        }
+        return metrics;
+    };
+    let pruning = evidence.pruning;
+    SourceReadParquetEvidenceMetrics {
+        input_kind: evidence.input_kind.to_string(),
+        remote_read_mode: evidence
+            .requested_remote_read_mode
+            .map(cudf::io::parquet::RemoteReadMode::as_str)
+            .unwrap_or("none")
+            .to_string(),
+        backend: evidence.backend.to_string(),
+        fallback_reason: evidence.fallback_reason.to_string(),
+        backend_build_status: evidence.backend_build_status.as_str().to_string(),
+        remote_bytes: evidence.remote_bytes,
+        remote_range_count: evidence.remote_range_count,
+        device_read_support: evidence.device_read_support.to_string(),
+        pruning_input_row_groups: pruning.map(|pruning| pruning.input_row_groups),
+        row_groups_after_stats_filter: pruning.and_then(|pruning| pruning.row_groups_after_stats_filter),
+        row_groups_after_bloom_filter: pruning.and_then(|pruning| pruning.row_groups_after_bloom_filter),
+        bloom_pruning_status: ranged_mini_parquet_bloom_status
+            .or_else(|| bloom_pruning_status(pruning))
+            .unwrap_or("not_reported")
+            .to_string(),
+    }
+}
+
+pub(super) fn bloom_pruning_status(pruning: Option<cudf::io::parquet::ParquetPruningEvidence>) -> Option<&'static str> {
+    let pruning = pruning?;
+    match (pruning.row_groups_after_stats_filter, pruning.row_groups_after_bloom_filter) {
+        (Some(after_stats), Some(after_bloom)) if after_bloom < after_stats => Some("bloom_pruned"),
+        (None, Some(after_bloom)) if after_bloom < pruning.input_row_groups => Some("bloom_pruned"),
+        (_, Some(_)) => Some("bloom_not_pruned"),
+        (Some(_), None) => Some("bloom_not_reported"),
+        (None, None) => Some("no_reader_predicate"),
+    }
+}
+
+pub(super) fn best_file_source_read_bytes(file: &LocalParquetFile) -> u64 {
+    selected_file_metadata_sum(file.row_group_bytes.as_deref(), file.row_groups.as_deref())
+        .max(selected_file_metadata_sum(
+            file.projected_row_group_compressed_bytes.as_deref(),
+            file.row_groups.as_deref(),
+        ))
+        .max(file.file_size_bytes.unwrap_or(0))
+}
+
+pub(super) fn selected_file_metadata_sum(values: Option<&[u64]>, row_groups: Option<&[usize]>) -> u64 {
+    let Some(values) = values else {
+        return 0;
+    };
+    match row_groups {
+        Some(row_groups) => row_groups.iter().filter_map(|index| values.get(*index)).sum(),
+        None => values.iter().sum(),
+    }
+}
+
+pub(super) fn best_chunk_source_read_bytes(chunk: &SourceChunk) -> u64 {
+    chunk
+        .estimated_source_read_bytes
+        .or(chunk.known_row_group_bytes)
+        .or(chunk.estimated_chunk_bytes)
+        .or(chunk.known_file_bytes)
+        .unwrap_or(0)
+}
