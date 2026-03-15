@@ -17,7 +17,7 @@ use super::{
     ERROR_ALGORITHM_DISABLED, ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_OK,
     ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE,
     ERROR_UNSUPPORTED_WEIGHT_DTYPE, ERROR_VERTEX_DTYPE_MISMATCH, SEVERITY_ERROR, SEVERITY_OK,
-    algorithm_for_function_name,
+    algorithm_for_metadata_name,
     json_schema::{data_type_label, normalized_options_json, schema_json},
 };
 
@@ -78,17 +78,18 @@ pub(super) async fn cugraph_validate_call(
     call_json: &str,
     config: &CugraphSqlConfig,
 ) -> ValidationRow {
-    let Some(algorithm) = algorithm_for_function_name(function_name) else {
+    let Some(algorithm) = algorithm_for_metadata_name(function_name) else {
         return ValidationRow::invalid(
             function_name,
             ERROR_UNKNOWN_ALGORITHM,
             format!("unknown cuGraph algorithm function '{function_name}'"),
         );
     };
+    let canonical_function_name = algorithm.function_name();
     let output_schema_json = schema_json(&stable_result_schema(algorithm));
     if !config.allows(algorithm) {
         return ValidationRow::invalid(
-            function_name,
+            canonical_function_name,
             ERROR_ALGORITHM_DISABLED,
             format!("cuGraph algorithm {algorithm:?} is not enabled in this session"),
         )
@@ -98,15 +99,20 @@ pub(super) async fn cugraph_validate_call(
     let call = match parse_validate_call_json(algorithm, call_json) {
         Ok(call) => call,
         Err((code, message)) => {
-            return ValidationRow::invalid(function_name, code, message).with_algorithm(true, output_schema_json);
+            return ValidationRow::invalid(canonical_function_name, code, message)
+                .with_algorithm(true, output_schema_json);
         },
     };
 
     let spec = match build_validate_spec(algorithm, table_name, &call, config) {
         Ok(spec) => spec,
         Err(error) => {
-            return ValidationRow::invalid(function_name, parse_error_code(&error.to_string()), error.to_string())
-                .with_algorithm(true, output_schema_json);
+            return ValidationRow::invalid(
+                canonical_function_name,
+                parse_error_code(&error.to_string()),
+                error.to_string(),
+            )
+            .with_algorithm(true, output_schema_json);
         },
     };
     let output_schema_json = schema_json(&spec.output_schema);
@@ -115,7 +121,7 @@ pub(super) async fn cugraph_validate_call(
     let provider = match resolve_table_provider(state, table_ref).await {
         Ok(provider) => provider,
         Err(message) => {
-            return ValidationRow::invalid(function_name, ERROR_TABLE_NOT_FOUND, message)
+            return ValidationRow::invalid(canonical_function_name, ERROR_TABLE_NOT_FOUND, message)
                 .with_algorithm(true, output_schema_json);
         },
     };
@@ -155,7 +161,7 @@ pub(super) async fn cugraph_validate_call(
             dst_dtype,
             weight_dtype,
             ..ValidationRow::invalid(
-                function_name,
+                canonical_function_name,
                 ERROR_COLUMN_NOT_FOUND,
                 format!("cuGraph edge source is missing column(s): {}", missing.join(",")),
             )
@@ -179,7 +185,7 @@ pub(super) async fn cugraph_validate_call(
                     src_dtype,
                     dst_dtype,
                     weight_dtype,
-                    ..ValidationRow::invalid(function_name, vertex_domain_error_code(&message), message)
+                    ..ValidationRow::invalid(canonical_function_name, vertex_domain_error_code(&message), message)
                         .with_algorithm(true, output_schema_json)
                 };
             },
@@ -196,7 +202,7 @@ pub(super) async fn cugraph_validate_call(
             dst_dtype,
             weight_dtype,
             ..ValidationRow::invalid(
-                function_name,
+                canonical_function_name,
                 ERROR_UNSUPPORTED_OPTION,
                 "cuGraph BFS logical string vertex-id mapping does not yet support edge_id_col",
             )
@@ -215,7 +221,7 @@ pub(super) async fn cugraph_validate_call(
             dst_dtype,
             weight_dtype,
             ..ValidationRow::invalid(
-                function_name,
+                canonical_function_name,
                 ERROR_VERTEX_DTYPE_MISMATCH,
                 format!(
                     "cuGraph edge-id column '{}' must have dtype {}",
@@ -238,7 +244,7 @@ pub(super) async fn cugraph_validate_call(
             dst_dtype,
             weight_dtype,
             ..ValidationRow::invalid(
-                function_name,
+                canonical_function_name,
                 ERROR_UNSUPPORTED_WEIGHT_DTYPE,
                 format!("cuGraph weight column '{}' has unsupported dtype", spec.weight_col.as_deref().unwrap_or("")),
             )
@@ -246,8 +252,14 @@ pub(super) async fn cugraph_validate_call(
         };
     }
 
-    if let Some(row) =
-        validate_bfs_predicate_sources(state, function_name, &spec, &vertex_domain, output_schema_json.clone()).await
+    if let Some(row) = validate_bfs_predicate_sources(
+        state,
+        canonical_function_name,
+        &spec,
+        &vertex_domain,
+        output_schema_json.clone(),
+    )
+    .await
     {
         return row;
     }
@@ -257,7 +269,7 @@ pub(super) async fn cugraph_validate_call(
         severity: SEVERITY_OK.to_string(),
         error_code: ERROR_OK.to_string(),
         message: "cuGraph call is statically valid".to_string(),
-        function_name: function_name.to_string(),
+        function_name: canonical_function_name.to_string(),
         algorithm_enabled: true,
         table_resolved: true,
         src_col_resolved: true,
