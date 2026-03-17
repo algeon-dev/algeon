@@ -283,7 +283,9 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
             | SchemaError::DuplicateUnqualifiedField { .. } => ErrorCode::DataFusionPlanning,
         },
         DataFusionError::NotImplemented(_) => ErrorCode::UnsupportedOperator,
-        DataFusionError::Configuration(_) | DataFusionError::Execution(_) => ErrorCode::DataFusionPlanning,
+        DataFusionError::Configuration(_) => ErrorCode::DataFusionPlanning,
+        DataFusionError::Execution(message) if datafusion_not_found_message(message) => ErrorCode::ObjectNotFound,
+        DataFusionError::Execution(_) => ErrorCode::DataFusionPlanning,
         DataFusionError::ResourcesExhausted(_) => ErrorCode::MemoryReservationFailed,
         DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
             classify_datafusion_error(source)
@@ -306,6 +308,10 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
 fn datafusion_not_found_message(message: &str) -> bool {
     let message = message.trim().to_ascii_lowercase();
     (message.starts_with("table '") && message.contains("' not found"))
+        || (message.starts_with("table '")
+            && (message.contains("' doesn't exist") || message.contains("' does not exist")))
+        || (message.starts_with("view '")
+            && (message.contains("' doesn't exist") || message.contains("' does not exist")))
         || message.starts_with("table not found:")
         || (message.starts_with("table function '") && message.contains("' not found"))
         || message.starts_with("table function not found:")
@@ -387,6 +393,18 @@ mod tests {
         assert_eq!(status.code(), Code::NotFound);
         assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
         assert_eq!(status.message(), "table 'does_not_exist' not found");
+    }
+
+    #[test]
+    fn missing_drop_target_execution_message_is_object_not_found() {
+        let status = datafusion_error_to_status_for_operation(
+            DataFusionError::Execution("Table 'does_not_exist' doesn't exist.".to_string()),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::NotFound);
+        assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
+        assert_eq!(status.message(), "Table 'does_not_exist' doesn't exist.");
     }
 
     #[test]
