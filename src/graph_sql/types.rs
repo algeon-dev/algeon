@@ -32,6 +32,7 @@ pub const CUGRAPH_LEIDEN_FUNCTION: &str = "cugraph_leiden";
 pub const CUGRAPH_ECG_FUNCTION: &str = "cugraph_ecg";
 pub const CUGRAPH_SPECTRAL_MODULARITY_MAXIMIZATION_FUNCTION: &str = "cugraph_spectral_modularity_maximization";
 pub const CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION: &str = "cugraph_balanced_cut_clustering";
+pub const CUGRAPH_FORCE_ATLAS2_FUNCTION: &str = "cugraph_force_atlas2";
 pub const CUGRAPH_LIST_ALGORITHMS_FUNCTION: &str = "cugraph_list_algorithms";
 pub const CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION: &str = "cugraph_describe_algorithm";
 pub const CUGRAPH_VALIDATE_CALL_FUNCTION: &str = "cugraph_validate_call";
@@ -113,6 +114,7 @@ pub enum CugraphAlgorithm {
     Ecg,
     SpectralModularityMaximization,
     BalancedCutClustering,
+    ForceAtlas2,
 }
 
 impl CugraphAlgorithm {
@@ -283,6 +285,11 @@ pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
         native_algorithm: NativeGraphAlgorithm::BalancedCutClustering,
         sql_function_name: CUGRAPH_BALANCED_CUT_CLUSTERING_FUNCTION,
     },
+    CugraphOperationDefinition {
+        algorithm: CugraphAlgorithm::ForceAtlas2,
+        native_algorithm: NativeGraphAlgorithm::ForceAtlas2,
+        sql_function_name: CUGRAPH_FORCE_ATLAS2_FUNCTION,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -418,6 +425,7 @@ pub enum CugraphAlgorithmParams {
     Ecg(CugraphEcgParams),
     SpectralModularityMaximization(CugraphSpectralClusteringParams),
     BalancedCutClustering(CugraphSpectralClusteringParams),
+    ForceAtlas2(CugraphForceAtlas2Params),
 }
 
 impl CugraphAlgorithmParams {
@@ -523,6 +531,22 @@ impl CugraphAlgorithmParams {
                     seed: params.seed,
                 })
             },
+            NativeGraphAlgorithmParams::ForceAtlas2(params) => Self::ForceAtlas2(CugraphForceAtlas2Params {
+                max_iter: params.max_iter,
+                outbound_attraction_distribution: params.outbound_attraction_distribution,
+                lin_log_mode: params.lin_log_mode,
+                prevent_overlapping: params.prevent_overlapping,
+                overlap_scaling_ratio: params.overlap_scaling_ratio,
+                edge_weight_influence: params.edge_weight_influence,
+                jitter_tolerance: params.jitter_tolerance,
+                barnes_hut_optimize: params.barnes_hut_optimize,
+                barnes_hut_theta: params.barnes_hut_theta,
+                scaling_ratio: params.scaling_ratio,
+                strong_gravity_mode: params.strong_gravity_mode,
+                gravity: params.gravity,
+                verbose: params.verbose,
+                seed: params.seed,
+            }),
         }
     }
 }
@@ -973,6 +997,65 @@ impl Default for CugraphSpectralClusteringParams {
             evs_max_iterations: 500,
             k_means_tolerance: 0.001,
             k_means_max_iterations: 100,
+            seed: 0,
+        }
+    }
+}
+
+/// Parameters for ForceAtlas2 graph layout.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CugraphForceAtlas2Params {
+    /// Maximum number of iterations. Must be in `[1, i32::MAX]`.
+    pub max_iter: u32,
+    /// Distribute attraction along outbound edges.
+    pub outbound_attraction_distribution: bool,
+    /// Use the lin-log attraction model.
+    pub lin_log_mode: bool,
+    /// Prevent nodes from overlapping.
+    ///
+    /// Currently rejected by the SQL parser because ForceAtlas2 overlap
+    /// prevention requires per-vertex radius side input that this SQL surface
+    /// does not expose yet.
+    pub prevent_overlapping: bool,
+    /// Repulsion scaling for overlapping nodes. Must be > 0.
+    pub overlap_scaling_ratio: f64,
+    /// Influence of edge weights. Must be >= 0.
+    pub edge_weight_influence: f64,
+    /// Swinging tolerance. Must be >= 0.
+    pub jitter_tolerance: f64,
+    /// Use the Barnes-Hut approximation.
+    pub barnes_hut_optimize: bool,
+    /// Barnes-Hut speed/accuracy trade-off. Must be in [0, 1].
+    pub barnes_hut_theta: f64,
+    /// Repulsion scaling ratio. Must be > 0.
+    pub scaling_ratio: f64,
+    /// Use stronger gravity for distant nodes.
+    pub strong_gravity_mode: bool,
+    /// Gravity strength. Must be >= 0.
+    pub gravity: f64,
+    /// Whether cuGraph should print convergence info.
+    pub verbose: bool,
+    /// RNG seed for deterministic layout runs.
+    pub seed: u64,
+}
+
+impl Default for CugraphForceAtlas2Params {
+    fn default() -> Self {
+        // Matches nexus_query_engine::GraphForceAtlas2Params::default().
+        Self {
+            max_iter: 500,
+            outbound_attraction_distribution: false,
+            lin_log_mode: false,
+            prevent_overlapping: false,
+            overlap_scaling_ratio: 2.0,
+            edge_weight_influence: 1.0,
+            jitter_tolerance: 1.0,
+            barnes_hut_optimize: false,
+            barnes_hut_theta: 0.5,
+            scaling_ratio: 2.0,
+            strong_gravity_mode: false,
+            gravity: 1.0,
+            verbose: false,
             seed: 0,
         }
     }

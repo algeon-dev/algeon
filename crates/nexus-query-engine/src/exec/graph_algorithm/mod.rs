@@ -11,6 +11,8 @@ mod centrality;
 #[cfg(feature = "cugraph")]
 mod community;
 #[cfg(feature = "cugraph")]
+mod layout;
+#[cfg(feature = "cugraph")]
 mod params;
 #[cfg(feature = "cugraph")]
 mod structure;
@@ -21,6 +23,8 @@ mod traversal;
 use centrality::*;
 #[cfg(feature = "cugraph")]
 use community::*;
+#[cfg(feature = "cugraph")]
+use layout::*;
 #[cfg(feature = "cugraph")]
 use params::*;
 #[cfg(feature = "cugraph")]
@@ -180,6 +184,7 @@ const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmE
     (crate::plan::GraphAlgorithm::Ecg, execute_ecg),
     (crate::plan::GraphAlgorithm::SpectralModularityMaximization, execute_spectral_modularity_maximization),
     (crate::plan::GraphAlgorithm::BalancedCutClustering, execute_balanced_cut_clustering),
+    (crate::plan::GraphAlgorithm::ForceAtlas2, execute_force_atlas2),
 ];
 
 #[cfg(feature = "cugraph")]
@@ -791,6 +796,25 @@ fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmParams) -> Str
             params.evs_max_iterations,
             params.k_means_tolerance,
             params.k_means_max_iterations,
+            params.seed,
+        ),
+        crate::plan::GraphAlgorithmParams::ForceAtlas2(params) => format!(
+            "max_iter={},outbound_attraction_distribution={},lin_log_mode={},prevent_overlapping={},\
+             overlap_scaling_ratio={},edge_weight_influence={},jitter_tolerance={},barnes_hut_optimize={},\
+             barnes_hut_theta={},scaling_ratio={},strong_gravity_mode={},gravity={},verbose={},seed={}",
+            params.max_iter,
+            params.outbound_attraction_distribution,
+            params.lin_log_mode,
+            params.prevent_overlapping,
+            params.overlap_scaling_ratio,
+            params.edge_weight_influence,
+            params.jitter_tolerance,
+            params.barnes_hut_optimize,
+            params.barnes_hut_theta,
+            params.scaling_ratio,
+            params.strong_gravity_mode,
+            params.gravity,
+            params.verbose,
             params.seed,
         ),
     }

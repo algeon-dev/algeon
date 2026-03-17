@@ -103,6 +103,54 @@ async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_col
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 1, 2, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 0, 3])) as ArrayRef,
+            Arc::new(Float32Array::from(vec![1.0_f32, 1.5, 1.0, 0.5])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("layout_edges", Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, x, y \
+             FROM cugraph_force_atlas2('layout_edges', 'src', 'dst', 'weight', \
+                  '{\"max_iter\":5,\"seed\":42}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(batch.num_rows(), 4);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2, 3]);
+    assert_eq!(batch.schema().field(1).data_type(), &DataType::Float32);
+    assert_eq!(batch.schema().field(2).data_type(), &DataType::Float32);
+    let x = batch.column(1).as_any().downcast_ref::<Float32Array>().unwrap();
+    let y = batch.column(2).as_any().downcast_ref::<Float32Array>().unwrap();
+    for row in 0..batch.num_rows() {
+        assert!(x.value(row).is_finite(), "ForceAtlas2 x coordinate must be finite at row {row}");
+        assert!(y.value(row).is_finite(), "ForceAtlas2 y coordinate must be finite at row {row}");
+    }
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))

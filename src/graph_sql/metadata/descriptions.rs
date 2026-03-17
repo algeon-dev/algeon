@@ -99,6 +99,9 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::BalancedCutClustering, "partition") => {
             "Cluster identifier assigned by balanced-cut spectral clustering."
         },
+        (CugraphAlgorithm::ForceAtlas2, "vertex") => "Vertex receiving ForceAtlas2 layout coordinates.",
+        (CugraphAlgorithm::ForceAtlas2, "x") => "X coordinate assigned by ForceAtlas2.",
+        (CugraphAlgorithm::ForceAtlas2, "y") => "Y coordinate assigned by ForceAtlas2.",
         (CugraphAlgorithm::Hits, "vertex") => "Vertex receiving HITS scores.",
         (CugraphAlgorithm::Hits, "hub_score") => "HITS hub score for the vertex.",
         (CugraphAlgorithm::Hits, "authority_score") => "HITS authority score for the vertex.",
@@ -150,6 +153,9 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
             "options_schema_json is typed registry metadata; validate_call remains the authoritative call-specific checker",
         ]);
     }
+    if algorithm == CugraphAlgorithm::ForceAtlas2 {
+        limitations.push("prevent_overlapping=true is rejected until vertex_radius side inputs are exposed");
+    }
     json!(limitations).to_string()
 }
 
@@ -177,6 +183,7 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::Ecg => "Detect communities with ensemble clustering for graphs.",
         CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices with spectral modularity maximization.",
         CugraphAlgorithm::BalancedCutClustering => "Cluster vertices with balanced-cut spectral clustering.",
+        CugraphAlgorithm::ForceAtlas2 => "Compute ForceAtlas2 two-dimensional layout coordinates.",
     }
 }
 
@@ -227,6 +234,9 @@ pub(super) fn purpose(algorithm: CugraphAlgorithm) -> &'static str {
         CugraphAlgorithm::Ecg => "Assign vertices to communities using ensemble clustering for graphs.",
         CugraphAlgorithm::SpectralModularityMaximization => "Cluster vertices by spectral modularity maximization.",
         CugraphAlgorithm::BalancedCutClustering => "Cluster vertices by optimizing a balanced-cut spectral objective.",
+        CugraphAlgorithm::ForceAtlas2 => {
+            "Compute deterministic two-dimensional force-directed layout coordinates for graph visualization."
+        },
     }
 }
 

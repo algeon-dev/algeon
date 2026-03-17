@@ -402,7 +402,8 @@ fn parse_options_json(
                 if algorithm == CugraphAlgorithm::Leiden
                     || algorithm == CugraphAlgorithm::Ecg
                     || algorithm == CugraphAlgorithm::SpectralModularityMaximization
-                    || algorithm == CugraphAlgorithm::BalancedCutClustering =>
+                    || algorithm == CugraphAlgorithm::BalancedCutClustering
+                    || algorithm == CugraphAlgorithm::ForceAtlas2 =>
             {
                 let seed = json_u64(value, key)?;
                 match params {
@@ -410,6 +411,7 @@ fn parse_options_json(
                     CugraphAlgorithmParams::Ecg(params) => params.seed = seed,
                     CugraphAlgorithmParams::SpectralModularityMaximization(params) => params.seed = seed,
                     CugraphAlgorithmParams::BalancedCutClustering(params) => params.seed = seed,
+                    CugraphAlgorithmParams::ForceAtlas2(params) => params.seed = seed,
                     _ => {},
                 }
             },
@@ -549,6 +551,113 @@ fn parse_options_json(
                         params.k_means_max_iterations = k_means_max_iterations
                     },
                     _ => {},
+                }
+            },
+            "max_iter" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let max_iter = json_u32(value, key)?;
+                if max_iter < 1 {
+                    return Err(plan_error("ForceAtlas2 max_iter must be at least 1"));
+                }
+                if max_iter > i32::MAX as u32 {
+                    return Err(plan_error("ForceAtlas2 max_iter must be at most i32::MAX"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.max_iter = max_iter;
+                }
+            },
+            "outbound_attraction_distribution" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let value = json_bool(value, key)?;
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.outbound_attraction_distribution = value;
+                }
+            },
+            "lin_log_mode" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let value = json_bool(value, key)?;
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.lin_log_mode = value;
+                }
+            },
+            "prevent_overlapping" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let value = json_bool(value, key)?;
+                if value {
+                    return Err(plan_error(
+                        "ForceAtlas2 prevent_overlapping requires vertex_radius side input, which the SQL API does not support yet",
+                    ));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.prevent_overlapping = value;
+                }
+            },
+            "overlap_scaling_ratio" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let overlap_scaling_ratio = json_f64(value, key)?;
+                if overlap_scaling_ratio <= 0.0 {
+                    return Err(plan_error("ForceAtlas2 overlap_scaling_ratio must be positive"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.overlap_scaling_ratio = overlap_scaling_ratio;
+                }
+            },
+            "edge_weight_influence" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let edge_weight_influence = json_f64(value, key)?;
+                if edge_weight_influence < 0.0 {
+                    return Err(plan_error("ForceAtlas2 edge_weight_influence must be non-negative"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.edge_weight_influence = edge_weight_influence;
+                }
+            },
+            "jitter_tolerance" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let jitter_tolerance = json_f64(value, key)?;
+                if jitter_tolerance < 0.0 {
+                    return Err(plan_error("ForceAtlas2 jitter_tolerance must be non-negative"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.jitter_tolerance = jitter_tolerance;
+                }
+            },
+            "barnes_hut_optimize" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let value = json_bool(value, key)?;
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.barnes_hut_optimize = value;
+                }
+            },
+            "barnes_hut_theta" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let barnes_hut_theta = json_f64(value, key)?;
+                if !(0.0..=1.0).contains(&barnes_hut_theta) {
+                    return Err(plan_error("ForceAtlas2 barnes_hut_theta must be in [0, 1]"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.barnes_hut_theta = barnes_hut_theta;
+                }
+            },
+            "scaling_ratio" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let scaling_ratio = json_f64(value, key)?;
+                if scaling_ratio <= 0.0 {
+                    return Err(plan_error("ForceAtlas2 scaling_ratio must be positive"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.scaling_ratio = scaling_ratio;
+                }
+            },
+            "strong_gravity_mode" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let value = json_bool(value, key)?;
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.strong_gravity_mode = value;
+                }
+            },
+            "gravity" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let gravity = json_f64(value, key)?;
+                if gravity < 0.0 {
+                    return Err(plan_error("ForceAtlas2 gravity must be non-negative"));
+                }
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.gravity = gravity;
+                }
+            },
+            "verbose" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
+                let value = json_bool(value, key)?;
+                if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
+                    params.verbose = value;
                 }
             },
             _ => {

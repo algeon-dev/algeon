@@ -537,7 +537,7 @@ fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {
 }
 
 fn parse_error_code(message: &str) -> &'static str {
-    if message.contains("unknown option") {
+    if message.contains("unknown option") || message.contains("requires vertex_radius side input") {
         ERROR_UNSUPPORTED_OPTION
     } else if message.contains("is not enabled in this session") {
         ERROR_ALGORITHM_DISABLED

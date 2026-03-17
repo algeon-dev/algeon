@@ -97,6 +97,9 @@ pub enum GraphAlgorithm {
     SpectralModularityMaximization,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#balanced-cut>
     BalancedCutClustering,
+    /// Force-directed graph layout.
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.layout.force_atlas2.force_atlas2/>
+    ForceAtlas2,
 }
 
 impl GraphAlgorithm {
@@ -124,6 +127,7 @@ impl GraphAlgorithm {
             Self::Ecg => "ecg",
             Self::SpectralModularityMaximization => "spectral_modularity_maximization",
             Self::BalancedCutClustering => "balanced_cut_clustering",
+            Self::ForceAtlas2 => "force_atlas2",
         }
     }
 
@@ -321,7 +325,7 @@ impl GraphOperationDefinition {
     pub const fn weight_policy(&self) -> GraphWeightPolicy {
         match self.algorithm {
             GraphAlgorithm::MinimumSpanningTree => GraphWeightPolicy::Required,
-            GraphAlgorithm::Sssp => GraphWeightPolicy::Optional,
+            GraphAlgorithm::Sssp | GraphAlgorithm::ForceAtlas2 => GraphWeightPolicy::Optional,
             _ => GraphWeightPolicy::Ignored,
         }
     }
@@ -353,6 +357,7 @@ impl GraphOperationDefinition {
                 | GraphAlgorithm::TriangleCountAll
                 | GraphAlgorithm::CoreNumber
                 | GraphAlgorithm::KCore
+                | GraphAlgorithm::ForceAtlas2
         ) {
             options.directed = false;
         }
@@ -399,6 +404,7 @@ impl GraphOperationDefinition {
             GraphAlgorithm::BalancedCutClustering => {
                 GraphAlgorithmParams::BalancedCutClustering(GraphSpectralClusteringParams::default())
             },
+            GraphAlgorithm::ForceAtlas2 => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
         }
     }
 
@@ -530,6 +536,11 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         algorithm: GraphAlgorithm::BalancedCutClustering,
         name: "balanced_cut_clustering",
         layout_requirement: GraphLayoutRequirement::Forward,
+    },
+    GraphOperationDefinition {
+        algorithm: GraphAlgorithm::ForceAtlas2,
+        name: "force_atlas2",
+        layout_requirement: GraphLayoutRequirement::Any,
     },
 ];
 
@@ -761,6 +772,7 @@ pub enum GraphAlgorithmParams {
     Ecg(GraphEcgParams),
     SpectralModularityMaximization(GraphSpectralClusteringParams),
     BalancedCutClustering(GraphSpectralClusteringParams),
+    ForceAtlas2(GraphForceAtlas2Params),
 }
 
 impl GraphAlgorithmParams {
@@ -788,6 +800,7 @@ impl GraphAlgorithmParams {
             Self::Ecg(_) => GraphAlgorithm::Ecg,
             Self::SpectralModularityMaximization(_) => GraphAlgorithm::SpectralModularityMaximization,
             Self::BalancedCutClustering(_) => GraphAlgorithm::BalancedCutClustering,
+            Self::ForceAtlas2(_) => GraphAlgorithm::ForceAtlas2,
         }
     }
 }
@@ -1209,6 +1222,70 @@ impl Default for GraphSpectralClusteringParams {
     }
 }
 
+/// Parameters for ForceAtlas2 graph layout.
+///
+/// Mirrors `cugraph::layout::ForceAtlas2Params` without cugraph-rs newtype
+/// wrappers and adds a deterministic RNG seed used to create the cuGraph
+/// `RngState` for each execution.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphForceAtlas2Params {
+    /// Maximum number of iterations. Must be in `[1, i32::MAX]`.
+    pub max_iter: u32,
+    /// Distribute attraction along outbound edges.
+    pub outbound_attraction_distribution: bool,
+    /// Use the lin-log attraction model.
+    pub lin_log_mode: bool,
+    /// Prevent nodes from overlapping.
+    ///
+    /// Currently rejected by the native executor because ForceAtlas2 overlap
+    /// prevention requires per-vertex radius side input that the native graph
+    /// plan does not expose yet.
+    pub prevent_overlapping: bool,
+    /// Repulsion scaling for overlapping nodes. Must be > 0.
+    pub overlap_scaling_ratio: f64,
+    /// Influence of edge weights. Must be >= 0.
+    pub edge_weight_influence: f64,
+    /// Swinging tolerance. Must be >= 0.
+    pub jitter_tolerance: f64,
+    /// Use the Barnes-Hut approximation.
+    pub barnes_hut_optimize: bool,
+    /// Barnes-Hut speed/accuracy trade-off. Must be in [0, 1].
+    pub barnes_hut_theta: f64,
+    /// Repulsion scaling ratio. Must be > 0.
+    pub scaling_ratio: f64,
+    /// Use stronger gravity for distant nodes.
+    pub strong_gravity_mode: bool,
+    /// Gravity strength. Must be >= 0.
+    pub gravity: f64,
+    /// Whether cuGraph should print convergence info.
+    pub verbose: bool,
+    /// RNG seed for deterministic layout runs.
+    pub seed: u64,
+}
+
+impl Default for GraphForceAtlas2Params {
+    fn default() -> Self {
+        // Matches cugraph::layout::ForceAtlas2Params::default(), plus a
+        // deterministic seed for the required cuGraph RNG state.
+        Self {
+            max_iter: 500,
+            outbound_attraction_distribution: false,
+            lin_log_mode: false,
+            prevent_overlapping: false,
+            overlap_scaling_ratio: 2.0,
+            edge_weight_influence: 1.0,
+            jitter_tolerance: 1.0,
+            barnes_hut_optimize: false,
+            barnes_hut_theta: 0.5,
+            scaling_ratio: 2.0,
+            strong_gravity_mode: false,
+            gravity: 1.0,
+            verbose: false,
+            seed: 0,
+        }
+    }
+}
+
 /// DataFusion-free graph algorithm specification.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphAlgorithmSpec {
@@ -1362,6 +1439,11 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
                 Field::new("partition", arrow::datatypes::DataType::Int64, false),
             ]
         },
+        GraphAlgorithm::ForceAtlas2 => vec![
+            Field::new("vertex", arrow::datatypes::DataType::Int64, false),
+            Field::new("x", arrow::datatypes::DataType::Float32, false),
+            Field::new("y", arrow::datatypes::DataType::Float32, false),
+        ],
     };
     Arc::new(Schema::new(fields))
 }

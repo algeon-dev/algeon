@@ -7,7 +7,10 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray},
+    array::{
+        Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int32Array, Int64Array, LargeStringArray,
+        StringArray,
+    },
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };

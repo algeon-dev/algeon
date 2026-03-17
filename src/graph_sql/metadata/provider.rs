@@ -377,6 +377,7 @@ fn title_case_algorithm_name(name: &str) -> String {
         "sssp" => return "SSSP".to_string(),
         "ecg" => return "ECG".to_string(),
         "k_core" => return "K-Core".to_string(),
+        "force_atlas2" => return "ForceAtlas2".to_string(),
         _ => {},
     }
     name.split('_')

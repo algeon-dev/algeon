@@ -206,6 +206,68 @@ pub(super) fn spectral_clustering_params(
     })
 }
 
+pub(super) fn force_atlas2_params(
+    params: &crate::plan::GraphForceAtlas2Params,
+) -> Result<cugraph::layout::ForceAtlas2Params> {
+    if params.prevent_overlapping {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "cuGraph ForceAtlas2 prevent_overlapping requires vertex_radius side input, which the native graph API does not support yet",
+        ));
+    }
+    if params.max_iter > i32::MAX as u32 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "cuGraph ForceAtlas2 max_iter must fit the libcugraph int32 iteration count",
+        )
+        .with_fact("max_iter", params.max_iter)
+        .with_fact("max_supported", i32::MAX));
+    }
+    Ok(cugraph::layout::ForceAtlas2Params {
+        max_iter: cugraph::params::IterationCount::new(params.max_iter).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "invalid cuGraph ForceAtlas2 max_iter",
+        ))?,
+        outbound_attraction_distribution: params.outbound_attraction_distribution,
+        lin_log_mode: params.lin_log_mode,
+        prevent_overlapping: params.prevent_overlapping,
+        overlap_scaling_ratio: cugraph::params::PositiveF64::new(params.overlap_scaling_ratio).map_err(
+            map_cugraph_error(
+                "nexus_query_engine.graph_algorithm.force_atlas2_params",
+                "invalid cuGraph ForceAtlas2 overlap_scaling_ratio",
+            ),
+        )?,
+        edge_weight_influence: cugraph::params::NonNegativeF64::new(params.edge_weight_influence).map_err(
+            map_cugraph_error(
+                "nexus_query_engine.graph_algorithm.force_atlas2_params",
+                "invalid cuGraph ForceAtlas2 edge_weight_influence",
+            ),
+        )?,
+        jitter_tolerance: cugraph::params::NonNegativeF64::new(params.jitter_tolerance).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "invalid cuGraph ForceAtlas2 jitter_tolerance",
+        ))?,
+        barnes_hut_optimize: params.barnes_hut_optimize,
+        barnes_hut_theta: cugraph::params::ClosedUnitF64::new(params.barnes_hut_theta).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "invalid cuGraph ForceAtlas2 barnes_hut_theta",
+        ))?,
+        scaling_ratio: cugraph::params::PositiveF64::new(params.scaling_ratio).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "invalid cuGraph ForceAtlas2 scaling_ratio",
+        ))?,
+        strong_gravity_mode: params.strong_gravity_mode,
+        gravity: cugraph::params::NonNegativeF64::new(params.gravity).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.force_atlas2_params",
+            "invalid cuGraph ForceAtlas2 gravity",
+        ))?,
+        verbose: params.verbose,
+        do_expensive_check: false,
+    })
+}
+
 pub(super) fn sssp_params(params: &crate::plan::GraphSsspParams) -> Result<cugraph::traversal::SsspParams> {
     let cutoff = params
         .cutoff

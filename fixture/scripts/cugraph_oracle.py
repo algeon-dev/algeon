@@ -143,15 +143,16 @@ def _load_edges(cudf_mod, path: Path):
     )
 
 
-def _build_graph(cudf_mod, cugraph_mod, edges, directed: bool):
+def _build_graph(cudf_mod, cugraph_mod, edges, directed: bool, edge_attr: bool):
     graph = cugraph_mod.Graph(directed=directed)
-    graph.from_cudf_edgelist(
-        edges,
-        source="src",
-        destination="dst",
-        edge_attr="weight",
-        renumber=True,
-    )
+    kwargs = {
+        "source": "src",
+        "destination": "dst",
+        "renumber": True,
+    }
+    if edge_attr:
+        kwargs["edge_attr"] = "weight"
+    graph.from_cudf_edgelist(edges, **kwargs)
     return graph
 
 
@@ -593,6 +594,37 @@ def _balanced_cut_clustering(cugraph_mod, graph, params: Dict[str, Any]) -> Dict
     }
 
 
+def _force_atlas2(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
+    # Pass every option explicitly: Python cuGraph defaults differ from
+    # cugraph-rs for a few ForceAtlas2 knobs, while the adapter mirrors
+    # cugraph-rs/C API defaults.
+    df = cugraph_mod.force_atlas2(
+        graph,
+        max_iter=int(params.get("max_iter", 500)),
+        outbound_attraction_distribution=bool(
+            params.get("outbound_attraction_distribution", False)
+        ),
+        lin_log_mode=bool(params.get("lin_log_mode", False)),
+        prevent_overlapping=bool(params.get("prevent_overlapping", False)),
+        overlap_scaling_ratio=float(params.get("overlap_scaling_ratio", 2.0)),
+        edge_weight_influence=float(params.get("edge_weight_influence", 1.0)),
+        jitter_tolerance=float(params.get("jitter_tolerance", 1.0)),
+        barnes_hut_optimize=bool(params.get("barnes_hut_optimize", False)),
+        barnes_hut_theta=float(params.get("barnes_hut_theta", 0.5)),
+        scaling_ratio=float(params.get("scaling_ratio", 2.0)),
+        strong_gravity_mode=bool(params.get("strong_gravity_mode", False)),
+        gravity=float(params.get("gravity", 1.0)),
+        verbose=bool(params.get("verbose", False)),
+        random_state=int(params.get("seed", 0)),
+    )
+    df = df.sort_values("vertex").reset_index(drop=True)
+    return {
+        "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
+        "x": [float(v) for v in df["x"].to_pandas().tolist()],
+        "y": [float(v) for v in df["y"].to_pandas().tolist()],
+    }
+
+
 ALGORITHMS = {
     "pagerank": {"layout": "transposed", "directed": True, "run": _pagerank},
     "bfs": {"layout": "forward", "directed": True, "run": _bfs},
@@ -706,6 +738,12 @@ ALGORITHMS = {
         "directed": False,
         "run": _balanced_cut_clustering,
     },
+    "force_atlas2": {
+        "layout": "forward",
+        "directed": False,
+        "edge_attr": False,
+        "run": _force_atlas2,
+    },
 }
 
 
@@ -735,7 +773,7 @@ def _run(args: argparse.Namespace) -> int:
 
     cudf_mod, cugraph_mod, pylibcugraph_mod, numpy_mod = _load_python_cugraph()
     edges = _load_edges(cudf_mod, dataset_path)
-    graph = _build_graph(cudf_mod, cugraph_mod, edges, spec["directed"])
+    graph = _build_graph(cudf_mod, cugraph_mod, edges, spec["directed"], spec.get("edge_attr", True))
     result = spec["run"](cugraph_mod, graph, params)
 
     document = {

@@ -405,6 +405,20 @@ pub const CUGRAPH_PARITY_SPECS: &[ParitySpec] = &[
         comparator: ParityComparator::PartitionEquivalence,
         tolerance: ParityTolerance::exact(),
     },
+    ParitySpec {
+        label: "force_atlas2/karate@default",
+        algorithm: CugraphAlgorithm::ForceAtlas2,
+        dataset: "karate",
+        // Mirrors the unweighted default SQL call and GraphForceAtlas2Params::default();
+        // pass every option explicitly because Python cuGraph defaults differ
+        // for some layout knobs while cugraph-rs follows the C API defaults.
+        params_json: r#"{"max_iter":500,"outbound_attraction_distribution":false,"lin_log_mode":false,"prevent_overlapping":false,"overlap_scaling_ratio":2.0,"edge_weight_influence":1.0,"jitter_tolerance":1.0,"barnes_hut_optimize":false,"barnes_hut_theta":0.5,"scaling_ratio":2.0,"strong_gravity_mode":false,"gravity":1.0,"verbose":false,"seed":0}"#,
+        seed: None,
+        truth_source: ParityTruthSource::OracleJson,
+        oracle_relpath: "karate/force_atlas2__default.json",
+        comparator: ParityComparator::Numeric,
+        tolerance: ParityTolerance { abs: 1.0e-4, rel: 1.0e-3 },
+    },
 ];
 
 /// Manifest entry for one locally prepared cuGraph dataset.

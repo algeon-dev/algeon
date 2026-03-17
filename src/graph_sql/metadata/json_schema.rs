@@ -317,6 +317,91 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                 }
             })
         },
+        CugraphAlgorithmParams::ForceAtlas2(params) => {
+            json!({
+                "max_iter": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.max_iter,
+                    "min": 1,
+                    "max": i32::MAX
+                },
+                "outbound_attraction_distribution": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.outbound_attraction_distribution
+                },
+                "lin_log_mode": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.lin_log_mode
+                },
+                "prevent_overlapping": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.prevent_overlapping,
+                    "allowed_values": [false],
+                    "valid_when": "unsupported until vertex_radius side inputs are exposed by the SQL API"
+                },
+                "overlap_scaling_ratio": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.overlap_scaling_ratio,
+                    "exclusive_min": 0.0
+                },
+                "edge_weight_influence": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.edge_weight_influence,
+                    "min": 0.0
+                },
+                "jitter_tolerance": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.jitter_tolerance,
+                    "min": 0.0
+                },
+                "barnes_hut_optimize": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.barnes_hut_optimize
+                },
+                "barnes_hut_theta": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.barnes_hut_theta,
+                    "min": 0.0,
+                    "max": 1.0
+                },
+                "scaling_ratio": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.scaling_ratio,
+                    "exclusive_min": 0.0
+                },
+                "strong_gravity_mode": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.strong_gravity_mode
+                },
+                "gravity": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.gravity,
+                    "min": 0.0
+                },
+                "verbose": {
+                    "scope": "algorithm",
+                    "type": "Boolean",
+                    "default": params.verbose
+                },
+                "seed": {
+                    "scope": "algorithm",
+                    "type": "UInt64",
+                    "default": params.seed
+                }
+            })
+        },
         CugraphAlgorithmParams::DegreesAll(_)
         | CugraphAlgorithmParams::InDegreesAll(_)
         | CugraphAlgorithmParams::OutDegreesAll(_)
@@ -581,6 +666,9 @@ fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
         | CugraphAlgorithmParams::BalancedCutClustering(params) => {
             json!({"n_clusters": params.n_clusters, "n_eigenvectors": params.n_eigenvectors, "evs_tolerance": params.evs_tolerance, "evs_max_iterations": params.evs_max_iterations, "k_means_tolerance": params.k_means_tolerance, "k_means_max_iterations": params.k_means_max_iterations, "seed": params.seed})
         },
+        CugraphAlgorithmParams::ForceAtlas2(params) => {
+            json!({"max_iter": params.max_iter, "outbound_attraction_distribution": params.outbound_attraction_distribution, "lin_log_mode": params.lin_log_mode, "prevent_overlapping": params.prevent_overlapping, "overlap_scaling_ratio": params.overlap_scaling_ratio, "edge_weight_influence": params.edge_weight_influence, "jitter_tolerance": params.jitter_tolerance, "barnes_hut_optimize": params.barnes_hut_optimize, "barnes_hut_theta": params.barnes_hut_theta, "scaling_ratio": params.scaling_ratio, "strong_gravity_mode": params.strong_gravity_mode, "gravity": params.gravity, "verbose": params.verbose, "seed": params.seed})
+        },
         CugraphAlgorithmParams::DegreesAll(_)
         | CugraphAlgorithmParams::InDegreesAll(_)
         | CugraphAlgorithmParams::OutDegreesAll(_)
@@ -691,6 +779,9 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
         CugraphAlgorithmParams::SpectralModularityMaximization(params)
         | CugraphAlgorithmParams::BalancedCutClustering(params) => {
             json!({"n_clusters": params.n_clusters, "n_eigenvectors": params.n_eigenvectors, "evs_tolerance": params.evs_tolerance, "evs_max_iterations": params.evs_max_iterations, "k_means_tolerance": params.k_means_tolerance, "k_means_max_iterations": params.k_means_max_iterations, "seed": params.seed})
+        },
+        CugraphAlgorithmParams::ForceAtlas2(params) => {
+            json!({"max_iter": params.max_iter, "outbound_attraction_distribution": params.outbound_attraction_distribution, "lin_log_mode": params.lin_log_mode, "prevent_overlapping": params.prevent_overlapping, "overlap_scaling_ratio": params.overlap_scaling_ratio, "edge_weight_influence": params.edge_weight_influence, "jitter_tolerance": params.jitter_tolerance, "barnes_hut_optimize": params.barnes_hut_optimize, "barnes_hut_theta": params.barnes_hut_theta, "scaling_ratio": params.scaling_ratio, "strong_gravity_mode": params.strong_gravity_mode, "gravity": params.gravity, "verbose": params.verbose, "seed": params.seed})
         },
         CugraphAlgorithmParams::DegreesAll(_)
         | CugraphAlgorithmParams::InDegreesAll(_)
