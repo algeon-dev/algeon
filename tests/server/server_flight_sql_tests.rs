@@ -203,19 +203,6 @@ async fn prepared_statement_update_create_external_table_executes_and_persists()
         .await
         .unwrap();
     assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
-    let error =
-        client.execute("SELECT COUNT(*) AS edge_count FROM update_edges_prepared".to_string(), None).await.unwrap_err();
-    let status = unwrap_flight_status(error);
-    assert_eq!(status.code(), Code::NotFound);
-    assert_error_metadata(&status, "object_not_found", "not_found", "permanent");
-
-    let error = prepared.execute().await.unwrap_err();
-    let status = unwrap_flight_status(error);
-    assert_eq!(status.code(), Code::InvalidArgument);
-    assert_query_id_metadata(&status);
-    assert_error_metadata(&status, "invalid_request", "invalid_input", "permanent");
-    assert!(status.message().contains("execute_update"));
-    assert_no_diagnostic_fields(status.message());
 
     let record_count = prepared.execute_update().await.unwrap();
     prepared.close().await.unwrap();
@@ -224,6 +211,52 @@ async fn prepared_statement_update_create_external_table_executes_and_persists()
     server.abort();
 
     assert_eq!(record_count, -1, "DataFusion DDL does not expose an affected-row count");
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_statement_query_create_external_table_executes_and_persists() {
+    // JDBC clients such as DataGrip wrap every statement in a server-side
+    // prepared statement and run it through `execute()` (the query channel),
+    // never `execute_update()`. DDL must therefore execute on the prepared
+    // query path the same way a non-prepared statement does.
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-prepared-query-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let mut prepared = client
+        .prepare(
+            format!(
+                "CREATE EXTERNAL TABLE query_edges_prepared STORED AS PARQUET LOCATION '{}'",
+                parquet_path.to_string_lossy()
+            ),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
+
+    // Execute through the query channel; DDL yields an empty result set rather
+    // than the `execute_update` rejection that used to block DataGrip-class
+    // clients.
+    let flight_info = prepared.execute().await.unwrap();
+    let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let ddl_batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+    let ddl_rows: usize = ddl_batches.iter().map(|batch| batch.num_rows()).sum();
+    assert_eq!(ddl_rows, 0, "DDL executed through the query channel returns no rows");
+
+    prepared.close().await.unwrap();
+    let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM query_edges_prepared").await;
+
+    server.abort();
+
     assert_eq!(batches.len(), 1);
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 }
