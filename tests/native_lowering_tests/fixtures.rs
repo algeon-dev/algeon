@@ -32,6 +32,30 @@ pub(super) fn write_numeric_parquet_file(path: &std::path::Path) {
     write_batch(path, schema, batch);
 }
 
+pub(super) fn write_snap_edge_parquet_file(path: &std::path::Path) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("edge_id", DataType::Int64, false),
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+        Field::new("src_bucket", DataType::Int32, false),
+        Field::new("dst_bucket", DataType::Int32, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3])),
+            Arc::new(Int64Array::from(vec![5, 12, 20, 30])),
+            Arc::new(Int64Array::from(vec![50, 40, 30, 20])),
+            Arc::new(Float64Array::from(vec![1.0, 1.0, 1.0, 1.0])),
+            Arc::new(Int32Array::from(vec![0, 0, 0, 0])),
+            Arc::new(Int32Array::from(vec![0, 0, 0, 0])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
 pub(super) fn write_full_gpu_gap_analysis_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),

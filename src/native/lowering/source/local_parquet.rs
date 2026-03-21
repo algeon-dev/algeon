@@ -192,7 +192,13 @@ pub(super) fn lower_local_parquet_source_input(
                 )?;
                 return Ok(projected);
             }
-            return Ok(scan_output);
+            return project_scan_output_columns(
+                builder,
+                scan_output.node,
+                scan_output.schema,
+                scan_output.bindings,
+                required_output_fields,
+            );
         }
         let filtered_node = builder.add_filter(
             scan_output.node,
@@ -214,7 +220,13 @@ pub(super) fn lower_local_parquet_source_input(
             )?;
             Ok(projected)
         } else {
-            Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
+            project_scan_output_columns(
+                builder,
+                filtered_node,
+                scan_output.schema,
+                scan_output.bindings,
+                required_output_fields,
+            )
         }
     } else {
         project_scan_output_columns(

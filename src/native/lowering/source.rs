@@ -73,11 +73,7 @@ pub(super) fn project_scan_output_columns(
     input_bindings: Vec<super::FieldBinding>,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, FallbackReason> {
-    let selected_bindings = input_bindings
-        .iter()
-        .filter(|binding| required_output_fields.contains(binding.frontend_index))
-        .cloned()
-        .collect::<Vec<_>>();
+    let selected_bindings = selected_source_bindings_in_frontend_order(&input_bindings, required_output_fields)?;
     if selected_bindings.len() == input_schema.fields().len()
         && selected_bindings.iter().zip(input_bindings.iter()).all(|(selected, input)| {
             selected.frontend_index == input.frontend_index && selected.native_name == input.native_name
@@ -98,6 +94,32 @@ pub(super) fn project_scan_output_columns(
     let schema = Arc::new(Schema::new(fields));
     let node = builder.add_projection(input_node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, selected_bindings))
+}
+
+fn selected_source_bindings_in_frontend_order(
+    input_bindings: &[super::FieldBinding],
+    required_output_fields: &RequiredFields,
+) -> Result<Vec<super::FieldBinding>, FallbackReason> {
+    let mut selected_bindings = match required_output_fields {
+        RequiredFields::All => input_bindings.to_vec(),
+        RequiredFields::Only(_) => {
+            let frontend_field_count =
+                input_bindings.iter().map(|binding| binding.frontend_index).max().map_or(0, |index| index + 1);
+            required_output_fields
+                .requested_indices(frontend_field_count)?
+                .into_iter()
+                .map(|frontend_index| {
+                    input_bindings
+                        .iter()
+                        .find(|binding| binding.frontend_index == frontend_index)
+                        .cloned()
+                        .ok_or(FallbackReason::UnsupportedExpression)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        },
+    };
+    selected_bindings.sort_by_key(|binding| binding.frontend_index);
+    Ok(selected_bindings)
 }
 
 pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: SchemaRef) -> Vec<super::FieldBinding> {
@@ -254,4 +276,40 @@ pub(super) fn required_scan_projection_schema(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Arc::new(Schema::new(fields)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{RequiredFields, selected_source_bindings_in_frontend_order};
+    use crate::native::lowering::FieldBinding;
+
+    fn binding(frontend_index: usize, name: &str) -> FieldBinding {
+        FieldBinding { frontend_index, frontend_name: name.to_string(), native_name: name.to_string() }
+    }
+
+    #[test]
+    fn selected_source_bindings_all_uses_frontend_schema_order() {
+        let input = vec![binding(1, "dst"), binding(0, "src"), binding(2, "weight")];
+
+        let selected = selected_source_bindings_in_frontend_order(&input, &RequiredFields::all()).unwrap();
+
+        assert_eq!(
+            selected.iter().map(|binding| binding.native_name.as_str()).collect::<Vec<_>>(),
+            vec!["src", "dst", "weight"],
+        );
+    }
+
+    #[test]
+    fn selected_source_bindings_only_uses_requested_frontend_order() {
+        let input = vec![binding(1, "dst"), binding(0, "src"), binding(2, "weight")];
+        let selected =
+            selected_source_bindings_in_frontend_order(&input, &RequiredFields::only(BTreeSet::from([0, 2]))).unwrap();
+
+        assert_eq!(
+            selected.iter().map(|binding| binding.native_name.as_str()).collect::<Vec<_>>(),
+            vec!["src", "weight"],
+        );
+    }
 }
