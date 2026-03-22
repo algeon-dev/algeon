@@ -7,10 +7,11 @@
 use std::sync::{Arc, OnceLock};
 
 use nexus_query_engine::{
-    AdaptiveMemoryHistory, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache,
-    GpuLocalParquetSourceCache, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
-    ServiceStreamPool, SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile, StddevSampExecutionMode,
-    TenantQueryContext,
+    AdaptiveMemoryHistory, AggregateStrategyExecutionOptions, DynamicFilterExecutionOptions, ExecutionBoundaryPolicy,
+    ExecutionCancellation, ExecutionContext, GpuHashJoinBuildCache, GpuLocalParquetSourceCache,
+    KeyedHashJoinStrategyOptions, MemoryControlPolicy, MemoryResourcePolicy, NativePipelineExecutionMode, QueryHandle,
+    ServiceStreamPool, SourceChunkPlanningMode, SourceChunkPlanningOptions, SourceSchedulerPolicy,
+    SourceStorageProfile, StddevSampExecutionMode, TenantQueryContext,
 };
 
 use crate::error::Error;
@@ -35,6 +36,10 @@ pub struct NativeCudfExecutionConfig {
     cancellation: ExecutionCancellation,
     native_pipeline_execution_mode: NativePipelineExecutionMode,
     stddev_samp_execution_mode: StddevSampExecutionMode,
+    dynamic_filter_execution_options: DynamicFilterExecutionOptions,
+    keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
+    aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
+    source_chunk_planning_options: SourceChunkPlanningOptions,
     adaptive_memory_history: Option<Arc<AdaptiveMemoryHistory>>,
     hash_join_build_cache: Option<Arc<GpuHashJoinBuildCache>>,
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
@@ -98,6 +103,10 @@ impl NativeCudfExecutionConfig {
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
+            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
+            aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
+            source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -170,6 +179,10 @@ impl NativeCudfExecutionConfig {
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
+            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
+            aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
+            source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             adaptive_memory_history: None,
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -270,6 +283,47 @@ impl NativeCudfExecutionConfig {
         self.with_statistical_aggregate_execution_mode(mode)
     }
 
+    /// Set native dynamic-filter execution policy.
+    ///
+    /// This policy is copied into native optimizer options so route discovery
+    /// and runtime payload handling share one threshold set. It is intentionally
+    /// not exposed as a session/server knob until the expert surface is reviewed.
+    pub fn with_dynamic_filter_execution_options(mut self, options: DynamicFilterExecutionOptions) -> Self {
+        self.dynamic_filter_execution_options = options;
+        self
+    }
+
+    /// Set native keyed-hash join strategy policy.
+    ///
+    /// This policy is copied into optimized native plans so capability
+    /// admission, strict reports, and runtime observed-build strategy selection
+    /// share one threshold set. It is intentionally not exposed as a
+    /// session/server knob until the expert surface is reviewed.
+    pub fn with_keyed_hash_join_strategy_options(mut self, options: KeyedHashJoinStrategyOptions) -> Self {
+        self.keyed_hash_join_strategy_options = options;
+        self
+    }
+
+    /// Set native grouped aggregate strategy execution policy.
+    ///
+    /// This policy is copied into native execution contexts so runtime
+    /// aggregate strategy selection, exact-cardinality probes, and strategy
+    /// metric rows share one threshold set. It is intentionally not exposed as
+    /// a session/server knob until the expert surface is reviewed.
+    pub fn with_aggregate_strategy_execution_options(mut self, options: AggregateStrategyExecutionOptions) -> Self {
+        self.aggregate_strategy_execution_options = options;
+        self
+    }
+
+    /// Set expert local-throughput source chunk planning policy.
+    ///
+    /// This policy is intentionally Rust-only; public source chunk knobs remain
+    /// the bounded memory policy and source chunk planning mode.
+    pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
+        self.source_chunk_planning_options = options;
+        self
+    }
+
     /// Attach an adaptive-only memory-history store for adaptive admission/execution.
     ///
     /// Strict bounded admission does not read this store. Supplying it while strict mode is selected
@@ -333,6 +387,10 @@ impl NativeCudfExecutionConfig {
         self.source_chunk_planning_mode = handle.source_chunk_planning_mode();
         self.native_pipeline_execution_mode = handle.native_pipeline_execution_mode();
         self.stddev_samp_execution_mode = handle.stddev_samp_execution_mode();
+        self.dynamic_filter_execution_options = handle.dynamic_filter_execution_options();
+        self.keyed_hash_join_strategy_options = handle.keyed_hash_join_strategy_options();
+        self.aggregate_strategy_execution_options = handle.aggregate_strategy_execution_options();
+        self.source_chunk_planning_options = handle.source_chunk_planning_options();
         self.query_service_handle = Some(handle);
         self
     }
@@ -373,6 +431,59 @@ impl NativeCudfExecutionConfig {
         self.statistical_aggregate_execution_mode()
     }
 
+    /// Dynamic-filter execution policy copied into optimized native plans.
+    pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
+        self.dynamic_filter_execution_options
+    }
+
+    /// Keyed-hash join strategy policy copied into optimized native plans.
+    pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
+        self.keyed_hash_join_strategy_options
+    }
+
+    /// Grouped aggregate strategy execution policy copied into native contexts.
+    pub fn aggregate_strategy_execution_options(&self) -> AggregateStrategyExecutionOptions {
+        self.aggregate_strategy_execution_options
+    }
+
+    /// Expert local-throughput source chunk planning policy copied into native contexts.
+    pub fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
+        self.source_chunk_planning_options
+    }
+
+    /// Validate internal expert query policies before planning or execution.
+    pub(crate) fn validate_query_policies(&self) -> crate::error::Result<()> {
+        self.dynamic_filter_execution_options.validate().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.native_exec.config.validate",
+                "invalid native dynamic-filter execution policy",
+                error,
+            )
+        })?;
+        self.keyed_hash_join_strategy_options.validate().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.native_exec.config.validate",
+                "invalid native keyed hash-join strategy policy",
+                error,
+            )
+        })?;
+        self.aggregate_strategy_execution_options.validate().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.native_exec.config.validate",
+                "invalid native aggregate strategy execution policy",
+                error,
+            )
+        })?;
+        self.source_chunk_planning_options.validate().map_err(|error| {
+            Error::from_native(
+                "datafusion_nexus.native_exec.config.validate",
+                "invalid native source chunk planning policy",
+                error,
+            )
+        })?;
+        Ok(())
+    }
+
     /// Adaptive-only memory history store, if configured.
     pub fn adaptive_memory_history(&self) -> Option<Arc<AdaptiveMemoryHistory>> {
         self.adaptive_memory_history.as_ref().map(Arc::clone)
@@ -381,6 +492,7 @@ impl NativeCudfExecutionConfig {
     // DataFusion-to-native config boundary. Native context construction and validation errors are
     // converted here into adapter errors before any query execution starts.
     pub(crate) fn execution_context(&self) -> crate::error::Result<NativeCudfExecutionContext> {
+        self.validate_query_policies()?;
         if let Some(handle) = &self.query_service_handle {
             return handle.acquire_context().map(NativeCudfExecutionContext::tenant_bound).map_err(|error| {
                 Error::from_native(
@@ -400,6 +512,8 @@ impl NativeCudfExecutionConfig {
             .with_cancellation(self.cancellation.clone())
             .with_native_pipeline_execution_mode(self.native_pipeline_execution_mode)
             .with_statistical_aggregate_execution_mode(self.stddev_samp_execution_mode)
+            .with_aggregate_strategy_execution_options(self.aggregate_strategy_execution_options)
+            .with_source_chunk_planning_options(self.source_chunk_planning_options)
             .with_source_storage_profiles(self.source_storage_profiles.clone());
         if let Some(pool) = &self.service_stream_pool {
             builder = builder.with_service_stream_pool(pool.clone());

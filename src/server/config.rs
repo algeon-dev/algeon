@@ -2,6 +2,10 @@
 use std::fmt;
 use std::{collections::BTreeMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
+use nexus_query_engine::{
+    MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    StatisticalAggregateExecutionMode,
+};
 use serde::Deserialize;
 
 use super::{
@@ -51,8 +55,27 @@ pub const NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_SERVER
 /// Maximum source bytes planned into one native bounded source chunk. Required
 /// with the other bounded budget values when set explicitly.
 pub const NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES";
-/// Path to a TOML server config file. The file currently supplies the `[auth]`
-/// section, including nested users that cannot be represented as scalar env vars.
+/// Maximum bounded retry attempts for source splitting, final merge, and final
+/// sort retry paths. Defaults to the native library bounded default.
+pub const NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV: &str = "NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS";
+/// Row-group count at or below which bounded source retry splitting stops.
+/// Defaults to the native library bounded default.
+pub const NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str = "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS";
+/// Maximum active native source reads allowed per bounded query. Values above
+/// `1` allow source prefetch overlap when the plan shape supports it.
+pub const NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT";
+/// Bounded source chunk planning mode. Accepts `conservative` or
+/// `local_parquet_throughput`.
+pub const NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+/// Native bounded-pipeline execution mode. Accepts `strict_bounded` or
+/// `adaptive`.
+pub const NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE";
+/// Floating statistical aggregate execution contract. Accepts
+/// `datafusion_exact_host_welford` or `gpu_native_tolerant`.
+pub const NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
+    "NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE";
+/// Path to a TOML server config file. The file supplies durable server config
+/// such as `[auth]` and `[native]`; scalar env vars remain bootstrap overrides.
 pub const NEXUS_SERVER_CONFIG_FILE_ENV: &str = "NEXUS_SERVER_CONFIG_FILE";
 
 /// Enables registration of cuGraph SQL functions. Must be `true` before any
@@ -170,21 +193,47 @@ pub struct ServerConfig {
 }
 
 /// Raw shape of the optional TOML overlay loaded from
-/// [`NEXUS_SERVER_CONFIG_FILE_ENV`]. Currently only carries
-/// the `[auth]` section; expand here when other sections need
-/// TOML-driven config.
+/// [`NEXUS_SERVER_CONFIG_FILE_ENV`].
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 struct ServerFileOverlay {
     auth: AuthConfig,
+    native: ServerNativeFileConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct ServerNativeFileConfig {
+    memory_policy: Option<String>,
+    device_budget_bytes: Option<u64>,
+    max_source_chunk_bytes: Option<u64>,
+    max_row_groups_per_chunk: Option<usize>,
+    max_retry_attempts: Option<usize>,
+    min_retry_chunk_row_groups: Option<usize>,
+    max_source_reads_in_flight: Option<usize>,
+    source_chunk_planning_mode: Option<String>,
+    pipeline_execution_mode: Option<String>,
+    statistical_aggregate_execution_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeConfigValue<T> {
+    value: T,
+    field: &'static str,
+}
+
+impl<T> NativeConfigValue<T> {
+    const fn new(value: T, field: &'static str) -> Self {
+        Self { value, field }
+    }
 }
 
 /// DataFusion physical-plan profile applied to the Flight SQL session.
 ///
 /// Decisions tracked here only affect DataFusion's logical/physical plan shape
 /// for queries served through Flight SQL. They are orthogonal to the native
-/// nexus-query-engine memory budget, which is controlled by the
-/// `NEXUS_SERVER_NATIVE_*` environment variables.
+/// nexus-query-engine memory budget, which is controlled by the server native
+/// config (`[native]` TOML or `NEXUS_SERVER_NATIVE_*` environment variables).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServerSessionProfile {
     /// Native-friendly profile that matches the workload harness defaults:
@@ -344,7 +393,12 @@ impl ServerConfig {
         let statement_ticket_ttl = Duration::from_secs(
             values.positive_u64(NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, DEFAULT_STATEMENT_TICKET_TTL_SECS)?,
         );
-        let native_optimizer_config = native_optimizer_config(&mut values)?;
+        let overlay_path = values.string(NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
+        let overlay = match overlay_path {
+            Some(path) => load_overlay(&path)?,
+            None => ServerFileOverlay::default(),
+        };
+        let native_optimizer_config = native_optimizer_config(&mut values, &overlay.native)?;
         #[cfg(feature = "iceberg")]
         let mut native_optimizer_config = native_optimizer_config;
 
@@ -380,11 +434,6 @@ impl ServerConfig {
         let default_profile = ServerSessionProfile::CpuFallback;
         let session_profile = explicit_profile.unwrap_or(default_profile);
 
-        let overlay_path = values.string(NEXUS_SERVER_CONFIG_FILE_ENV).map(PathBuf::from);
-        let overlay = match overlay_path {
-            Some(path) => load_overlay(&path)?,
-            None => ServerFileOverlay::default(),
-        };
         overlay.auth.mode.validate()?;
 
         Ok(Self {
@@ -415,59 +464,249 @@ fn load_overlay(path: &std::path::Path) -> Result<ServerFileOverlay> {
     })
 }
 
-fn native_optimizer_config(values: &mut EnvValues<'_>) -> Result<CudfOptimizerConfig> {
-    let memory_policy = values
-        .string(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV)
-        .map(|raw| parse_native_memory_policy(&raw))
-        .transpose()?
-        .unwrap_or(ServerNativeMemoryPolicy::Bounded);
-    let device_budget = values.optional_u64(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV)?;
-    let max_source_chunk = values.optional_u64(NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV)?;
-    let max_row_groups = values.optional_usize(NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV)?;
+fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileConfig) -> Result<CudfOptimizerConfig> {
+    let memory_policy = optional_native_string(
+        values,
+        NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
+        "native.memory_policy",
+        file.memory_policy.as_deref(),
+    )
+    .map(|raw| {
+        parse_native_memory_policy(raw.field, &raw.value)
+            .map(|memory_policy| NativeConfigValue::new(memory_policy, raw.field))
+    })
+    .transpose()?
+    .unwrap_or(NativeConfigValue::new(ServerNativeMemoryPolicy::Bounded, NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+    let env_forces_unbounded = matches!(memory_policy.value, ServerNativeMemoryPolicy::Unbounded)
+        && memory_policy.field == NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV;
+    let device_budget = optional_native_u64(
+        values,
+        NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+        "native.device_budget_bytes",
+        if env_forces_unbounded { None } else { file.device_budget_bytes },
+    )?;
+    let max_source_chunk = optional_native_u64(
+        values,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        "native.max_source_chunk_bytes",
+        if env_forces_unbounded { None } else { file.max_source_chunk_bytes },
+    )?;
+    let max_row_groups = optional_native_usize(
+        values,
+        NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+        "native.max_row_groups_per_chunk",
+        if env_forces_unbounded { None } else { file.max_row_groups_per_chunk },
+    )?;
+    let max_retry_attempts = optional_native_usize(
+        values,
+        NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+        "native.max_retry_attempts",
+        if env_forces_unbounded { None } else { file.max_retry_attempts },
+    )?;
+    let min_retry_chunk_row_groups = optional_native_usize(
+        values,
+        NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+        "native.min_retry_chunk_row_groups",
+        if env_forces_unbounded { None } else { file.min_retry_chunk_row_groups },
+    )?;
+    let max_source_reads_in_flight = optional_native_usize(
+        values,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+        "native.max_source_reads_in_flight",
+        if env_forces_unbounded { None } else { file.max_source_reads_in_flight },
+    )?;
+    let source_chunk_planning_mode = optional_native_string(
+        values,
+        NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+        "native.source_chunk_planning_mode",
+        if env_forces_unbounded { None } else { file.source_chunk_planning_mode.as_deref() },
+    )
+    .map(|raw| {
+        parse_source_chunk_planning_mode(raw.field, &raw.value).map(|mode| NativeConfigValue::new(mode, raw.field))
+    })
+    .transpose()?;
+    let native_pipeline_execution_mode = optional_native_string(
+        values,
+        NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+        "native.pipeline_execution_mode",
+        if env_forces_unbounded { None } else { file.pipeline_execution_mode.as_deref() },
+    )
+    .map(|raw| {
+        parse_native_pipeline_execution_mode(raw.field, &raw.value).map(|mode| NativeConfigValue::new(mode, raw.field))
+    })
+    .transpose()?;
+    let statistical_aggregate_execution_mode = optional_native_string(
+        values,
+        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+        "native.statistical_aggregate_execution_mode",
+        file.statistical_aggregate_execution_mode.as_deref(),
+    )
+    .map(|raw| {
+        parse_statistical_aggregate_execution_mode(raw.field, &raw.value)
+            .map(|mode| NativeConfigValue::new(mode, raw.field))
+    })
+    .transpose()?;
+    if matches!(memory_policy.value, ServerNativeMemoryPolicy::Unbounded)
+        && (device_budget.is_some()
+            || max_source_chunk.is_some()
+            || max_row_groups.is_some()
+            || max_retry_attempts.is_some()
+            || min_retry_chunk_row_groups.is_some()
+            || max_source_reads_in_flight.is_some()
+            || source_chunk_planning_mode.is_some()
+            || native_pipeline_execution_mode.is_some())
+    {
+        return Err(ServerError::invalid_config(
+            memory_policy.field,
+            "unbounded native execution cannot be combined with bounded native execution settings",
+        ));
+    }
 
-    let execution_config = match memory_policy {
-        ServerNativeMemoryPolicy::Unbounded => {
-            if device_budget.is_some() || max_source_chunk.is_some() || max_row_groups.is_some() {
-                return Err(ServerError::invalid_config(
-                    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-                    "unbounded native execution cannot be combined with bounded native budget env vars",
-                ));
-            }
-            NativeCudfExecutionConfig::unbounded()
-        },
-        ServerNativeMemoryPolicy::Bounded => match (device_budget, max_source_chunk, max_row_groups) {
+    let mut execution_config = match memory_policy.value {
+        ServerNativeMemoryPolicy::Unbounded => NativeCudfExecutionConfig::unbounded(),
+        ServerNativeMemoryPolicy::Bounded => match (&device_budget, &max_source_chunk, &max_row_groups) {
             (None, None, None) => NativeCudfExecutionConfig::bounded_auto_sized(),
             (Some(device_budget), Some(max_source_chunk), Some(max_row_groups)) => {
-                if device_budget == 0 {
-                    return Err(ServerError::invalid_config(
-                        NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-                        "must be greater than zero",
-                    ));
+                if device_budget.value == 0 {
+                    return Err(ServerError::invalid_config(device_budget.field, "must be greater than zero"));
                 }
-                if max_source_chunk == 0 {
-                    return Err(ServerError::invalid_config(
-                        NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-                        "must be greater than zero",
-                    ));
+                if max_source_chunk.value == 0 {
+                    return Err(ServerError::invalid_config(max_source_chunk.field, "must be greater than zero"));
                 }
-                if max_row_groups == 0 {
-                    return Err(ServerError::invalid_config(
-                        NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
-                        "must be greater than zero",
-                    ));
+                if max_row_groups.value == 0 {
+                    return Err(ServerError::invalid_config(max_row_groups.field, "must be greater than zero"));
                 }
-                NativeCudfExecutionConfig::bounded(device_budget, max_source_chunk, max_row_groups, 1, 1)
+                NativeCudfExecutionConfig::bounded(
+                    device_budget.value,
+                    max_source_chunk.value,
+                    max_row_groups.value,
+                    max_retry_attempts
+                        .as_ref()
+                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS, |value| value.value),
+                    min_retry_chunk_row_groups
+                        .as_ref()
+                        .map_or(NativeCudfExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS, |value| {
+                            value.value
+                        }),
+                )
             },
             _ => {
                 return Err(ServerError::invalid_config(
-                    NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+                    first_present_bounded_budget_field(&device_budget, &max_source_chunk, &max_row_groups),
                     "bounded native execution requires device budget, max source chunk bytes, and max row groups per chunk",
                 ));
             },
         },
     };
+    if let Some(max_retry_attempts) = max_retry_attempts {
+        if max_retry_attempts.value == 0 {
+            return Err(ServerError::invalid_config(max_retry_attempts.field, "must be greater than zero"));
+        }
+        if let MemoryControlPolicy::Bounded {
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            min_retry_chunk_row_groups,
+            ..
+        } = execution_config.memory_control_policy()
+        {
+            execution_config = execution_config.with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes,
+                max_source_chunk_bytes,
+                max_row_groups_per_chunk,
+                max_retry_attempts: max_retry_attempts.value,
+                min_retry_chunk_row_groups,
+            });
+        }
+    }
+    if let Some(min_retry_chunk_row_groups) = min_retry_chunk_row_groups {
+        if min_retry_chunk_row_groups.value == 0 {
+            return Err(ServerError::invalid_config(min_retry_chunk_row_groups.field, "must be greater than zero"));
+        }
+        if let MemoryControlPolicy::Bounded {
+            device_budget_bytes,
+            max_source_chunk_bytes,
+            max_row_groups_per_chunk,
+            max_retry_attempts,
+            ..
+        } = execution_config.memory_control_policy()
+        {
+            execution_config = execution_config.with_memory_control_policy(MemoryControlPolicy::Bounded {
+                device_budget_bytes,
+                max_source_chunk_bytes,
+                max_row_groups_per_chunk,
+                max_retry_attempts,
+                min_retry_chunk_row_groups: min_retry_chunk_row_groups.value,
+            });
+        }
+    }
+    if let Some(max_source_reads_in_flight) = max_source_reads_in_flight {
+        if max_source_reads_in_flight.value == 0 {
+            return Err(ServerError::invalid_config(max_source_reads_in_flight.field, "must be greater than zero"));
+        }
+        execution_config =
+            execution_config.with_source_scheduler_policy(SourceSchedulerPolicy::new(max_source_reads_in_flight.value));
+    }
+    if let Some(mode) = source_chunk_planning_mode {
+        execution_config = execution_config.with_source_chunk_planning_mode(mode.value);
+    }
+    if let Some(mode) = native_pipeline_execution_mode {
+        execution_config = execution_config.with_native_pipeline_execution_mode(mode.value);
+    }
+    if let Some(mode) = statistical_aggregate_execution_mode {
+        execution_config = execution_config.with_statistical_aggregate_execution_mode(mode.value);
+    }
 
     Ok(CudfOptimizerConfig::new(GpuFallbackPolicy::default()).with_native_execution_config(execution_config))
+}
+
+fn optional_native_string(
+    values: &mut EnvValues<'_>,
+    env_name: &'static str,
+    file_field: &'static str,
+    file_value: Option<&str>,
+) -> Option<NativeConfigValue<String>> {
+    values
+        .string(env_name)
+        .map(|value| NativeConfigValue::new(value, env_name))
+        .or_else(|| file_value.map(|value| NativeConfigValue::new(value.to_string(), file_field)))
+}
+
+fn optional_native_u64(
+    values: &mut EnvValues<'_>,
+    env_name: &'static str,
+    file_field: &'static str,
+    file_value: Option<u64>,
+) -> Result<Option<NativeConfigValue<u64>>> {
+    Ok(match values.optional_u64(env_name)? {
+        Some(value) => Some(NativeConfigValue::new(value, env_name)),
+        None => file_value.map(|value| NativeConfigValue::new(value, file_field)),
+    })
+}
+
+fn optional_native_usize(
+    values: &mut EnvValues<'_>,
+    env_name: &'static str,
+    file_field: &'static str,
+    file_value: Option<usize>,
+) -> Result<Option<NativeConfigValue<usize>>> {
+    Ok(match values.optional_usize(env_name)? {
+        Some(value) => Some(NativeConfigValue::new(value, env_name)),
+        None => file_value.map(|value| NativeConfigValue::new(value, file_field)),
+    })
+}
+
+fn first_present_bounded_budget_field(
+    device_budget: &Option<NativeConfigValue<u64>>,
+    max_source_chunk: &Option<NativeConfigValue<u64>>,
+    max_row_groups: &Option<NativeConfigValue<usize>>,
+) -> &'static str {
+    device_budget
+        .as_ref()
+        .map(|value| value.field)
+        .or_else(|| max_source_chunk.as_ref().map(|value| value.field))
+        .or_else(|| max_row_groups.as_ref().map(|value| value.field))
+        .unwrap_or(NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV)
 }
 
 #[cfg(feature = "iceberg")]
@@ -514,13 +753,45 @@ enum ServerNativeMemoryPolicy {
     Unbounded,
 }
 
-fn parse_native_memory_policy(raw: &str) -> Result<ServerNativeMemoryPolicy> {
+fn parse_native_memory_policy(field: &'static str, raw: &str) -> Result<ServerNativeMemoryPolicy> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "bounded" => Ok(ServerNativeMemoryPolicy::Bounded),
         "unbounded" => Ok(ServerNativeMemoryPolicy::Unbounded),
+        other => Err(ServerError::invalid_config(field, format!("must be `bounded` or `unbounded`, got `{other}`"))),
+    }
+}
+
+fn parse_source_chunk_planning_mode(field: &'static str, raw: &str) -> Result<SourceChunkPlanningMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "conservative" => Ok(SourceChunkPlanningMode::Conservative),
+        "local_parquet_throughput" => Ok(SourceChunkPlanningMode::LocalParquetThroughput),
         other => Err(ServerError::invalid_config(
-            NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
-            format!("must be `bounded` or `unbounded`, got `{other}`"),
+            field,
+            format!("must be `conservative` or `local_parquet_throughput`, got `{other}`"),
+        )),
+    }
+}
+
+fn parse_native_pipeline_execution_mode(field: &'static str, raw: &str) -> Result<NativePipelineExecutionMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "strict_bounded" => Ok(NativePipelineExecutionMode::StrictBounded),
+        "adaptive" => Ok(NativePipelineExecutionMode::Adaptive),
+        other => {
+            Err(ServerError::invalid_config(field, format!("must be `strict_bounded` or `adaptive`, got `{other}`")))
+        },
+    }
+}
+
+fn parse_statistical_aggregate_execution_mode(
+    field: &'static str,
+    raw: &str,
+) -> Result<StatisticalAggregateExecutionMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "datafusion_exact_host_welford" => Ok(StatisticalAggregateExecutionMode::DataFusionExactHostWelford),
+        "gpu_native_tolerant" => Ok(StatisticalAggregateExecutionMode::GpuNativeTolerant),
+        other => Err(ServerError::invalid_config(
+            field,
+            format!("must be `datafusion_exact_host_welford` or `gpu_native_tolerant`, got `{other}`"),
         )),
     }
 }

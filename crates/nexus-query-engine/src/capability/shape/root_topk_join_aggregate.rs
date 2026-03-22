@@ -1,7 +1,6 @@
 use super::*;
 use crate::{
     LocalParquetSource, PredicateDisposition, WindowFrame, WindowNode,
-    capability::join::SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerReductionStage},
 };
 
@@ -1328,7 +1327,11 @@ fn root_topk_local_parquet_source_has_reduction(
             .as_ref()
             .and_then(|stats| stats.selected_source_bytes())
             .or(source.diagnostics.known_bytes)
-            .is_some_and(|bytes| bytes <= SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD)
+            .is_some_and(|bytes| {
+                bytes <= plan
+                    .keyed_hash_join_strategy_options()
+                    .small_one_shot_probe_bytes_threshold()
+            })
 }
 
 fn root_topk_direct_local_parquet_pipeline_has_source_reduction(

@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use arrow::datatypes::{DataType, Schema};
 
 use crate::{
+    error::{QueryError, QueryErrorCode, Result as QueryResult},
     expr::{AggregateFunction, AggregateSpec, Expr},
     plan::{NodeId, PlanNode, QueryPlan},
 };
@@ -127,6 +128,273 @@ impl AggregateExecutionStrategy {
             Self::EncodedKeyPartial => "encoded_key_partial",
             Self::PreparedSortGroupby => "prepared_sort_groupby",
             Self::PartitionedMerge => "partitioned_merge",
+        }
+    }
+}
+
+/// Runtime threshold policy for grouped aggregate strategy selection.
+///
+/// These thresholds choose between the default libcudf groupby path, encoded
+/// key partial aggregation, prepared sort-backed groupby, and exact
+/// cardinality probes. This is an expert Rust surface only; keep it out of
+/// server/session/user-facing configuration until the tuning model has a
+/// reviewed production contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AggregateStrategyExecutionOptions {
+    pub(crate) encoded_key_partial_low_cardinality_threshold_ppm: u64,
+    pub(crate) encoded_key_partial_min_input_rows: u64,
+    pub(crate) exact_grouped_key_cardinality_probe_max_key_columns: usize,
+    pub(crate) exact_single_string_avg_cardinality_probe_min_input_rows: u64,
+    pub(crate) exact_single_key_cardinality_probe_min_input_rows: u64,
+    pub(crate) exact_grouped_key_cardinality_probe_min_input_rows: u64,
+    pub(crate) exact_single_string_key_prepared_max_groups: u64,
+    pub(crate) exact_three_key_cardinality_probe_max_input_rows: u64,
+    pub(crate) exact_five_key_cardinality_probe_max_input_rows: u64,
+    pub(crate) prepared_sort_groupby_low_cardinality_threshold_ppm: u64,
+    pub(crate) source_adjacent_prepared_sort_groupby_max_row_groups: u64,
+    pub(crate) source_adjacent_prepared_sort_groupby_max_source_read_bytes: u64,
+    pub(crate) source_adjacent_prepared_sort_groupby_max_fan_in: u64,
+}
+
+impl AggregateStrategyExecutionOptions {
+    const MAX_RATIO_PPM: u64 = 1_000_000;
+
+    pub const DEFAULT_ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
+    pub const DEFAULT_ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS: u64 = 100_000;
+    pub const DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS: usize = 5;
+    pub const DEFAULT_EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 100_000;
+    pub const DEFAULT_EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
+    pub const DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS: u64 = 500_000;
+    pub const DEFAULT_EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS: u64 = 4_096;
+    pub const DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 10_000_000;
+    pub const DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS: u64 = 7_000_000;
+    pub const DEFAULT_PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM: u64 = 100_000;
+    pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS: u64 = 64;
+    pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES: u64 = 384 * 1024 * 1024;
+    pub const DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN: u64 = 64;
+
+    pub fn encoded_key_partial_low_cardinality_threshold_ppm(&self) -> u64 {
+        self.encoded_key_partial_low_cardinality_threshold_ppm
+    }
+
+    pub fn encoded_key_partial_min_input_rows(&self) -> u64 {
+        self.encoded_key_partial_min_input_rows
+    }
+
+    pub fn exact_grouped_key_cardinality_probe_max_key_columns(&self) -> usize {
+        self.exact_grouped_key_cardinality_probe_max_key_columns
+    }
+
+    pub fn exact_single_string_avg_cardinality_probe_min_input_rows(&self) -> u64 {
+        self.exact_single_string_avg_cardinality_probe_min_input_rows
+    }
+
+    pub fn exact_single_key_cardinality_probe_min_input_rows(&self) -> u64 {
+        self.exact_single_key_cardinality_probe_min_input_rows
+    }
+
+    pub fn exact_grouped_key_cardinality_probe_min_input_rows(&self) -> u64 {
+        self.exact_grouped_key_cardinality_probe_min_input_rows
+    }
+
+    pub fn exact_single_string_key_prepared_max_groups(&self) -> u64 {
+        self.exact_single_string_key_prepared_max_groups
+    }
+
+    pub fn exact_three_key_cardinality_probe_max_input_rows(&self) -> u64 {
+        self.exact_three_key_cardinality_probe_max_input_rows
+    }
+
+    pub fn exact_five_key_cardinality_probe_max_input_rows(&self) -> u64 {
+        self.exact_five_key_cardinality_probe_max_input_rows
+    }
+
+    pub fn prepared_sort_groupby_low_cardinality_threshold_ppm(&self) -> u64 {
+        self.prepared_sort_groupby_low_cardinality_threshold_ppm
+    }
+
+    pub fn source_adjacent_prepared_sort_groupby_max_row_groups(&self) -> u64 {
+        self.source_adjacent_prepared_sort_groupby_max_row_groups
+    }
+
+    pub fn source_adjacent_prepared_sort_groupby_max_source_read_bytes(&self) -> u64 {
+        self.source_adjacent_prepared_sort_groupby_max_source_read_bytes
+    }
+
+    pub fn source_adjacent_prepared_sort_groupby_max_fan_in(&self) -> u64 {
+        self.source_adjacent_prepared_sort_groupby_max_fan_in
+    }
+
+    /// Validates aggregate strategy policy values.
+    ///
+    /// Zero-valued thresholds remain accepted because this is an expert Rust
+    /// surface and callers may use zero to disable narrow strategy branches.
+    /// The checks here reject ratios above one hundred percent and contradictory
+    /// nonzero probe bounds so strategy facts remain interpretable.
+    pub fn validate(&self) -> QueryResult<()> {
+        validate_aggregate_strategy_execution_ppm(
+            "encoded_key_partial_low_cardinality_threshold_ppm",
+            self.encoded_key_partial_low_cardinality_threshold_ppm,
+        )?;
+        validate_aggregate_strategy_execution_ppm(
+            "prepared_sort_groupby_low_cardinality_threshold_ppm",
+            self.prepared_sort_groupby_low_cardinality_threshold_ppm,
+        )?;
+        validate_aggregate_strategy_execution_min_lte_max(
+            "exact_grouped_key_cardinality_probe_min_input_rows",
+            self.exact_grouped_key_cardinality_probe_min_input_rows,
+            "exact_three_key_cardinality_probe_max_input_rows",
+            self.exact_three_key_cardinality_probe_max_input_rows,
+            "three_key_probe_max_input_rows_below_grouped_probe_min_input_rows",
+        )?;
+        validate_aggregate_strategy_execution_min_lte_max(
+            "exact_grouped_key_cardinality_probe_min_input_rows",
+            self.exact_grouped_key_cardinality_probe_min_input_rows,
+            "exact_five_key_cardinality_probe_max_input_rows",
+            self.exact_five_key_cardinality_probe_max_input_rows,
+            "five_key_probe_max_input_rows_below_grouped_probe_min_input_rows",
+        )?;
+        validate_aggregate_strategy_execution_min_lte_max(
+            "exact_single_string_avg_cardinality_probe_min_input_rows",
+            self.exact_single_string_avg_cardinality_probe_min_input_rows,
+            "exact_single_key_cardinality_probe_min_input_rows",
+            self.exact_single_key_cardinality_probe_min_input_rows,
+            "single_string_avg_probe_min_input_rows_above_general_single_key_min_input_rows",
+        )?;
+        Ok(())
+    }
+
+    pub fn with_encoded_key_partial_low_cardinality_threshold_ppm(mut self, threshold_ppm: u64) -> Self {
+        self.encoded_key_partial_low_cardinality_threshold_ppm = threshold_ppm;
+        self
+    }
+
+    pub fn with_encoded_key_partial_min_input_rows(mut self, rows: u64) -> Self {
+        self.encoded_key_partial_min_input_rows = rows;
+        self
+    }
+
+    pub fn with_exact_grouped_key_cardinality_probe_max_key_columns(mut self, columns: usize) -> Self {
+        self.exact_grouped_key_cardinality_probe_max_key_columns = columns;
+        self
+    }
+
+    pub fn with_exact_single_string_avg_cardinality_probe_min_input_rows(mut self, rows: u64) -> Self {
+        self.exact_single_string_avg_cardinality_probe_min_input_rows = rows;
+        self
+    }
+
+    pub fn with_exact_single_key_cardinality_probe_min_input_rows(mut self, rows: u64) -> Self {
+        self.exact_single_key_cardinality_probe_min_input_rows = rows;
+        self
+    }
+
+    pub fn with_exact_grouped_key_cardinality_probe_min_input_rows(mut self, rows: u64) -> Self {
+        self.exact_grouped_key_cardinality_probe_min_input_rows = rows;
+        self
+    }
+
+    pub fn with_exact_single_string_key_prepared_max_groups(mut self, groups: u64) -> Self {
+        self.exact_single_string_key_prepared_max_groups = groups;
+        self
+    }
+
+    pub fn with_exact_three_key_cardinality_probe_max_input_rows(mut self, rows: u64) -> Self {
+        self.exact_three_key_cardinality_probe_max_input_rows = rows;
+        self
+    }
+
+    pub fn with_exact_five_key_cardinality_probe_max_input_rows(mut self, rows: u64) -> Self {
+        self.exact_five_key_cardinality_probe_max_input_rows = rows;
+        self
+    }
+
+    pub fn with_prepared_sort_groupby_low_cardinality_threshold_ppm(mut self, threshold_ppm: u64) -> Self {
+        self.prepared_sort_groupby_low_cardinality_threshold_ppm = threshold_ppm;
+        self
+    }
+
+    pub fn with_source_adjacent_prepared_sort_groupby_max_row_groups(mut self, row_groups: u64) -> Self {
+        self.source_adjacent_prepared_sort_groupby_max_row_groups = row_groups;
+        self
+    }
+
+    pub fn with_source_adjacent_prepared_sort_groupby_max_source_read_bytes(mut self, bytes: u64) -> Self {
+        self.source_adjacent_prepared_sort_groupby_max_source_read_bytes = bytes;
+        self
+    }
+
+    pub fn with_source_adjacent_prepared_sort_groupby_max_fan_in(mut self, fan_in: u64) -> Self {
+        self.source_adjacent_prepared_sort_groupby_max_fan_in = fan_in;
+        self
+    }
+}
+
+fn validate_aggregate_strategy_execution_ppm(field: &'static str, value: u64) -> QueryResult<()> {
+    if value > AggregateStrategyExecutionOptions::MAX_RATIO_PPM {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.aggregate_strategy_execution_options.validate",
+            "aggregate strategy execution ratio threshold exceeds one hundred percent",
+        )
+        .with_fact("field", field)
+        .with_fact("value", value)
+        .with_fact("max_value", AggregateStrategyExecutionOptions::MAX_RATIO_PPM)
+        .with_fact("reason", "ratio_ppm_above_one_hundred_percent"));
+    }
+    Ok(())
+}
+
+fn validate_aggregate_strategy_execution_min_lte_max(
+    min_field: &'static str,
+    min_value: u64,
+    max_field: &'static str,
+    max_value: u64,
+    reason: &'static str,
+) -> QueryResult<()> {
+    if min_value != 0 && max_value != 0 && min_value > max_value {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.aggregate_strategy_execution_options.validate",
+            "aggregate strategy execution threshold ordering is inconsistent",
+        )
+        .with_fact("field", min_field)
+        .with_fact("value", min_value)
+        .with_fact("bound_field", max_field)
+        .with_fact("bound_value", max_value)
+        .with_fact("reason", reason));
+    }
+    Ok(())
+}
+
+impl Default for AggregateStrategyExecutionOptions {
+    fn default() -> Self {
+        Self {
+            encoded_key_partial_low_cardinality_threshold_ppm:
+                Self::DEFAULT_ENCODED_KEY_PARTIAL_LOW_CARDINALITY_THRESHOLD_PPM,
+            encoded_key_partial_min_input_rows: Self::DEFAULT_ENCODED_KEY_PARTIAL_MIN_INPUT_ROWS,
+            exact_grouped_key_cardinality_probe_max_key_columns:
+                Self::DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS,
+            exact_single_string_avg_cardinality_probe_min_input_rows:
+                Self::DEFAULT_EXACT_SINGLE_STRING_AVG_CARDINALITY_PROBE_MIN_INPUT_ROWS,
+            exact_single_key_cardinality_probe_min_input_rows:
+                Self::DEFAULT_EXACT_SINGLE_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS,
+            exact_grouped_key_cardinality_probe_min_input_rows:
+                Self::DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MIN_INPUT_ROWS,
+            exact_single_string_key_prepared_max_groups: Self::DEFAULT_EXACT_SINGLE_STRING_KEY_PREPARED_MAX_GROUPS,
+            exact_three_key_cardinality_probe_max_input_rows:
+                Self::DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS,
+            exact_five_key_cardinality_probe_max_input_rows:
+                Self::DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS,
+            prepared_sort_groupby_low_cardinality_threshold_ppm:
+                Self::DEFAULT_PREPARED_SORT_GROUPBY_LOW_CARDINALITY_THRESHOLD_PPM,
+            source_adjacent_prepared_sort_groupby_max_row_groups:
+                Self::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS,
+            source_adjacent_prepared_sort_groupby_max_source_read_bytes:
+                Self::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES,
+            source_adjacent_prepared_sort_groupby_max_fan_in:
+                Self::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_FAN_IN,
         }
     }
 }
@@ -526,4 +794,58 @@ fn aggregate_encoded_key_companion_dtype(data_type: &DataType) -> bool {
             | DataType::Decimal128(_, _)
             | DataType::Decimal256(_, _)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aggregate_strategy_execution_options_default_validate() {
+        AggregateStrategyExecutionOptions::default().validate().unwrap();
+    }
+
+    #[test]
+    fn aggregate_strategy_execution_options_reject_ratio_above_one_hundred_percent() {
+        let error = AggregateStrategyExecutionOptions::default()
+            .with_prepared_sort_groupby_low_cardinality_threshold_ppm(1_000_001)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("prepared_sort_groupby_low_cardinality_threshold_ppm"));
+        assert_eq!(error.fact_value("max_value"), Some("1000000"));
+        assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
+    }
+
+    #[test]
+    fn aggregate_strategy_execution_options_reject_contradictory_probe_bounds() {
+        let error = AggregateStrategyExecutionOptions::default()
+            .with_exact_grouped_key_cardinality_probe_min_input_rows(10)
+            .with_exact_three_key_cardinality_probe_max_input_rows(9)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("exact_grouped_key_cardinality_probe_min_input_rows"));
+        assert_eq!(error.fact_value("bound_field"), Some("exact_three_key_cardinality_probe_max_input_rows"));
+        assert_eq!(
+            error.fact_value("reason"),
+            Some("three_key_probe_max_input_rows_below_grouped_probe_min_input_rows")
+        );
+    }
+
+    #[test]
+    fn aggregate_strategy_execution_options_accept_zero_threshold_overrides() {
+        AggregateStrategyExecutionOptions::default()
+            .with_encoded_key_partial_low_cardinality_threshold_ppm(0)
+            .with_prepared_sort_groupby_low_cardinality_threshold_ppm(0)
+            .with_exact_grouped_key_cardinality_probe_min_input_rows(0)
+            .with_exact_three_key_cardinality_probe_max_input_rows(0)
+            .with_source_adjacent_prepared_sort_groupby_max_row_groups(0)
+            .with_source_adjacent_prepared_sort_groupby_max_source_read_bytes(0)
+            .with_source_adjacent_prepared_sort_groupby_max_fan_in(0)
+            .validate()
+            .unwrap();
+    }
 }

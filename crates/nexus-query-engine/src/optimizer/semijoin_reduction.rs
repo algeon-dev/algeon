@@ -7,6 +7,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 use super::rewrite;
 use crate::{
     adaptive_report::AdaptiveCandidateStatus,
+    error::{QueryError, QueryErrorCode},
     expr::{ColumnQualifier, ColumnRef, Expr},
     plan::{
         JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode,
@@ -54,6 +55,21 @@ impl SemijoinReductionOptions {
     pub fn with_admission_mode(mut self, admission_mode: SemijoinReductionAdmissionMode) -> Self {
         self.admission_mode = admission_mode;
         self
+    }
+
+    /// Validates internal consistency for semijoin-reduction cost gates.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.cost_threshold_multiplier == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.semijoin_reduction_options.validate",
+                "semijoin-reduction option must be greater than zero",
+            )
+            .with_fact("field", "cost_threshold_multiplier")
+            .with_fact("value", self.cost_threshold_multiplier)
+            .with_fact("reason", "zero"));
+        }
+        Ok(())
     }
 }
 
@@ -135,6 +151,10 @@ pub struct SemijoinReductionCandidateDiagnostics {
     pub key_mappings: Vec<SemijoinReductionKeyMappingDiagnostics>,
     /// Cost-gate evidence when lineage reached a target subtree.
     pub cost_gate: Option<SemijoinReductionCostGateDiagnostics>,
+    /// Configured cost multiplier used by the semijoin cost gate.
+    pub cost_threshold_multiplier: u64,
+    /// Configured post-rewrite admission gate mode.
+    pub admission_mode: SemijoinReductionAdmissionMode,
     /// Admission decision used after tentative rewrite, if evaluated.
     pub admission_decision: Option<SemijoinReductionAdmissionDecision>,
     /// Whether the original plan was admitted by the selected admission mode.
@@ -276,7 +296,8 @@ pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionO
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink());
+    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
+        .with_keyed_hash_join_strategy_options_from(&plan);
     if let Err(reason) = validate_rewritten_root_semantics(&plan, &rewritten_plan) {
         reject_applied_candidates(&mut diagnostics, reason, None, None, None);
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
@@ -552,6 +573,8 @@ impl<'a> SemijoinReductionRewriter<'a> {
             target_subtree_id: None,
             key_mappings: Vec::new(),
             cost_gate: None,
+            cost_threshold_multiplier: self.options.cost_threshold_multiplier,
+            admission_mode: self.options.admission_mode,
             admission_decision: Some(SemijoinReductionAdmissionDecision::NotEvaluated),
             original_admitted: None,
             rewritten_admitted: None,

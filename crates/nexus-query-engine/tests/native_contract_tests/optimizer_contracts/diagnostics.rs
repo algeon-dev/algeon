@@ -132,3 +132,36 @@ fn native_optimizer_stable_rule_rows_project_aggregate_join_pushdown_candidates(
         ]
     );
 }
+
+#[test]
+fn native_optimizer_stable_rule_rows_project_local_source_reuse_options() {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(estimated_local_source("left", "left_key", 1_024, 10));
+    let right = builder.add_source(estimated_local_source("right", "right_key", 1_024, 10));
+
+    let diagnostics = NativeOptimizerDiagnostics {
+        local_parquet_source_reuse: LocalParquetSourceReuseDiagnostics {
+            considered_count: 1,
+            applied_count: 0,
+            candidates: vec![LocalParquetSourceReuseCandidateDiagnostics {
+                rule_name: LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
+                source_node_ids: vec![left, right],
+                reuse_count: 2,
+                stable_file_ids: vec!["orders".to_string()],
+                superset_read_columns: vec!["left_key".to_string(), "right_key".to_string()],
+                branch_filter_count: 1,
+                max_variant_selected_bytes: 500 * 1024 * 1024,
+                applied: false,
+                rejected_reason: Some(LocalParquetSourceReuseRejectedReason::VariantTooLarge),
+            }],
+        },
+        ..Default::default()
+    };
+
+    assert_eq!(
+        diagnostics.stable_rule_rows(),
+        vec![
+            "rule=local_parquet_source_reuse,considered_count=1,applied_count=0,candidates=rule=local_parquet_source_reuse,source_node_ids=n0+n1,reuse_count=2,stable_file_ids=orders,superset_read_columns=left_key+right_key,branch_filter_count=1,max_variant_selected_bytes=524288000,applied=false,rejected_reason=VariantTooLarge".to_string()
+        ]
+    );
+}

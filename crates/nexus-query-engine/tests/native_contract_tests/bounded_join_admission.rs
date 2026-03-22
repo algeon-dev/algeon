@@ -156,6 +156,27 @@ fn large_keyed_inner_build_selects_partitioned_strategy_without_hash_table_gate(
 }
 
 #[test]
+fn plan_captured_keyed_hash_join_strategy_options_drive_strict_admission_facts() {
+    let strategy_options = KeyedHashJoinStrategyOptions::default()
+        .with_large_keyed_hash_build_row_threshold(200_000_000)
+        .with_large_keyed_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024)
+        .with_small_reusable_hash_build_row_threshold(200_000_000)
+        .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024);
+    let optimized = nexus_query_engine::optimize_query_plan(
+        large_keyed_join_strategy_plan(JoinType::Inner),
+        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() },
+    );
+    let plan = optimized.plan;
+
+    let facts = plan
+        .bounded_join_modeled_facts(ExecutionBoundaryPolicy::default())
+        .expect("custom strategy thresholds should keep the join admitted");
+
+    assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
+    assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
+}
+
+#[test]
 fn large_keyed_left_and_full_builds_select_partitioned_strategy_without_hash_table_gate() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type);
@@ -2348,6 +2369,24 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::StrictBoundedEnvelope::RootTopKJoinAggregate);
     }
+}
+
+#[test]
+fn root_topk_source_reduction_uses_plan_captured_join_strategy_threshold() {
+    let strategy_options = KeyedHashJoinStrategyOptions::default().with_small_one_shot_probe_bytes_threshold(2048);
+    let optimized = nexus_query_engine::optimize_query_plan(
+        root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout),
+        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() },
+    );
+    let plan = optimized.plan;
+    let analysis = plan.capability_analysis();
+
+    assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
+    assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
+    let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
+        panic!("root TopK admission should reject exact sources above the captured one-shot threshold");
+    };
+    assert_eq!(*reason, "root_topk_join_aggregate_requires_source_reduction_proof");
 }
 
 #[test]

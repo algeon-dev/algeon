@@ -19,6 +19,9 @@ use super::{
 };
 use crate::{
     adaptive_runtime::AdaptiveMemoryHistory,
+    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    chunk::SourceChunkPlanningOptions,
+    dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
     mode::{NativePipelineExecutionMode, StddevSampExecutionMode},
 };
@@ -120,6 +123,14 @@ pub struct QueryServiceConfig {
     /// contexts. The field keeps its legacy STDDEV_SAMP name for source
     /// compatibility.
     pub stddev_samp_execution_mode: StddevSampExecutionMode,
+    /// Dynamic-filter execution policy assigned to native plans using service handles.
+    pub dynamic_filter_execution_options: DynamicFilterExecutionOptions,
+    /// Keyed-hash join strategy policy assigned to native plans using service handles.
+    pub keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
+    /// Grouped aggregate strategy execution policy copied into tenant contexts.
+    pub aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
+    /// Expert local-throughput source chunk planning policy copied into tenant contexts.
+    pub source_chunk_planning_options: SourceChunkPlanningOptions,
     /// Optional service stream pool size. `None` uses the SM-aware default.
     pub stream_pool_size: Option<usize>,
     /// Maximum number of admitted query handles active at one time.
@@ -143,6 +154,10 @@ impl QueryServiceConfig {
         self.source_fetch.validate_for_deployment(deployment)?;
         self.boundary_policy.validate(false)?;
         self.source_scheduler_policy.validate()?;
+        self.dynamic_filter_execution_options.validate()?;
+        self.keyed_hash_join_strategy_options.validate()?;
+        self.aggregate_strategy_execution_options.validate()?;
+        self.source_chunk_planning_options.validate()?;
         if let Some(stream_pool_size) = self.stream_pool_size
             && stream_pool_size == 0
         {
@@ -194,6 +209,10 @@ impl Default for QueryServiceConfig {
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
             native_pipeline_execution_mode: NativePipelineExecutionMode::default(),
             stddev_samp_execution_mode: StddevSampExecutionMode::default(),
+            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default(),
+            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
+            aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
+            source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             stream_pool_size: None,
             max_concurrent_queries: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
             max_admission_queue_len: DEFAULT_HOST_FETCH_MAX_CONCURRENT_OPS,
@@ -653,6 +672,26 @@ impl QueryHandle {
         self.statistical_aggregate_execution_mode()
     }
 
+    /// Dynamic-filter execution policy assigned to this admitted query.
+    pub fn dynamic_filter_execution_options(&self) -> DynamicFilterExecutionOptions {
+        self.service.config.dynamic_filter_execution_options
+    }
+
+    /// Keyed-hash join strategy policy assigned to this admitted query.
+    pub fn keyed_hash_join_strategy_options(&self) -> KeyedHashJoinStrategyOptions {
+        self.service.config.keyed_hash_join_strategy_options
+    }
+
+    /// Grouped aggregate strategy execution policy assigned to this admitted query.
+    pub fn aggregate_strategy_execution_options(&self) -> AggregateStrategyExecutionOptions {
+        self.service.config.aggregate_strategy_execution_options
+    }
+
+    /// Expert source chunk planning policy assigned to this admitted query.
+    pub fn source_chunk_planning_options(&self) -> SourceChunkPlanningOptions {
+        self.service.config.source_chunk_planning_options
+    }
+
     /// Acquires a tenant-bound execution context from the service stream pool.
     pub fn acquire_context(&self) -> Result<TenantQueryContext> {
         if self.released.load(Ordering::Acquire) {
@@ -697,6 +736,8 @@ impl QueryHandle {
             cancellation: ExecutionCancellation::new(),
             native_pipeline_execution_mode: self.service.config.native_pipeline_execution_mode,
             stddev_samp_execution_mode: self.service.config.stddev_samp_execution_mode,
+            aggregate_strategy_execution_options: self.service.config.aggregate_strategy_execution_options,
+            source_chunk_planning_options: self.service.config.source_chunk_planning_options,
             adaptive_memory_history: Some(Arc::new(AdaptiveMemoryHistory::default())),
             hash_join_build_cache: None,
             local_parquet_source_cache: None,
@@ -871,11 +912,22 @@ mod tests {
 
     #[test]
     fn query_service_handle_exposes_configured_execution_policies() {
+        let dynamic_filter_execution_options = DynamicFilterExecutionOptions::default().with_max_build_rows(10_000);
+        let keyed_hash_join_strategy_options =
+            KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
+        let aggregate_strategy_execution_options =
+            AggregateStrategyExecutionOptions::default().with_encoded_key_partial_min_input_rows(22);
+        let source_chunk_planning_options =
+            SourceChunkPlanningOptions::default().with_local_parquet_throughput_max_row_groups_per_chunk(33);
         let config = QueryServiceConfig {
             source_scheduler_policy: SourceSchedulerPolicy::new(4),
             source_chunk_planning_mode: SourceChunkPlanningMode::LocalParquetThroughput,
             native_pipeline_execution_mode: NativePipelineExecutionMode::Adaptive,
             stddev_samp_execution_mode: StddevSampExecutionMode::GpuNativeTolerant,
+            dynamic_filter_execution_options,
+            keyed_hash_join_strategy_options,
+            aggregate_strategy_execution_options,
+            source_chunk_planning_options,
             ..QueryServiceConfig::default()
         };
         let service = QueryService::new_for_admission_tests(
@@ -892,6 +944,93 @@ mod tests {
         assert_eq!(handle.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
         assert_eq!(handle.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
         assert_eq!(handle.stddev_samp_execution_mode(), StddevSampExecutionMode::GpuNativeTolerant);
+        assert_eq!(handle.dynamic_filter_execution_options(), dynamic_filter_execution_options);
+        assert_eq!(handle.keyed_hash_join_strategy_options(), keyed_hash_join_strategy_options);
+        assert_eq!(handle.aggregate_strategy_execution_options(), aggregate_strategy_execution_options);
+        assert_eq!(handle.source_chunk_planning_options(), source_chunk_planning_options);
+    }
+
+    #[test]
+    fn query_service_rejects_inconsistent_dynamic_filter_execution_policy() {
+        let config = QueryServiceConfig {
+            dynamic_filter_execution_options: DynamicFilterExecutionOptions::default()
+                .with_max_build_rows(10)
+                .with_large_local_parquet_range_producer_rows(11),
+            ..QueryServiceConfig::default()
+        };
+
+        let error = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("large_local_parquet_range_producer_rows"));
+        assert_eq!(error.fact_value("bound_field"), Some("max_build_rows"));
+        assert_eq!(error.fact_value("reason"), Some("range_producer_rows_exceeds_runtime_build_cap"));
+    }
+
+    #[test]
+    fn query_service_rejects_inconsistent_keyed_hash_join_strategy_policy() {
+        let config = QueryServiceConfig {
+            keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default()
+                .with_large_keyed_hash_build_row_threshold(10),
+            ..QueryServiceConfig::default()
+        };
+
+        let error = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("large_field"), Some("large_keyed_hash_build_row_threshold"));
+        assert_eq!(error.fact_value("small_field"), Some("small_reusable_hash_build_row_threshold"));
+        assert_eq!(error.fact_value("reason"), Some("large_threshold_below_small_threshold"));
+    }
+
+    #[test]
+    fn query_service_rejects_invalid_aggregate_strategy_execution_policy() {
+        let config = QueryServiceConfig {
+            aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default()
+                .with_prepared_sort_groupby_low_cardinality_threshold_ppm(1_000_001),
+            ..QueryServiceConfig::default()
+        };
+
+        let error = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("prepared_sort_groupby_low_cardinality_threshold_ppm"));
+        assert_eq!(error.fact_value("reason"), Some("ratio_ppm_above_one_hundred_percent"));
+    }
+
+    #[test]
+    fn query_service_rejects_invalid_source_chunk_planning_policy() {
+        let config = QueryServiceConfig {
+            source_chunk_planning_options: SourceChunkPlanningOptions::default()
+                .with_local_parquet_throughput_max_row_groups_per_chunk(0),
+            ..QueryServiceConfig::default()
+        };
+
+        let error = QueryService::new_for_admission_tests(
+            config,
+            vec![QueryServiceTenantConfig::new("tenant", 1024 * 1024)],
+            non_gds_deployment(),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
     #[test]

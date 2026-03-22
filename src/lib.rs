@@ -34,6 +34,7 @@ pub mod report;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod session;
+pub mod session_config;
 mod source_cardinality;
 pub mod table_format;
 
@@ -47,9 +48,9 @@ pub mod error_contracts {
 pub mod prelude {
     pub use crate::{
         CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-        CudfSessionStateBuilderExt, FallbackReason, GpuFallbackPolicy, NativeCudfExec, NativeCudfExecutionConfig,
-        PhysicalOptimizerRules, PlanningReport, cudf_native_physical_optimizer_rules,
-        cudf_native_physical_optimizer_rules_with_rule,
+        CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, FallbackReason, GpuFallbackPolicy, NativeCudfExec,
+        NativeCudfExecutionConfig, NativeMemoryPolicyConfig, PhysicalOptimizerRules, PlanningReport,
+        cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
     };
 }
 
@@ -100,6 +101,7 @@ pub mod execution_contracts {
             NativeStrictBoundedContractDiagnostics, NativeStrictBoundedRejectedCandidateDiagnostics,
             STRICT_BOUNDED_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON,
         },
+        session_config::{DATAFUSION_NEXUS_CONFIG_PREFIX, DataFusionNexusSessionConfig, NativeMemoryPolicyConfig},
     };
 }
 
@@ -133,7 +135,8 @@ pub mod table_format_contracts {
 /// `nexus_query_engine::{plan,runtime,source,capability,metrics}`.
 pub mod engine_contracts {
     pub use nexus_query_engine::{
-        AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
+        AdaptiveMemoryHistory, DynamicFilterExecutionOptions, GpuLocalParquetSourceCache,
+        GpuLocalParquetSourceCacheKey, KeyedHashJoinStrategyOptions, NativeOptimizerOptions,
         NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, RemoteParquetReadMode,
         S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SourceStorageProfile,
         StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract,
@@ -259,10 +262,11 @@ pub use native_report::{
     compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
 };
 pub use nexus_query_engine::{
-    AdaptiveMemoryHistory, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey, NativeOptimizerOptions,
-    NativePipelineExecutionMode, NativePlanCpuPreferenceReason, NativePlanPreferenceOptions, RemoteParquetReadMode,
-    S3SourceStorageCredential, S3SourceStorageProfile, SemijoinReductionOptions, SourceStorageProfile,
-    StatisticalAggregateExecutionMode, StatisticalAggregateToleranceContract,
+    AdaptiveMemoryHistory, DynamicFilterExecutionOptions, GpuLocalParquetSourceCache, GpuLocalParquetSourceCacheKey,
+    KeyedHashJoinStrategyOptions, NativeOptimizerOptions, NativePipelineExecutionMode, NativePlanCpuPreferenceReason,
+    NativePlanPreferenceOptions, RemoteParquetReadMode, S3SourceStorageCredential, S3SourceStorageProfile,
+    SemijoinReductionOptions, SourceStorageProfile, StatisticalAggregateExecutionMode,
+    StatisticalAggregateToleranceContract,
 };
 pub use planner::{
     CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
@@ -277,6 +281,7 @@ pub use session::{
     CUDF_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, CudfSessionStateBuilderExt, PhysicalOptimizerRules,
     cudf_native_physical_optimizer_rules, cudf_native_physical_optimizer_rules_with_rule,
 };
+pub use session_config::{DATAFUSION_NEXUS_CONFIG_PREFIX, DataFusionNexusSessionConfig, NativeMemoryPolicyConfig};
 pub use source_cardinality::{
     SOURCE_UNIQUE_KEYS_METADATA_KEY, register_source_unique_keys_for_path, schema_with_source_unique_keys,
 };

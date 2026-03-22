@@ -10,11 +10,7 @@ use super::{
     *,
 };
 use crate::{
-    capability::{
-        KeylessConditionalJoinKind, LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD, LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD,
-        LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD, SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD,
-        SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD, keyed_filtered_semi_anti_join_capable,
-    },
+    capability::{KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind, keyed_filtered_semi_anti_join_capable},
     exec::bounded::{
         compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
         strict::CompiledJoinExecutionStrategy,
@@ -104,12 +100,14 @@ impl BoundedCompiledJoinProbeState {
 
 pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinBuildState {
     strategy: CompiledJoinExecutionStrategy,
+    strategy_options: KeyedHashJoinStrategyOptions,
     side: JoinSide,
     input: BoundedJoinSideFrame,
 }
 
 pub(in crate::exec::bounded) struct BoundedCompiledPreparedJoinProbeState {
     strategy: CompiledJoinExecutionStrategy,
+    strategy_options: KeyedHashJoinStrategyOptions,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
 }
@@ -387,6 +385,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
     node_id: NodeId,
     node: &JoinNode,
     strategy: CompiledJoinExecutionStrategy,
+    strategy_options: KeyedHashJoinStrategyOptions,
     input: GpuDataFrame,
     input_reservation: &ActiveReservation,
     reservations: &mut ReservationTracker,
@@ -432,7 +431,12 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
                 reservations,
                 metrics,
             )?;
-            Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState { strategy, side, input }))
+            Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState {
+                strategy,
+                strategy_options,
+                side,
+                input,
+            }))
         },
     }
 }
@@ -442,6 +446,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
     node_id: NodeId,
     node: &JoinNode,
     strategy: CompiledJoinExecutionStrategy,
+    strategy_options: KeyedHashJoinStrategyOptions,
     input: ResidentGpuFrame,
     reservations: &mut ReservationTracker,
     metrics: &mut QueryMetrics,
@@ -483,7 +488,12 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
                 reservations,
                 metrics,
             )?;
-            Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState { strategy, side, input }))
+            Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState {
+                strategy,
+                strategy_options,
+                side,
+                input,
+            }))
         },
     }
 }
@@ -537,6 +547,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
             let (left, right) = orient_prepared_inputs(build.side, build.input, side, probe)?;
             Ok(BoundedCompiledJoinProbeState::Prepared(BoundedCompiledPreparedJoinProbeState {
                 strategy: build.strategy,
+                strategy_options: build.strategy_options,
                 left,
                 right,
             }))
@@ -589,6 +600,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
             let (left, right) = orient_prepared_inputs(build.side, build.input, side, probe)?;
             Ok(BoundedCompiledJoinProbeState::Prepared(BoundedCompiledPreparedJoinProbeState {
                 strategy: build.strategy,
+                strategy_options: build.strategy_options,
                 left,
                 right,
             }))
@@ -990,6 +1002,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 node,
                 probe.left,
                 probe.right,
+                probe.strategy_options,
                 reservations,
                 metrics,
             )
@@ -1003,6 +1016,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 node,
                 probe.left,
                 probe.right,
+                probe.strategy_options,
                 reservations,
                 metrics,
             )

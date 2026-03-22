@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use crate::{
     capability::{
         JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
-        KeylessConditionalJoinKind, join_node_execution_capability, keyed_hash_join_strategy_decision,
+        KeyedHashJoinStrategyOptions, KeylessConditionalJoinKind, join_node_execution_capability,
         keyed_hash_join_strategy_decision_for_plan, one_shot_equi_join_supported,
     },
     plan::{JoinNode, NodeId, QueryPlan},
@@ -50,11 +50,12 @@ impl CompiledJoinExecutionStrategy {
     pub(crate) fn select_from_join_node_with_strategy_facts(
         join: &JoinNode,
         facts: KeyedHashJoinStrategyInputFacts,
+        options: &KeyedHashJoinStrategyOptions,
     ) -> std::result::Result<Option<CompiledJoinStrategySelection>, KeyedHashJoinStrategyDecision> {
         if join_node_execution_capability(join) != Some(JoinExecutionCapability::KeyedHash) {
             if one_shot_equi_join_supported(join) || crate::capability::partitioned_keyed_residual_join_supported(join)
             {
-                match keyed_hash_join_strategy_decision(join, facts) {
+                match crate::capability::keyed_hash_join_strategy_decision_with_options(join, facts, options) {
                     decision @ KeyedHashJoinStrategyDecision::Selected {
                         strategy: KeyedHashJoinStrategy::OneShotEqui,
                         ..
@@ -77,7 +78,10 @@ impl CompiledJoinExecutionStrategy {
             return Ok(Self::from_non_keyed_hash_join_node(join)
                 .map(|strategy| CompiledJoinStrategySelection { strategy, facts: None }));
         }
-        Self::select_from_keyed_hash_strategy_decision(keyed_hash_join_strategy_decision(join, facts)).map(Some)
+        Self::select_from_keyed_hash_strategy_decision(
+            crate::capability::keyed_hash_join_strategy_decision_with_options(join, facts, options),
+        )
+        .map(Some)
     }
 
     fn from_keyed_hash_strategy_decision(

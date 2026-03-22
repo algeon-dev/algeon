@@ -77,35 +77,39 @@ pub(super) fn join_strategy(
         probe_reuse_count: plan_facts.probe_reuse_count,
         reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
     };
-    CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(node, strategy_facts)
-        .map_err(|decision| {
-            let (reason, facts) = match decision {
-                crate::capability::KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),
-                crate::capability::KeyedHashJoinStrategyDecision::Selected { .. } => {
-                    unreachable!("selected strategy decisions do not map to strategy-selection errors")
-                },
-            };
-            let mut error = invalid("compiled join task rejected its keyed hash join execution strategy")
-                .with_fact("reason", reason)
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("plan_node_id", node_id)
-                .with_fact("pipeline_task_kind", task.kind().as_str());
-            for (key, value) in facts {
-                error = error.with_fact(key, value);
-            }
-            error
-        })?
-        .ok_or_else(|| {
-            invalid("compiled join task references an unsupported join execution strategy")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("plan_node_id", node_id)
-                .with_fact("pipeline_task_kind", task.kind().as_str())
-                .with_fact("join_type", node.spec.join_type)
-                .with_fact("build_side", node.spec.build_side)
-                .with_fact("key_count", node.spec.keys.len())
-                .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
-                .with_fact("output_projection_len", node.spec.output_projection.len())
-        })
+    CompiledJoinExecutionStrategy::select_from_join_node_with_strategy_facts(
+        node,
+        strategy_facts,
+        &plan.keyed_hash_join_strategy_options(),
+    )
+    .map_err(|decision| {
+        let (reason, facts) = match decision {
+            crate::capability::KeyedHashJoinStrategyDecision::Rejected { reason, facts } => (reason, facts),
+            crate::capability::KeyedHashJoinStrategyDecision::Selected { .. } => {
+                unreachable!("selected strategy decisions do not map to strategy-selection errors")
+            },
+        };
+        let mut error = invalid("compiled join task rejected its keyed hash join execution strategy")
+            .with_fact("reason", reason)
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str());
+        for (key, value) in facts {
+            error = error.with_fact(key, value);
+        }
+        error
+    })?
+    .ok_or_else(|| {
+        invalid("compiled join task references an unsupported join execution strategy")
+            .with_fact("compiled_task_id", task.id())
+            .with_fact("plan_node_id", node_id)
+            .with_fact("pipeline_task_kind", task.kind().as_str())
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", node.spec.build_side)
+            .with_fact("key_count", node.spec.keys.len())
+            .with_fact("residual_predicate", node.spec.residual_predicate.is_some())
+            .with_fact("output_projection_len", node.spec.output_projection.len())
+    })
 }
 
 pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
@@ -116,7 +120,7 @@ pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
     build_side_bytes: u64,
 ) -> bool {
     let plan_facts = keyed_hash_join_strategy_input_facts_for_plan(plan, node_id, node);
-    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
+    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options(
         node,
         KeyedHashJoinStrategyInputFacts {
             estimated_build_rows: plan_facts.estimated_build_rows,
@@ -129,6 +133,7 @@ pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
             probe_reuse_count: plan_facts.probe_reuse_count,
             reusable_prebuild_supported: plan_facts.reusable_prebuild_supported,
         },
+        &plan.keyed_hash_join_strategy_options(),
     )
 }
 

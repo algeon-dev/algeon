@@ -3,7 +3,8 @@ use std::collections::{BTreeSet, VecDeque};
 use super::*;
 use crate::{
     dynamic_filter::{
-        DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterRoute, DynamicFilterSet,
+        DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
+        DynamicFilterRoute, DynamicFilterSet,
         apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter,
         dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
     },
@@ -130,9 +131,10 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         &self,
         routes: &[DynamicFilterRoute],
         filter_set: &DynamicFilterSet,
+        options: DynamicFilterExecutionOptions,
     ) -> BTreeSet<DynamicFilterId> {
         let routes = routes.iter().collect::<Vec<_>>();
-        deferred_large_small_in_list_reader_predicate_routes(&self.source, &routes, filter_set)
+        deferred_large_small_in_list_reader_predicate_routes(&self.source, &routes, filter_set, options)
     }
 
     pub(in crate::exec::bounded) fn with_dynamic_filters_and_deferred_reader_predicates(
@@ -141,12 +143,18 @@ impl BoundedJoinLeafLocalParquetSourceStream {
         routes: &[&DynamicFilterRoute],
         filter_set: &DynamicFilterSet,
         deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
+        options: DynamicFilterExecutionOptions,
     ) -> Result<Self> {
         if routes.is_empty() {
             return Ok(self);
         }
-        let merged_reader_predicate_routes =
-            merged_reader_predicate_route_ids(&self.source, routes, filter_set, deferred_reader_predicate_routes)?;
+        let merged_reader_predicate_routes = merged_reader_predicate_route_ids(
+            &self.source,
+            routes,
+            filter_set,
+            deferred_reader_predicate_routes,
+            options,
+        )?;
         let before = self.dynamic_filter_source_snapshot();
         let source = apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter(
             &self.source,
@@ -185,6 +193,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             before,
             after,
             deferred_reader_predicate_routes,
+            options,
         );
         let reader_dynamic_filters =
             source_reader_predicate_dynamic_filter_stages(routes, filter_set, &merged_reader_predicate_routes);

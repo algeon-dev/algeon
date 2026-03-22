@@ -52,11 +52,12 @@ pub(super) fn join_source_chunk_planning_policy(
     source: &LocalParquetSource,
     has_source_adjacent_stages: bool,
 ) -> SourceChunkPlanningPolicy {
-    SourceChunkPlanningPolicy::for_source_task_with_mode(
+    SourceChunkPlanningPolicy::for_source_task_with_mode_and_options(
         source,
         context.memory_control_policy(),
         SourceTaskMemoryModel::join_leaf_stream(has_source_adjacent_stages),
         context.source_chunk_planning_mode(),
+        context.source_chunk_planning_options(),
     )
 }
 pub(super) fn join_source_retry_policy(context: &ExecutionContext) -> (usize, usize) {

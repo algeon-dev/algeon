@@ -8,6 +8,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 use super::{dynamic_filter as dynamic_filter_optimizer, rewrite};
 use crate::{
     dynamic_filter::DynamicFilterConsumer,
+    error::{QueryError, QueryErrorCode},
     expr::{BinaryOp, CaseWhen, Expr},
     plan::{
         FilterNode, NodeId, PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
@@ -36,6 +37,21 @@ impl LocalParquetSourceReuseOptions {
     /// Returns options with source reuse disabled.
     pub fn disabled() -> Self {
         Self { enabled: false, max_variant_selected_bytes: DEFAULT_MAX_VARIANT_SELECTED_BYTES }
+    }
+
+    /// Validates internal consistency for local Parquet source-reuse limits.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.max_variant_selected_bytes == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source_reuse_options.validate",
+                "local Parquet source-reuse option must be greater than zero",
+            )
+            .with_fact("field", "max_variant_selected_bytes")
+            .with_fact("value", self.max_variant_selected_bytes)
+            .with_fact("reason", "zero"));
+        }
+        Ok(())
     }
 }
 
@@ -85,6 +101,8 @@ pub struct LocalParquetSourceReuseCandidateDiagnostics {
     pub superset_read_columns: Vec<String>,
     /// Whether any branch predicate is replayed as a native filter.
     pub branch_filter_count: usize,
+    /// Configured maximum selected bytes accepted for each source variant.
+    pub max_variant_selected_bytes: u64,
     /// Whether the group was rewritten.
     pub applied: bool,
     /// Rejection reason when no rewrite was applied.
@@ -135,7 +153,8 @@ pub(crate) fn optimize_local_parquet_source_reuse(
 
     let mut rewriter = LocalParquetSourceReuseRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
-    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink());
+    let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
+        .with_keyed_hash_join_strategy_options_from(&plan);
     LocalParquetSourceReuseResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,
@@ -231,6 +250,7 @@ fn discover_source_reuse_candidates(
             stable_file_ids,
             superset_read_columns: superset_read_columns.iter().map(|column| column.name.clone()).collect(),
             branch_filter_count,
+            max_variant_selected_bytes: options.max_variant_selected_bytes,
             applied,
             rejected_reason,
         });

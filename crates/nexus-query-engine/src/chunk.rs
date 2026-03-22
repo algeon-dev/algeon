@@ -36,7 +36,7 @@ pub use model::{SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkRowPo
 pub use planner::{annotate_source_chunk_batching_reasons, plan_source_chunk_batches};
 pub use policy::{
     LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK, LOCAL_PARQUET_THROUGHPUT_MIN_DEVICE_BUDGET_BYTES,
-    SourceChunkPlanningPolicy,
+    SourceChunkPlanningOptions, SourceChunkPlanningPolicy,
 };
 use row_group::{RowGroupMetadata, row_group_metadata_from_footer, source_row_group_metadata};
 
@@ -1480,6 +1480,44 @@ mod tests {
 
         assert_eq!(policy.max_row_groups_per_chunk, LOCAL_PARQUET_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
         assert_eq!(policy.max_source_chunk_bytes, Some(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn local_throughput_source_chunk_planning_uses_configured_expert_options() {
+        let source = local_source();
+        let options = SourceChunkPlanningOptions::default()
+            .with_local_parquet_throughput_min_device_budget_bytes(8 * 1024 * 1024 * 1024)
+            .with_local_parquet_throughput_max_row_groups_per_chunk(16);
+        let policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
+            &source,
+            bounded_policy(8 * 1024 * 1024 * 1024, 64 * 1024 * 1024, 1),
+            SourceChunkPlanningMode::LocalParquetThroughput,
+            options,
+        );
+
+        assert_eq!(policy.max_row_groups_per_chunk, 16);
+        assert_eq!(policy.source_chunk_planning_reason(), "local_parquet_throughput_admitted");
+    }
+
+    #[test]
+    fn source_chunk_planning_options_reject_zero_thresholds() {
+        let error = SourceChunkPlanningOptions::default()
+            .with_local_parquet_throughput_max_row_groups_per_chunk(0)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_max_row_groups_per_chunk"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
+
+        let error = SourceChunkPlanningOptions::default()
+            .with_local_parquet_throughput_min_device_budget_bytes(0)
+            .validate()
+            .unwrap_err();
+
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("field"), Some("local_parquet_throughput_min_device_budget_bytes"));
+        assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
     #[test]

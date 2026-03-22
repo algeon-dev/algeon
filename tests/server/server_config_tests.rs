@@ -5,10 +5,14 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use datafusion_nexus::server::{
-    NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-    NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
-    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV, ServerConfig,
+    NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
+    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+    NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+    NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+    NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+    NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+    NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
+    ServerConfig,
 };
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::server::{
@@ -17,9 +21,11 @@ use datafusion_nexus::server::{
 };
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::{TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyPreference};
-use nexus_query_engine::MemoryControlPolicy;
 #[cfg(feature = "iceberg")]
 use nexus_query_engine::S3SourceStorageCredential;
+use nexus_query_engine::{
+    MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode, StatisticalAggregateExecutionMode,
+};
 
 #[test]
 fn server_config_defaults_to_single_flight_sql_admission() {
@@ -86,10 +92,185 @@ fn server_config_accepts_bounded_native_profile() {
             device_budget_bytes: 1024,
             max_source_chunk_bytes: 512,
             max_row_groups_per_chunk: 8,
-            max_retry_attempts: 1,
+            max_retry_attempts: datafusion_nexus::NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             min_retry_chunk_row_groups: 1,
         }
     );
+}
+
+#[test]
+fn server_config_accepts_extended_native_query_knobs() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "5".to_string()),
+        (NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "2".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "4".to_string()),
+        (NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput".to_string()),
+        (NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "adaptive".to_string()),
+        (NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, "gpu_native_tolerant".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let native = config.native_optimizer_config.native_execution_config();
+
+    assert_eq!(
+        native.memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 512,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 5,
+            min_retry_chunk_row_groups: 2,
+        }
+    );
+    assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
+    assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
+    assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
+}
+
+#[test]
+fn server_config_accepts_toml_native_query_knobs() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+device_budget_bytes = 1024
+max_source_chunk_bytes = 512
+max_row_groups_per_chunk = 8
+max_retry_attempts = 5
+min_retry_chunk_row_groups = 2
+max_source_reads_in_flight = 4
+source_chunk_planning_mode = "local_parquet_throughput"
+pipeline_execution_mode = "adaptive"
+statistical_aggregate_execution_mode = "gpu_native_tolerant"
+"#,
+    );
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let native = config.native_optimizer_config.native_execution_config();
+
+    assert_eq!(
+        native.memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 512,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 5,
+            min_retry_chunk_row_groups: 2,
+        }
+    );
+    assert_eq!(native.source_scheduler_policy().max_source_reads_in_flight(), 4);
+    assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::LocalParquetThroughput);
+    assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::Adaptive);
+    assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
+}
+
+#[test]
+fn server_config_env_overrides_toml_native_query_knobs() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[native]
+device_budget_bytes = 1024
+max_source_chunk_bytes = 512
+max_row_groups_per_chunk = 8
+max_retry_attempts = 0
+min_retry_chunk_row_groups = 2
+source_chunk_planning_mode = "local_parquet_throughput"
+"#,
+    );
+    env.insert(NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "7".to_string());
+    env.insert(NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "conservative".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let native = config.native_optimizer_config.native_execution_config();
+
+    assert_eq!(
+        native.memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 512,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: 7,
+            min_retry_chunk_row_groups: 2,
+        }
+    );
+    assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
+}
+
+#[test]
+fn server_config_env_unbounded_overrides_toml_bounded_native_profile() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[native]
+device_budget_bytes = 1024
+max_source_chunk_bytes = 512
+max_row_groups_per_chunk = 8
+max_retry_attempts = 5
+min_retry_chunk_row_groups = 2
+max_source_reads_in_flight = 4
+source_chunk_planning_mode = "local_parquet_throughput"
+pipeline_execution_mode = "adaptive"
+statistical_aggregate_execution_mode = "gpu_native_tolerant"
+"#,
+    );
+    env.insert(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let native = config.native_optimizer_config.native_execution_config();
+
+    assert_eq!(native.memory_control_policy(), MemoryControlPolicy::Unbounded);
+    assert_eq!(
+        native.source_scheduler_policy().max_source_reads_in_flight(),
+        nexus_query_engine::SourceSchedulerPolicy::default().max_source_reads_in_flight()
+    );
+    assert_eq!(native.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
+    assert_eq!(native.native_pipeline_execution_mode(), NativePipelineExecutionMode::StrictBounded);
+    assert_eq!(native.statistical_aggregate_execution_mode(), StatisticalAggregateExecutionMode::GpuNativeTolerant);
+}
+
+#[test]
+fn server_config_env_completes_toml_bounded_native_profile() {
+    let (_dir, mut env) = env_with_server_toml(
+        r#"
+[native]
+device_budget_bytes = 1024
+max_source_chunk_bytes = 512
+"#,
+    );
+    env.insert(NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string());
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(
+        config.native_optimizer_config.native_execution_config().memory_control_policy(),
+        MemoryControlPolicy::Bounded {
+            device_budget_bytes: 1024,
+            max_source_chunk_bytes: 512,
+            max_row_groups_per_chunk: 8,
+            max_retry_attempts: datafusion_nexus::NativeCudfExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+            min_retry_chunk_row_groups: 1,
+        }
+    );
+}
+
+#[test]
+fn server_config_accepts_retry_knobs_with_auto_sized_bounded_profile() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "7".to_string()),
+        (NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "3".to_string()),
+    ]);
+
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    let MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } =
+        config.native_optimizer_config.native_execution_config().memory_control_policy()
+    else {
+        panic!("server default must remain bounded");
+    };
+    assert_eq!(max_retry_attempts, 7);
+    assert_eq!(min_retry_chunk_row_groups, 3);
 }
 
 #[test]
@@ -119,12 +300,177 @@ fn server_config_rejects_unbounded_native_profile_with_bounded_knobs() {
 }
 
 #[test]
+fn server_config_rejects_unbounded_native_profile_with_bounded_scheduler_knobs() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, "2".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+}
+
+#[test]
+fn server_config_rejects_unbounded_native_profile_with_bounded_retry_or_pipeline_knobs() {
+    for (name, value) in [
+        (NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "2"),
+        (NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "2"),
+        (NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "adaptive"),
+    ] {
+        let env = BTreeMap::from([
+            (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+            (name, value.to_string()),
+        ]);
+
+        let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+        assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+    }
+}
+
+#[test]
+fn server_config_rejects_toml_unbounded_native_profile_with_bounded_knobs() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+memory_policy = "unbounded"
+max_source_reads_in_flight = 2
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("native.memory_policy"));
+}
+
+#[test]
+fn server_config_rejects_partial_toml_bounded_native_profile() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+device_budget_bytes = 1024
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("native.device_budget_bytes"));
+}
+
+#[test]
 fn server_config_rejects_unknown_native_memory_policy() {
     let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "best_effort".to_string())]);
 
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV));
+}
+
+#[test]
+fn server_config_rejects_zero_extended_native_query_knobs() {
+    for name in [
+        NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+        NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+        NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+    ] {
+        let env = BTreeMap::from([(name, "0".to_string())]);
+
+        let error = ServerConfig::from_env_get(|env_name| env.get(env_name).cloned()).unwrap_err();
+
+        assert!(error.to_string().contains(name));
+    }
+}
+
+#[test]
+fn server_config_rejects_zero_toml_native_query_knobs() {
+    let (_dir, env) = env_with_server_toml(
+        r#"
+[native]
+max_source_reads_in_flight = 0
+"#,
+    );
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("native.max_source_reads_in_flight"));
+}
+
+#[test]
+fn server_config_rejects_malformed_native_execution_modes() {
+    let pipeline_env = BTreeMap::from([(NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "sometimes".to_string())]);
+    let pipeline_error = ServerConfig::from_env_get(|name| pipeline_env.get(name).cloned()).unwrap_err();
+    assert!(pipeline_error.to_string().contains(NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV));
+
+    let aggregate_env = BTreeMap::from([(
+        NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+        "bit_identical_gpu".to_string(),
+    )]);
+    let aggregate_error = ServerConfig::from_env_get(|name| aggregate_env.get(name).cloned()).unwrap_err();
+    assert!(aggregate_error.to_string().contains(NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV));
+}
+
+#[test]
+fn server_config_rejects_undocumented_native_execution_mode_aliases() {
+    let pipeline_env = BTreeMap::from([(NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, "strict".to_string())]);
+    let pipeline_error = ServerConfig::from_env_get(|name| pipeline_env.get(name).cloned()).unwrap_err();
+    assert!(pipeline_error.to_string().contains(NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV));
+
+    for alias in ["exact", "gpu_native"] {
+        let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, alias.to_string())]);
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+        assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV));
+    }
+}
+
+#[test]
+fn server_config_rejects_malformed_source_chunk_planning_mode() {
+    let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "throughput".to_string())]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV));
+}
+
+#[test]
+fn server_config_rejects_malformed_toml_native_execution_modes() {
+    for (toml_body, field) in [
+        (
+            r#"
+[native]
+source_chunk_planning_mode = "throughput"
+"#,
+            "native.source_chunk_planning_mode",
+        ),
+        (
+            r#"
+[native]
+pipeline_execution_mode = "strict"
+"#,
+            "native.pipeline_execution_mode",
+        ),
+        (
+            r#"
+[native]
+statistical_aggregate_execution_mode = "gpu_native"
+"#,
+            "native.statistical_aggregate_execution_mode",
+        ),
+    ] {
+        let (_dir, env) = env_with_server_toml(toml_body);
+
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+        assert!(error.to_string().contains(field), "expected {field} in error: {error}");
+    }
+}
+
+fn env_with_server_toml(toml_body: &str) -> (tempfile::TempDir, BTreeMap<&'static str, String>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("server.toml");
+    std::fs::write(&path, toml_body).expect("write config file");
+    let path_str = path.to_string_lossy().into_owned();
+    (dir, BTreeMap::from([(NEXUS_SERVER_CONFIG_FILE_ENV, path_str)]))
 }
 
 #[cfg(not(feature = "iceberg"))]

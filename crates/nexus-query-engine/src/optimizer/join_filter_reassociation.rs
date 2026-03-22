@@ -140,7 +140,8 @@ pub(crate) fn optimize_join_filter_reassociation(
         return JoinFilterReassociationResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
     JoinFilterReassociationResult {
-        plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink()),
+        plan: rewrite::finish_compacted_rewritten_plan(rewriter.nodes, new_root, plan.sink())
+            .with_keyed_hash_join_strategy_options_from(&plan),
         change: super::NativeOptimizerChange::Changed,
         diagnostics: rewriter.diagnostics,
     }

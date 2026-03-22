@@ -14,9 +14,12 @@ use datafusion::{
 
 #[cfg(feature = "cugraph")]
 use crate::graph_sql::{CugraphSqlConfig, cugraph_table_functions};
-use crate::planner::{
-    CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
-    CudfTableFormatGpuOnlyLeafGuardRule,
+use crate::{
+    planner::{
+        CUDF_TABLE_FORMAT_GPU_ONLY_LEAF_GUARD_RULE_NAME, CudfNativePhysicalOptimizerRule, CudfOptimizerConfig,
+        CudfTableFormatGpuOnlyLeafGuardRule,
+    },
+    session_config::DataFusionNexusSessionConfig,
 };
 
 /// Public name and deduplication key for the final native rewrite rule.
@@ -74,9 +77,17 @@ impl CudfSessionStateBuilderExt for SessionStateBuilder {
     }
 
     fn with_cudf_native_rule(mut self, rule: Arc<CudfNativePhysicalOptimizerRule>) -> Self {
+        ensure_datafusion_nexus_session_config(&mut self, rule.config());
         let mut rules = take_physical_optimizer_rules(&mut self);
         insert_cudf_native_rules_before_final_validation(&mut rules, rule);
         self.with_physical_optimizer_rules(rules)
+    }
+}
+
+fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, config: &CudfOptimizerConfig) {
+    let session_config = builder.config().get_or_insert_with(Default::default);
+    if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {
+        session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
     }
 }
 

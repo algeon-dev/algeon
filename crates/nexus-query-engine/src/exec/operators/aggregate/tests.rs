@@ -13,15 +13,17 @@ use super::{
     },
     filtered_grouped::select_filtered_grouped_aggregate_strategy,
     partial_strategy::{
-        EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS, EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS,
-        EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS, ExactGroupedKeyCardinalityProbe,
-        ExactSingleKeyCardinalityProbe, SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS,
-        SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES, aggregate_structural_key, reduction_ratio_ppm,
+        ExactGroupedKeyCardinalityProbe, ExactSingleKeyCardinalityProbe, aggregate_structural_key,
+        exact_cardinality_probe_should_select_prepared_sort_groupby, exact_grouped_key_cardinality_probe_candidate,
+        exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby,
+        exact_single_key_cardinality_probe_candidate, exact_single_key_cardinality_probe_candidate_with_options,
+        reduction_ratio_ppm, select_partial_aggregate_strategy_decision,
+        select_partial_aggregate_strategy_decision_with_options,
     },
     *,
 };
 use crate::{
-    capability::aggregate_strategy_capability_decision,
+    capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
     error::{QueryError, QueryErrorCode},
     metrics::QueryMetrics,
     runtime::MemoryControlPolicy,
@@ -711,7 +713,10 @@ fn multi_key_single_sum_without_prior_uses_libcudf_as_cardinality_probe_when_lar
 fn source_adjacent_prepared_sort_groupby_rejects_single_large_source_chunk() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let evidence = source_adjacent_group_key_evidence(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1, 1);
+    let evidence = source_adjacent_group_key_evidence(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
+        1,
+    );
     let decision = select_partial_aggregate_strategy_decision(
         decision,
         None,
@@ -737,7 +742,10 @@ fn source_adjacent_prepared_sort_groupby_rejects_single_large_source_chunk() {
 fn source_adjacent_prepared_sort_groupby_keeps_bounded_group_key_source_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let evidence = source_adjacent_group_key_evidence(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS, 1);
+    let evidence = source_adjacent_group_key_evidence(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS,
+        1,
+    );
     let decision = select_partial_aggregate_strategy_decision(
         decision,
         None,
@@ -759,7 +767,9 @@ fn source_adjacent_prepared_sort_groupby_keeps_bounded_group_key_source_chunks()
 fn source_adjacent_prepared_sort_groupby_keeps_bounded_unpartitioned_source_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let evidence = source_adjacent_unpartitioned_evidence(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS);
+    let evidence = source_adjacent_unpartitioned_evidence(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS,
+    );
     let decision = select_partial_aggregate_strategy_decision(
         decision,
         None,
@@ -781,9 +791,11 @@ fn source_adjacent_prepared_sort_groupby_keeps_bounded_unpartitioned_source_chun
 fn source_adjacent_prepared_sort_groupby_keeps_large_byte_bounded_unpartitioned_source_chunks() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let mut evidence = source_adjacent_unpartitioned_evidence(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1);
+    let mut evidence = source_adjacent_unpartitioned_evidence(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
+    );
     evidence.source_chunk_estimated_source_read_bytes =
-        Some(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES);
+        Some(AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES);
     let decision = select_partial_aggregate_strategy_decision(
         decision,
         None,
@@ -805,9 +817,12 @@ fn source_adjacent_prepared_sort_groupby_keeps_large_byte_bounded_unpartitioned_
 fn source_adjacent_prepared_sort_groupby_rejects_large_unpartitioned_source_chunks_without_byte_bound() {
     let (schema, spec) = multi_key_sum_spec();
     let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
-    let mut evidence = source_adjacent_unpartitioned_evidence(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1);
-    evidence.source_chunk_estimated_source_read_bytes =
-        Some(SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES + 1);
+    let mut evidence = source_adjacent_unpartitioned_evidence(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
+    );
+    evidence.source_chunk_estimated_source_read_bytes = Some(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES + 1,
+    );
     let decision = select_partial_aggregate_strategy_decision(
         decision,
         None,
@@ -822,6 +837,117 @@ fn source_adjacent_prepared_sort_groupby_rejects_large_unpartitioned_source_chun
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
         Some("prepared_sort_groupby_requires_group_key_source_partition")
+    );
+}
+
+#[test]
+fn source_adjacent_prepared_sort_groupby_rejects_unknown_read_all_row_groups_without_byte_bound() {
+    let (schema, spec) = multi_key_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let mut evidence = source_adjacent_unpartitioned_evidence(0);
+    evidence.source_chunk_reads_all_row_groups = true;
+    evidence.source_chunk_estimated_source_read_bytes = None;
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        65_000_000,
+        Some(evidence),
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_group_key_source_partition")
+    );
+}
+
+#[test]
+fn source_adjacent_prepared_sort_groupby_uses_byte_bound_for_unknown_unpartitioned_read_all_row_groups() {
+    let (schema, spec) = multi_key_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let mut evidence = source_adjacent_unpartitioned_evidence(0);
+    evidence.source_chunk_reads_all_row_groups = true;
+    evidence.source_chunk_estimated_source_read_bytes =
+        Some(AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_SOURCE_READ_BYTES);
+    let decision = select_partial_aggregate_strategy_decision(
+        decision,
+        None,
+        &spec,
+        &schema,
+        65_000_000,
+        Some(evidence),
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_cost_model_status").map(String::as_str),
+        Some("selected_source_adjacent_execution")
+    );
+}
+
+#[test]
+fn source_adjacent_prepared_sort_groupby_zero_row_group_threshold_does_not_admit_unknown_group_key_chunks() {
+    let (schema, spec) = multi_key_sum_spec();
+    let options =
+        AggregateStrategyExecutionOptions::default().with_source_adjacent_prepared_sort_groupby_max_row_groups(0);
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let mut evidence = source_adjacent_group_key_evidence(0, 1);
+    evidence.source_chunk_reads_all_row_groups = true;
+    evidence.source_chunk_estimated_source_read_bytes = Some(1);
+    let decision = select_partial_aggregate_strategy_decision_with_options(
+        decision,
+        None,
+        &spec,
+        &schema,
+        65_000_000,
+        Some(evidence),
+        options,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(
+        decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
+        Some("prepared_sort_groupby_requires_group_key_source_partition")
+    );
+}
+
+#[test]
+fn aggregate_strategy_options_change_source_adjacent_row_group_gate_and_report_thresholds() {
+    let (schema, spec) = multi_key_sum_spec();
+    let options = AggregateStrategyExecutionOptions::default()
+        .with_source_adjacent_prepared_sort_groupby_max_row_groups(
+            AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
+        );
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let evidence = source_adjacent_group_key_evidence(
+        AggregateStrategyExecutionOptions::DEFAULT_SOURCE_ADJACENT_PREPARED_SORT_GROUPBY_MAX_ROW_GROUPS + 1,
+        1,
+    );
+    let decision = select_partial_aggregate_strategy_decision_with_options(
+        decision,
+        None,
+        &spec,
+        &schema,
+        65_000_000,
+        Some(evidence),
+        options,
+        &QueryMetrics::default(),
+    );
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
+    assert_eq!(
+        decision.facts.get("aggregate_source_adjacent_prepared_sort_groupby_max_row_groups").map(String::as_str),
+        Some("65")
+    );
+    assert_eq!(decision.facts.get("aggregate_strategy_options_version").map(String::as_str), Some("1"));
+    assert_eq!(
+        decision.facts.get("aggregate_encoded_key_partial_low_cardinality_threshold_ppm").map(String::as_str),
+        Some("100000")
     );
 }
 
@@ -875,6 +1001,29 @@ fn medium_single_string_sum_runtime_probe_waits_for_libcudf_groupby_cardinality(
         Some("selected_libcudf_runtime_probe")
     );
     assert_eq!(exact_single_key_cardinality_probe_candidate(&decision, &spec, &schema, 204_000), None);
+}
+
+#[test]
+fn aggregate_strategy_options_change_exact_single_key_probe_threshold() {
+    let (schema, spec) = simple_string_sum_spec();
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Single);
+    let decision = select_partial_aggregate_strategy_decision_with_options(
+        decision,
+        None,
+        &spec,
+        &schema,
+        204_000,
+        None,
+        AggregateStrategyExecutionOptions::default(),
+        &QueryMetrics::default(),
+    );
+    let options =
+        AggregateStrategyExecutionOptions::default().with_exact_single_key_cardinality_probe_min_input_rows(100_000);
+
+    assert_eq!(
+        exact_single_key_cardinality_probe_candidate_with_options(&decision, &spec, &schema, 204_000, options),
+        Some("county")
+    );
 }
 
 #[test]
@@ -996,7 +1145,7 @@ fn three_key_runtime_probe_rejects_wide_input_and_all_fixed_width_keys() {
         None,
         &spec,
         &schema,
-        EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
+        AggregateStrategyExecutionOptions::DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
         None,
         &QueryMetrics::default(),
     );
@@ -1005,7 +1154,7 @@ fn three_key_runtime_probe_rejects_wide_input_and_all_fixed_width_keys() {
             &wide_input_decision,
             &spec,
             &schema,
-            EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1
+            AggregateStrategyExecutionOptions::DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1
         ),
         None
     );
@@ -1065,7 +1214,7 @@ fn five_key_runtime_probe_rejects_wide_input_and_wrong_string_mix() {
         None,
         &spec,
         &schema,
-        EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
+        AggregateStrategyExecutionOptions::DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
         None,
         &QueryMetrics::default(),
     );
@@ -1074,7 +1223,7 @@ fn five_key_runtime_probe_rejects_wide_input_and_wrong_string_mix() {
             &wide_input_decision,
             &spec,
             &schema,
-            EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1
+            AggregateStrategyExecutionOptions::DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1
         ),
         None
     );
@@ -1149,7 +1298,7 @@ fn exact_grouped_key_cardinality_probe_candidate_rejects_single_small_and_wide_k
 
     let mut wide_group_exprs = Vec::new();
     let mut wide_fields = Vec::new();
-    for index in 0..=EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS {
+    for index in 0..=AggregateStrategyExecutionOptions::DEFAULT_EXACT_GROUPED_KEY_CARDINALITY_PROBE_MAX_KEY_COLUMNS {
         let name = format!("k{index}");
         wide_group_exprs.push(Expr::column(name.as_str()));
         wide_fields.push(Field::new(name, DataType::Int32, false));
@@ -1417,6 +1566,84 @@ fn simple_string_low_cardinality_prior_keeps_encoded_key_partial() {
     assert_eq!(
         decision.facts.get("prepared_sort_groupby_selection_reason").map(String::as_str),
         Some("encoded_key_preferred_for_simple_string_key")
+    );
+}
+
+#[test]
+fn aggregate_strategy_options_change_encoded_key_partial_reduction_threshold() {
+    let (schema, spec) = simple_string_sum_spec();
+    let node_id = NodeId::from_index_for_internal_use(20);
+    let metrics =
+        metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 750_000, "libcudf_groupby");
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let default_decision = select_partial_aggregate_strategy_decision(
+        decision.clone(),
+        Some(node_id),
+        &spec,
+        &schema,
+        5_000_000,
+        None,
+        &metrics,
+    );
+    let options =
+        AggregateStrategyExecutionOptions::default().with_encoded_key_partial_low_cardinality_threshold_ppm(200_000);
+    let custom_decision = select_partial_aggregate_strategy_decision_with_options(
+        decision,
+        Some(node_id),
+        &spec,
+        &schema,
+        5_000_000,
+        None,
+        options,
+        &metrics,
+    );
+
+    assert_eq!(default_decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(custom_decision.selected_strategy, AggregateExecutionStrategy::EncodedKeyPartial);
+    assert_eq!(
+        custom_decision.facts.get("encoded_key_partial_reduction_ratio_threshold_ppm").map(String::as_str),
+        Some("200000")
+    );
+    assert_eq!(
+        custom_decision.facts.get("aggregate_encoded_key_partial_low_cardinality_threshold_ppm").map(String::as_str),
+        Some("200000")
+    );
+}
+
+#[test]
+fn aggregate_strategy_options_change_prepared_sort_groupby_reduction_threshold() {
+    let (schema, spec) = fixed_width_sum_spec();
+    let node_id = NodeId::from_index_for_internal_use(21);
+    let metrics =
+        metrics_with_prior_partial_decision(node_id, &spec, &schema, None, 5_000_000, 750_000, "libcudf_groupby");
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let default_decision = select_partial_aggregate_strategy_decision(
+        decision.clone(),
+        Some(node_id),
+        &spec,
+        &schema,
+        5_000_000,
+        None,
+        &metrics,
+    );
+    let options =
+        AggregateStrategyExecutionOptions::default().with_prepared_sort_groupby_low_cardinality_threshold_ppm(200_000);
+    let custom_decision = select_partial_aggregate_strategy_decision_with_options(
+        decision,
+        Some(node_id),
+        &spec,
+        &schema,
+        5_000_000,
+        None,
+        options,
+        &metrics,
+    );
+
+    assert_eq!(default_decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
+    assert_eq!(custom_decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
+    assert_eq!(
+        custom_decision.facts.get("aggregate_prepared_sort_groupby_low_cardinality_threshold_ppm").map(String::as_str),
+        Some("200000")
     );
 }
 

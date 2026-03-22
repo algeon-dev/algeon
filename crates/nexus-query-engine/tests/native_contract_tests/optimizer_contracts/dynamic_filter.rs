@@ -28,6 +28,28 @@ fn native_optimizer_discovers_hash_join_build_to_parquet_source_dynamic_filter_r
     assert_eq!(routes[0].consumer_columns, vec!["left_key".to_string()]);
     assert!(matches!(routes[0].producer, DynamicFilterProducer::HashJoinBuild { build_side: JoinSide::Right, .. }));
     assert!(matches!(routes[0].consumer, DynamicFilterConsumer::LocalParquetSource { .. }));
+    assert_eq!(result.plan.dynamic_filter_execution_options(), DynamicFilterExecutionOptions::default());
+}
+
+#[test]
+fn dynamic_filter_execution_options_survive_gpu_resident_sink_clone() {
+    let execution = DynamicFilterExecutionOptions::default().with_max_build_rows(17);
+    let keyed_hash_join_strategy =
+        KeyedHashJoinStrategyOptions::default().with_small_reusable_hash_build_row_threshold(11);
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions { enabled: true, execution },
+        keyed_hash_join_strategy,
+        ..NativeOptimizerOptions::disabled()
+    };
+    let plan = estimated_inner_join_plan(JoinSide::Right, 512 * 1024 * 1024, 10, 16 * 1024 * 1024, 10);
+
+    let result = optimize_query_plan(plan, &options);
+    let gpu_plan = result.plan.clone_with_gpu_resident_sink();
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(gpu_plan.dynamic_filter_routes(), result.plan.dynamic_filter_routes());
+    assert_eq!(gpu_plan.dynamic_filter_execution_options(), execution);
+    assert_eq!(gpu_plan.keyed_hash_join_strategy_options(), keyed_hash_join_strategy);
 }
 
 #[test]
@@ -163,6 +185,29 @@ fn native_optimizer_rejects_dynamic_filter_route_when_producer_keyset_exceeds_ru
         Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit)
     );
     assert!(result.plan.dynamic_filter_routes().is_empty());
+}
+
+#[test]
+fn native_optimizer_uses_custom_dynamic_filter_runtime_limit_for_route_discovery() {
+    let plan = estimated_inner_join_plan(JoinSide::Right, 512 * 1024 * 1024, 1_000_000, 64 * 1024 * 1024, 12);
+    let execution = DynamicFilterExecutionOptions::default().with_max_build_rows(11);
+    let options = NativeOptimizerOptions {
+        dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryOptions { execution, ..Default::default() },
+        ..NativeOptimizerOptions::disabled()
+    };
+
+    let result = optimize_query_plan(plan, &options);
+
+    assert_eq!(result.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
+    assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
+    let candidate = &result.diagnostics.dynamic_filter_route_discovery.candidates[0];
+    assert!(!candidate.routed);
+    assert_eq!(
+        candidate.rejected_reason,
+        Some(DynamicFilterRouteRejectedReason::ProducerKeysetExceedsRuntimeLimit)
+    );
+    assert_eq!(result.plan.dynamic_filter_execution_options(), execution);
 }
 
 #[test]

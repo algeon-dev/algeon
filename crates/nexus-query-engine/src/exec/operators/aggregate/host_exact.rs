@@ -14,7 +14,9 @@ use cudf::hash::{FastHashMap, fast_hash_map_with_capacity};
 
 use super::{
     add_floating_statistical_aggregate_contract_facts,
-    partial_strategy::{add_partial_aggregate_input_evidence_facts, reduction_ratio_ppm},
+    partial_strategy::{
+        add_aggregate_strategy_execution_option_facts, add_partial_aggregate_input_evidence_facts, reduction_ratio_ppm,
+    },
     *,
 };
 
@@ -314,6 +316,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
         metrics,
         node_id.map(|id| id.to_string()),
         context.memory_control_policy().as_str(),
+        context.aggregate_strategy_execution_options(),
         spec,
         batch.schema().as_ref(),
         row_count as u64,
@@ -348,6 +351,7 @@ fn record_datafusion_exact_stddev_strategy_decision(
     metrics: &mut QueryMetrics,
     node_id: Option<String>,
     memory_mode: &'static str,
+    aggregate_strategy_options: AggregateStrategyExecutionOptions,
     spec: &AggregateSpec,
     input_schema: &arrow::datatypes::Schema,
     input_rows: u64,
@@ -417,6 +421,7 @@ fn record_datafusion_exact_stddev_strategy_decision(
         spec,
         StddevSampExecutionMode::DataFusionExactHostWelford,
     );
+    add_aggregate_strategy_execution_option_facts(&mut facts, aggregate_strategy_options);
     if let Some(extra_strategy_facts) = extra_strategy_facts {
         add_filtered_materialization_facts(&mut facts, extra_strategy_facts);
     }

@@ -429,10 +429,11 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,
-        SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+        SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
             source,
             context.memory_control_policy(),
             context.source_chunk_planning_mode(),
+            context.source_chunk_planning_options(),
         ),
         context,
     )?;
@@ -482,10 +483,11 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         node_id,
         source,
-        SourceChunkPlanningPolicy::from_memory_policy_with_mode(
+        SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
             source,
             context.memory_control_policy(),
             context.source_chunk_planning_mode(),
+            context.source_chunk_planning_options(),
         ),
         context,
     )?;

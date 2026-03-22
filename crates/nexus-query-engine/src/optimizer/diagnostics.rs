@@ -176,7 +176,7 @@ fn format_semijoin_reduction_candidate(candidate: &SemijoinReductionCandidateDia
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
 
     format!(
-        "rule={},candidate_node_id={},before_root_node_id={},after_root_node_id={},crossed_join_node_ids={},target_subtree_id={},key_mappings={},cost_gate={},admission_decision={},original_admitted={},rewritten_admitted={},applied={},rejected_reason={}",
+        "rule={},candidate_node_id={},before_root_node_id={},after_root_node_id={},crossed_join_node_ids={},target_subtree_id={},key_mappings={},cost_threshold_multiplier={},admission_mode={:?},cost_gate={},admission_decision={},original_admitted={},rewritten_admitted={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.candidate_node_id,
         candidate.before_root_node_id,
@@ -184,6 +184,8 @@ fn format_semijoin_reduction_candidate(candidate: &SemijoinReductionCandidateDia
         crossed_join_node_ids,
         target_subtree_id,
         key_mappings,
+        candidate.cost_threshold_multiplier,
+        candidate.admission_mode,
         cost_gate,
         admission_decision,
         original_admitted,
@@ -198,7 +200,7 @@ fn format_join_build_side_selection_candidate(candidate: &JoinBuildSideSelection
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     format!(
-        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},applied={},rejected_reason={}",
+        "rule={},candidate_node_id={},before_build_side={},after_build_side={},left_estimated_rows={},right_estimated_rows={},left_estimated_bytes={},right_estimated_bytes={},small_build_side_bytes={},small_build_side_rows={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.candidate_node_id,
         candidate.before_build_side,
@@ -207,6 +209,8 @@ fn format_join_build_side_selection_candidate(candidate: &JoinBuildSideSelection
         option_u64_text(candidate.right_estimated_rows),
         option_u64_text(candidate.left_estimated_bytes),
         option_u64_text(candidate.right_estimated_bytes),
+        candidate.small_build_side_bytes,
+        candidate.small_build_side_rows,
         candidate.applied,
         rejected_reason,
     )
@@ -218,7 +222,7 @@ fn format_dimension_derived_row_group_pruning_candidate(
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     format!(
-        "rule={},candidate_node_id={},dimension_source_node_id={},target_source_node_id={},dimension_key_column={},target_key_column={},derived_min_key={},derived_max_key={},selected_row_groups_before={},selected_row_groups_after={},applied={},rejected_reason={}",
+        "rule={},candidate_node_id={},dimension_source_node_id={},target_source_node_id={},dimension_key_column={},target_key_column={},derived_min_key={},derived_max_key={},selected_row_groups_before={},selected_row_groups_after={},max_dimension_rows={},applied={},rejected_reason={}",
         candidate.rule_name,
         candidate.candidate_node_id,
         candidate.dimension_source_node_id.map_or_else(|| "none".to_string(), |id| id.to_string()),
@@ -229,6 +233,7 @@ fn format_dimension_derived_row_group_pruning_candidate(
         option_i64_text(candidate.derived_max_key),
         option_usize_text(candidate.selected_row_groups_before),
         option_usize_text(candidate.selected_row_groups_after),
+        candidate.max_dimension_rows,
         candidate.applied,
         rejected_reason,
     )
@@ -268,13 +273,14 @@ fn format_local_parquet_source_reuse_candidate(candidate: &LocalParquetSourceReu
     let rejected_reason =
         candidate.rejected_reason.as_ref().map(|reason| format!("{reason:?}")).unwrap_or_else(|| "none".to_string());
     format!(
-        "rule={},source_node_ids={},reuse_count={},stable_file_ids={},superset_read_columns={},branch_filter_count={},applied={},rejected_reason={}",
+        "rule={},source_node_ids={},reuse_count={},stable_file_ids={},superset_read_columns={},branch_filter_count={},max_variant_selected_bytes={},applied={},rejected_reason={}",
         candidate.rule_name,
         source_node_ids,
         candidate.reuse_count,
         stable_file_ids,
         superset_read_columns,
         candidate.branch_filter_count,
+        candidate.max_variant_selected_bytes,
         candidate.applied,
         rejected_reason,
     )

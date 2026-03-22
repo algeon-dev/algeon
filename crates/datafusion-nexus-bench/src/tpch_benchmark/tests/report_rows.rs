@@ -249,6 +249,7 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
                 rejected_candidate_strategies:
                     "encoded_key_partial:encoded_key_partial_cost_model_no_prior_cardinality_evidence;partitioned_merge:partitioned_merge_requires_final_merge_stage"
                         .to_string(),
+                ..NativeAggregateStrategyMetricRow::default()
             }],
             join_strategy_rows: vec![NativeJoinStrategyMetricRow {
                 node_id: "n7".to_string(),
