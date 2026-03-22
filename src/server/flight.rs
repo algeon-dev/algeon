@@ -1,6 +1,9 @@
 use std::{
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -78,6 +81,61 @@ const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
 const MAX_PREPARED_STATEMENTS: usize = 1024;
 const ADMISSION_SWEEP_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// A live Flight SQL prepared statement.
+///
+/// JDBC clients such as DataGrip prepare a statement once and then re-run the
+/// held handle. A DDL statement prepares with an empty result schema, which the
+/// Arrow Flight SQL JDBC driver classifies as `IS_DML` and executes through
+/// `executeUpdate` (the update channel); DataGrip re-runs that same handle, so
+/// the second execution would otherwise hit DataFusion's "already exists" /
+/// "not found" catalog error. We deduplicate no-result-set DDL per handle: the
+/// first execution runs, later executions of the *same* handle are no-ops.
+/// Query / DML prepared statements set `no_result_ddl = false` and are never
+/// deduplicated, so they can still be executed repeatedly.
+///
+/// Contract: a no-result-set DDL handle is applied **at most once**. This is
+/// scoped to *one* handle — a fresh `CreatePreparedStatement` (a distinct
+/// handle) re-runs the DDL and still surfaces a genuine duplicate, so an
+/// independent client running `CREATE` against a pre-existing table is not
+/// masked. The dedup targets the sequential double-send a single JDBC client
+/// issues for one logical statement; it deliberately does not re-apply the DDL
+/// if catalog state changes underneath a reused handle (e.g. the object is
+/// dropped elsewhere and the same handle is executed again), and it does not
+/// serialize two *concurrent* executions of the same handle.
+#[derive(Debug)]
+struct PreparedStatementEntry {
+    /// The prepared SQL text. Re-planned on each execution (planning is
+    /// side-effect-free; only `execute_logical_plan` mutates the catalog).
+    sql: String,
+    /// True iff the prepared plan is DDL (no result set). Classified once at
+    /// prepare time so neither execution channel has to re-plan to decide
+    /// whether dedup applies.
+    no_result_ddl: bool,
+    /// Set after the first successful execution. Only consulted for
+    /// `no_result_ddl` handles, to turn a repeat execution into a no-op.
+    executed: AtomicBool,
+}
+
+impl PreparedStatementEntry {
+    fn new(sql: String, no_result_ddl: bool) -> Self {
+        Self { sql, no_result_ddl, executed: AtomicBool::new(false) }
+    }
+
+    /// True when this is a no-result-set DDL handle that has already executed
+    /// once — i.e. a repeat execution that must be treated as a no-op.
+    fn ddl_already_executed(&self) -> bool {
+        self.no_result_ddl && self.executed.load(Ordering::Relaxed)
+    }
+
+    /// Record a successful execution. Only meaningful for `no_result_ddl`
+    /// handles; a no-op otherwise, so callers can mark unconditionally.
+    fn mark_executed(&self) {
+        if self.no_result_ddl {
+            self.executed.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct DatafusionCudfFlightSqlService {
     ctx: Arc<SessionContext>,
@@ -89,14 +147,14 @@ pub struct DatafusionCudfFlightSqlService {
     admission: Arc<QueryAdmission>,
     cancellations: Arc<QueryCancellation>,
     tickets: Arc<DashMap<String, StatementTicket>>,
-    /// Map of prepared-statement handle → SQL text. Populated by
-    /// `do_action_create_prepared_statement` and removed by
+    /// Map of prepared-statement handle → [`PreparedStatementEntry`].
+    /// Populated by `do_action_create_prepared_statement` and removed by
     /// `do_action_close_prepared_statement` (or replaced when the same
     /// handle is reused). The handle is an opaque UUID and is distinct
     /// from the per-execution `query_id` issued at `get_flight_info_*`
     /// time; one prepared statement can be executed multiple times,
     /// each producing a fresh `query_id` / Flight ticket.
-    prepared_statements: Arc<DashMap<String, String>>,
+    prepared_statements: Arc<DashMap<String, PreparedStatementEntry>>,
     statement_ticket_ttl: Duration,
     /// Parent token that every per-statement token is derived from. Cancelled
     /// by [`crate::server::serve`] on SIGINT/SIGTERM so any statement that
@@ -290,6 +348,7 @@ impl DatafusionCudfFlightSqlService {
         started_at: Instant,
         permit: OwnedSemaphorePermit,
         ticket_kind: StatementTicketKind,
+        prepared_handle: Option<String>,
     ) -> Result<FlightInfo, Status> {
         // Before ticket issuance there is no per-query token, so planning
         // observes the server shutdown token directly. The native flag is still
@@ -345,6 +404,7 @@ impl DatafusionCudfFlightSqlService {
                 query_id,
                 sql,
                 ticket_kind,
+                prepared_handle,
                 native_cancellation,
                 started_at,
                 issued_at: Instant::now(),
@@ -440,8 +500,38 @@ impl DatafusionCudfFlightSqlService {
         // Derive from `shutdown_token` so cancellation cascades to statements
         // that race in between permit acquisition and registry insert.
         let token = self.shutdown_token.child_token();
-        let StatementTicket { query_id, sql, ticket_kind, native_cancellation, started_at, _permit: permit, .. } =
-            ticket;
+        let StatementTicket {
+            query_id,
+            sql,
+            ticket_kind,
+            prepared_handle,
+            native_cancellation,
+            started_at,
+            _permit: permit,
+            ..
+        } = ticket;
+
+        // DataGrip-class clients re-run held prepared-statement handles. A
+        // no-result-set DDL handle that already executed once is a no-op on
+        // re-execution: return an empty result so the client's `execute()`
+        // succeeds instead of surfacing DataFusion's "already exists" /
+        // "not found" catalog error from the duplicate run.
+        if let Some(handle) = &prepared_handle
+            && self.prepared_statements.get(handle).is_some_and(|entry| entry.ddl_already_executed())
+        {
+            tracing::info!(
+                query_id,
+                prepared_statement_handle = handle.as_str(),
+                "deduplicated repeated prepared DDL execution on the query channel; returning an empty result"
+            );
+            drop(permit);
+            let stream = FlightDataEncoderBuilder::new()
+                .with_schema(Arc::new(Schema::empty()))
+                .build(futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>())
+                .map_err(move |error| status_with_query_id(Status::from(error), &query_id));
+            return Ok(Response::new(Box::pin(stream)));
+        }
+
         self.cancellations.insert(query_id.clone(), token.clone(), native_cancellation.clone());
         let native_cancellation_for_bridge = native_cancellation.clone();
         let token_for_bridge = token.clone();
@@ -517,6 +607,15 @@ impl DatafusionCudfFlightSqlService {
                 return Err(status);
             },
         };
+        // `execute_logical_plan` has run any DDL side effect by now, so record
+        // the success: a re-run of this prepared handle short-circuits to an
+        // empty result (`mark_executed` self-guards on `no_result_ddl`, so
+        // query/DML handles are unaffected).
+        if let Some(handle) = &prepared_handle
+            && let Some(entry) = self.prepared_statements.get(handle)
+        {
+            entry.mark_executed();
+        }
         if let Some(error) = fast_fail_unsupported_table_format_operator_plan(df.logical_plan()) {
             let status = status_with_query_id(adapter_error_status(error), &query_id);
             lifecycle.finish_status("planning", &status);

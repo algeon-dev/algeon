@@ -261,6 +261,96 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
     assert_eq!(int_value(batches[0].column(0)), Some(2));
 }
 
+// Regression: a prepared DDL handle re-executed twice — the double-send a
+// JDBC client such as DataGrip triggers — must succeed both times. DataGrip /
+// the Arrow Flight SQL JDBC driver classify the empty result schema of a DDL
+// prepared statement as IS_DML, so `execute()` routes to `executeUpdate()`
+// (the update channel) and re-uses the held handle. The second execution is
+// deduplicated into a no-op instead of failing with "already exists".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-dedup-update-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE dedup_update_edges STORED AS PARQUET LOCATION '{}'",
+        parquet_path.to_string_lossy()
+    );
+
+    // Prepare once; the client holds a single handle and re-uses it.
+    let mut prepared = client.prepare(create_sql, None).await.unwrap();
+    assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
+
+    let first = prepared.execute_update().await.unwrap();
+    assert_eq!(first, -1, "DataFusion DDL does not expose an affected-row count");
+
+    // The double-send: same handle, executed again. Must be a no-op, not an
+    // "already exists" rejection.
+    let second = prepared.execute_update().await.unwrap();
+    assert_eq!(second, -1, "re-executing the same prepared DDL handle must be a deduplicated no-op");
+
+    prepared.close().await.unwrap();
+    let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM dedup_update_edges").await;
+
+    server.abort();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
+// Regression: the same double-send on the query channel (a client that runs a
+// prepared DDL through `execute()` + `do_get` twice) is likewise deduplicated.
+// The second `do_get` returns an empty result rather than re-running the DDL.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepared_ddl_double_execute_is_deduplicated_on_query_channel() {
+    let addr = free_local_addr();
+    let mut config = ServerConfig::from_env_get(|_| None).unwrap();
+    config.bind_addr = addr;
+
+    let server = tokio::spawn(async move { serve(config).await });
+    let mut client = connect_with_retry(addr).await;
+    let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-dedup-query-").tempdir().unwrap();
+    let parquet_path = dir.path().join("edges.parquet");
+    write_update_edges_parquet(&parquet_path);
+
+    let create_sql = format!(
+        "CREATE EXTERNAL TABLE dedup_query_edges STORED AS PARQUET LOCATION '{}'",
+        parquet_path.to_string_lossy()
+    );
+
+    let mut prepared = client.prepare(create_sql, None).await.unwrap();
+    assert_eq!(prepared.dataset_schema().unwrap().fields().len(), 0, "DDL prepared statements do not return rows");
+
+    // First execution on the query channel: getFlightInfo + do_get.
+    let info1 = prepared.execute().await.unwrap();
+    let ticket1 = info1.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let rows1: usize =
+        client.do_get(ticket1).await.unwrap().try_collect::<Vec<_>>().await.unwrap().iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows1, 0, "DDL executed through the query channel returns no rows");
+
+    // The double-send: same handle, executed again on the query channel.
+    let info2 = prepared.execute().await.unwrap();
+    let ticket2 = info2.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
+    let rows2: usize =
+        client.do_get(ticket2).await.unwrap().try_collect::<Vec<_>>().await.unwrap().iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows2, 0, "re-executing the same prepared DDL handle must be a deduplicated no-op");
+
+    prepared.close().await.unwrap();
+    let batches = execute_batches(&mut client, "SELECT COUNT(*) AS edge_count FROM dedup_query_edges").await;
+
+    server.abort();
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(int_value(batches[0].column(0)), Some(2));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_invalid_sql_uses_server_error_presentation() {
     let addr = free_local_addr();

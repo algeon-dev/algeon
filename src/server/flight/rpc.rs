@@ -51,6 +51,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 planning_started_at,
                 permit,
                 StatementTicketKind::Statement,
+                None,
             )
             .await
         {
@@ -74,7 +75,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
             .map_err(|error| Status::invalid_argument(error.to_string()))?
             .to_string();
         let query_id = Uuid::new_v4().hyphenated().to_string();
-        let sql = self.prepared_statements.get(&handle).map(|entry| entry.value().clone()).ok_or_else(|| {
+        let sql = self.prepared_statements.get(&handle).map(|entry| entry.sql.clone()).ok_or_else(|| {
             adapter_error_status_with_query_id(
                 Error::new(
                     ErrorCode::ObjectNotFound,
@@ -108,6 +109,7 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 planning_started_at,
                 permit,
                 StatementTicketKind::PreparedStatement,
+                Some(handle.clone()),
             )
             .await
         {
@@ -402,18 +404,38 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 )
             })?
             .to_string();
-        let sql = self.prepared_statements.get(&handle).map(|entry| entry.value().clone()).ok_or_else(|| {
-            adapter_error_status_with_query_id(
-                Error::new(
-                    ErrorCode::ObjectNotFound,
-                    "datafusion_nexus.server.flight.do_put_prepared_statement_update.resolve",
-                    format!("unknown prepared statement handle: {handle}"),
-                ),
-                &query_id,
-            )
-        })?;
+        let (sql, already_executed) = self
+            .prepared_statements
+            .get(&handle)
+            .map(|entry| (entry.sql.clone(), entry.ddl_already_executed()))
+            .ok_or_else(|| {
+                adapter_error_status_with_query_id(
+                    Error::new(
+                        ErrorCode::ObjectNotFound,
+                        "datafusion_nexus.server.flight.do_put_prepared_statement_update.resolve",
+                        format!("unknown prepared statement handle: {handle}"),
+                    ),
+                    &query_id,
+                )
+            })?;
 
-        self.execute_update_sql(query_id, sql, UpdateStatementKind::PreparedStatement).await
+        // DataGrip re-runs the held handle (empty result schema => IS_DML =>
+        // executeUpdate). A no-result-set DDL handle that already executed once
+        // is a no-op on re-execution rather than an "already exists" rejection.
+        if already_executed {
+            tracing::info!(
+                query_id,
+                prepared_statement_handle = handle.as_str(),
+                "deduplicated repeated prepared DDL execution on the update channel; returning a no-op"
+            );
+            return Ok(UNKNOWN_UPDATE_RECORD_COUNT);
+        }
+
+        let record_count = self.execute_update_sql(query_id, sql, UpdateStatementKind::PreparedStatement).await?;
+        if let Some(entry) = self.prepared_statements.get(&handle) {
+            entry.mark_executed();
+        }
+        Ok(record_count)
     }
 
     async fn do_action_create_prepared_statement(
@@ -474,8 +496,12 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let dataset_schema_ipc =
             schema_to_ipc_bytes(&dataset_schema).map_err(|error| Status::internal(error.to_string()))?;
 
+        // DDL prepares with an empty result schema; classify it once here so
+        // neither execution channel re-plans to decide whether a re-run of the
+        // held handle should be deduplicated into a no-op.
+        let no_result_ddl = matches!(logical_plan, LogicalPlan::Ddl(_));
         let handle = Uuid::new_v4().hyphenated().to_string();
-        self.prepared_statements.insert(handle.clone(), sql);
+        self.prepared_statements.insert(handle.clone(), PreparedStatementEntry::new(sql, no_result_ddl));
         tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
 
         Ok(ActionCreatePreparedStatementResult {
