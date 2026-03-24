@@ -1,7 +1,7 @@
 //! A named-column wrapper around GPU columns for ergonomic DataFrame operations.
 //!
 //! [`DataFrame`] stores columns individually as `Arc<Column>`, enabling
-//! zero-copy operations like rename, select, and copy that share GPU memory
+//! zero-copy operations like rename, select, and clone that share GPU memory
 //! via reference counting instead of deep-copying all column data.
 //!
 //! # Example
@@ -48,8 +48,12 @@ use crate::{
 /// **new** `DataFrame` rather than modifying in place.
 ///
 /// Columns are stored as `Arc<Column>`, so operations that don't change
-/// column data (rename, select, copy, with_column for unchanged columns)
+/// column data (rename, select, clone, with_column for unchanged columns)
 /// share GPU memory via reference counting.
+///
+/// Cloning a `DataFrame` is cheap: it clones the `IndexMap` and bumps
+/// `Arc` reference counts — no GPU data is copied.
+#[derive(Clone)]
 pub struct DataFrame {
     columns: IndexMap<String, Arc<Column>>,
     row_count: i32,
@@ -59,7 +63,7 @@ pub struct DataFrame {
 ///
 /// This is the compatibility form containing the raw join sides. Each side
 /// has columns `[key_columns..., payload_columns...]`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DataFrameJoinResult {
     /// Left-side result: key columns + left payload columns.
     pub left: DataFrame,
@@ -493,14 +497,13 @@ impl DataFrame {
     /// This is a convenience wrapper around
     /// [`parquet::read_parquet_with_metadata`].
     pub fn read_parquet(path: impl AsRef<Path>) -> Result<Self> {
-        let opts = ParquetReaderOptions::new(path)?;
-        Self::read_parquet_with_options(&opts)
+        Self::read_parquet_with_options(ParquetReaderOptions::new(path))
     }
 
     /// Read a Parquet file into a `DataFrame` using caller-provided options.
     ///
     /// Column names are taken from the Parquet file's schema metadata.
-    pub fn read_parquet_with_options(options: &ParquetReaderOptions) -> Result<Self> {
+    pub fn read_parquet_with_options(options: ParquetReaderOptions) -> Result<Self> {
         let result = parquet::read_parquet_with_metadata(options)?;
         Self::from_table(result.table, result.column_names)
     }
@@ -509,7 +512,7 @@ impl DataFrame {
     /// the file's schema metadata.
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
         let names: Vec<&str> = self.column_names();
-        let opts = ParquetWriterOptions::new(path)?.column_names(&names);
+        let opts = ParquetWriterOptions::new(path).column_names(&names);
         let (_views, table_view) = self.build_table_view()?;
         parquet::write_parquet(&table_view, &opts)
     }
@@ -525,10 +528,33 @@ impl DataFrame {
         self.gather_range(0, take)
     }
 
+    /// Return the first `n` rows, consuming `self`.
+    ///
+    /// Functionally identical to [`head`](Self::head) but takes `self` by
+    /// value, allowing the input's `Arc<Column>`s to drop sooner when they
+    /// are the last reference.
+    pub fn head_owned(self, n: usize) -> Result<Self> {
+        let total = self.num_rows()? as usize;
+        let take = n.min(total);
+        self.gather_range(0, take)
+    }
+
     /// Return the last `n` rows.
     ///
     /// If `n >= num_rows`, all rows are returned. The schema is preserved.
     pub fn tail(&self, n: usize) -> Result<Self> {
+        let total = self.num_rows()? as usize;
+        let take = n.min(total);
+        let start = total - take;
+        self.gather_range(start, take)
+    }
+
+    /// Return the last `n` rows, consuming `self`.
+    ///
+    /// Functionally identical to [`tail`](Self::tail) but takes `self` by
+    /// value, allowing the input's `Arc<Column>`s to drop sooner when they
+    /// are the last reference.
+    pub fn tail_owned(self, n: usize) -> Result<Self> {
         let total = self.num_rows()? as usize;
         let take = n.min(total);
         let start = total - take;
@@ -583,6 +609,20 @@ impl DataFrame {
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
 
+    /// Keep only rows where `mask` is `true`, consuming `self`.
+    ///
+    /// Functionally identical to [`filter`](Self::filter) but takes `self`
+    /// by value, allowing the input's `Arc<Column>`s to drop sooner when
+    /// they are the last reference.
+    pub fn filter_owned(self, mask: &ColumnView<'_>) -> Result<Self> {
+        let names = self.column_names_owned();
+        let result_table = {
+            let (_views, table_view) = self.build_table_view()?;
+            filter::apply_boolean_mask(&table_view, mask)?
+        };
+        Self::from_table_with_names(result_table, names)
+    }
+
     /// Filter rows to those where `column` values appear in `values`.
     ///
     /// This is a convenience wrapper around [`crate::search::contains`] +
@@ -600,6 +640,21 @@ impl DataFrame {
         let mask = crate::search::contains(values, &col_view)?;
         let mask_view = mask.view()?;
         self.filter(&mask_view)
+    }
+
+    /// Filter rows to those where `column` values appear in `values`,
+    /// consuming `self`.
+    ///
+    /// Functionally identical to [`filter_isin`](Self::filter_isin) but
+    /// takes `self` by value, allowing the input's `Arc<Column>`s to drop
+    /// sooner when they are the last reference.
+    pub fn filter_isin_owned(self, column: &str, values: &ColumnView<'_>) -> Result<Self> {
+        let mask = {
+            let col_view = self.column(column)?;
+            crate::search::contains(values, &col_view)?
+        };
+        let mask_view = mask.view()?;
+        self.filter_owned(&mask_view)
     }
 
     /// Sort rows by the given column names and orders.
@@ -638,6 +693,42 @@ impl DataFrame {
         };
 
         Self::from_table_with_names(result_table, self.column_names_owned())
+    }
+
+    /// Sort rows by the given column names and orders, consuming `self`.
+    ///
+    /// Functionally identical to [`sort`](Self::sort) but takes `self` by
+    /// value, allowing the input's `Arc<Column>`s to drop sooner when they
+    /// are the last reference.
+    pub fn sort_owned(self, by: &[&str], orders: &[Order]) -> Result<Self> {
+        if by.len() != orders.len() {
+            return Err(Error::new(ErrorKind::InvalidOperation, "number of sort columns must equal number of orders")
+                .with_operation("dataframe::sort_owned")
+                .with_context("by_count", by.len().to_string())
+                .with_context("orders_count", orders.len().to_string()));
+        }
+
+        let names = self.column_names_owned();
+        let key_indices = resolve_column_names(&self.columns, by, "dataframe::sort_owned")?;
+
+        let all_in_order =
+            key_indices.len() == self.columns.len() && key_indices.iter().enumerate().all(|(i, &idx)| idx == i);
+
+        let result_table = {
+            let (_views, table_view) = self.build_table_view()?;
+
+            if all_in_order {
+                sorting::sort(&table_view, Some(orders), None)?
+            } else {
+                let keys_table = build_keys_table_from_columns(&self.columns, &key_indices)?;
+                let keys_view = keys_table.view()?;
+                let order_col = sorting::sorted_order(&keys_view, Some(orders), None)?;
+                let order_view = order_col.view()?;
+                copying::gather(&table_view, &order_view, copying::OutOfBoundsPolicy::DontCheck)?
+            }
+        };
+
+        Self::from_table_with_names(result_table, names)
     }
 
     /// Return the `n` rows with the largest values in `column`.
@@ -715,6 +806,32 @@ impl DataFrame {
         self.drop_nulls(subset, keep_threshold).map_err(|e| {
             e.with_operation("dataframe::drop_nulls_any").with_context("subset_count", subset_count.to_string())
         })
+    }
+
+    /// Drop rows where **any** of the specified `subset` columns contain
+    /// nulls, consuming `self`.
+    ///
+    /// Functionally identical to [`drop_nulls_any`](Self::drop_nulls_any)
+    /// but takes `self` by value, allowing the input's `Arc<Column>`s to
+    /// drop sooner when they are the last reference.
+    pub fn drop_nulls_any_owned(self, subset: &[&str]) -> Result<Self> {
+        let subset_count = subset.len();
+        let keep_threshold = i32::try_from(subset_count).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
+                .with_operation("dataframe::drop_nulls_any_owned")
+                .with_context("subset_count", subset_count.to_string())
+        })?;
+
+        let names = self.column_names_owned();
+        let key_indices = resolve_column_names(&self.columns, subset, "dataframe::drop_nulls_any_owned")?;
+        let key_i32: Vec<i32> = key_indices.iter().map(|&i| i as i32).collect();
+
+        let result_table = {
+            let (_views, table_view) = self.build_table_view()?;
+            stream_compaction::drop_nulls(&table_view, &key_i32, keep_threshold)?
+        };
+
+        Self::from_table_with_names(result_table, names)
     }
 
     // -- Joins ---------------------------------------------------------------
@@ -948,7 +1065,7 @@ impl DataFrame {
         GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
     }
 
-    // -- Concat, copy, rename, select ----------------------------------------
+    // -- Concat, rename, select ----------------------------------------------
 
     /// Concatenate two DataFrames row-wise.
     ///
@@ -1005,14 +1122,6 @@ impl DataFrame {
         let result_table = crate::concatenate::concatenate_tables(&[&left_tv, &right_tv])?;
 
         Self::from_table_with_names(result_table, self.column_names_owned())
-    }
-
-    /// Deep-copy this DataFrame (both the GPU column data and the schema).
-    ///
-    /// With `Arc<Column>` storage, this is a cheap clone of the `IndexMap`
-    /// and `Arc::clone` for each column — no GPU data is copied.
-    pub fn copy(&self) -> Result<Self> {
-        Ok(Self { columns: self.columns.clone(), row_count: self.row_count })
     }
 
     /// Return a new DataFrame with one column renamed.
@@ -1123,6 +1232,36 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
+    /// Return a new DataFrame containing only the specified columns,
+    /// consuming `self`.
+    ///
+    /// Unlike [`select`](Self::select), this variant moves columns out of
+    /// the `IndexMap` instead of cloning the `Arc`, avoiding even the
+    /// refcount bump for selected columns.
+    pub fn select_owned(mut self, columns: &[&str]) -> Result<Self> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for &name in columns {
+            if !seen.insert(name) {
+                return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
+                    .with_operation("dataframe::select_owned")
+                    .with_context("duplicate_column", name.to_string())
+                    .with_context("selected_column_count", columns.len().to_string()));
+            }
+        }
+
+        let mut new_columns = IndexMap::with_capacity(columns.len());
+        for &name in columns {
+            let col = self.columns.swap_remove(name).ok_or_else(|| {
+                Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                    .with_operation("dataframe::select_owned")
+                    .with_context("column_name", name.to_string())
+            })?;
+            new_columns.insert(name.to_string(), col);
+        }
+
+        Ok(Self { columns: new_columns, row_count: self.row_count })
+    }
+
     // -- Column-level convenience --------------------------------------------
 
     /// Return a new DataFrame with the given column added or replaced.
@@ -1160,6 +1299,36 @@ impl DataFrame {
         let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
 
         Ok(Self { columns: new_columns, row_count })
+    }
+
+    /// Return a new DataFrame with the given column added or replaced,
+    /// consuming `self`.
+    ///
+    /// Unlike [`with_column`](Self::with_column), this variant moves
+    /// the existing columns instead of cloning the `IndexMap`, avoiding
+    /// the refcount bump for unchanged columns.
+    pub fn with_column_owned(mut self, name: &str, col: Column) -> Result<Self> {
+        let col_rows = {
+            let col_view = col.view()?;
+            col_view.len()?
+        };
+        let self_rows = self.num_rows()?;
+
+        if self.num_columns() > 0 && col_rows != self_rows {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
+            )
+            .with_operation("dataframe::with_column_owned")
+            .with_context("column_name", name.to_string())
+            .with_context("column_rows", col_rows.to_string())
+            .with_context("dataframe_rows", self_rows.to_string()));
+        }
+
+        let row_count = if self.num_columns() > 0 { self.row_count } else { col_rows };
+        self.columns.insert(name.to_string(), Arc::new(col));
+
+        Ok(Self { columns: self.columns, row_count })
     }
 
     /// Return a new DataFrame with null values in the named column replaced

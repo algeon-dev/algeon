@@ -13,7 +13,7 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = cudf::table::Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
-    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["id", "value"]);
+    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).column_names(&["id", "value"]);
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back via DataFrame.
@@ -39,12 +39,12 @@ fn test_read_parquet_with_options() {
     let c2 = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = cudf::table::Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
-    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["a", "b"]);
+    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).column_names(&["a", "b"]);
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read with column selection and row limit.
-    let opts = ParquetReaderOptions::new(&path).unwrap().columns(&["b"]).num_rows(3);
-    let df = DataFrame::read_parquet_with_options(&opts).unwrap();
+    let opts = ParquetReaderOptions::new(&path).columns(&["b"]).num_rows(3);
+    let df = DataFrame::read_parquet_with_options(opts).unwrap();
 
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.num_rows().unwrap(), 3);

@@ -3,7 +3,7 @@
 use std::{
     ffi::{CStr, CString},
     os::raw::c_char,
-    path::Path,
+    path::{Path, PathBuf},
     ptr,
 };
 
@@ -14,7 +14,7 @@ use crate::{
 
 /// Options for reading a Parquet file.
 pub struct ParquetReaderOptions {
-    filepath: CString,
+    filepath: PathBuf,
     columns: Option<Vec<CString>>,
     skip_rows: i64,
     num_rows: i64,
@@ -22,14 +22,13 @@ pub struct ParquetReaderOptions {
 
 impl ParquetReaderOptions {
     /// Create options to read from the given file path.
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let filepath = super::path_to_cstring(path.as_ref(), "io::parquet::parquet_reader_options")?;
-        Ok(Self {
-            filepath,
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self {
+            filepath: path.as_ref().to_path_buf(),
             columns: None,
             skip_rows: 0,
             num_rows: -1, // -1 means read all
-        })
+        }
     }
 
     /// Only read the specified columns (by name).
@@ -51,38 +50,6 @@ impl ParquetReaderOptions {
     }
 }
 
-/// Read a Parquet file into a `Table`.
-pub fn read_parquet(options: &ParquetReaderOptions) -> Result<Table> {
-    let mut table_handle = ptr::null_mut();
-
-    // Build the pointer array outside the match so it outlives the FFI call.
-    let col_ptrs_vec: Vec<*const std::os::raw::c_char> =
-        options.columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
-    let (col_ptrs, num_cols) =
-        if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
-
-    error::check_status_in_with(
-        unsafe {
-            cudf_sys::cudf_io_read_parquet(
-                options.filepath.as_ptr(),
-                col_ptrs,
-                num_cols,
-                options.skip_rows,
-                options.num_rows,
-                &mut table_handle,
-            )
-        },
-        "io::parquet::read_parquet",
-        [
-            ("selected_column_count", num_cols.to_string()),
-            ("skip_rows", options.skip_rows.to_string()),
-            ("num_rows", options.num_rows.to_string()),
-        ],
-    )?;
-
-    Ok(unsafe { Table::from_raw(table_handle) })
-}
-
 /// A table read from Parquet along with its column name metadata.
 pub struct ParquetTableWithMetadata {
     /// The table containing the data.
@@ -93,16 +60,18 @@ pub struct ParquetTableWithMetadata {
 
 /// Read a Parquet file into a `Table` along with column name metadata.
 ///
-/// This is the same as [`read_parquet`] but additionally returns the column
-/// names stored in the Parquet file's schema. This avoids having to hardcode
-/// column indices when working with Parquet files.
-pub fn read_parquet_with_metadata(options: &ParquetReaderOptions) -> Result<ParquetTableWithMetadata> {
+/// Returns the table data and the column names stored in the Parquet file's
+/// schema. This avoids having to hardcode column indices when working with
+/// Parquet files.
+pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<ParquetTableWithMetadata> {
+    let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet_with_metadata")?;
+
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
     let mut num_names: i32 = 0;
 
-    // Build the pointer array outside the match so it outlives the FFI call.
-    let col_ptrs_vec: Vec<*const std::os::raw::c_char> =
+    // Build the pointer array; the Vec must outlive the FFI call.
+    let col_ptrs_vec: Vec<*const c_char> =
         options.columns.as_ref().map(|cols| cols.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
     let (col_ptrs, num_cols) =
         if col_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (col_ptrs_vec.as_ptr(), col_ptrs_vec.len() as i32) };
@@ -110,7 +79,7 @@ pub fn read_parquet_with_metadata(options: &ParquetReaderOptions) -> Result<Parq
     error::check_status_in_with(
         unsafe {
             cudf_sys::cudf_io_read_parquet_with_metadata(
-                options.filepath.as_ptr(),
+                filepath.as_ptr(),
                 col_ptrs,
                 num_cols,
                 options.skip_rows,
@@ -182,15 +151,14 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
 
 /// Options for writing a Parquet file.
 pub struct ParquetWriterOptions {
-    filepath: CString,
+    filepath: PathBuf,
     column_names: Option<Vec<CString>>,
 }
 
 impl ParquetWriterOptions {
     /// Create options to write to the given file path.
-    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
-        let filepath = super::path_to_cstring(path.as_ref(), "io::parquet::parquet_writer_options")?;
-        Ok(Self { filepath, column_names: None })
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self { filepath: path.as_ref().to_path_buf(), column_names: None }
     }
 
     /// Set column names for the output file.
@@ -203,14 +171,16 @@ impl ParquetWriterOptions {
 
 /// Write a table to a Parquet file.
 pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> Result<()> {
-    // Build the pointer array outside the match so it outlives the FFI call.
-    let name_ptrs_vec: Vec<*const std::os::raw::c_char> =
+    let filepath = super::path_to_cstring(&options.filepath, "io::parquet::write_parquet")?;
+
+    // Build the pointer array; the Vec must outlive the FFI call.
+    let name_ptrs_vec: Vec<*const c_char> =
         options.column_names.as_ref().map(|names| names.iter().map(|c| c.as_ptr()).collect()).unwrap_or_default();
     let (name_ptrs, num_cols) =
         if name_ptrs_vec.is_empty() { (ptr::null(), 0) } else { (name_ptrs_vec.as_ptr(), name_ptrs_vec.len() as i32) };
 
     error::check_status_in_with(
-        unsafe { cudf_sys::cudf_io_write_parquet(table.raw_handle(), options.filepath.as_ptr(), name_ptrs, num_cols) },
+        unsafe { cudf_sys::cudf_io_write_parquet(table.raw_handle(), filepath.as_ptr(), name_ptrs, num_cols) },
         "io::parquet::write_parquet",
         [("output_column_name_count", num_cols.to_string())],
     )

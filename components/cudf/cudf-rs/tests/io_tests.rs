@@ -18,13 +18,13 @@ fn test_parquet_roundtrip() {
     let table = Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["ids", "values"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["ids", "values"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back
-    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap();
-    let read_table = parquet::read_parquet(&read_opts).unwrap();
-    let read_view = read_table.view().unwrap();
+    let read_opts = parquet::ParquetReaderOptions::new(&path);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 2);
     assert_eq!(read_view.num_rows().unwrap(), 3);
@@ -47,13 +47,13 @@ fn test_parquet_column_selection() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["a", "b", "c"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["a", "b", "c"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only column "b"
-    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap().columns(&["b"]);
-    let read_table = parquet::read_parquet(&read_opts).unwrap();
-    let read_view = read_table.view().unwrap();
+    let read_opts = parquet::ParquetReaderOptions::new(&path).columns(&["b"]);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_columns().unwrap(), 1);
     let col = read_view.column(0).unwrap();
@@ -70,13 +70,13 @@ fn test_parquet_row_limits() {
     let table = Table::from_columns(vec![col]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["x"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["x"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only first 10 rows
-    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap().num_rows(10);
-    let read_table = parquet::read_parquet(&read_opts).unwrap();
-    let read_view = read_table.view().unwrap();
+    let read_opts = parquet::ParquetReaderOptions::new(&path).num_rows(10);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
+    let read_view = result.table.view().unwrap();
 
     assert_eq!(read_view.num_rows().unwrap(), 10);
     let col = read_view.column(0).unwrap();
@@ -119,12 +119,12 @@ fn test_parquet_read_with_metadata_returns_column_names() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["alpha", "beta", "gamma"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["alpha", "beta", "gamma"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back with metadata
-    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap();
-    let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
+    let read_opts = parquet::ParquetReaderOptions::new(&path);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
 
     // Verify column names
     assert_eq!(result.column_names, vec!["alpha", "beta", "gamma"]);
@@ -155,12 +155,12 @@ fn test_parquet_read_with_metadata_column_selection() {
     let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["x", "y", "z"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["x", "y", "z"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read only columns "x" and "z"
-    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap().columns(&["x", "z"]);
-    let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
+    let read_opts = parquet::ParquetReaderOptions::new(&path).columns(&["x", "z"]);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
 
     // Only the selected columns should appear
     assert_eq!(result.column_names, vec!["x", "z"]);
@@ -183,11 +183,11 @@ fn test_parquet_read_with_metadata_single_column() {
     let table = Table::from_columns(vec![c1]).unwrap();
     let view = table.view().unwrap();
 
-    let write_opts = parquet::ParquetWriterOptions::new(&path).unwrap().column_names(&["only_col"]);
+    let write_opts = parquet::ParquetWriterOptions::new(&path).column_names(&["only_col"]);
     parquet::write_parquet(&view, &write_opts).unwrap();
 
-    let read_opts = parquet::ParquetReaderOptions::new(&path).unwrap();
-    let result = parquet::read_parquet_with_metadata(&read_opts).unwrap();
+    let read_opts = parquet::ParquetReaderOptions::new(&path);
+    let result = parquet::read_parquet_with_metadata(read_opts).unwrap();
 
     assert_eq!(result.column_names, vec!["only_col"]);
     assert_eq!(result.table.view().unwrap().num_columns().unwrap(), 1);
