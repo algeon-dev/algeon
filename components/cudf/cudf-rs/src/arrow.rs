@@ -200,7 +200,9 @@ fn column_view_to_arrow(cv: &ColumnView<'_>, type_id: TypeId) -> Result<Arc<dyn 
 
 /// Convert a numeric column to the corresponding Arrow primitive array.
 fn numeric_to_arrow<T>(cv: &ColumnView<'_>) -> Result<Arc<dyn Array>>
-where T: ArrowPrimitiveMapping {
+where
+    T: ArrowPrimitiveMapping,
+{
     let data: Vec<T> = cv.to_vec()?;
     let validity = cv.validity()?;
 
@@ -286,7 +288,9 @@ fn arrow_array_to_column(arr: &dyn Array, field_name: &str) -> Result<Column> {
 
 /// Convert a primitive Arrow array to a cudf Column.
 fn primitive_to_column<T>(arr: &dyn Array) -> Result<Column>
-where T: ArrowPrimitiveMapping {
+where
+    T: ArrowPrimitiveMapping,
+{
     let prim = arr.as_primitive::<T::ArrowPrimitive>();
     let values: Vec<T> = prim.values().iter().copied().collect();
 

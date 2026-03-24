@@ -449,3 +449,80 @@ fn test_from_device_ptr_rejects_non_fixed_width_type() {
     let err = result.err().unwrap();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
+
+// --- Column::nulls() tests ---
+
+#[test]
+fn test_nulls_int32_empty() {
+    let col = Column::nulls(TypeId::Int32, 0).unwrap();
+    let view = col.view().unwrap();
+    assert_eq!(view.len().unwrap(), 0);
+    assert_eq!(view.data_type().unwrap().id(), TypeId::Int32);
+}
+
+#[test]
+fn test_nulls_int64() {
+    let col = Column::nulls(TypeId::Int64, 100).unwrap();
+    let view = col.view().unwrap();
+    assert_eq!(view.len().unwrap(), 100);
+    assert_eq!(view.null_count().unwrap(), 100);
+    let validity = view.validity().unwrap().unwrap();
+    assert!(validity.iter().all(|&v| !v));
+}
+
+#[test]
+fn test_nulls_float32() {
+    let col = Column::nulls(TypeId::Float32, 50).unwrap();
+    let view = col.view().unwrap();
+    assert_eq!(view.len().unwrap(), 50);
+    assert_eq!(view.null_count().unwrap(), 50);
+    let validity = view.validity().unwrap().unwrap();
+    assert!(validity.iter().all(|&v| !v));
+}
+
+#[test]
+fn test_nulls_bool8() {
+    let col = Column::nulls(TypeId::Bool8, 10).unwrap();
+    let view = col.view().unwrap();
+    assert_eq!(view.len().unwrap(), 10);
+    assert_eq!(view.null_count().unwrap(), 10);
+}
+
+#[test]
+fn test_nulls_string() {
+    let col = Column::nulls(TypeId::String, 25).unwrap();
+    let view = col.view().unwrap();
+    assert_eq!(view.len().unwrap(), 25);
+    assert_eq!(view.null_count().unwrap(), 25);
+    assert_eq!(view.data_type().unwrap().id(), TypeId::String);
+}
+
+#[test]
+fn test_nulls_preserves_type() {
+    for type_id in [
+        TypeId::Int8,
+        TypeId::Int16,
+        TypeId::Int32,
+        TypeId::Int64,
+        TypeId::Float32,
+        TypeId::Float64,
+        TypeId::Bool8,
+        TypeId::String,
+    ] {
+        let col = Column::nulls(type_id, 5).unwrap();
+        let view = col.view().unwrap();
+        assert_eq!(view.data_type().unwrap().id(), type_id);
+    }
+}
+
+#[test]
+fn test_nulls_rejects_length_over_i32_max() {
+    let result = Column::nulls(TypeId::Int8, (i32::MAX as usize) + 1);
+    assert!(result.is_err());
+    let err = match result {
+        Ok(_) => panic!("expected len > i32::MAX to be rejected"),
+        Err(err) => err,
+    };
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "column::nulls");
+}

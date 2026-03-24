@@ -170,6 +170,28 @@ impl<'a> TableView<'a> {
         Ok(unsafe { ColumnView::from_raw(col_handle) })
     }
 
+    /// Construct a `TableView` from a slice of `ColumnView`s.
+    ///
+    /// This is useful when you have individually-owned columns and need to
+    /// present them as a table to libcudf operations.
+    pub fn from_column_views(views: &[&ColumnView<'a>]) -> Result<Self> {
+        let num_columns = i32::try_from(views.len()).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "number of column views exceeds i32::MAX")
+                .with_operation("table_view::from_column_views")
+                .with_context("num_columns", views.len().to_string())
+        })?;
+
+        let mut handles: Vec<*mut c_void> = views.iter().map(|v| v.raw_handle()).collect();
+
+        let mut out = ptr::null_mut();
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_table_view_from_column_views(handles.as_mut_ptr(), num_columns, &mut out) },
+            "table_view::from_column_views",
+        )?;
+
+        Ok(TableView { handle: NonNull::new(out).expect("null handle on success"), _lifetime: PhantomData })
+    }
+
     /// Returns the raw FFI handle. For internal I/O use.
     pub(crate) fn raw_handle(&self) -> *mut c_void {
         self.handle.as_ptr()

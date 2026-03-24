@@ -1,4 +1,20 @@
 //! Device memory resource management (RMM).
+//!
+//! # Example
+//!
+//! ```no_run
+//! use cudf::memory::DeviceMemoryResource;
+//!
+//! // Use the default CUDA allocator.
+//! let _mr = DeviceMemoryResource::cuda().unwrap();
+//!
+//! // Or use a pool allocator for faster repeated allocations.
+//! let _pool = DeviceMemoryResource::pool(
+//!     256 * 1024 * 1024,  // 256 MB initial pool
+//!     0,                   // 0 = unbounded maximum
+//! )
+//! .unwrap();
+//! ```
 
 use std::ptr::{self, NonNull};
 

@@ -86,3 +86,49 @@ fn test_table_view_negative_column_index_rejected() {
     let err = res.err().unwrap();
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
 }
+
+#[test]
+fn test_table_view_from_column_views() {
+    use cudf::table::TableView;
+
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = Column::from_slice(&[4.0f64, 5.0, 6.0]).unwrap();
+    let v1 = c1.view().unwrap();
+    let v2 = c2.view().unwrap();
+
+    let table_view = TableView::from_column_views(&[&v1, &v2]).unwrap();
+    assert_eq!(table_view.num_columns().unwrap(), 2);
+    assert_eq!(table_view.num_rows().unwrap(), 3);
+
+    // Verify column data is accessible through the table view
+    let col0 = table_view.column(0).unwrap();
+    assert_eq!(col0.data_type().unwrap().id(), TypeId::Int32);
+    assert_eq!(col0.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+
+    let col1 = table_view.column(1).unwrap();
+    assert_eq!(col1.data_type().unwrap().id(), TypeId::Float64);
+    assert_eq!(col1.to_vec::<f64>().unwrap(), vec![4.0, 5.0, 6.0]);
+}
+
+#[test]
+fn test_table_view_from_column_views_single_column() {
+    use cudf::table::TableView;
+
+    let c1 = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
+    let v1 = c1.view().unwrap();
+
+    let table_view = TableView::from_column_views(&[&v1]).unwrap();
+    assert_eq!(table_view.num_columns().unwrap(), 1);
+    assert_eq!(table_view.num_rows().unwrap(), 4);
+
+    let col0 = table_view.column(0).unwrap();
+    assert_eq!(col0.to_vec::<i64>().unwrap(), vec![10, 20, 30, 40]);
+}
+
+#[test]
+fn test_table_view_from_column_views_empty() {
+    use cudf::table::TableView;
+
+    let table_view = TableView::from_column_views(&[]).unwrap();
+    assert_eq!(table_view.num_columns().unwrap(), 0);
+}

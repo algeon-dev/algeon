@@ -392,3 +392,65 @@ fn test_column_binary_op_scalar_with_type() {
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 12, 13]);
 }
+
+// ---------------------------------------------------------------------------
+// Operator overloading via std::ops
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_ops_add_column_f32_scalar() {
+    let col = Column::from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
+    let result = (&col + 1.0f32).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<f32>().unwrap(), vec![2.0, 3.0, 4.0]);
+}
+
+#[test]
+fn test_ops_mul_column_f64_scalar() {
+    let col = Column::from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
+    let result = (&col * 100.0f64).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<f64>().unwrap(), vec![100.0, 200.0, 300.0]);
+}
+
+#[test]
+fn test_ops_sub_column_i32_scalar() {
+    let col = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let result = (&col - 5i32).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 15, 25]);
+}
+
+#[test]
+fn test_ops_div_column_i64_scalar() {
+    let col = Column::from_slice(&[10i64, 20, 30]).unwrap();
+    let result = (&col / 2i64).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<i64>().unwrap(), vec![5, 10, 15]);
+}
+
+#[test]
+fn test_ops_add_column_column() {
+    let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let b = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let result = (&a + &b).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+}
+
+#[test]
+fn test_ops_mul_column_column() {
+    let a = Column::from_slice(&[2i32, 3, 4]).unwrap();
+    let b = Column::from_slice(&[5i32, 6, 7]).unwrap();
+    let result = (&a * &b).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<i32>().unwrap(), vec![10, 18, 28]);
+}
+
+#[test]
+fn test_ops_chain() {
+    let col = Column::from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
+    let result = (&(&col * 100.0f32).unwrap() + 1.0f32).unwrap();
+    let rv = result.view().unwrap();
+    assert_eq!(rv.to_vec::<f32>().unwrap(), vec![101.0, 201.0, 301.0]);
+}

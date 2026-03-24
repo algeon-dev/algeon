@@ -1,4 +1,30 @@
 //! GPU-accelerated join operations.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use cudf::{column::Column, join, table::Table};
+//!
+//! let left_key = Column::from_slice(&[1i32, 2, 3]).unwrap();
+//! let left_val = Column::from_slice(&[10i32, 20, 30]).unwrap();
+//! let right_key = Column::from_slice(&[2i32, 3, 4]).unwrap();
+//! let right_val = Column::from_slice(&[200i32, 300, 400]).unwrap();
+//!
+//! let lk = Table::from_columns(vec![left_key]).unwrap();
+//! let lv = Table::from_columns(vec![left_val]).unwrap();
+//! let rk = Table::from_columns(vec![right_key]).unwrap();
+//! let rv = Table::from_columns(vec![right_val]).unwrap();
+//!
+//! let result = join::inner_join(
+//!     &lk.view().unwrap(),
+//!     &rk.view().unwrap(),
+//!     &lv.view().unwrap(),
+//!     &rv.view().unwrap(),
+//!     join::NullEquality::Equal,
+//! )
+//! .unwrap();
+//! // result matches keys 2 and 3
+//! ```
 
 use std::ptr;
 

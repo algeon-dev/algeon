@@ -1,4 +1,21 @@
 //! GPU-accelerated sorting operations.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use cudf::{column::Column, sorting, table::Table};
+//!
+//! let col = Column::from_slice(&[30i32, 10, 20]).unwrap();
+//! let table = Table::from_columns(vec![col]).unwrap();
+//!
+//! let sorted = sorting::sort(
+//!     &table.view().unwrap(),
+//!     Some(&[sorting::Order::Ascending]),
+//!     None,
+//! )
+//! .unwrap();
+//! // sorted: [10, 20, 30]
+//! ```
 
 use std::ptr;
 

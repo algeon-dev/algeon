@@ -371,6 +371,10 @@ impl DataFrame {
     ///
     /// Returns `(codes, uniques)` where `codes[i]` maps to `uniques[codes[i]]`.
     /// This is equivalent to `pandas.factorize()` but GPU-accelerated.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema.
     pub fn factorize(&self, column: &str) -> Result<(Column, Column)> {
         let cv = self.column(column)?;
         cv.factorize().map_err(|e| {
@@ -457,12 +461,36 @@ impl DataFrame {
         self.gather_range(start, take)
     }
 
+    /// Gather (select) rows by an index column.
+    ///
+    /// Produces a new `DataFrame` whose row `i` equals `self[indices[i]]`.
+    /// The `indices` column must be `Int32`. Out-of-bounds indices produce
+    /// null rows (uses [`OutOfBoundsPolicy::Nullify`](copying::OutOfBoundsPolicy::Nullify)).
+    /// The schema is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `indices` is not `Int32`.
+    pub fn gather(&self, indices: &ColumnView<'_>) -> Result<Self> {
+        if indices.is_empty()? {
+            return self.empty_with_same_schema();
+        }
+        let table_view = self.table.view()?;
+        let result_table = copying::gather(&table_view, indices, copying::OutOfBoundsPolicy::Nullify)?;
+        Ok(Self { table: result_table, schema: self.schema.clone() })
+    }
+
     // -- Filter, sort, deduplicate -------------------------------------------
 
     /// Filter rows using a boolean mask column.
     ///
     /// Rows where `mask` is `true` are kept; `false` or null rows are
     /// dropped. The schema is preserved.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `mask` is not `Bool8`, or if its row count
+    /// does not match the DataFrame's row count.
     pub fn filter(&self, mask: &ColumnView<'_>) -> Result<Self> {
         let table_view = self.table.view()?;
         let result_table = filter::apply_boolean_mask(&table_view, mask)?;
@@ -529,6 +557,10 @@ impl DataFrame {
     /// Return the `n` rows with the largest values in `column`.
     ///
     /// Equivalent to `self.sort(&[column], &[Descending])?.head(n)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema.
     pub fn nlargest(&self, n: usize, column: &str) -> Result<Self> {
         self.sort(&[column], &[Order::Descending])?.head(n)
     }
@@ -536,6 +568,10 @@ impl DataFrame {
     /// Return the `n` rows with the smallest values in `column`.
     ///
     /// Equivalent to `self.sort(&[column], &[Ascending])?.head(n)`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema.
     pub fn nsmallest(&self, n: usize, column: &str) -> Result<Self> {
         self.sort(&[column], &[Order::Ascending])?.head(n)
     }
@@ -602,6 +638,11 @@ impl DataFrame {
     /// Output schema is: `left_keys + left_payload + right_payload`.
     /// If a right payload name collides with an existing output column name,
     /// `"_right"` is appended (and numbered if needed).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `on` is not in both schemas, or if
+    /// the key column types do not match.
     pub fn inner_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
         self.join_merged_impl(right, on, JoinKind::Inner, "dataframe::inner_join")
     }
@@ -610,6 +651,11 @@ impl DataFrame {
     /// for non-matching rows.
     ///
     /// Output schema is: `left_keys + left_payload + right_payload`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `on` is not in both schemas, or if
+    /// the key column types do not match.
     pub fn left_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
         self.join_merged_impl(right, on, JoinKind::Left, "dataframe::left_join")
     }
@@ -621,21 +667,47 @@ impl DataFrame {
     ///
     /// For right-only rows, key columns are coalesced from right keys when
     /// left keys are null.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `on` is not in both schemas, or if
+    /// the key column types do not match.
     pub fn full_join(&self, right: &DataFrame, on: &[&str]) -> Result<Self> {
         self.join_merged_impl(right, on, JoinKind::Full, "dataframe::full_join")
     }
 
-    /// Compatibility API: return split left/right join outputs.
+    /// Inner join returning split left/right `DataFrame` outputs.
+    ///
+    /// Each side contains `[key_columns..., payload_columns...]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `on` is not in both schemas, or if
+    /// the key column types do not match.
     pub fn inner_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
         self.join_split_on_impl(right, on, on, JoinKind::Inner, "dataframe::inner_join_split")
     }
 
-    /// Compatibility API: return split left/right join outputs.
+    /// Left join returning split left/right `DataFrame` outputs.
+    ///
+    /// Each side contains `[key_columns..., payload_columns...]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `on` is not in both schemas, or if
+    /// the key column types do not match.
     pub fn left_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
         self.join_split_on_impl(right, on, on, JoinKind::Left, "dataframe::left_join_split")
     }
 
-    /// Compatibility API: return split left/right join outputs.
+    /// Full join returning split left/right `DataFrame` outputs.
+    ///
+    /// Each side contains `[key_columns..., payload_columns...]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `on` is not in both schemas, or if
+    /// the key column types do not match.
     pub fn full_join_split(&self, right: &DataFrame, on: &[&str]) -> Result<DataFrameJoinResult> {
         self.join_split_on_impl(right, on, on, JoinKind::Full, "dataframe::full_join_split")
     }
@@ -647,6 +719,12 @@ impl DataFrame {
     /// positionally). Output key columns use the **left** key names.
     ///
     /// Output schema is: `left_keys + left_payload + right_payload`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `left_on` and `right_on` have different lengths,
+    /// if any name is not found in its respective schema, or if paired key
+    /// column types do not match.
     pub fn inner_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
         self.join_merged_on_impl(right, left_on, right_on, JoinKind::Inner, "dataframe::inner_join_on")
     }
@@ -655,6 +733,12 @@ impl DataFrame {
     ///
     /// All left rows are preserved; the right side is null-padded for
     /// non-matching rows. Output key columns use the **left** key names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `left_on` and `right_on` have different lengths,
+    /// if any name is not found in its respective schema, or if paired key
+    /// column types do not match.
     pub fn left_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
         self.join_merged_on_impl(right, left_on, right_on, JoinKind::Left, "dataframe::left_join_on")
     }
@@ -664,6 +748,12 @@ impl DataFrame {
     /// All rows from both sides are preserved, with null-padding where
     /// there is no match. Key columns are coalesced and use the **left**
     /// key names.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `left_on` and `right_on` have different lengths,
+    /// if any name is not found in its respective schema, or if paired key
+    /// column types do not match.
     pub fn full_join_on(&self, right: &DataFrame, left_on: &[&str], right_on: &[&str]) -> Result<Self> {
         self.join_merged_on_impl(right, left_on, right_on, JoinKind::Full, "dataframe::full_join_on")
     }
@@ -885,6 +975,11 @@ impl DataFrame {
     /// Return a new DataFrame with one column renamed, consuming `self`.
     ///
     /// This is a pure schema rewrite with **no GPU data copy**.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `old` is not in the schema, or if `new` already
+    /// exists in the schema.
     pub fn rename_owned(self, old: &str, new: &str) -> Result<Self> {
         if !self.schema.contains_key(old) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
@@ -1066,7 +1161,9 @@ impl DataFrame {
     /// a transformation function `f` to its view. All other columns are
     /// deep-copied.
     fn rebuild_with_replaced_column<F>(&self, target_idx: usize, _operation: &'static str, f: F) -> Result<Self>
-    where F: FnOnce(&ColumnView<'_>) -> Result<Column> {
+    where
+        F: FnOnce(&ColumnView<'_>) -> Result<Column>,
+    {
         let table_view = self.table.view()?;
         let num_cols = self.schema.len();
         let mut columns: Vec<Column> = Vec::with_capacity(num_cols);
@@ -1608,4 +1705,25 @@ fn unique_right_payload_name(existing: &[String], base: &str) -> String {
         }
         i += 1;
     }
+}
+
+/// Construct a [`DataFrame`](crate::dataframe::DataFrame) from named columns.
+///
+/// # Example
+///
+/// ```no_run
+/// use cudf::column::Column;
+///
+/// let x = Column::from_slice(&[1i32, 2, 3]).unwrap();
+/// let y = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+/// let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
+/// ```
+#[macro_export]
+macro_rules! dataframe {
+    ($($name:expr => $col:expr),+ $(,)?) => {{
+        $crate::DataFrame::new(
+            vec![$($name.to_string()),+],
+            vec![$($col),+],
+        )
+    }};
 }

@@ -174,6 +174,7 @@ impl Column {
         )?;
         Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
+
     /// Create a STRING type column from a slice of string references.
     ///
     /// Each string is copied to GPU memory. The resulting column has no null mask.
@@ -207,6 +208,65 @@ impl Column {
             "column::from_strings",
         )?;
         Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+    }
+
+    /// Create an all-null column of the given type and length.
+    ///
+    /// Every element is null (invalid). For `len == 0` this is equivalent
+    /// to [`Column::empty`].
+    pub fn nulls(type_id: TypeId, len: usize) -> Result<Self> {
+        let size = usize_to_i32_len(len, "data", "column::nulls")?;
+        if len == 0 {
+            return Self::empty(type_id);
+        }
+
+        match type_id {
+            TypeId::String => {
+                let dummy: Vec<&str> = vec![""; len];
+                let validity = vec![false; len];
+                Self::from_strings_nullable(&dummy, &validity)
+            },
+            _ => {
+                let elem_size =
+                    type_id.size_in_bytes().map_err(|e| e.with_operation("column::nulls"))?.ok_or_else(|| {
+                        Error::new(
+                            ErrorKind::InvalidOperation,
+                            format!("column::nulls does not support variable-width type {:?}", type_id),
+                        )
+                        .with_operation("column::nulls")
+                        .with_context("type_id", format!("{:?}", type_id).to_lowercase())
+                    })?;
+
+                let data_len_bytes = len.checked_mul(elem_size as usize).ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidOperation, "column::nulls byte size overflow")
+                        .with_operation("column::nulls")
+                        .with_context("len", len.to_string())
+                        .with_context("elem_size_bytes", elem_size.to_string())
+                })?;
+
+                let data = vec![0u8; data_len_bytes];
+                let validity = vec![false; len];
+                let null_mask = crate::types::validity_to_bitmask(&validity);
+                let null_count = size;
+
+                let mut handle = ptr::null_mut();
+                error::check_status_in_with(
+                    unsafe {
+                        cudf_sys::cudf_column_create_numeric(
+                            type_id.to_raw(),
+                            data.as_ptr() as *const c_void,
+                            size,
+                            null_mask.as_ptr(),
+                            null_count,
+                            &mut handle,
+                        )
+                    },
+                    "column::nulls",
+                    [("type_id", format!("{:?}", type_id).to_lowercase()), ("len", len.to_string())],
+                )?;
+                Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+            },
+        }
     }
 
     /// Create a nullable STRING type column from host string data and a validity mask.
@@ -288,6 +348,19 @@ impl Column {
     // -- Arithmetic methods ---------------------------------------------------
 
     /// Element-wise addition: `self + rhs`. Output type inferred.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudf::column::Column;
+    ///
+    /// let a = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    /// let b = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    /// let sum = a.add(&b).unwrap();
+    /// // sum: [11, 22, 33]
+    ///
+    /// // Also available via std::ops: &a + &b
+    /// ```
     pub fn add(&self, rhs: &Column) -> Result<Column> {
         self.binary_op(rhs, crate::binary::BinaryOperator::Add).map_err(|e| e.with_operation("column::add"))
     }
@@ -393,6 +466,19 @@ impl Column {
     }
 
     /// Element-wise: `self + scalar`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use cudf::{column::Column, scalar::Scalar};
+    ///
+    /// let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    /// let offset = Scalar::from_value(100i32).unwrap();
+    /// let result = col.add_scalar(&offset).unwrap();
+    /// // result: [101, 102, 103]
+    ///
+    /// // Also available via std::ops: &col + 100i32
+    /// ```
     pub fn add_scalar(&self, rhs: &crate::scalar::Scalar) -> Result<Column> {
         self.binary_op_scalar(rhs, crate::binary::BinaryOperator::Add)
             .map_err(|e| e.with_operation("column::add_scalar"))
@@ -919,6 +1005,401 @@ impl ColumnView<'_> {
             e.with_operation("column_view::isin")
                 .with_context("input_type_id", input_type_id_str)
                 .with_context("values_type_id", values_type_id_str)
+        })
+    }
+
+    /// Map values through a lookup table.
+    ///
+    /// For each element in `self`, find its position in `keys` and return
+    /// the corresponding element from `values`. Elements not found in `keys`
+    /// become null. Implemented via a left join internally.
+    ///
+    /// Preconditions:
+    /// - `self` and `keys` must have the same type.
+    /// - `keys` and `values` must have the same length.
+    /// - `keys` must be unique (duplicate mapping keys are rejected).
+    ///
+    /// # Example
+    /// ```no_run
+    /// use cudf::column::Column;
+    /// let input = Column::from_strings(&["a", "b", "c", "a"]).unwrap();
+    /// let keys = Column::from_strings(&["a", "b", "c"]).unwrap();
+    /// let values = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    /// let mapped = input.view().unwrap()
+    ///     .map(&keys.view().unwrap(), &values.view().unwrap())
+    ///     .unwrap();
+    /// ```
+    pub fn map(&self, keys: &ColumnView<'_>, values: &ColumnView<'_>) -> Result<Column> {
+        let input_type_id = self.data_type().map_err(|e| e.with_operation("column_view::map"))?.id();
+        let keys_type_id = keys.data_type().map_err(|e| e.with_operation("column_view::map"))?.id();
+        let values_type_id = values.data_type().map_err(|e| e.with_operation("column_view::map"))?.id();
+
+        let input_type_id_str = format!("{:?}", input_type_id).to_lowercase();
+        let keys_type_id_str = format!("{:?}", keys_type_id).to_lowercase();
+        let values_type_id_str = format!("{:?}", values_type_id).to_lowercase();
+
+        if input_type_id != keys_type_id {
+            return Err(Error::new(ErrorKind::InvalidOperation, "self and keys must have the same type")
+                .with_operation("column_view::map")
+                .with_context("input_type_id", input_type_id_str)
+                .with_context("keys_type_id", keys_type_id_str)
+                .with_context("values_type_id", values_type_id_str));
+        }
+
+        let input_count = self.len().map_err(|e| e.with_operation("column_view::map"))?;
+        let keys_count = keys.len().map_err(|e| e.with_operation("column_view::map"))?;
+        let values_count = values.len().map_err(|e| e.with_operation("column_view::map"))?;
+
+        if keys_count != values_count {
+            return Err(Error::new(ErrorKind::InvalidOperation, "keys and values must have the same length")
+                .with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string()));
+        }
+
+        if input_count == 0 {
+            return Column::empty(values_type_id).map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            });
+        }
+
+        let keys_owned = copy_view_to_owned(keys).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let mapper_key_table = crate::table::Table::from_columns(vec![keys_owned]).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        let distinct_keys = crate::stream_compaction::distinct(
+            &mapper_key_table.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            &[0],
+            crate::stream_compaction::DuplicateKeepOption::KeepAny,
+            crate::stream_compaction::NullEquality::Equal,
+            crate::stream_compaction::NanEquality::AllEqual,
+        )
+        .map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        let distinct_keys_count = distinct_keys
+            .view()
+            .map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?
+            .num_rows()
+            .map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?;
+
+        if distinct_keys_count != keys_count {
+            return Err(Error::new(ErrorKind::InvalidOperation, "keys must be unique")
+                .with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+                .with_context("distinct_keys_count", distinct_keys_count.to_string()));
+        }
+
+        // Build a row-index column [0, 1, 2, ..., len-1] as left payload
+        // to restore original ordering after the join.
+        let row_indices: Vec<i32> = (0..input_count).collect();
+        let idx_col = Column::from_slice(&row_indices).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        // Build tables
+        let self_owned = copy_view_to_owned(self).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let self_key_table = crate::table::Table::from_columns(vec![self_owned]).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let left_payload = crate::table::Table::from_columns(vec![idx_col]).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        let values_owned = copy_view_to_owned(values).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let mapper_val_table = crate::table::Table::from_columns(vec![values_owned]).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        // Left join: self_keys LEFT JOIN mapper_keys
+        let result = crate::join::left_join(
+            &self_key_table.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            &mapper_key_table.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            &left_payload.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            &mapper_val_table.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            crate::join::NullEquality::Equal,
+        )
+        .map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        // result.left = [left_key, row_index], result.right = [right_key, mapped_value]
+        // Extract row_index from left (column 1) and mapped_value from right (column 1).
+        // Sort by row_index to restore original order.
+        let left_view = result.left.view().map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let right_view = result.right.view().map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        let idx_cv = left_view.column(1).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let val_cv = right_view.column(1).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        // Build tables for sort_by_key: values=[mapped_value], keys=[row_index]
+        let idx_owned = copy_view_to_owned(&idx_cv).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let val_owned = copy_view_to_owned(&val_cv).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let val_table = crate::table::Table::from_columns(vec![val_owned]).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let key_table = crate::table::Table::from_columns(vec![idx_owned]).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        let sorted = crate::sorting::sort_by_key(
+            &val_table.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            &key_table.view().map_err(|e| {
+                e.with_operation("column_view::map")
+                    .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                    .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                    .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                    .with_context("input_count", input_count.to_string())
+                    .with_context("keys_count", keys_count.to_string())
+                    .with_context("values_count", values_count.to_string())
+            })?,
+            Some(&[crate::sorting::Order::Ascending]),
+            None,
+        )
+        .map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+
+        // Extract the sorted value column
+        let sorted_view = sorted.view().map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        let sorted_val = sorted_view.column(0).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
+        })?;
+        copy_view_to_owned(&sorted_val).map_err(|e| {
+            e.with_operation("column_view::map")
+                .with_context("input_type_id", format!("{:?}", input_type_id).to_lowercase())
+                .with_context("keys_type_id", format!("{:?}", keys_type_id).to_lowercase())
+                .with_context("values_type_id", format!("{:?}", values_type_id).to_lowercase())
+                .with_context("input_count", input_count.to_string())
+                .with_context("keys_count", keys_count.to_string())
+                .with_context("values_count", values_count.to_string())
         })
     }
 }
