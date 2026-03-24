@@ -1025,7 +1025,9 @@ impl ColumnView<'_> {
     /// let input = Column::from_strings(&["a", "b", "c", "a"]).unwrap();
     /// let keys = Column::from_strings(&["a", "b", "c"]).unwrap();
     /// let values = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    /// let mapped = input.view().unwrap()
+    /// let mapped = input
+    ///     .view()
+    ///     .unwrap()
     ///     .map(&keys.view().unwrap(), &values.view().unwrap())
     ///     .unwrap();
     /// ```

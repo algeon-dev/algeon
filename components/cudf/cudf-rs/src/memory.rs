@@ -10,8 +10,8 @@
 //!
 //! // Or use a pool allocator for faster repeated allocations.
 //! let _pool = DeviceMemoryResource::pool(
-//!     256 * 1024 * 1024,  // 256 MB initial pool
-//!     0,                   // 0 = unbounded maximum
+//!     256 * 1024 * 1024, // 256 MB initial pool
+//!     0,                 // 0 = unbounded maximum
 //! )
 //! .unwrap();
 //! ```
