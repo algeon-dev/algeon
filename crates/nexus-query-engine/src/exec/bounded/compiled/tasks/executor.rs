@@ -2,8 +2,6 @@ use super::*;
 
 mod dynamic_filters;
 
-const MIN_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES: u64 = 8 * 1024;
-
 fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -> bool {
     matches!(
         error.code(),
@@ -188,9 +186,10 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let gather_map_floor =
             cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(1).map(|bytes| bytes as u64).unwrap_or(64);
         let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(self.context, &self.reservations);
+        let stream_quantum_bytes = BoundedPartitionTargetPolicy::default().join_materialize_stream_quantum_bytes();
         Ok(output_floor
             .saturating_add(gather_map_floor)
-            .max(MIN_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES)
+            .max(stream_quantum_bytes)
             .max(probe.materialize_admission_bytes(stream_target_bytes)))
     }
 

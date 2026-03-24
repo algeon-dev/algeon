@@ -10,6 +10,7 @@ use super::{
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 mod lakehouse_cache;
+mod lakehouse_cache_policy;
 mod metrics;
 mod object_store_fetch;
 mod object_store_safety;
@@ -33,12 +34,13 @@ pub(super) use lakehouse_cache::{
 };
 #[cfg(test)]
 use lakehouse_cache::{
-    LAKEHOUSE_CACHE_READ_PIN_COUNTER, LakehouseCacheReadPin, MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE,
-    collect_lakehouse_cache_entries, complete_cache_file_matches_expected_size, evict_lakehouse_cache,
-    lakehouse_cache_entry_has_read_pin, lakehouse_cache_io_error, lakehouse_cache_lock_path,
-    lakehouse_cache_read_pin_path, local_cache_optimized_batch_signature, optimized_batch_uses_identity_source_frame,
-    stable_log_hash,
+    LAKEHOUSE_CACHE_READ_PIN_COUNTER, LakehouseCacheReadPin, collect_lakehouse_cache_entries,
+    complete_cache_file_matches_expected_size, evict_lakehouse_cache, lakehouse_cache_entry_has_read_pin,
+    lakehouse_cache_io_error, lakehouse_cache_lock_path, lakehouse_cache_read_pin_path,
+    local_cache_optimized_batch_signature, optimized_batch_uses_identity_source_frame, stable_log_hash,
 };
+#[cfg(test)]
+use lakehouse_cache_policy::LakehouseCachePolicy;
 pub(super) use metrics::HostBufferFetchRuntimeMetrics;
 use metrics::{
     parquet_chunk_path_fact, parquet_chunk_stable_id_fact, parquet_file_path_fact, parquet_file_stable_id_fact,
@@ -785,7 +787,7 @@ mod tests {
         fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
         let lock_path = lakehouse_cache_lock_path(&cache_path);
         fs::write(&lock_path, b"").unwrap();
-        thread::sleep(MALFORMED_LAKEHOUSE_CACHE_LOCK_STALE_AGE + Duration::from_millis(25));
+        thread::sleep(LakehouseCachePolicy::DEFAULT_MALFORMED_CACHE_LOCK_STALE_AGE + Duration::from_millis(25));
         let context = ExecutionContext::builder().with_lakehouse_cache_fill_max_concurrent_ops(1).build().unwrap();
         let _held_permit = context
             .acquire_lakehouse_cache_fill_operation_with_timeout(

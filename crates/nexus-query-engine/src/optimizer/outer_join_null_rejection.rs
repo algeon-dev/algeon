@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
 
-use super::rewrite;
+use super::{outer_join_null_rejection_policy::OuterJoinNullRejectionPolicy, rewrite};
 use crate::{
     expr::{ColumnRef, Expr},
     plan::{
@@ -13,8 +13,6 @@ use crate::{
 
 /// Stable rule name used in optimizer diagnostics.
 pub const OUTER_JOIN_NULL_REJECTION_RULE_NAME: &str = "outer_join_null_rejection";
-
-const LARGE_NULL_REJECTED_RIGHT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Configuration for rewriting null-rejected outer joins.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -633,7 +631,7 @@ fn null_introducing_input_is_large(plan: &QueryPlan, outer_join_id: NodeId) -> b
         return false;
     };
     let right_input = join.inputs[join_side_index(JoinSide::Right)];
-    estimated_output_bytes(plan, right_input).is_some_and(|bytes| bytes > LARGE_NULL_REJECTED_RIGHT_INPUT_BYTES)
+    OuterJoinNullRejectionPolicy::default().null_introducing_input_is_large(estimated_output_bytes(plan, right_input))
 }
 
 fn consumer_counts(plan: &QueryPlan) -> Vec<usize> {

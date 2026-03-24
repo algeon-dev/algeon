@@ -7,7 +7,33 @@
 use super::{edge::*, graph::*, model::*, node::*, shape::*, *};
 use crate::{plan::WindowFunction, source::LocalParquetSource};
 
-const LARGE_BLOCKING_ROLLUP_RANK_SOURCE_BYTES_THRESHOLD: u64 = 512 << 20;
+/// Policy for blocking rollup/rank/top-k full-scan capability guards.
+///
+/// The guard rejects fact-sized full scans until exact blocking-stage contracts
+/// model the aggregate, rank/window, and optional final top-k stages. Keep this
+/// policy internal until those contracts produce stable operator guidance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockingRollupRankFullScanPolicy {
+    large_source_bytes_threshold: u64,
+}
+
+impl BlockingRollupRankFullScanPolicy {
+    const DEFAULT_LARGE_SOURCE_BYTES_THRESHOLD: u64 = 512 << 20;
+
+    fn large_source_bytes_threshold(self) -> u64 {
+        self.large_source_bytes_threshold
+    }
+
+    fn is_large_source(self, selected_bytes: u64) -> bool {
+        selected_bytes >= self.large_source_bytes_threshold
+    }
+}
+
+impl Default for BlockingRollupRankFullScanPolicy {
+    fn default() -> Self {
+        Self { large_source_bytes_threshold: Self::DEFAULT_LARGE_SOURCE_BYTES_THRESHOLD }
+    }
+}
 
 pub(super) fn analyze_invariants(plan: &QueryPlan, edges: &[EdgeContract]) -> Vec<SubgraphInvariant> {
     let mut invariants = Vec::new();
@@ -202,6 +228,7 @@ struct BlockingRollupRankTopKFullScanShape {
     final_topk_fetch: Option<usize>,
     large_source_id: NodeId,
     large_source_selected_bytes: u64,
+    large_source_threshold_bytes: u64,
     large_source_total_bytes: Option<u64>,
     large_source_selected_row_groups: Option<usize>,
     large_source_total_row_groups: Option<usize>,
@@ -262,7 +289,7 @@ fn append_blocking_rollup_rank_full_scan_invariant(plan: &QueryPlan, invariants:
                 ("large_source_total_bytes", optional_u64_fact(shape.large_source_total_bytes)),
                 ("large_source_selected_row_groups", optional_usize_fact(shape.large_source_selected_row_groups)),
                 ("large_source_total_row_groups", optional_usize_fact(shape.large_source_total_row_groups)),
-                ("large_source_threshold_bytes", LARGE_BLOCKING_ROLLUP_RANK_SOURCE_BYTES_THRESHOLD.to_string()),
+                ("large_source_threshold_bytes", shape.large_source_threshold_bytes.to_string()),
                 ("large_source_file_count", shape.large_source_file_count.to_string()),
                 ("large_source_read_column_count", shape.large_source_read_column_count.to_string()),
                 ("source_count", shape.source_count.to_string()),
@@ -278,6 +305,7 @@ fn append_blocking_rollup_rank_full_scan_invariant(plan: &QueryPlan, invariants:
 }
 
 fn blocking_rollup_rank_full_scan_shape(plan: &QueryPlan) -> Option<BlockingRollupRankTopKFullScanShape> {
+    let policy = BlockingRollupRankFullScanPolicy::default();
     let reachable = collect_reachable_node_ids(plan).ok()?;
     let mut source_count = 0;
     let mut join_count = 0;
@@ -298,7 +326,7 @@ fn blocking_rollup_rank_full_scan_shape(plan: &QueryPlan) -> Option<BlockingRoll
                 let Some(source_size) = blocking_rollup_rank_topk_source_size(source) else {
                     continue;
                 };
-                if source_size.selected_bytes < LARGE_BLOCKING_ROLLUP_RANK_SOURCE_BYTES_THRESHOLD {
+                if !policy.is_large_source(source_size.selected_bytes) {
                     continue;
                 }
                 large_sources.push((*node_id, source_size, source.file_count(), source.read_column_count()));
@@ -397,6 +425,7 @@ fn blocking_rollup_rank_full_scan_shape(plan: &QueryPlan) -> Option<BlockingRoll
                         final_topk_fetch: final_topk.map(|(_, _, fetch)| fetch),
                         large_source_id: *large_source_id,
                         large_source_selected_bytes: source_size.selected_bytes,
+                        large_source_threshold_bytes: policy.large_source_bytes_threshold(),
                         large_source_total_bytes: source_size.total_bytes,
                         large_source_selected_row_groups: source_size.selected_row_groups,
                         large_source_total_row_groups: source_size.total_row_groups,

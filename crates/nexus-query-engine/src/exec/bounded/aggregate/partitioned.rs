@@ -210,13 +210,7 @@ pub(super) fn partitioned_aggregate_partition_count(context: &ExecutionContext, 
     let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
         return 1;
     };
-    let target = partitioned_aggregate_target_partition_bytes(device_budget_bytes);
+    let target = BoundedPartitionTargetPolicy::default().aggregate_partition_target_bytes(device_budget_bytes);
     let partitions = input_bytes.max(1).saturating_add(target.saturating_sub(1)) / target.max(1);
     usize::try_from(partitions.clamp(1, 1024)).unwrap_or(1024)
-}
-
-fn partitioned_aggregate_target_partition_bytes(device_budget_bytes: u64) -> u64 {
-    const MIN_TARGET_BYTES: u64 = 128 * 1024 * 1024;
-    const MAX_TARGET_BYTES: u64 = 1024 * 1024 * 1024;
-    (device_budget_bytes / 32).clamp(MIN_TARGET_BYTES, MAX_TARGET_BYTES)
 }

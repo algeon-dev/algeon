@@ -7,17 +7,11 @@ use std::{
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::{filter_inputs::filtered_aggregate_input_type, *};
-
-// Single-pass materialization keeps the original frame and aggregate state live, so require headroom.
-const SINGLE_PASS_BUDGET_FRACTION_DENOMINATOR: u64 = 2;
-// Segment scratch target that amortizes cuDF calls while staying below the per-query budget clamp.
-const SEGMENT_TARGET_TEMPORARY_BYTES: u64 = 512 * 1024 * 1024;
-const TEST_SEGMENT_TARGET_TEMPORARY_BYTES_FACT: &str = "__nexus_filtered_global_segment_target_bytes";
-// Degenerate width estimates must still let segmented execution make forward progress.
-const MIN_SEGMENT_ROWS: u64 = 1;
-// Retained predicate masks need alignment and temporary headroom beyond bitmap storage.
-const FILTER_PREDICATE_BYTES_PER_ROW: u64 = 2;
+use super::{
+    filter_inputs::filtered_aggregate_input_type,
+    filtered_segment_policy::{FilteredAggregateScope, FilteredAggregateSegmentationPolicy},
+    *,
+};
 
 // Admission decision plus segmentation plan for filtered global aggregates.
 #[derive(Debug, Clone)]
@@ -52,6 +46,7 @@ pub(super) fn select_filtered_global_aggregate_strategy(
     budget_bytes: u64,
     stage: AggregateExecutionStage,
 ) -> Result<FilteredGlobalAggregateStrategyDecision> {
+    let policy = FilteredAggregateSegmentationPolicy::default();
     let footprint = estimate_filtered_global_materialization_footprint(spec, input_schema, input_rows)?;
     let unsupported_stateful_merge = spec.aggr_exprs.iter().any(|expr| {
         expr.distinct
@@ -64,7 +59,7 @@ pub(super) fn select_filtered_global_aggregate_strategy(
                     | AggregateFunction::VarPop
             )
     });
-    let threshold = budget_bytes / SINGLE_PASS_BUDGET_FRACTION_DENOMINATOR;
+    let threshold = policy.single_pass_threshold_bytes(budget_bytes);
     let single_pass_exceeds_threshold =
         footprint.filtered_count > 0 && footprint.estimated_materialization_bytes > threshold;
     if single_pass_exceeds_threshold && unsupported_stateful_merge {
@@ -76,12 +71,12 @@ pub(super) fn select_filtered_global_aggregate_strategy(
         ));
     }
     let use_segmented = footprint.filtered_count > 0 && single_pass_exceeds_threshold && !unsupported_stateful_merge;
-    let target_temporary_bytes = filtered_global_segment_target_temporary_bytes(input_schema, budget_bytes);
-    let retained_predicate_bytes_per_row = u64::try_from(footprint.unique_filter_predicate_count)
-        .unwrap_or(u64::MAX)
-        .saturating_mul(FILTER_PREDICATE_BYTES_PER_ROW);
+    let target_temporary_bytes =
+        policy.segment_target_temporary_bytes(FilteredAggregateScope::Global, input_schema, budget_bytes);
+    let retained_predicate_bytes_per_row =
+        policy.retained_filter_predicate_bytes_per_row(footprint.unique_filter_predicate_count);
     let rows_per_chunk = if use_segmented {
-        rows_per_chunk_for_filtered_global_segment(
+        policy.rows_per_segment(
             footprint.max_segment_input_bytes_per_row.saturating_add(retained_predicate_bytes_per_row),
             target_temporary_bytes,
         )
@@ -114,10 +109,7 @@ pub(super) fn select_filtered_global_aggregate_strategy(
     );
     decision.facts.insert("filtered_input_materialization_budget_bytes", budget_bytes.to_string());
     decision.facts.insert("filtered_input_materialization_threshold_bytes", threshold.to_string());
-    decision.facts.insert(
-        "filtered_input_materialization_budget_fraction",
-        format!("1/{SINGLE_PASS_BUDGET_FRACTION_DENOMINATOR}"),
-    );
+    decision.facts.insert("filtered_input_materialization_budget_fraction", policy.single_pass_budget_fraction_label());
     decision.facts.insert("filtered_input_value_bytes", footprint.value_bytes.to_string());
     decision.facts.insert("filtered_input_validity_bytes", footprint.validity_bytes.to_string());
     decision.facts.insert("filtered_input_predicate_bytes", footprint.predicate_bytes.to_string());
@@ -463,7 +455,9 @@ fn execute_segmented_filtered_global_partial_state(
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows();
     let frame = input.into_frame();
-    let rows_per_chunk = usize::try_from(decision.rows_per_chunk).unwrap_or(usize::MAX).max(MIN_SEGMENT_ROWS as usize);
+    let rows_per_chunk = usize::try_from(decision.rows_per_chunk)
+        .unwrap_or(usize::MAX)
+        .max(FilteredAggregateSegmentationPolicy::default().min_segment_rows_as_usize());
     let mut partial_frames = Vec::new();
     let mut offset = 0usize;
     loop {
@@ -1021,7 +1015,7 @@ fn unsupported_large_filtered_global_stateful_merge_error(
     .with_fact("filtered_input_materialization_threshold_bytes", threshold)
     .with_fact(
         "filtered_input_materialization_budget_fraction",
-        format!("1/{SINGLE_PASS_BUDGET_FRACTION_DENOMINATOR}"),
+        FilteredAggregateSegmentationPolicy::default().single_pass_budget_fraction_label(),
     )
     .with_fact("filtered_input_unsupported_stateful_merge", true)
     .with_fact("filtered_input_unique_predicate_count", footprint.unique_filter_predicate_count)
@@ -1088,28 +1082,12 @@ fn filtered_inputs_per_segment_for_budget(
     budget_bytes: u64,
     target_temporary_bytes: u64,
 ) -> usize {
-    let target = cmp::max(1, cmp::min(target_temporary_bytes, budget_bytes / 8));
+    let target = FilteredAggregateSegmentationPolicy::default()
+        .segment_temporary_budget_bytes(target_temporary_bytes, budget_bytes);
     let retained_predicate_bytes = retained_predicate_bytes_per_row.saturating_mul(rows_per_chunk);
     let available_for_masked_inputs = target.saturating_sub(retained_predicate_bytes).max(1);
     let per_input_bytes = max_segment_input_bytes_per_row.saturating_mul(rows_per_chunk);
     usize::try_from(cmp::max(1, available_for_masked_inputs / per_input_bytes.max(1))).unwrap_or(usize::MAX)
-}
-
-fn rows_per_chunk_for_filtered_global_segment(
-    max_segment_input_bytes_per_row: u64,
-    target_temporary_bytes: u64,
-) -> u64 {
-    cmp::max(MIN_SEGMENT_ROWS, target_temporary_bytes / max_segment_input_bytes_per_row.max(1))
-}
-
-fn filtered_global_segment_target_temporary_bytes(input_schema: &ArrowSchemaRef, budget_bytes: u64) -> u64 {
-    let configured = input_schema
-        .metadata()
-        .get(TEST_SEGMENT_TARGET_TEMPORARY_BYTES_FACT)
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(SEGMENT_TARGET_TEMPORARY_BYTES);
-    cmp::max(1, cmp::min(configured, cmp::max(1, budget_bytes / 8)))
 }
 
 fn fixed_width_dtype_size(data_type: &ArrowDataType) -> Option<u64> {

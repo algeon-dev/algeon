@@ -179,7 +179,7 @@ struct FinalSortExecutor<'a> {
     metrics: &'a mut QueryMetrics,
 }
 
-impl<'a> FinalSortExecutor<'a> {
+impl FinalSortExecutor<'_> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
         self.final_sort_budget_token_for_bytes(boundary, attempt, self.reservations.remaining_bytes())
     }

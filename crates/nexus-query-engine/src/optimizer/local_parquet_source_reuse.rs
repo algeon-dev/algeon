@@ -22,8 +22,6 @@ use crate::{
 /// Stable rule name used in optimizer diagnostics.
 pub const LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME: &str = "local_parquet_source_reuse";
 
-const DEFAULT_MAX_VARIANT_SELECTED_BYTES: u64 = 500 * 1024 * 1024;
-
 /// Configuration for sharing compatible repeated local Parquet sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalParquetSourceReuseOptions {
@@ -34,9 +32,12 @@ pub struct LocalParquetSourceReuseOptions {
 }
 
 impl LocalParquetSourceReuseOptions {
+    /// Default per-variant selected byte cap for source reuse.
+    pub const DEFAULT_MAX_VARIANT_SELECTED_BYTES: u64 = 500 * 1024 * 1024;
+
     /// Returns options with source reuse disabled.
     pub fn disabled() -> Self {
-        Self { enabled: false, max_variant_selected_bytes: DEFAULT_MAX_VARIANT_SELECTED_BYTES }
+        Self { enabled: false, max_variant_selected_bytes: Self::DEFAULT_MAX_VARIANT_SELECTED_BYTES }
     }
 
     /// Validates internal consistency for local Parquet source-reuse limits.
@@ -57,7 +58,7 @@ impl LocalParquetSourceReuseOptions {
 
 impl Default for LocalParquetSourceReuseOptions {
     fn default() -> Self {
-        Self { enabled: true, max_variant_selected_bytes: DEFAULT_MAX_VARIANT_SELECTED_BYTES }
+        Self { enabled: true, max_variant_selected_bytes: Self::DEFAULT_MAX_VARIANT_SELECTED_BYTES }
     }
 }
 

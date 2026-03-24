@@ -7,13 +7,11 @@ use cudf::ops::{
     when,
 };
 
-use super::*;
+use super::{lowering_policy::ExpressionLoweringPolicy, *};
 use crate::{
     expr::{CaseWhen, DatePart},
     plan::ProjectionOutput,
 };
-
-const MAX_ROW_PREDICATE_IN_LIST_EXPANSION: usize = 128;
 
 #[path = "lowering/aggregate.rs"]
 mod aggregate;
@@ -616,7 +614,7 @@ fn lower_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr
 
 fn lower_filter_in_list(expr: &Expr, list: &[Expr], negated: bool) -> Result<cudf::Expr> {
     validate_in_list_literal_values(list)?;
-    if list.len() > MAX_ROW_PREDICATE_IN_LIST_EXPANSION {
+    if !ExpressionLoweringPolicy::default().filter_in_list_should_use_row_predicate_tree(list.len()) {
         // Large dynamic-filter keysets are post-decode filters. Keeping them as
         // cudf InList lets cudf use its boolean-mask path instead of recursively
         // lowering a deeply nested row-predicate OR/AND tree.
@@ -828,13 +826,16 @@ mod tests {
 
     #[test]
     fn large_filter_in_list_stays_as_cudf_in_list() {
-        let predicate = Expr::in_list(Expr::column("k"), int64_literals(MAX_ROW_PREDICATE_IN_LIST_EXPANSION + 1));
+        let predicate = Expr::in_list(
+            Expr::column("k"),
+            int64_literals(ExpressionLoweringPolicy::DEFAULT_ROW_PREDICATE_IN_LIST_EXPANSION_LIMIT + 1),
+        );
 
         let lowered = lower_filter_predicate_expr(&predicate).unwrap();
 
         match lowered {
             cudf::Expr::InList { values, negated, .. } => {
-                assert_eq!(values.len(), MAX_ROW_PREDICATE_IN_LIST_EXPANSION + 1);
+                assert_eq!(values.len(), ExpressionLoweringPolicy::DEFAULT_ROW_PREDICATE_IN_LIST_EXPANSION_LIMIT + 1);
                 assert!(!negated);
             },
             other => panic!("large filter IN list should not expand to row-predicate tree: {}", expr_kind(&other)),

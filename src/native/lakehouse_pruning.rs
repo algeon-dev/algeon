@@ -22,10 +22,7 @@ use nexus_query_engine::{
     discover_dimension_derived_pruning_requests, seed_dimension_derived_reader_predicates,
 };
 
-use crate::NativeCudfExec;
-
-const MAX_DIMENSION_ROWS: usize = 25_000_000;
-const MAX_TARGET_FILES_ACROSS_REQUESTS: usize = 4_000;
+use crate::{NativeCudfExec, native::table_format_pruning_policy::TableFormatPruningPolicy};
 
 type BoxFutureResult<T> = Pin<Box<dyn Future<Output = Result<T>> + Send>>;
 
@@ -65,6 +62,7 @@ fn prune_execution_plan(
 }
 
 async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>) -> Arc<dyn ExecutionPlan> {
+    let policy = TableFormatPruningPolicy::default();
     let mut plan = seed_dimension_derived_reader_predicates(exec.native_plan().clone());
     let mut any_applied = false;
 
@@ -95,10 +93,11 @@ async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>)
         .filter(|source| !source.files.iter().all(|file| file.location.as_local_path().is_some()))
         .map(|source| source.files.len())
         .sum();
-    if target_file_count > MAX_TARGET_FILES_ACROSS_REQUESTS {
+    if policy.target_file_guard_exceeded(target_file_count) {
         eprintln!(
             "[lakehouse_pruning] event=skip reason=too_many_target_files target_file_count={} max_target_file_count={}",
-            target_file_count, MAX_TARGET_FILES_ACROSS_REQUESTS,
+            target_file_count,
+            policy.max_target_files_across_requests(),
         );
         return if any_applied { rebuild_native_exec(exec, plan) } else { Arc::new(exec.clone()) };
     }
@@ -112,7 +111,7 @@ async fn prune_native_exec(exec: &NativeCudfExec, runtime_env: &Arc<RuntimeEnv>)
                     before,
                     after,
                 );
-                plan = patched;
+                plan = *patched;
                 any_applied = true;
             },
             Ok(RequestOutcome::Skipped { target_source_node_id, reason }) => {
@@ -651,7 +650,7 @@ fn static_bytes_range_may_satisfy(min: &[u8], max: &[u8], op: BinaryOp, literal:
 }
 
 enum RequestOutcome {
-    Applied { plan: QueryPlan, target_source_node_id: NodeId, before: usize, after: usize },
+    Applied { plan: Box<QueryPlan>, target_source_node_id: NodeId, before: usize, after: usize },
     Skipped { target_source_node_id: NodeId, reason: &'static str },
 }
 
@@ -712,7 +711,7 @@ async fn prune_request(
     );
     if result.applied {
         Ok(RequestOutcome::Applied {
-            plan: result.plan,
+            plan: Box::new(result.plan),
             target_source_node_id,
             before: result.before,
             after: result.after,
@@ -730,6 +729,7 @@ async fn derive_dimension_key_filter(
 ) -> std::result::Result<Option<DimensionKeyFilter>, String> {
     // Fold object-store dimension batches through the same accumulator the
     // in-engine local pass uses, so both derive identical set-aware filters.
+    let policy = TableFormatPruningPolicy::default();
     let projection_indices = reader_projection_indices(source, key_column, predicate)
         .ok_or_else(|| "unsupported_dimension_projection".to_string())?;
     let mut accumulator = DimensionKeyAccumulator::default();
@@ -750,10 +750,11 @@ async fn derive_dimension_key_filter(
             .map_err(|error| error.to_string())?;
         while let Some(batch) = stream.try_next().await.map_err(|error| error.to_string())? {
             total_rows = total_rows.saturating_add(batch.num_rows());
-            if total_rows > MAX_DIMENSION_ROWS {
+            if policy.dimension_row_guard_exceeded(total_rows) {
                 return Err(format!(
                     "dimension_row_guard_exceeded total_rows={} max_rows={}",
-                    total_rows, MAX_DIMENSION_ROWS
+                    total_rows,
+                    policy.max_dimension_rows()
                 ));
             }
             accumulator

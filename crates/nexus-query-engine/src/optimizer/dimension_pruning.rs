@@ -29,8 +29,6 @@ use crate::{
 /// Stable rule name used in optimizer diagnostics.
 pub const DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME: &str = "dimension_derived_row_group_pruning";
 
-const DEFAULT_MAX_DIMENSION_ROWS: u64 = 1_000_000;
-
 /// Configuration for dimension-derived fact row-group pruning.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DimensionDerivedRowGroupPruningOptions {
@@ -41,9 +39,12 @@ pub struct DimensionDerivedRowGroupPruningOptions {
 }
 
 impl DimensionDerivedRowGroupPruningOptions {
+    /// Default selected dimension row cap for deriving pruning key ranges.
+    pub const DEFAULT_MAX_DIMENSION_ROWS: u64 = 1_000_000;
+
     /// Returns options with the pass disabled and default limits preserved.
     pub fn disabled() -> Self {
-        Self { enabled: false, max_dimension_rows: DEFAULT_MAX_DIMENSION_ROWS }
+        Self { enabled: false, max_dimension_rows: Self::DEFAULT_MAX_DIMENSION_ROWS }
     }
 
     /// Validates internal consistency for dimension-derived pruning limits.
@@ -64,7 +65,7 @@ impl DimensionDerivedRowGroupPruningOptions {
 
 impl Default for DimensionDerivedRowGroupPruningOptions {
     fn default() -> Self {
-        Self { enabled: true, max_dimension_rows: DEFAULT_MAX_DIMENSION_ROWS }
+        Self { enabled: true, max_dimension_rows: Self::DEFAULT_MAX_DIMENSION_ROWS }
     }
 }
 
@@ -629,7 +630,7 @@ fn aggregate_group_output_name(expr: &Expr) -> Option<&str> {
 /// Plan-shape candidate for dimension-derived fact row-group pruning.
 ///
 /// Local-path sources are discovered and applied by
-/// [`optimize_dimension_derived_row_group_pruning`]. Object-store/table-format
+/// `optimize_dimension_derived_row_group_pruning`. Object-store/table-format
 /// sources are discovered here and resolved by the DataFusion adapter, keeping
 /// this crate free of catalog/object-store dependencies.
 ///
@@ -650,7 +651,7 @@ pub struct DimensionDerivedPruningRequest {
 /// Discovers dimension-derived pruning requests without reading Parquet data.
 ///
 /// Mirrors the candidate-discovery half of
-/// [`optimize_dimension_derived_row_group_pruning`]. The caller supplies
+/// `optimize_dimension_derived_row_group_pruning`. The caller supplies
 /// admission checks, key-range derivation, and footer statistics.
 pub fn discover_dimension_derived_pruning_requests(plan: &QueryPlan) -> Vec<DimensionDerivedPruningRequest> {
     let parent_counts = rewrite::parent_counts(plan);
@@ -909,7 +910,7 @@ pub struct KeyRange {
 /// Maximum coalesced runs before falling back to one bounding range.
 ///
 /// Bounds memory/overlap cost while preserving legacy single-range behavior.
-pub const DIMENSION_KEY_FILTER_MAX_RUNS: usize = 4096;
+pub const DIMENSION_KEY_FILTER_MAX_RUNS: usize = DimensionKeyFilter::MAX_RUNS;
 
 /// Dimension keys satisfying a predicate, stored as disjoint inclusive runs.
 ///
@@ -922,6 +923,9 @@ pub struct DimensionKeyFilter {
 }
 
 impl DimensionKeyFilter {
+    /// Maximum coalesced runs before falling back to one bounding range.
+    pub const MAX_RUNS: usize = 4096;
+
     /// Builds a filter from ascending, unique keys, coalescing contiguous
     /// integers into runs. Collapses to a single bounding run when the run count
     /// would exceed [`DIMENSION_KEY_FILTER_MAX_RUNS`]. Returns `None` when the
@@ -940,7 +944,7 @@ impl DimensionKeyFilter {
             }
         }
         runs.push(run);
-        if runs.len() > DIMENSION_KEY_FILTER_MAX_RUNS {
+        if runs.len() > Self::MAX_RUNS {
             return Some(Self::from_bounds(KeyRange {
                 min: runs.first().expect("non-empty").min,
                 max: runs.last().expect("non-empty").max,
@@ -994,7 +998,7 @@ impl DimensionKeyFilter {
 
 /// Accumulates the qualifying dimension key values across decoded dimension
 /// batches and coalesces them into a [`DimensionKeyFilter`]. Shared by the
-/// in-engine local pass ([`derive_dimension_key_filter`]) and the out-of-engine
+/// in-engine local pass (`derive_dimension_key_filter`) and the out-of-engine
 /// resolver, which folds object-store dimension batches through
 /// [`Self::observe_batch`] to guarantee identical filter semantics on both sides.
 #[derive(Debug, Clone, Default)]
@@ -1898,7 +1902,7 @@ pub fn apply_local_parquet_row_group_selections(
 /// the file's current row-group selection. Kept positions are mapped back
 /// through that selection, so existing `row_groups` are narrowed, not replaced.
 ///
-/// The rule matches [`prune_target_source`]: unknown stats are retained, pruning
+/// The rule matches `prune_target_source`: unknown stats are retained, pruning
 /// never empties a selection, and mismatches return the original plan with
 /// `applied = false`.
 pub fn apply_dimension_derived_pruning_with_stats(

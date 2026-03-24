@@ -277,11 +277,11 @@ fn normalize_global_aggregate_stack<'a>(
     })
 }
 
-fn normalize_global_limit_root<'a>(
+fn normalize_global_limit_root(
     output_schema_fields: usize,
-    input: &'a dyn ExecutionPlan,
+    input: &dyn ExecutionPlan,
     limit: NativeLimitSpec,
-) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
+) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
     if let Some(projection) = input.downcast_ref::<ProjectionExec>() {
         let candidate = global_aggregate_candidate(output_schema_fields, true, false, false, false);
         match required_child::<AggregateExec>(projection.input().as_ref(), candidate.clone()) {
@@ -419,10 +419,10 @@ fn peel_pre_aggregate_projection_and_input(
     Ok((projection, normalize_native_input(peel_repartition(input), candidate)?))
 }
 
-fn normalize_native_input<'a>(
-    plan: &'a dyn ExecutionPlan,
+fn normalize_native_input(
+    plan: &dyn ExecutionPlan,
     candidate: GpuCandidate,
-) -> Result<NormalizedNativeInput<'a>, NativePlanRejection> {
+) -> Result<NormalizedNativeInput<'_>, NativePlanRejection> {
     if let Some(coalesce) = plan.downcast_ref::<CoalescePartitionsExec>()
         && let Some(fetch) = coalesce.fetch()
     {

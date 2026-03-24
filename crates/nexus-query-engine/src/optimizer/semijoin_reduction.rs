@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
-use super::rewrite;
+use super::{rewrite, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
     adaptive_report::AdaptiveCandidateStatus,
     error::{QueryError, QueryErrorCode},
@@ -18,10 +18,8 @@ use crate::{
 /// Stable rule name used in optimizer diagnostics.
 pub const SEMIJOIN_REDUCTION_RULE_NAME: &str = "semijoin_reduction";
 /// Default cost gate multiplier for comparing semijoin-side cost to target cost.
-pub const DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER: u64 = 8;
-
-const DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_ROWS: u64 = 1_000_000;
-const DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER: u64 =
+    SemijoinReductionOptions::DEFAULT_COST_THRESHOLD_MULTIPLIER;
 
 /// Configuration for the semijoin-reduction optimizer pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,11 +40,14 @@ pub struct SemijoinReductionOptions {
 }
 
 impl SemijoinReductionOptions {
+    /// Default cost gate multiplier for comparing semijoin-side cost to target cost.
+    pub const DEFAULT_COST_THRESHOLD_MULTIPLIER: u64 = 8;
+
     /// Returns options with the pass disabled and default thresholds preserved.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            cost_threshold_multiplier: DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER,
+            cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER,
             admission_mode: SemijoinReductionAdmissionMode::NotEvaluated,
         }
     }
@@ -77,7 +78,7 @@ impl Default for SemijoinReductionOptions {
     fn default() -> Self {
         Self {
             enabled: true,
-            cost_threshold_multiplier: DEFAULT_SEMIJOIN_REDUCTION_COST_THRESHOLD_MULTIPLIER,
+            cost_threshold_multiplier: Self::DEFAULT_COST_THRESHOLD_MULTIPLIER,
             admission_mode: SemijoinReductionAdmissionMode::NotEvaluated,
         }
     }
@@ -899,10 +900,7 @@ fn filtered_source_keyset_cost_signal(
 
     let target_rows = estimated_output_rows(plan, analysis.target_subtree_id);
     let target_bytes = estimated_output_bytes(plan, analysis.target_subtree_id);
-    let target_is_dimension_sized = target_rows
-        .is_some_and(|rows| rows <= DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_ROWS)
-        || target_bytes.is_some_and(|bytes| bytes <= DEFAULT_FILTERED_SOURCE_KEYSET_TARGET_MAX_BYTES);
-    if !target_is_dimension_sized {
+    if !OptimizerSourceTargetPolicy::default().target_is_dimension_sized(target_rows, target_bytes) {
         return None;
     }
 

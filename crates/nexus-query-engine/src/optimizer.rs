@@ -7,6 +7,7 @@
 mod semijoin_reduction;
 
 mod aggregate_join_pushdown;
+mod aggregate_join_pushdown_policy;
 mod count_non_null_pruning;
 mod diagnostics;
 mod dimension_pruning;
@@ -15,9 +16,11 @@ mod join_build_side;
 mod join_filter_reassociation;
 mod local_parquet_source_reuse;
 mod outer_join_null_rejection;
+mod outer_join_null_rejection_policy;
 mod projection_simplification;
 mod rewrite;
 mod shared_subplan_materialization;
+mod source_target_policy;
 mod stream_fanout_replay;
 
 pub use aggregate_join_pushdown::{

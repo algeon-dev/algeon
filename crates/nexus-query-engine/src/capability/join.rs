@@ -15,24 +15,6 @@ use crate::{
     plan::{JoinNode, JoinSide, JoinType, NodeId, QueryPlan, estimated_output_bytes, estimated_output_rows},
 };
 
-/// Past this build scale, reusable hash residency is risky enough to prefer partitioning.
-pub(crate) const LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
-/// Byte-size large-build gate used alongside row evidence.
-pub(crate) const LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
-/// Large probes can turn one reusable build into too much gather/output pressure.
-pub(crate) const LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
-/// Builds below this row scale are cheap enough to prebuild even for one probe.
-pub(crate) const SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
-/// Byte-size small-build gate used alongside row evidence.
-pub(crate) const SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
-/// Small probes avoid the scheduling overhead of the partitioned path.
-pub(crate) const SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
-/// Large-but-contained right builds can still be cheaper than partitioning when
-/// a left join's preserved probe side is already small.
-pub(crate) const MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD: u64 = 128_000_000;
-/// Byte guard paired with [`MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD`].
-pub(crate) const MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
-
 /// Threshold policy used by capability admission and runtime keyed-hash join
 /// strategy selection.
 ///
@@ -52,16 +34,24 @@ pub struct KeyedHashJoinStrategyOptions {
 }
 
 impl KeyedHashJoinStrategyOptions {
-    pub const DEFAULT_LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD;
-    pub const DEFAULT_LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD;
-    pub const DEFAULT_LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD;
-    pub const DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD;
-    pub const DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD;
-    pub const DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD;
-    pub const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD: u64 =
-        MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD;
-    pub const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 =
-        MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD;
+    /// Past this build scale, reusable hash residency is risky enough to prefer partitioning.
+    pub const DEFAULT_LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD: u64 = 64_000_000;
+    /// Byte-size large-build gate used alongside row evidence.
+    pub const DEFAULT_LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD: u64 = 8 * 1024 * 1024 * 1024;
+    /// Large probes can turn one reusable build into too much gather/output pressure.
+    pub const DEFAULT_LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
+    /// Builds below this row scale are cheap enough to prebuild even for one probe.
+    pub const DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD: u64 = 1_000_000;
+    /// Byte-size small-build gate used alongside row evidence.
+    pub const DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD: u64 = 64 * 1024 * 1024;
+    /// Small probes avoid the scheduling overhead of the partitioned path.
+    pub const DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD: u64 = 256 * 1024 * 1024;
+    /// Large-but-contained right builds can still be cheaper than partitioning
+    /// when a left join's preserved probe side is already small.
+    pub const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD: u64 = 128_000_000;
+    /// Byte guard paired with
+    /// [`DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD`](Self::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD).
+    pub const DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD: u64 = 2 * 1024 * 1024 * 1024;
 
     pub fn large_keyed_hash_build_row_threshold(&self) -> u64 {
         self.large_keyed_hash_build_row_threshold
@@ -188,14 +178,16 @@ fn validate_keyed_hash_join_threshold_order(
 impl Default for KeyedHashJoinStrategyOptions {
     fn default() -> Self {
         Self {
-            large_keyed_hash_build_row_threshold: LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD,
-            large_keyed_hash_build_bytes_threshold: LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD,
-            large_keyed_hash_probe_bytes_threshold: LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD,
-            small_reusable_hash_build_row_threshold: SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD,
-            small_reusable_hash_build_bytes_threshold: SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD,
-            small_one_shot_probe_bytes_threshold: SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD,
-            max_small_probe_left_one_shot_build_row_threshold: MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD,
-            max_small_probe_left_one_shot_build_bytes_threshold: MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD,
+            large_keyed_hash_build_row_threshold: Self::DEFAULT_LARGE_KEYED_HASH_BUILD_ROW_THRESHOLD,
+            large_keyed_hash_build_bytes_threshold: Self::DEFAULT_LARGE_KEYED_HASH_BUILD_BYTES_THRESHOLD,
+            large_keyed_hash_probe_bytes_threshold: Self::DEFAULT_LARGE_KEYED_HASH_PROBE_BYTES_THRESHOLD,
+            small_reusable_hash_build_row_threshold: Self::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD,
+            small_reusable_hash_build_bytes_threshold: Self::DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD,
+            small_one_shot_probe_bytes_threshold: Self::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD,
+            max_small_probe_left_one_shot_build_row_threshold:
+                Self::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD,
+            max_small_probe_left_one_shot_build_bytes_threshold:
+                Self::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD,
         }
     }
 }
@@ -923,6 +915,8 @@ mod tests {
         plan::{JoinKey, JoinOutputColumn, JoinSpec},
     };
 
+    type Options = KeyedHashJoinStrategyOptions;
+
     fn single_use_join(join_type: JoinType) -> JoinNode {
         JoinNode {
             inputs: [NodeId::from_index_for_internal_use(0), NodeId::from_index_for_internal_use(1)],
@@ -962,7 +956,7 @@ mod tests {
         KeyedHashJoinStrategyInputFacts {
             estimated_build_rows,
             observed_build_rows,
-            build_side_bytes: Some(SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD / 2),
+            build_side_bytes: Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD / 2),
             probe_side_bytes,
             estimated_output_rows: None,
             estimated_output_bytes: None,
@@ -985,7 +979,7 @@ mod tests {
     fn known_small_probe_single_use_inner_join_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_inner_join(),
-            input_facts(Some(10), None, Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
+            input_facts(Some(10), None, Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
         );
 
         assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
@@ -1011,7 +1005,7 @@ mod tests {
         ));
         let decision = keyed_hash_join_strategy_decision(
             &join,
-            input_facts(Some(10), None, Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
+            input_facts(Some(10), None, Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2)),
         );
 
         assert!(one_shot_equi_join_supported(&join));
@@ -1022,7 +1016,7 @@ mod tests {
     fn unknown_probe_medium_single_use_inner_join_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_inner_join(),
-            input_facts(Some(SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None, None),
+            input_facts(Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None, None),
         );
 
         assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
@@ -1046,7 +1040,7 @@ mod tests {
     fn unknown_probe_medium_observed_without_estimate_stays_reusable() {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_inner_join(),
-            input_facts(None, Some(SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None),
+            input_facts(None, Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_ROW_THRESHOLD / 2), None),
         );
 
         assert_eq!(selected_strategy(decision), KeyedHashJoinStrategy::ReusableHashEqui);
@@ -1058,17 +1052,17 @@ mod tests {
         let input = KeyedHashJoinStrategyInputFacts {
             estimated_build_rows: Some(10),
             observed_build_rows: None,
-            build_side_bytes: Some(SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD * 2),
-            probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+            build_side_bytes: Some(Options::DEFAULT_SMALL_REUSABLE_HASH_BUILD_BYTES_THRESHOLD * 2),
+            probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
             estimated_output_rows: None,
             estimated_output_bytes: None,
             build_key_unique: None,
             probe_reuse_count: 1,
             reusable_prebuild_supported: true,
         };
-        let mut options = KeyedHashJoinStrategyOptions::default();
-        options.small_reusable_hash_build_row_threshold = 5;
-        options.small_reusable_hash_build_bytes_threshold = 1024;
+        let options = KeyedHashJoinStrategyOptions::default()
+            .with_small_reusable_hash_build_row_threshold(5)
+            .with_small_reusable_hash_build_bytes_threshold(1024);
 
         assert_eq!(
             selected_strategy(keyed_hash_join_strategy_decision(&join, input)),
@@ -1096,10 +1090,10 @@ mod tests {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
-                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
                 observed_build_rows: None,
-                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
-                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
                 estimated_output_bytes: None,
                 build_key_unique: Some(true),
@@ -1119,7 +1113,7 @@ mod tests {
                 estimated_build_rows: Some(10),
                 observed_build_rows: None,
                 build_side_bytes: Some(1024),
-                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
                 estimated_output_bytes: None,
                 build_key_unique: Some(true),
@@ -1136,10 +1130,10 @@ mod tests {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
-                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD + 1),
+                estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD + 1),
                 observed_build_rows: None,
-                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD + 1),
-                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD + 1),
+                probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
                 estimated_output_bytes: None,
                 build_key_unique: Some(true),
@@ -1156,10 +1150,10 @@ mod tests {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
-                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
                 observed_build_rows: None,
-                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
-                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
                 estimated_output_bytes: None,
                 build_key_unique: None,
@@ -1176,10 +1170,10 @@ mod tests {
         assert!(keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness(
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
-                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
                 observed_build_rows: None,
-                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
-                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: None,
                 estimated_output_bytes: None,
                 build_key_unique: None,
@@ -1194,10 +1188,10 @@ mod tests {
         let decision = keyed_hash_join_strategy_decision(
             &single_use_left_join(),
             KeyedHashJoinStrategyInputFacts {
-                estimated_build_rows: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
+                estimated_build_rows: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_ROW_THRESHOLD),
                 observed_build_rows: None,
-                build_side_bytes: Some(MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
-                probe_side_bytes: Some(SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
+                build_side_bytes: Some(Options::DEFAULT_MAX_SMALL_PROBE_LEFT_ONE_SHOT_BUILD_BYTES_THRESHOLD),
+                probe_side_bytes: Some(Options::DEFAULT_SMALL_ONE_SHOT_PROBE_BYTES_THRESHOLD / 2),
                 estimated_output_rows: Some(1),
                 estimated_output_bytes: Some(1024),
                 build_key_unique: None,

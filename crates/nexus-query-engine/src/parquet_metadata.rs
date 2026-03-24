@@ -18,7 +18,11 @@ use parquet::file::{
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Speculative tail size for footer-only object-store metadata reads.
-const FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
+pub(crate) const PARQUET_FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
+
+pub(crate) const fn parquet_footer_prefetch_bytes(file_size: u64) -> u64 {
+    if file_size < PARQUET_FOOTER_PREFETCH_BYTES { file_size } else { PARQUET_FOOTER_PREFETCH_BYTES }
+}
 
 /// Footer sidecar file signature.
 ///
@@ -102,7 +106,7 @@ pub(crate) async fn fetch_object_store_parquet_metadata(
         .with_fact("file_size", file_size));
     }
 
-    let prefetch = FOOTER_PREFETCH_BYTES.min(file_size);
+    let prefetch = parquet_footer_prefetch_bytes(file_size);
     let tail_start = file_size - prefetch;
     let tail = store
         .get_range(&location, tail_start..file_size)
@@ -438,6 +442,14 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
         bytes
+    }
+
+    #[test]
+    fn footer_prefetch_size_is_capped_by_file_size() {
+        assert_eq!(parquet_footer_prefetch_bytes(0), 0);
+        assert_eq!(parquet_footer_prefetch_bytes(1024), 1024);
+        assert_eq!(parquet_footer_prefetch_bytes(PARQUET_FOOTER_PREFETCH_BYTES), PARQUET_FOOTER_PREFETCH_BYTES);
+        assert_eq!(parquet_footer_prefetch_bytes(PARQUET_FOOTER_PREFETCH_BYTES + 1), PARQUET_FOOTER_PREFETCH_BYTES);
     }
 
     #[test]

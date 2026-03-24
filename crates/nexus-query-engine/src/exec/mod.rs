@@ -31,6 +31,7 @@ mod edge_null_filter;
 mod graph_algorithm;
 mod join;
 mod lowering;
+mod lowering_policy;
 mod materialize;
 mod operators;
 mod order;

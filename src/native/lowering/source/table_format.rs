@@ -26,6 +26,7 @@ use crate::{
         lowering::{LoweredNativeInput, RequiredFields, expr::lower_physical_expr_with_bindings},
         normalize::NormalizedNativeSource,
         source::{NativeParquetColumnRequirements, attach_row_group_byte_metadata},
+        table_format_pruning_policy::TableFormatPruningPolicy,
         validate::{
             collect_required_columns, is_list_carry_type, is_supported_native_type, validate_physical_expr,
             validate_schema,
@@ -63,8 +64,6 @@ use field_id::*;
 use files::*;
 use groups::*;
 use schema_match::*;
-
-const TABLE_FORMAT_FILTER_ELISION_MIN_SOURCE_ROWS: u64 = 10_000_000;
 
 pub(super) fn lower_table_format_source_input(
     scan_exec: &CudfTableFormatScanExec,
@@ -327,8 +326,8 @@ fn table_format_reader_pushdown_predicate(
 }
 
 fn table_format_reader_pushdown_can_elide_native_filter(native_source: &NativeLocalParquetSource) -> bool {
-    table_format_source_known_rows(native_source)
-        .is_some_and(|rows| rows >= TABLE_FORMAT_FILTER_ELISION_MIN_SOURCE_ROWS)
+    TableFormatPruningPolicy::default()
+        .reader_pushdown_can_elide_native_filter(table_format_source_known_rows(native_source))
 }
 
 fn table_format_source_known_rows(native_source: &NativeLocalParquetSource) -> Option<u64> {

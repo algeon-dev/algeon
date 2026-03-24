@@ -8,9 +8,6 @@ use crate::{
 /// Stable rule name used in optimizer diagnostics.
 pub const JOIN_BUILD_SIDE_SELECTION_RULE_NAME: &str = "join_build_side_selection";
 
-const DEFAULT_SMALL_BUILD_SIDE_BYTES: u64 = 64 * 1024 * 1024;
-const DEFAULT_SMALL_BUILD_SIDE_ROWS: u64 = 1_000_000;
-
 /// Configuration for choosing smaller hash-join build sides.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JoinBuildSideSelectionOptions {
@@ -23,12 +20,17 @@ pub struct JoinBuildSideSelectionOptions {
 }
 
 impl JoinBuildSideSelectionOptions {
+    /// Default byte threshold under which a side is treated as a small build candidate.
+    pub const DEFAULT_SMALL_BUILD_SIDE_BYTES: u64 = 64 * 1024 * 1024;
+    /// Default row threshold under which a side is treated as a small build candidate.
+    pub const DEFAULT_SMALL_BUILD_SIDE_ROWS: u64 = 1_000_000;
+
     /// Returns options with the pass disabled and default thresholds preserved.
     pub fn disabled() -> Self {
         Self {
             enabled: false,
-            small_build_side_bytes: DEFAULT_SMALL_BUILD_SIDE_BYTES,
-            small_build_side_rows: DEFAULT_SMALL_BUILD_SIDE_ROWS,
+            small_build_side_bytes: Self::DEFAULT_SMALL_BUILD_SIDE_BYTES,
+            small_build_side_rows: Self::DEFAULT_SMALL_BUILD_SIDE_ROWS,
         }
     }
 
@@ -58,8 +60,8 @@ impl Default for JoinBuildSideSelectionOptions {
     fn default() -> Self {
         Self {
             enabled: true,
-            small_build_side_bytes: DEFAULT_SMALL_BUILD_SIDE_BYTES,
-            small_build_side_rows: DEFAULT_SMALL_BUILD_SIDE_ROWS,
+            small_build_side_bytes: Self::DEFAULT_SMALL_BUILD_SIDE_BYTES,
+            small_build_side_rows: Self::DEFAULT_SMALL_BUILD_SIDE_ROWS,
         }
     }
 }

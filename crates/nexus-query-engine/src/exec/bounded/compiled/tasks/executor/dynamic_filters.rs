@@ -2,7 +2,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
 
-impl<'a> CompiledGpuTaskExecutor<'a> {
+impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn produce_hash_join_build_dynamic_filters(
         &mut self,
         join_node_id: NodeId,

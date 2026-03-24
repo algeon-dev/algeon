@@ -4,9 +4,71 @@ struct SharedScalarFilteredMaterializationEstimate {
     estimated_materialization_bytes: u64,
 }
 
+/// Internal sizing policy for shared scalar filtered-aggregate materialization estimates.
+///
+/// These estimates are optimizer diagnostics and admission evidence only. Keep
+/// them internal until runtime budget reporting can expose a stable production
+/// tuning model for shared filtered aggregate materialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SharedScalarFilteredMaterializationEstimatePolicy {
+    shared_filter_predicate_bytes_per_row: u64,
+    shared_value_slot_overhead_bytes: u64,
+    shared_unknown_value_width_bytes: u64,
+    shared_null_mask_bits_per_byte: u64,
+    shared_null_mask_alignment_bytes: u64,
+}
+
+impl SharedScalarFilteredMaterializationEstimatePolicy {
+    const DEFAULT_SHARED_FILTER_PREDICATE_BYTES_PER_ROW: u64 = 2;
+    const DEFAULT_SHARED_VALUE_SLOT_OVERHEAD_BYTES: u64 = 64;
+    const DEFAULT_SHARED_UNKNOWN_VALUE_WIDTH_BYTES: u64 = 16;
+    const DEFAULT_SHARED_NULL_MASK_BITS_PER_BYTE: u64 = 8;
+    const DEFAULT_SHARED_NULL_MASK_ALIGNMENT_BYTES: u64 = 64;
+
+    fn filter_predicate_bytes(self, input_rows: u64, unique_filter_predicate_count: usize) -> Option<u64> {
+        Some(
+            u64::try_from(unique_filter_predicate_count)
+                .ok()?
+                .saturating_mul(input_rows)
+                .saturating_mul(self.shared_filter_predicate_bytes_per_row),
+        )
+    }
+
+    fn value_slot_overhead_bytes(self) -> u64 {
+        self.shared_value_slot_overhead_bytes
+    }
+
+    fn unknown_value_width_bytes(self) -> u64 {
+        self.shared_unknown_value_width_bytes
+    }
+
+    fn null_mask_bytes(self, rows: u64) -> u64 {
+        if rows == 0 {
+            0
+        } else {
+            rows.div_ceil(self.shared_null_mask_bits_per_byte)
+                .div_ceil(self.shared_null_mask_alignment_bytes)
+                * self.shared_null_mask_alignment_bytes
+        }
+    }
+}
+
+impl Default for SharedScalarFilteredMaterializationEstimatePolicy {
+    fn default() -> Self {
+        Self {
+            shared_filter_predicate_bytes_per_row: Self::DEFAULT_SHARED_FILTER_PREDICATE_BYTES_PER_ROW,
+            shared_value_slot_overhead_bytes: Self::DEFAULT_SHARED_VALUE_SLOT_OVERHEAD_BYTES,
+            shared_unknown_value_width_bytes: Self::DEFAULT_SHARED_UNKNOWN_VALUE_WIDTH_BYTES,
+            shared_null_mask_bits_per_byte: Self::DEFAULT_SHARED_NULL_MASK_BITS_PER_BYTE,
+            shared_null_mask_alignment_bytes: Self::DEFAULT_SHARED_NULL_MASK_ALIGNMENT_BYTES,
+        }
+    }
+}
+
 fn estimate_shared_scalar_filtered_materialization(
     family: &[AggregateMaterializationSignature],
 ) -> Option<SharedScalarFilteredMaterializationEstimate> {
+    let policy = SharedScalarFilteredMaterializationEstimatePolicy::default();
     let representative = family.first()?;
     if !representative.group_exprs.is_empty() {
         return None;
@@ -15,17 +77,16 @@ fn estimate_shared_scalar_filtered_materialization(
     let original_frame_retained_bytes = family.iter().filter_map(|signature| signature.source_bytes).max().unwrap_or(0);
     let unique_filter_predicate_count =
         family.iter().map(|signature| signature.exact_source_signature.as_str()).collect::<BTreeSet<_>>().len();
-    let predicate_bytes =
-        u64::try_from(unique_filter_predicate_count).ok()?.saturating_mul(input_rows).saturating_mul(2);
+    let predicate_bytes = policy.filter_predicate_bytes(input_rows, unique_filter_predicate_count)?;
     let mut value_bytes = 0u64;
     for signature in family {
         for aggregate_expr in &signature.aggregate_expr_specs {
-            let (width, nullable) = shared_aggregate_value_width_and_nullability(aggregate_expr, signature);
-            let validity = if nullable { shared_null_mask_bytes(input_rows) } else { 0 };
+            let (width, nullable) = shared_aggregate_value_width_and_nullability(policy, aggregate_expr, signature);
+            let validity = if nullable { policy.null_mask_bytes(input_rows) } else { 0 };
             value_bytes = value_bytes
                 .saturating_add(input_rows.saturating_mul(width))
                 .saturating_add(validity)
-                .saturating_add(64);
+                .saturating_add(policy.value_slot_overhead_bytes());
         }
     }
     Some(SharedScalarFilteredMaterializationEstimate {
@@ -37,6 +98,7 @@ fn estimate_shared_scalar_filtered_materialization(
 }
 
 fn shared_aggregate_value_width_and_nullability(
+    policy: SharedScalarFilteredMaterializationEstimatePolicy,
     aggregate_expr: &AggregateExpr,
     signature: &AggregateMaterializationSignature,
 ) -> (u64, bool) {
@@ -46,11 +108,15 @@ fn shared_aggregate_value_width_and_nullability(
             .values()
             .find_map(|columns| columns.get(column.name()))
             .map(|column| {
-                (shared_fixed_width_dtype_size(column.field.data_type()).unwrap_or(16), column.field.is_nullable())
+                (
+                    shared_fixed_width_dtype_size(column.field.data_type())
+                        .unwrap_or(policy.unknown_value_width_bytes()),
+                    column.field.is_nullable(),
+                )
             })
-            .unwrap_or((16, true)),
+            .unwrap_or((policy.unknown_value_width_bytes(), true)),
         Expr::Literal(value) => (shared_literal_width(value), matches!(value, crate::expr::LiteralValue::Null(_))),
-        _ => (16, true),
+        _ => (policy.unknown_value_width_bytes(), true),
     }
 }
 
@@ -93,6 +159,32 @@ fn shared_fixed_width_dtype_size(data_type: &DataType) -> Option<u64> {
     }
 }
 
-fn shared_null_mask_bytes(rows: u64) -> u64 {
-    if rows == 0 { 0 } else { rows.div_ceil(8).div_ceil(64) * 64 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_scalar_filtered_materialization_estimate_policy_preserves_predicate_bytes() {
+        let policy = SharedScalarFilteredMaterializationEstimatePolicy::default();
+
+        assert_eq!(policy.filter_predicate_bytes(10, 3), Some(60));
+    }
+
+    #[test]
+    fn shared_scalar_filtered_materialization_estimate_policy_preserves_null_mask_alignment() {
+        let policy = SharedScalarFilteredMaterializationEstimatePolicy::default();
+
+        assert_eq!(policy.null_mask_bytes(0), 0);
+        assert_eq!(policy.null_mask_bytes(1), 64);
+        assert_eq!(policy.null_mask_bytes(512), 64);
+        assert_eq!(policy.null_mask_bytes(513), 128);
+    }
+
+    #[test]
+    fn shared_scalar_filtered_materialization_estimate_policy_preserves_unknown_width_and_overhead() {
+        let policy = SharedScalarFilteredMaterializationEstimatePolicy::default();
+
+        assert_eq!(policy.unknown_value_width_bytes(), 16);
+        assert_eq!(policy.value_slot_overhead_bytes(), 64);
+    }
 }

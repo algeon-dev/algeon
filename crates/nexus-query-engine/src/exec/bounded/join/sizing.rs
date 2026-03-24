@@ -19,16 +19,69 @@ use arrow::datatypes::DataType as ArrowDataType;
 
 use crate::error::{QueryError, QueryErrorCode, Result};
 
-/// Conservative offsets-buffer width for cuDF `String` columns. cuDF
-/// starts with INT32 offsets and switches to INT64 above
-/// `cudf::strings::detail::get_offset64_threshold()`
-/// (`../cudf-rs/cudf/cpp/include/cudf/strings/detail/strings_children.cuh:133-157`);
-/// using 8 bytes per offset upper-bounds both regimes.
-pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = 8;
+/// Internal policy for closed-form join and aggregate output sizing.
+///
+/// These values encode conservative cudf/RMM/Arrow allocation assumptions used
+/// before the materialization operator can report observed device memory. They
+/// are not user-facing knobs; they should move downstack when cudf-rs can
+/// expose authoritative sizing or allocation-alignment contracts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JoinOutputSizingPolicy {
+    string_offset_bytes_conservative: u64,
+    per_column_alignment_padding_bytes: u64,
+    null_mask_bits_per_byte: u64,
+    null_mask_alignment_bytes: u64,
+}
+
+impl JoinOutputSizingPolicy {
+    /// Conservative offsets-buffer width for cuDF `String` columns. cuDF
+    /// starts with INT32 offsets and switches to INT64 above
+    /// `cudf::strings::detail::get_offset64_threshold()`
+    /// (`../cudf-rs/cudf/cpp/include/cudf/strings/detail/strings_children.cuh:133-157`);
+    /// using 8 bytes per offset upper-bounds both regimes.
+    const DEFAULT_STRING_OFFSET_BYTES_CONSERVATIVE: u64 = 8;
+    /// Conservative per-buffer-pair allocation padding used to upper-bound
+    /// RMM's allocation alignment when materializing a join output column.
+    const DEFAULT_PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = 256;
+    const DEFAULT_NULL_MASK_BITS_PER_BYTE: u64 = 8;
+    const DEFAULT_NULL_MASK_ALIGNMENT_BYTES: u64 = 64;
+
+    fn string_offset_bytes_conservative(self) -> u64 {
+        self.string_offset_bytes_conservative
+    }
+
+    fn per_column_alignment_padding_bytes(self) -> u64 {
+        self.per_column_alignment_padding_bytes
+    }
+
+    fn null_mask_bytes(self, rows: u64) -> u64 {
+        if rows == 0 {
+            return 0;
+        }
+        let bits = rows.saturating_add(self.null_mask_bits_per_byte.saturating_sub(1)) / self.null_mask_bits_per_byte;
+        let blocks =
+            bits.saturating_add(self.null_mask_alignment_bytes.saturating_sub(1)) / self.null_mask_alignment_bytes;
+        blocks.saturating_mul(self.null_mask_alignment_bytes)
+    }
+}
+
+impl Default for JoinOutputSizingPolicy {
+    fn default() -> Self {
+        Self {
+            string_offset_bytes_conservative: Self::DEFAULT_STRING_OFFSET_BYTES_CONSERVATIVE,
+            per_column_alignment_padding_bytes: Self::DEFAULT_PER_COLUMN_ALIGNMENT_PADDING_BYTES,
+            null_mask_bits_per_byte: Self::DEFAULT_NULL_MASK_BITS_PER_BYTE,
+            null_mask_alignment_bytes: Self::DEFAULT_NULL_MASK_ALIGNMENT_BYTES,
+        }
+    }
+}
+
+/// Conservative offsets-buffer width for cuDF `String` columns.
+pub const STRING_OFFSET_BYTES_CONSERVATIVE: u64 = JoinOutputSizingPolicy::DEFAULT_STRING_OFFSET_BYTES_CONSERVATIVE;
 
 /// Conservative per-buffer-pair allocation padding used to upper-bound
 /// RMM's allocation alignment when materializing a join output column.
-pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = 256;
+pub const PER_COLUMN_ALIGNMENT_PADDING_BYTES: u64 = JoinOutputSizingPolicy::DEFAULT_PER_COLUMN_ALIGNMENT_PADDING_BYTES;
 
 /// Description of one output column for the upper-bound calculation.
 #[derive(Debug, Clone)]
@@ -75,6 +128,7 @@ pub fn join_output_upper_bound_bytes(
 }
 
 fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumnUpperBoundInput) -> Result<u64> {
+    let policy = JoinOutputSizingPolicy::default();
     let data_bytes = match &column.data_type {
         ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => expected_output_rows,
         ArrowDataType::Int16 | ArrowDataType::UInt16 => expected_output_rows.saturating_mul(2),
@@ -96,22 +150,14 @@ fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumn
             })?;
             let data = expected_output_rows.saturating_mul(max_len);
             let data = column.input_total_string_bytes.map_or(data, |total| data.min(total));
-            let offsets = expected_output_rows.saturating_add(1).saturating_mul(STRING_OFFSET_BYTES_CONSERVATIVE);
+            let offsets =
+                expected_output_rows.saturating_add(1).saturating_mul(policy.string_offset_bytes_conservative());
             data.saturating_add(offsets)
         },
         _ => return Err(unsupported_dtype(column)),
     };
-    let null_mask = null_mask_bytes(expected_output_rows);
-    Ok(data_bytes.saturating_add(null_mask).saturating_add(PER_COLUMN_ALIGNMENT_PADDING_BYTES))
-}
-
-fn null_mask_bytes(rows: u64) -> u64 {
-    if rows == 0 {
-        return 0;
-    }
-    let bits = rows.saturating_add(7) / 8;
-    let blocks = bits.saturating_add(63) / 64;
-    blocks.saturating_mul(64)
+    let null_mask = policy.null_mask_bytes(expected_output_rows);
+    Ok(data_bytes.saturating_add(null_mask).saturating_add(policy.per_column_alignment_padding_bytes()))
 }
 
 fn unsupported_dtype(column: &JoinOutputColumnUpperBoundInput) -> QueryError {
@@ -122,4 +168,27 @@ fn unsupported_dtype(column: &JoinOutputColumnUpperBoundInput) -> QueryError {
     )
     .with_fact("dtype", format!("{:?}", column.data_type))
     .with_fact("reason", "unsupported_join_output_dtype")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_output_sizing_policy_preserves_public_aliases() {
+        let policy = JoinOutputSizingPolicy::default();
+
+        assert_eq!(policy.string_offset_bytes_conservative(), STRING_OFFSET_BYTES_CONSERVATIVE);
+        assert_eq!(policy.per_column_alignment_padding_bytes(), PER_COLUMN_ALIGNMENT_PADDING_BYTES);
+    }
+
+    #[test]
+    fn join_output_sizing_policy_preserves_null_mask_alignment() {
+        let policy = JoinOutputSizingPolicy::default();
+
+        assert_eq!(policy.null_mask_bytes(0), 0);
+        assert_eq!(policy.null_mask_bytes(1), 64);
+        assert_eq!(policy.null_mask_bytes(512), 64);
+        assert_eq!(policy.null_mask_bytes(513), 128);
+    }
 }

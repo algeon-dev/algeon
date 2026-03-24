@@ -288,7 +288,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let build_bytes = build.input.bytes;
     let probe_estimated_bytes = stream.estimated_source_read_bytes().unwrap_or(0);
     let partition_count = partitioned_join_partition_count(context, build.input.bytes, probe_estimated_bytes)
-        .max(PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS);
+        .max(BoundedPartitionRowPolicy::default().hash_frame_stream_min_partitions());
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);
@@ -465,7 +465,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let build_bytes = build.input.bytes;
     let probe_estimated_bytes = inputs.max_per_frame_reservation_bytes();
     let partition_count = partitioned_join_partition_count(context, build.input.bytes, probe_estimated_bytes)
-        .max(PARTITIONED_HASH_FRAME_STREAM_MIN_PARTITIONS);
+        .max(BoundedPartitionRowPolicy::default().hash_frame_stream_min_partitions());
     let partition_target_bytes = partitioned_join_target_bytes_for_context(context);
     let build_keys = join_keys_for_side(node, build_side);
     let probe_keys = join_keys_for_side(node, probe_side);

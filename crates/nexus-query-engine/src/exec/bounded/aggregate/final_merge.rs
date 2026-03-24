@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{final_merge_policy::BoundedFinalMergePolicy, *};
 use crate::{
     SortExpr, SortSpec,
     capability::{AggregateExecutionStage, AggregateExecutionStrategy, aggregate_strategy_capability_decision},
@@ -300,7 +300,9 @@ fn should_execute_partitioned_final_aggregate_merge(
 
 fn partitioned_final_merge_partition_count(context: &ExecutionContext, partials: &[CommittedPartial]) -> usize {
     let input_bytes = partials.iter().map(|partial| partial.reservation.bytes()).sum::<u64>().max(1);
-    partitioned_aggregate_partition_count(context, input_bytes).max(partials.len().clamp(1, 32))
+    let partial_partition_floor =
+        BoundedFinalMergePolicy::default().partitioned_final_merge_partial_partition_floor(partials.len());
+    partitioned_aggregate_partition_count(context, input_bytes).max(partial_partition_floor)
 }
 
 fn execute_partitioned_final_aggregate_merge(
@@ -1036,15 +1038,15 @@ fn record_final_merge_retry_error(error: &QueryError, metrics: &mut QueryMetrics
 }
 
 pub(in crate::exec::bounded) fn reduce_merge_fan_in(merge_fan_in: usize) -> Option<usize> {
-    if merge_fan_in <= 2 {
-        return None;
-    }
-
-    Some(merge_fan_in.div_ceil(2).max(2))
+    BoundedFinalMergePolicy::default().reduce_merge_fan_in(merge_fan_in)
 }
 
 fn final_merge_retry_facts(merge_level: usize, merge_fan_in: usize, metrics: &QueryMetrics) -> RetryFacts {
-    let retry_action = if merge_fan_in <= 2 { "fail_min_merge_fan_in" } else { "retry_attempts_exhausted" };
+    let retry_action = if BoundedFinalMergePolicy::default().merge_fan_in_is_at_retry_floor(merge_fan_in) {
+        "fail_min_merge_fan_in"
+    } else {
+        "retry_attempts_exhausted"
+    };
 
     RetryFacts::new()
         .with_retry_action(retry_action)
@@ -1162,18 +1164,24 @@ fn initial_compiled_final_merge_fan_in(context: &ExecutionContext, partials: &[C
         return partials.len();
     }
 
+    let policy = BoundedFinalMergePolicy::default();
     let mut fan_in = 0usize;
     let mut selected_bytes = 0u64;
     for partial in partials {
         let partial_bytes = compiled_partial_merge_basis_bytes(partial);
-        if fan_in >= 2 && selected_bytes.saturating_add(partial_bytes) > threshold_bytes {
+        if policy.should_stop_compiled_final_merge_fan_in_selection(
+            fan_in,
+            selected_bytes,
+            partial_bytes,
+            threshold_bytes,
+        ) {
             break;
         }
         selected_bytes = selected_bytes.saturating_add(partial_bytes);
         fan_in += 1;
     }
 
-    fan_in.clamp(2, partials.len())
+    policy.compiled_final_merge_fan_in(fan_in, partials.len())
 }
 
 fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
