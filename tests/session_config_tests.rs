@@ -1,7 +1,7 @@
 use datafusion::{common::config::ConfigOptions, execution::SessionStateBuilder, prelude::SessionContext};
 use datafusion_nexus::{
-    CudfOptimizerConfig, CudfSessionStateBuilderExt, DataFusionNexusSessionConfig, GpuFallbackPolicy,
-    NativeCudfExecutionConfig, NativeMemoryPolicyConfig,
+    CudfOptimizerConfig, CudfSessionStateBuilderExt, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
+    DataFusionNexusSessionConfig, GpuFallbackPolicy, NativeCudfExecutionConfig, NativeMemoryPolicyConfig,
 };
 use nexus_query_engine::{
     MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode, SourceSchedulerPolicy,
@@ -131,9 +131,38 @@ fn datafusion_nexus_session_config_entries_are_discoverable() {
     let base = CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred);
     let options = options_with_nexus_extension(&base);
     let entries = options.entries();
+    let nexus_entries = entries.iter().filter(|entry| entry.key.starts_with("datafusion_nexus.")).collect::<Vec<_>>();
 
     assert!(entries.iter().any(|entry| entry.key == "datafusion_nexus.native.memory_policy"));
     assert!(entries.iter().any(|entry| entry.key == "datafusion_nexus.native.statistical_aggregate_execution_mode"));
+    assert_eq!(nexus_entries.len(), DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS.len());
+    for option in DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS {
+        let entry = nexus_entries
+            .iter()
+            .find(|entry| entry.key == option.full_key())
+            .unwrap_or_else(|| panic!("missing entry for {}", option.full_key()));
+        assert_eq!(entry.description, option.description);
+        assert!(entry.value.is_some(), "{} should report current value", option.full_key());
+    }
+}
+
+#[test]
+fn datafusion_nexus_session_config_option_descriptors_document_scope_and_types() {
+    let bounded_keys = DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+        .iter()
+        .filter(|option| option.bounded_only)
+        .map(|option| option.key)
+        .collect::<Vec<_>>();
+
+    assert!(bounded_keys.contains(&"native.max_source_reads_in_flight"));
+    assert!(!bounded_keys.contains(&"native.memory_policy"));
+    assert!(!bounded_keys.contains(&"native.statistical_aggregate_execution_mode"));
+    assert!(
+        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+            .iter()
+            .any(|option| option.full_key() == "datafusion_nexus.native.pipeline_execution_mode"
+                && option.value_type == "enum: strict_bounded|adaptive")
+    );
 }
 
 #[tokio::test]

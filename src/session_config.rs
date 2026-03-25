@@ -31,6 +31,96 @@ const NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY: &str = "native.source_chunk_plannin
 const NATIVE_PIPELINE_EXECUTION_MODE_KEY: &str = "native.pipeline_execution_mode";
 const NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY: &str = "native.statistical_aggregate_execution_mode";
 
+/// Discoverable metadata for one `datafusion_nexus.native.*` session option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DataFusionNexusSessionConfigOption {
+    /// Key below [`DATAFUSION_NEXUS_CONFIG_PREFIX`], for example
+    /// `native.memory_policy`.
+    pub key: &'static str,
+    /// Human-readable value type used by docs and operator surfaces.
+    pub value_type: &'static str,
+    /// Whether this option is active only when native memory policy is bounded.
+    pub bounded_only: bool,
+    /// Description shown through DataFusion config entries.
+    pub description: &'static str,
+}
+
+impl DataFusionNexusSessionConfigOption {
+    /// Fully-qualified DataFusion config key.
+    pub fn full_key(&self) -> String {
+        format!("{DATAFUSION_NEXUS_CONFIG_PREFIX}.{}", self.key)
+    }
+}
+
+/// DataFusion session options exposed by datafusion-nexus.
+///
+/// This table is the programmatic discovery surface for embedded DataFusion
+/// users and documentation generators. `ConfigOptions::entries` reports the
+/// same keys and descriptions with current values.
+pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfigOption] = &[
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_MEMORY_POLICY_KEY,
+        value_type: "enum: bounded|unbounded",
+        bounded_only: false,
+        description: "Native memory-control mode: bounded or unbounded.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_DEVICE_BUDGET_BYTES_KEY,
+        value_type: "positive integer bytes",
+        bounded_only: true,
+        description: "Bounded native device-memory budget in bytes.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY,
+        value_type: "positive integer bytes",
+        bounded_only: true,
+        description: "Maximum source bytes planned into one native bounded source chunk.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY,
+        value_type: "positive integer",
+        bounded_only: true,
+        description: "Maximum source row groups planned into one native bounded source chunk.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_MAX_RETRY_ATTEMPTS_KEY,
+        value_type: "positive integer",
+        bounded_only: true,
+        description: "Maximum bounded retry attempts.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY,
+        value_type: "positive integer",
+        bounded_only: true,
+        description: "Row-group count at or below which bounded source retry splitting stops.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY,
+        value_type: "positive integer",
+        bounded_only: true,
+        description: "Maximum active native source reads allowed per bounded query.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY,
+        value_type: "enum: conservative|local_parquet_throughput",
+        bounded_only: true,
+        description: "Bounded source chunk planning mode.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_PIPELINE_EXECUTION_MODE_KEY,
+        value_type: "enum: strict_bounded|adaptive",
+        bounded_only: true,
+        description: "Native bounded-pipeline execution mode.",
+    },
+    DataFusionNexusSessionConfigOption {
+        key: NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY,
+        value_type: "enum: datafusion_exact_host_welford|gpu_native_tolerant",
+        bounded_only: false,
+        description: "Floating statistical aggregate execution contract.",
+    },
+];
+
 /// Native memory-control policy label used by the DataFusion config extension.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum NativeMemoryPolicyConfig {
@@ -189,6 +279,24 @@ impl DataFusionNexusSessionConfig {
         }
         Ok(())
     }
+
+    fn value_for_key(&self, key: &str) -> String {
+        match key {
+            NATIVE_MEMORY_POLICY_KEY => self.native_memory_policy.to_string(),
+            NATIVE_DEVICE_BUDGET_BYTES_KEY => self.native_device_budget_bytes.to_string(),
+            NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY => self.native_max_source_chunk_bytes.to_string(),
+            NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY => self.native_max_row_groups_per_chunk.to_string(),
+            NATIVE_MAX_RETRY_ATTEMPTS_KEY => self.native_max_retry_attempts.to_string(),
+            NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY => self.native_min_retry_chunk_row_groups.to_string(),
+            NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY => self.native_max_source_reads_in_flight.to_string(),
+            NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY => self.native_source_chunk_planning_mode.to_string(),
+            NATIVE_PIPELINE_EXECUTION_MODE_KEY => self.native_pipeline_execution_mode.to_string(),
+            NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY => {
+                self.native_statistical_aggregate_execution_mode.to_string()
+            },
+            _ => unreachable!("unknown datafusion-nexus session config key: {key}"),
+        }
+    }
 }
 
 impl ConfigExtension for DataFusionNexusSessionConfig {
@@ -252,54 +360,14 @@ impl ExtensionOptions for DataFusionNexusSessionConfig {
     }
 
     fn entries(&self) -> Vec<ConfigEntry> {
-        vec![
-            entry(
-                NATIVE_MEMORY_POLICY_KEY,
-                self.native_memory_policy,
-                "Native memory-control mode: bounded or unbounded.",
-            ),
-            entry(
-                NATIVE_DEVICE_BUDGET_BYTES_KEY,
-                self.native_device_budget_bytes,
-                "Bounded native device-memory budget in bytes.",
-            ),
-            entry(
-                NATIVE_MAX_SOURCE_CHUNK_BYTES_KEY,
-                self.native_max_source_chunk_bytes,
-                "Maximum source bytes planned into one native bounded source chunk.",
-            ),
-            entry(
-                NATIVE_MAX_ROW_GROUPS_PER_CHUNK_KEY,
-                self.native_max_row_groups_per_chunk,
-                "Maximum source row groups planned into one native bounded source chunk.",
-            ),
-            entry(NATIVE_MAX_RETRY_ATTEMPTS_KEY, self.native_max_retry_attempts, "Maximum bounded retry attempts."),
-            entry(
-                NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_KEY,
-                self.native_min_retry_chunk_row_groups,
-                "Row-group count at or below which bounded source retry splitting stops.",
-            ),
-            entry(
-                NATIVE_MAX_SOURCE_READS_IN_FLIGHT_KEY,
-                self.native_max_source_reads_in_flight,
-                "Maximum active native source reads allowed per bounded query.",
-            ),
-            entry(
-                NATIVE_SOURCE_CHUNK_PLANNING_MODE_KEY,
-                self.native_source_chunk_planning_mode,
-                "Bounded source chunk planning mode.",
-            ),
-            entry(
-                NATIVE_PIPELINE_EXECUTION_MODE_KEY,
-                self.native_pipeline_execution_mode,
-                "Native bounded-pipeline execution mode.",
-            ),
-            entry(
-                NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_KEY,
-                self.native_statistical_aggregate_execution_mode,
-                "Floating statistical aggregate execution contract.",
-            ),
-        ]
+        DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
+            .iter()
+            .map(|option| ConfigEntry {
+                key: option.full_key(),
+                value: Some(self.value_for_key(option.key)),
+                description: option.description,
+            })
+            .collect()
     }
 }
 
@@ -375,10 +443,6 @@ fn require_positive_usize(key: &str, value: usize) -> DataFusionResult<()> {
         return Err(config_error(format!("{key} must be greater than zero")));
     }
     Ok(())
-}
-
-fn entry(key: &'static str, value: impl fmt::Display, description: &'static str) -> ConfigEntry {
-    ConfigEntry { key: format!("{DATAFUSION_NEXUS_CONFIG_PREFIX}.{key}"), value: Some(value.to_string()), description }
 }
 
 fn config_error(message: impl Into<String>) -> DataFusionError {
