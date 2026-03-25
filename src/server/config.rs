@@ -67,6 +67,11 @@ pub const NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV: &str = "NEXUS_SERV
 /// Bounded source chunk planning mode. Accepts `conservative` or
 /// `local_parquet_throughput`.
 pub const NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
+/// Seconds a native object-store source read may wait for host-buffer budget
+/// or source-fetch concurrency before returning a resource timeout. This
+/// service-level source IO setting applies in both bounded and unbounded mode.
+pub const NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV: &str =
+    "NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS";
 /// Native bounded-pipeline execution mode. Accepts `strict_bounded` or
 /// `adaptive`.
 pub const NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV: &str = "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE";
@@ -77,6 +82,140 @@ pub const NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV: &str =
 /// Path to a TOML server config file. The file supplies durable server config
 /// such as `[auth]` and `[native]`; scalar env vars remain bootstrap overrides.
 pub const NEXUS_SERVER_CONFIG_FILE_ENV: &str = "NEXUS_SERVER_CONFIG_FILE";
+
+/// Scope for a server `[native]` configuration option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ServerNativeConfigScope {
+    /// Native execution setting that applies in both bounded and unbounded mode.
+    NativeExecution,
+    /// Bounded execution setting rejected when native memory policy is unbounded.
+    BoundedExecution,
+    /// Service-level source IO resource setting, not session-scoped.
+    SourceIoResource,
+}
+
+impl ServerNativeConfigScope {
+    /// Whether this option is active only under bounded native memory policy.
+    pub const fn is_bounded_only(self) -> bool {
+        matches!(self, Self::BoundedExecution)
+    }
+}
+
+/// Discoverable metadata for one server `[native]` TOML/env option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct NexusServerNativeConfigOption {
+    /// TOML field including the `[native]` section prefix, for example
+    /// `native.memory_policy`.
+    pub toml_field: &'static str,
+    /// Environment variable that overrides the TOML field.
+    pub env_var: &'static str,
+    /// Human-readable value type used by docs and operator surfaces.
+    pub value_type: &'static str,
+    /// Server-side scope for this option.
+    pub scope: ServerNativeConfigScope,
+    /// Matching DataFusion session key when this is also session-scoped.
+    pub session_key: Option<&'static str>,
+    /// Human-readable operator description.
+    pub description: &'static str,
+}
+
+/// Server `[native]` options exposed through TOML and environment variables.
+///
+/// This table is the programmatic discovery surface for operator docs and
+/// config introspection. Parser code remains explicit so validation and
+/// bounded/unbounded interactions stay local to `native_optimizer_config`.
+pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] = &[
+    NexusServerNativeConfigOption {
+        toml_field: "native.memory_policy",
+        env_var: NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV,
+        value_type: "enum: bounded|unbounded",
+        scope: ServerNativeConfigScope::NativeExecution,
+        session_key: Some("datafusion_nexus.native.memory_policy"),
+        description: "Native memory-control mode: bounded or unbounded.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.device_budget_bytes",
+        env_var: NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+        value_type: "positive integer bytes",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.device_budget_bytes"),
+        description: "Bounded native device-memory budget in bytes.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.max_source_chunk_bytes",
+        env_var: NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        value_type: "positive integer bytes",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.max_source_chunk_bytes"),
+        description: "Maximum source bytes planned into one native bounded source chunk.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.max_row_groups_per_chunk",
+        env_var: NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+        value_type: "positive integer",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.max_row_groups_per_chunk"),
+        description: "Maximum source row groups planned into one native bounded source chunk.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.max_retry_attempts",
+        env_var: NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+        value_type: "positive integer",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.max_retry_attempts"),
+        description: "Maximum bounded retry attempts.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.min_retry_chunk_row_groups",
+        env_var: NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+        value_type: "positive integer",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.min_retry_chunk_row_groups"),
+        description: "Row-group count at or below which bounded source retry splitting stops.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.max_source_reads_in_flight",
+        env_var: NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
+        value_type: "positive integer",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.max_source_reads_in_flight"),
+        description: "Maximum active native source reads allowed per bounded query.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.source_chunk_planning_mode",
+        env_var: NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
+        value_type: "enum: conservative|local_parquet_throughput",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.source_chunk_planning_mode"),
+        description: "Bounded source chunk planning mode.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.host_fetch_acquire_timeout_secs",
+        env_var: NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
+        value_type: "positive integer seconds",
+        scope: ServerNativeConfigScope::SourceIoResource,
+        session_key: None,
+        description: "Service-level host-buffer budget and source-fetch concurrency wait timeout.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.pipeline_execution_mode",
+        env_var: NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
+        value_type: "enum: strict_bounded|adaptive",
+        scope: ServerNativeConfigScope::BoundedExecution,
+        session_key: Some("datafusion_nexus.native.pipeline_execution_mode"),
+        description: "Native bounded-pipeline execution mode.",
+    },
+    NexusServerNativeConfigOption {
+        toml_field: "native.statistical_aggregate_execution_mode",
+        env_var: NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
+        value_type: "enum: datafusion_exact_host_welford|gpu_native_tolerant",
+        scope: ServerNativeConfigScope::NativeExecution,
+        session_key: Some("datafusion_nexus.native.statistical_aggregate_execution_mode"),
+        description: "Floating statistical aggregate execution contract.",
+    },
+];
 
 /// Enables registration of cuGraph SQL functions. Must be `true` before any
 /// other cuGraph server setting is accepted. On a build without the `cugraph`
@@ -212,6 +351,7 @@ struct ServerNativeFileConfig {
     min_retry_chunk_row_groups: Option<usize>,
     max_source_reads_in_flight: Option<usize>,
     source_chunk_planning_mode: Option<String>,
+    host_fetch_acquire_timeout_secs: Option<u64>,
     pipeline_execution_mode: Option<String>,
     statistical_aggregate_execution_mode: Option<String>,
 }
@@ -525,6 +665,12 @@ fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileCo
         parse_source_chunk_planning_mode(raw.field, &raw.value).map(|mode| NativeConfigValue::new(mode, raw.field))
     })
     .transpose()?;
+    let host_fetch_acquire_timeout_secs = optional_native_u64(
+        values,
+        NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
+        "native.host_fetch_acquire_timeout_secs",
+        file.host_fetch_acquire_timeout_secs,
+    )?;
     let native_pipeline_execution_mode = optional_native_string(
         values,
         NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV,
@@ -649,6 +795,12 @@ fn native_optimizer_config(values: &mut EnvValues<'_>, file: &ServerNativeFileCo
     }
     if let Some(mode) = source_chunk_planning_mode {
         execution_config = execution_config.with_source_chunk_planning_mode(mode.value);
+    }
+    if let Some(timeout_secs) = host_fetch_acquire_timeout_secs {
+        if timeout_secs.value == 0 {
+            return Err(ServerError::invalid_config(timeout_secs.field, "must be greater than zero"));
+        }
+        execution_config = execution_config.with_host_fetch_acquire_timeout(Duration::from_secs(timeout_secs.value));
     }
     if let Some(mode) = native_pipeline_execution_mode {
         execution_config = execution_config.with_native_pipeline_execution_mode(mode.value);

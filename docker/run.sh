@@ -32,7 +32,13 @@ LOG="info"
 MAX_IN_FLIGHT=1
 
 # ---------------------------------------------------------------------------
-# Native GPU memory budget  (all three required together; omit all → unbounded)
+# Native GPU execution controls
+# Server default without explicit budget env vars is bounded auto-sized. This
+# helper sets an explicit bounded profile for repeatable local/decision-grade
+# runs. Set NEXUS_SERVER_NATIVE_MEMORY_POLICY=unbounded to omit bounded controls.
+#
+# NEXUS_SERVER_NATIVE_MEMORY_POLICY
+#   bounded | unbounded
 #
 # NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES
 #   Hard cap on live GPU memory reservations.
@@ -45,17 +51,44 @@ MAX_IN_FLIGHT=1
 #
 # NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK
 #   Max Parquet row groups per source chunk (rg1024 profile).
+#
+# NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS
+# NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS
+#   Bounded retry controls.
+#
+# NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT
+#   Bounded source scheduling / prefetch width.
+#
+# NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE
+#   conservative | local_parquet_throughput
+#
+# NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE
+#   strict_bounded | adaptive
+#
+# NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE
+#   datafusion_exact_host_welford | gpu_native_tolerant
 # ---------------------------------------------------------------------------
-NATIVE_DEVICE_BUDGET_BYTES=102117670912   # 97387 MiB  (97887 - 500 MiB overhead)
-NATIVE_MAX_SOURCE_CHUNK_BYTES=4294967296  # 4 GiB
-NATIVE_MAX_ROW_GROUPS_PER_CHUNK=1024
+NATIVE_MEMORY_POLICY="${NEXUS_SERVER_NATIVE_MEMORY_POLICY:-bounded}"
+NATIVE_MEMORY_POLICY_NORMALIZED="${NATIVE_MEMORY_POLICY,,}"
+NATIVE_DEVICE_BUDGET_BYTES="${NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES:-102117670912}"   # 97387 MiB
+NATIVE_MAX_SOURCE_CHUNK_BYTES="${NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES:-4294967296}" # 4 GiB
+NATIVE_MAX_ROW_GROUPS_PER_CHUNK="${NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK:-1024}"
+NATIVE_MAX_RETRY_ATTEMPTS="${NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS:-3}"
+NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS="${NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS:-1}"
+NATIVE_MAX_SOURCE_READS_IN_FLIGHT="${NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT:-2}"
+NATIVE_SOURCE_CHUNK_PLANNING_MODE="${NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE:-conservative}"
+NATIVE_PIPELINE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE:-strict_bounded}"
+NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE="${NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE:-datafusion_exact_host_welford}"
 
 # ---------------------------------------------------------------------------
 # DataFusion session  (single underscores; DataFusion SessionConfig::from_env)
-# These are read by DataFusion's SessionConfig::from_env().
+# These are read by DataFusion's SessionConfig::from_env(), not by direct
+# datafusion-nexus env parsing. DataFusion maps option keys by upper-casing and
+# replacing "." with "_"; for example, `datafusion.execution.batch_size`
+# becomes `DATAFUSION_EXECUTION_BATCH_SIZE`.
 #
 # DATAFUSION_EXECUTION_TARGET_PARTITIONS  CPU parallelism for fallback path (no effect on GPU)
-# DATAFUSION_EXECUTION_BATCH_SIZE         Arrow record-batch size for fallback path
+# DATAFUSION_EXECUTION_BATCH_SIZE         Arrow record-batch size for DataFusion/fallback operators
 # ---------------------------------------------------------------------------
 DATAFUSION_EXECUTION_TARGET_PARTITIONS="${DATAFUSION_EXECUTION_TARGET_PARTITIONS:-16}"
 DATAFUSION_EXECUTION_BATCH_SIZE="${DATAFUSION_EXECUTION_BATCH_SIZE:-8192}"
@@ -137,10 +170,9 @@ ARGS=(
     -e "NEXUS_SERVER_LOG=${LOG}"
     -e "NEXUS_SERVER_MAX_IN_FLIGHT=${MAX_IN_FLIGHT}"
 
-    # Native GPU memory budget
-    -e "NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES=${NATIVE_DEVICE_BUDGET_BYTES}"
-    -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES=${NATIVE_MAX_SOURCE_CHUNK_BYTES}"
-    -e "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}"
+    # Native GPU execution controls
+    -e "NEXUS_SERVER_NATIVE_MEMORY_POLICY=${NATIVE_MEMORY_POLICY}"
+    -e "NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE=${NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE}"
 
     # DataFusion session
     -e "DATAFUSION_EXECUTION_TARGET_PARTITIONS=${DATAFUSION_EXECUTION_TARGET_PARTITIONS}"
@@ -162,6 +194,19 @@ ARGS=(
     # cuGraph SQL DSL
     -e "NEXUS_SERVER_CUGRAPH_ENABLED=${CUGRAPH_ENABLED}"
 )
+
+if [[ "${NATIVE_MEMORY_POLICY_NORMALIZED}" != "unbounded" ]]; then
+    ARGS+=(
+        -e "NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES=${NATIVE_DEVICE_BUDGET_BYTES}"
+        -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES=${NATIVE_MAX_SOURCE_CHUNK_BYTES}"
+        -e "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK=${NATIVE_MAX_ROW_GROUPS_PER_CHUNK}"
+        -e "NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS=${NATIVE_MAX_RETRY_ATTEMPTS}"
+        -e "NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS=${NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS}"
+        -e "NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT=${NATIVE_MAX_SOURCE_READS_IN_FLIGHT}"
+        -e "NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE=${NATIVE_SOURCE_CHUNK_PLANNING_MODE}"
+        -e "NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE=${NATIVE_PIPELINE_EXECUTION_MODE}"
+    )
+fi
 
 # Pre-load specific tables only when ICEBERG_TABLES is non-empty.
 [[ -n "${ICEBERG_TABLES}" ]] && ARGS+=(-e "NEXUS_ICEBERG_TABLES=${ICEBERG_TABLES}")
