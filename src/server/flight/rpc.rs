@@ -419,16 +419,17 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
                 )
             })?;
 
-        // DataGrip re-runs the held handle (empty result schema => IS_DML =>
-        // executeUpdate). A no-result-set DDL handle that already executed once
-        // is a no-op on re-execution rather than an "already exists" rejection.
+        // DataGrip-class clients may re-run the held handle after executing a
+        // DDL through executeUpdate. A no-result-set DDL handle that already
+        // executed once is a no-op on re-execution rather than an "already
+        // exists" rejection.
         if already_executed {
             tracing::info!(
                 query_id,
                 prepared_statement_handle = handle.as_str(),
                 "deduplicated repeated prepared DDL execution on the update channel; returning a no-op"
             );
-            return Ok(UNKNOWN_UPDATE_RECORD_COUNT);
+            return Ok(NO_UPDATED_RECORDS_COUNT);
         }
 
         let record_count = self.execute_update_sql(query_id, sql, UpdateStatementKind::PreparedStatement).await?;
@@ -493,10 +494,13 @@ impl FlightSqlService for DatafusionCudfFlightSqlService {
         let dataset_schema = self
             .dataset_schema_for_prepared_statement(&logical_plan)
             .map_err(|status| status_with_query_id(status, &query_id))?;
-        let dataset_schema_ipc =
-            schema_to_ipc_bytes(&dataset_schema).map_err(|error| Status::internal(error.to_string()))?;
+        let dataset_schema_ipc = if self.prepared_statement_has_result_set(&logical_plan) {
+            schema_to_ipc_bytes(&dataset_schema).map_err(|error| Status::internal(error.to_string()))?
+        } else {
+            prost::bytes::Bytes::new()
+        };
 
-        // DDL prepares with an empty result schema; classify it once here so
+        // DDL prepares without a result-set schema; classify it once here so
         // neither execution channel re-plans to decide whether a re-run of the
         // held handle should be deduplicated into a no-op.
         let no_result_ddl = matches!(logical_plan, LogicalPlan::Ddl(_));
