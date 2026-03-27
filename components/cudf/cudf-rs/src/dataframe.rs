@@ -26,6 +26,7 @@ use indexmap::IndexMap;
 use crate::{
     column::{Column, ColumnView},
     copying,
+    dataframe_view::DataFrameView,
     error::{Error, ErrorKind, Result},
     filter,
     groupby::{self, Aggregation, AggregationRequest, NullPolicy},
@@ -33,6 +34,7 @@ use crate::{
     join, replace,
     scalar::Scalar,
     series::Series,
+    series_view::SeriesView,
     sorting::{self, Order, SortOptions},
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
     table::Table,
@@ -463,26 +465,24 @@ impl DataFrame {
         self.columns.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Borrow a low-level [`ColumnView`] by name.
+    /// Borrow a named [`SeriesView`] by name.
     ///
-    /// This returns the raw GPU column view without name metadata.
-    /// **Prefer [`series()`](Self::series)** for façade-level code — it returns a
-    /// named [`Series`] with the same zero-copy cost.
-    ///
-    /// `column()` is mainly useful when you need to pass a `ColumnView` directly
-    /// to a low-level operation that does not accept `Series`.
+    /// The returned view carries the column name and implements
+    /// `Deref<Target = ColumnView>`, so all low-level column methods are
+    /// available directly.
     ///
     /// # Errors
     ///
     /// Returns an error if `name` is not in the schema.
-    pub fn column(&self, name: &str) -> Result<ColumnView<'_>> {
-        let col = self.columns.get(name).ok_or_else(|| {
+    pub fn column(&self, name: &str) -> Result<SeriesView<'_>> {
+        let (key, col) = self.columns.get_key_value(name).ok_or_else(|| {
             Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
                 .with_operation("dataframe::column")
                 .with_context("column_name", name.to_string())
         })?;
 
-        col.view()
+        let cv = col.view()?;
+        Ok(SeriesView::new(Some(key.as_str()), cv))
     }
 
     /// Return a named [`Series`] for the given column — the primary façade accessor.
@@ -511,6 +511,15 @@ impl DataFrame {
     /// Look up the positional index of a column by name.
     pub fn column_index(&self, name: &str) -> Option<usize> {
         self.columns.get_index_of(name)
+    }
+
+    /// Create a [`DataFrameView`] — a named, borrowed view of all columns.
+    ///
+    /// The view provides named column access and iteration without copying
+    /// any GPU data.
+    pub fn view(&self) -> DataFrameView<'_> {
+        let columns = self.columns.iter().map(|(name, col)| (name.as_str(), col)).collect();
+        DataFrameView::new(columns)
     }
 
     /// Factorize a named column into integer codes and unique values.
@@ -784,7 +793,7 @@ impl DataFrame {
     /// Validate that a `Series` is a valid boolean mask for this DataFrame.
     ///
     /// Returns the `ColumnView` if valid, or an appropriate error.
-    fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<ColumnView<'a>> {
+    fn validate_series_mask<'a>(&self, mask: &'a Series) -> Result<SeriesView<'a>> {
         let mask_view = mask.view()?;
         self.validate_mask_view(&mask_view, "dataframe::filter")?;
         Ok(mask_view)
