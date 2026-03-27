@@ -45,4 +45,3 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
 
     Ok(DataFrame::from_raw_parts(map, row_count))
 }
-

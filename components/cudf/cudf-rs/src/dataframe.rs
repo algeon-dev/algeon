@@ -1151,6 +1151,85 @@ impl DataFrame {
         self.join_merged_on_impl(right, left_on, right_on, JoinKind::Full, "dataframe::full_join_on")
     }
 
+    // -- Façade merge ---------------------------------------------------------
+
+    /// Merge (join) two DataFrames with cuDF-style options.
+    ///
+    /// This is the unified façade entry point for joins. Configure the merge
+    /// via [`MergeOptions`](crate::join::MergeOptions).
+    ///
+    /// # Key modes
+    ///
+    /// - `on(keys)` — shared key column names present in both sides. Output
+    ///   contains one shared key column per key.
+    /// - `left_on(keys)` + `right_on(keys)` — asymmetric key names. Both key
+    ///   columns are preserved in the output.
+    ///
+    /// # Suffix handling
+    ///
+    /// When `on()` is used: if a left payload and right payload column share
+    /// the same name, both are suffixed with the configured suffixes (default
+    /// `"_left"` / `"_right"`).
+    ///
+    /// When `left_on()` / `right_on()` is used: both key columns are preserved,
+    /// and conflicting payload names get the same suffix treatment.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - No keys are specified (`on` or `left_on`+`right_on`)
+    /// - `left_on` is set without `right_on` or vice versa
+    /// - `left_on` and `right_on` have different lengths
+    /// - A key column is not found in its respective DataFrame
+    pub fn merge(&self, right: &DataFrame, options: join::MergeOptions) -> Result<Self> {
+        let operation: &'static str = "dataframe::merge";
+
+        // Resolve key names from options.
+        let (left_on_strs, right_on_strs, shared_keys) = resolve_merge_keys(&options, operation)?;
+
+        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
+        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
+
+        // Validate key counts match.
+        if left_on_refs.len() != right_on_refs.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "left_on and right_on must have the same number of key columns",
+            )
+            .with_operation(operation)
+            .with_context("left_on_count", left_on_refs.len().to_string())
+            .with_context("right_on_count", right_on_refs.len().to_string()));
+        }
+
+        // Map JoinType to internal JoinKind.
+        let kind = match options.join_type() {
+            join::JoinType::Inner => JoinKind::Inner,
+            join::JoinType::Left => JoinKind::Left,
+            join::JoinType::Full => JoinKind::Full,
+        };
+
+        // Execute the split join with null_equality from options.
+        let split = self.join_split_on_impl_with_null_eq(
+            right,
+            &left_on_refs,
+            &right_on_refs,
+            kind,
+            options.null_eq(),
+            operation,
+        )?;
+
+        // Reassemble with façade suffix logic.
+        merge_join_result_with_suffixes(
+            split,
+            &left_on_refs,
+            shared_keys,
+            kind == JoinKind::Full,
+            options.suffix_left(),
+            options.suffix_right(),
+            operation,
+        )
+    }
+
     /// Internal merged-join implementation.
     fn join_merged_impl(
         &self,
@@ -1175,13 +1254,26 @@ impl DataFrame {
         merge_join_result(split, left_on, kind == JoinKind::Full, operation)
     }
 
-    /// Internal split-join dispatch with asymmetric keys.
+    /// Internal split-join dispatch with asymmetric keys (default NullEquality::Equal).
     fn join_split_on_impl(
         &self,
         right: &DataFrame,
         left_on: &[&str],
         right_on: &[&str],
         kind: JoinKind,
+        operation: &'static str,
+    ) -> Result<DataFrameJoinResult> {
+        self.join_split_on_impl_with_null_eq(right, left_on, right_on, kind, join::NullEquality::Equal, operation)
+    }
+
+    /// Internal split-join dispatch with asymmetric keys and configurable null equality.
+    fn join_split_on_impl_with_null_eq(
+        &self,
+        right: &DataFrame,
+        left_on: &[&str],
+        right_on: &[&str],
+        kind: JoinKind,
+        null_equality: join::NullEquality,
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
         if left_on.len() != right_on.len() {
@@ -1214,9 +1306,9 @@ impl DataFrame {
         let rpv = rp_table.view()?;
 
         let result = match kind {
-            JoinKind::Inner => join::inner_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?,
-            JoinKind::Left => join::left_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?,
-            JoinKind::Full => join::full_join(&lkv, &rkv, &lpv, &rpv, join::NullEquality::Equal)?,
+            JoinKind::Inner => join::inner_join(&lkv, &rkv, &lpv, &rpv, null_equality)?,
+            JoinKind::Left => join::left_join(&lkv, &rkv, &lpv, &rpv, null_equality)?,
+            JoinKind::Full => join::full_join(&lkv, &rkv, &lpv, &rpv, null_equality)?,
         };
 
         // Build schemas: left side uses left key names, right side uses right key names.
@@ -2179,6 +2271,155 @@ fn unique_right_payload_name(existing: &[String], base: &str) -> String {
         }
         i += 1;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Façade merge helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve the key names from `MergeOptions`, returning `(left_on, right_on, shared)`.
+///
+/// `shared` is `true` when `on()` was used (both sides share the same key names),
+/// meaning the output should emit one shared key column per key.
+fn resolve_merge_keys(
+    options: &join::MergeOptions,
+    operation: &'static str,
+) -> Result<(Vec<String>, Vec<String>, bool)> {
+    match (options.on_keys(), options.left_on_keys(), options.right_on_keys()) {
+        // on() mode: shared key names
+        (Some(on), None, None) => {
+            let keys: Vec<String> = on.to_vec();
+            Ok((keys.clone(), keys, true))
+        },
+        // left_on() + right_on() mode: asymmetric keys
+        (None, Some(lo), Some(ro)) => Ok((lo.to_vec(), ro.to_vec(), false)),
+        // left_on without right_on
+        (None, Some(_), None) => {
+            Err(Error::new(ErrorKind::InvalidOperation, "left_on was specified without right_on; set both or use on()")
+                .with_operation(operation))
+        },
+        // right_on without left_on
+        (None, None, Some(_)) => {
+            Err(Error::new(ErrorKind::InvalidOperation, "right_on was specified without left_on; set both or use on()")
+                .with_operation(operation))
+        },
+        // on() together with left_on/right_on is ambiguous — treat as error
+        (Some(_), _, _) => Err(Error::new(
+            ErrorKind::InvalidOperation,
+            "on() cannot be combined with left_on()/right_on(); use one or the other",
+        )
+        .with_operation(operation)),
+        // Nothing specified
+        (None, None, None) => {
+            Err(Error::new(ErrorKind::InvalidOperation, "no join keys specified; use on() or left_on() + right_on()")
+                .with_operation(operation))
+        },
+    }
+}
+
+/// Reassemble a split join result into a single DataFrame using façade suffix rules.
+///
+/// When `shared_keys` is true (from `on()`):
+///   - Emit one shared key column per key (coalesced for full join).
+///   - Conflicting payload names get `suffix_left` / `suffix_right`.
+///
+/// When `shared_keys` is false (from `left_on()`/`right_on()`):
+///   - Both key columns are preserved (left key name, right key name).
+///   - Conflicting payload names get suffixes.
+fn merge_join_result_with_suffixes(
+    split: DataFrameJoinResult,
+    left_on: &[&str],
+    shared_keys: bool,
+    coalesce_keys: bool,
+    suffix_left: &str,
+    suffix_right: &str,
+    operation: &'static str,
+) -> Result<DataFrame> {
+    let DataFrameJoinResult { left, right } = split;
+    let key_count = left_on.len();
+
+    let left_names: Vec<String> = left.columns.keys().cloned().collect();
+    let right_names: Vec<String> = right.columns.keys().cloned().collect();
+    let left_cols: Vec<Arc<Column>> = left.columns.into_values().collect();
+    let right_cols: Vec<Arc<Column>> = right.columns.into_values().collect();
+
+    if key_count > left_cols.len() || key_count > right_cols.len() {
+        return Err(Error::new(ErrorKind::InvalidOperation, "join key count exceeds result column count")
+            .with_operation(operation)
+            .with_context("num_keys", key_count.to_string())
+            .with_context("left_columns", left_cols.len().to_string())
+            .with_context("right_columns", right_cols.len().to_string()));
+    }
+
+    // Collect left and right payload names (after key columns).
+    let left_payload_names: Vec<&str> = left_names[key_count..].iter().map(|s| s.as_str()).collect();
+    let right_payload_names: Vec<&str> = right_names[key_count..].iter().map(|s| s.as_str()).collect();
+
+    // Find which payload names collide.
+    let left_payload_set: std::collections::HashSet<&str> = left_payload_names.iter().copied().collect();
+    let right_payload_set: std::collections::HashSet<&str> = right_payload_names.iter().copied().collect();
+    let conflicting: std::collections::HashSet<&str> =
+        left_payload_set.intersection(&right_payload_set).copied().collect();
+
+    let mut out_cols: Vec<Column> = Vec::new();
+    let mut out_names: Vec<String> = Vec::new();
+
+    if shared_keys {
+        // on() mode: emit one shared key column per key.
+        for i in 0..key_count {
+            let key_col = if coalesce_keys {
+                coalesce_columns(&left_cols[i], &right_cols[i], operation)?
+            } else {
+                left_cols[i].copy()?
+            };
+            out_cols.push(key_col);
+            out_names.push(left_names[i].clone());
+        }
+    } else {
+        // left_on/right_on mode: emit left key columns, then right key columns are added
+        // as part of right payload below.
+        for i in 0..key_count {
+            let key_col = if coalesce_keys {
+                coalesce_columns(&left_cols[i], &right_cols[i], operation)?
+            } else {
+                left_cols[i].copy()?
+            };
+            out_cols.push(key_col);
+            out_names.push(left_names[i].clone());
+        }
+    }
+
+    // Left payload.
+    for (idx, name) in left_payload_names.iter().enumerate() {
+        let col_idx = key_count + idx;
+        out_cols.push(left_cols[col_idx].copy()?);
+        if conflicting.contains(name) {
+            out_names.push(format!("{}{}", name, suffix_left));
+        } else {
+            out_names.push(name.to_string());
+        }
+    }
+
+    if !shared_keys {
+        // Emit right key columns for asymmetric join.
+        for i in 0..key_count {
+            out_cols.push(right_cols[i].copy()?);
+            out_names.push(right_names[i].clone());
+        }
+    }
+
+    // Right payload.
+    for (idx, name) in right_payload_names.iter().enumerate() {
+        let col_idx = key_count + idx;
+        out_cols.push(right_cols[col_idx].copy()?);
+        if conflicting.contains(name) {
+            out_names.push(format!("{}{}", name, suffix_right));
+        } else {
+            out_names.push(name.to_string());
+        }
+    }
+
+    DataFrame::new(out_names, out_cols)
 }
 
 /// Construct a [`DataFrame`](crate::dataframe::DataFrame) from named columns.
