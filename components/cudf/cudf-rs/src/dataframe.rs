@@ -577,6 +577,14 @@ impl DataFrame {
         self.columns.keys().cloned().collect()
     }
 
+    /// Returns a reference to the internal column map.
+    ///
+    /// This is a crate-internal accessor used by façade types like
+    /// [`GroupBy`][crate::groupby::GroupBy].
+    pub(crate) fn columns_map(&self) -> &IndexMap<String, Arc<Column>> {
+        &self.columns
+    }
+
     // -- I/O (Parquet) -------------------------------------------------------
 
     /// Read a Parquet file into a `DataFrame`, using column names from the
@@ -1345,6 +1353,32 @@ impl DataFrame {
     /// ```
     pub fn groupby<'a>(&'a self, keys: &[&str]) -> GroupByBuilder<'a> {
         GroupByBuilder { df: self, key_names: keys.iter().map(|s| s.to_string()).collect(), agg_requests: Vec::new() }
+    }
+
+    /// Start a façade-style groupby operation.
+    ///
+    /// Returns a [`GroupBy`] on which you call [`.agg()`][groupby::GroupBy::agg]
+    /// with [`AggSpec`][groupby::AggSpec] items, or use shortcut methods like
+    /// `.sum()`, `.mean()`, `.count()`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cudf::column::Column;
+    /// # use cudf::dataframe::DataFrame;
+    /// # use cudf::groupby::{Agg, AggSpec};
+    /// # let df = DataFrame::new(
+    /// #     vec!["key".into(), "val".into()],
+    /// #     vec![Column::from_slice(&[1i32,2]).unwrap(),
+    /// #          Column::from_slice(&[10i64,20]).unwrap()],
+    /// # ).unwrap();
+    /// let result = df
+    ///     .facade_groupby(&["key"])
+    ///     .agg(&[AggSpec::new("val", Agg::Sum)])
+    ///     .unwrap();
+    /// ```
+    pub fn facade_groupby<'a>(&'a self, keys: &[&str]) -> groupby::GroupBy<'a> {
+        groupby::GroupBy::new(self, keys.iter().map(|s| s.to_string()).collect())
     }
 
     // -- Concat, rename, select ----------------------------------------------

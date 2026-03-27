@@ -187,4 +187,8 @@ cudf_status_t cudf_table_release_columns(cudf_table_handle table,
   CUDF_RUST_CATCH
 }
 
+void cudf_free_column_array(cudf_column_handle* array) {
+  delete[] array;
+}
+
 }  // extern "C"

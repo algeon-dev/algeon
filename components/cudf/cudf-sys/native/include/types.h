@@ -9,6 +9,8 @@ extern "C" {
 #endif
 
 /// Mirrors cudf::type_id with identical discriminant values.
+/// This enum is part of the Rust FFI ABI and must remain 32-bit compatible
+/// with Rust `#[repr(i32)]`. Keep `native/src/abi_checks.cpp` in sync.
 typedef enum {
   CUDF_TYPE_EMPTY = 0,
   CUDF_TYPE_INT8,

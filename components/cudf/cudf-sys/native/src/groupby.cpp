@@ -192,7 +192,11 @@ cudf_status_t cudf_groupby_aggregate(
       total += static_cast<int32_t>(rv.results.size());
     }
 
-    auto* col_array = new cudf_column_handle[total];
+    auto* col_array = new (std::nothrow) cudf_column_handle[total];
+    if (col_array == nullptr) {
+      set_error("failed to allocate groupby result column handle array");
+      return CUDF_ERROR_OUT_OF_MEMORY;
+    }
     int32_t idx = 0;
     for (auto& rv : result_values) {
       for (auto& col : rv.results) {
@@ -208,10 +212,6 @@ cudf_status_t cudf_groupby_aggregate(
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
-}
-
-void cudf_free_column_array(cudf_column_handle* array) {
-  delete[] array;
 }
 
 }  // extern "C"

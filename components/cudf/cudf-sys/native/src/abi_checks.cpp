@@ -1,3 +1,7 @@
+// Build-time ABI guardrails for enums shared with Rust.
+// Rust declares FFI enums with `#[repr(i32)]`, so the C/C++ shim must keep
+// them 32-bit and preserve the discriminants expected by Rust.
+
 #include "binary.h"
 #include "copying.h"
 #include "groupby.h"
@@ -44,6 +48,18 @@ static_assert(sizeof(cudf_stream_compaction_null_equality_t) == sizeof(int32_t),
 static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_nan_equality_t must be 32-bit");
 
+static_assert(CUDF_SUCCESS == 0);
+static_assert(CUDF_ERROR_INVALID_OPERATION == 1);
+static_assert(CUDF_ERROR_CUDA == 2);
+static_assert(CUDF_ERROR_OUT_OF_MEMORY == 3);
+static_assert(CUDF_ERROR_IO == 4);
+static_assert(CUDF_ERROR_TYPE == 5);
+static_assert(CUDF_ERROR_NULL == 6);
+static_assert(CUDF_ERROR_INDEX == 7);
+static_assert(CUDF_ERROR_UNKNOWN == 8);
+static_assert(CUDF_ERROR_FATAL_CUDA == 9);
+
+static_assert(CUDF_TYPE_EMPTY == static_cast<int>(cudf::type_id::EMPTY));
 static_assert(CUDF_TYPE_INT8 == static_cast<int>(cudf::type_id::INT8));
 static_assert(CUDF_TYPE_INT16 == static_cast<int>(cudf::type_id::INT16));
 static_assert(CUDF_TYPE_INT32 == static_cast<int>(cudf::type_id::INT32));
@@ -55,6 +71,22 @@ static_assert(CUDF_TYPE_UINT64 == static_cast<int>(cudf::type_id::UINT64));
 static_assert(CUDF_TYPE_FLOAT32 == static_cast<int>(cudf::type_id::FLOAT32));
 static_assert(CUDF_TYPE_FLOAT64 == static_cast<int>(cudf::type_id::FLOAT64));
 static_assert(CUDF_TYPE_BOOL8 == static_cast<int>(cudf::type_id::BOOL8));
+static_assert(CUDF_TYPE_TIMESTAMP_DAYS == static_cast<int>(cudf::type_id::TIMESTAMP_DAYS));
+static_assert(CUDF_TYPE_TIMESTAMP_SECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_SECONDS));
+static_assert(CUDF_TYPE_TIMESTAMP_MILLISECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_MILLISECONDS));
+static_assert(CUDF_TYPE_TIMESTAMP_MICROSECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_MICROSECONDS));
+static_assert(CUDF_TYPE_TIMESTAMP_NANOSECONDS == static_cast<int>(cudf::type_id::TIMESTAMP_NANOSECONDS));
+static_assert(CUDF_TYPE_DURATION_DAYS == static_cast<int>(cudf::type_id::DURATION_DAYS));
+static_assert(CUDF_TYPE_DURATION_SECONDS == static_cast<int>(cudf::type_id::DURATION_SECONDS));
+static_assert(CUDF_TYPE_DURATION_MILLISECONDS == static_cast<int>(cudf::type_id::DURATION_MILLISECONDS));
+static_assert(CUDF_TYPE_DURATION_MICROSECONDS == static_cast<int>(cudf::type_id::DURATION_MICROSECONDS));
+static_assert(CUDF_TYPE_DURATION_NANOSECONDS == static_cast<int>(cudf::type_id::DURATION_NANOSECONDS));
+static_assert(CUDF_TYPE_DICTIONARY32 == static_cast<int>(cudf::type_id::DICTIONARY32));
+static_assert(CUDF_TYPE_STRING == static_cast<int>(cudf::type_id::STRING));
+static_assert(CUDF_TYPE_LIST == static_cast<int>(cudf::type_id::LIST));
+static_assert(CUDF_TYPE_DECIMAL32 == static_cast<int>(cudf::type_id::DECIMAL32));
+static_assert(CUDF_TYPE_DECIMAL64 == static_cast<int>(cudf::type_id::DECIMAL64));
+static_assert(CUDF_TYPE_DECIMAL128 == static_cast<int>(cudf::type_id::DECIMAL128));
 static_assert(CUDF_TYPE_STRUCT == static_cast<int>(cudf::type_id::STRUCT));
 
 static_assert(CUDF_ORDER_ASCENDING == static_cast<int>(cudf::order::ASCENDING));
@@ -97,10 +129,59 @@ static_assert(CUDF_STREAM_COMPACTION_NAN_EQUALITY_UNEQUAL ==
               static_cast<int>(cudf::nan_equality::UNEQUAL));
 
 static_assert(CUDF_UNARY_SIN == static_cast<int>(cudf::unary_operator::SIN));
+static_assert(CUDF_UNARY_COS == static_cast<int>(cudf::unary_operator::COS));
+static_assert(CUDF_UNARY_TAN == static_cast<int>(cudf::unary_operator::TAN));
+static_assert(CUDF_UNARY_ARCSIN == static_cast<int>(cudf::unary_operator::ARCSIN));
+static_assert(CUDF_UNARY_ARCCOS == static_cast<int>(cudf::unary_operator::ARCCOS));
+static_assert(CUDF_UNARY_ARCTAN == static_cast<int>(cudf::unary_operator::ARCTAN));
+static_assert(CUDF_UNARY_SINH == static_cast<int>(cudf::unary_operator::SINH));
+static_assert(CUDF_UNARY_COSH == static_cast<int>(cudf::unary_operator::COSH));
+static_assert(CUDF_UNARY_TANH == static_cast<int>(cudf::unary_operator::TANH));
+static_assert(CUDF_UNARY_ARCSINH == static_cast<int>(cudf::unary_operator::ARCSINH));
+static_assert(CUDF_UNARY_ARCCOSH == static_cast<int>(cudf::unary_operator::ARCCOSH));
+static_assert(CUDF_UNARY_ARCTANH == static_cast<int>(cudf::unary_operator::ARCTANH));
+static_assert(CUDF_UNARY_EXP == static_cast<int>(cudf::unary_operator::EXP));
+static_assert(CUDF_UNARY_LOG == static_cast<int>(cudf::unary_operator::LOG));
+static_assert(CUDF_UNARY_SQRT == static_cast<int>(cudf::unary_operator::SQRT));
+static_assert(CUDF_UNARY_CBRT == static_cast<int>(cudf::unary_operator::CBRT));
+static_assert(CUDF_UNARY_CEIL == static_cast<int>(cudf::unary_operator::CEIL));
+static_assert(CUDF_UNARY_FLOOR == static_cast<int>(cudf::unary_operator::FLOOR));
+static_assert(CUDF_UNARY_ABS == static_cast<int>(cudf::unary_operator::ABS));
+static_assert(CUDF_UNARY_RINT == static_cast<int>(cudf::unary_operator::RINT));
+static_assert(CUDF_UNARY_BIT_COUNT == static_cast<int>(cudf::unary_operator::BIT_COUNT));
+static_assert(CUDF_UNARY_BIT_INVERT == static_cast<int>(cudf::unary_operator::BIT_INVERT));
+static_assert(CUDF_UNARY_NOT == static_cast<int>(cudf::unary_operator::NOT));
 static_assert(CUDF_UNARY_NEGATE == static_cast<int>(cudf::unary_operator::NEGATE));
 
 static_assert(CUDF_BINARY_ADD == static_cast<int>(cudf::binary_operator::ADD));
 static_assert(CUDF_BINARY_SUB == static_cast<int>(cudf::binary_operator::SUB));
 static_assert(CUDF_BINARY_MUL == static_cast<int>(cudf::binary_operator::MUL));
 static_assert(CUDF_BINARY_DIV == static_cast<int>(cudf::binary_operator::DIV));
+static_assert(CUDF_BINARY_TRUE_DIV == static_cast<int>(cudf::binary_operator::TRUE_DIV));
+static_assert(CUDF_BINARY_FLOOR_DIV == static_cast<int>(cudf::binary_operator::FLOOR_DIV));
+static_assert(CUDF_BINARY_MOD == static_cast<int>(cudf::binary_operator::MOD));
+static_assert(CUDF_BINARY_PMOD == static_cast<int>(cudf::binary_operator::PMOD));
+static_assert(CUDF_BINARY_PYMOD == static_cast<int>(cudf::binary_operator::PYMOD));
+static_assert(CUDF_BINARY_POW == static_cast<int>(cudf::binary_operator::POW));
+static_assert(CUDF_BINARY_INT_POW == static_cast<int>(cudf::binary_operator::INT_POW));
+static_assert(CUDF_BINARY_LOG_BASE == static_cast<int>(cudf::binary_operator::LOG_BASE));
+static_assert(CUDF_BINARY_ATAN2 == static_cast<int>(cudf::binary_operator::ATAN2));
+static_assert(CUDF_BINARY_SHIFT_LEFT == static_cast<int>(cudf::binary_operator::SHIFT_LEFT));
+static_assert(CUDF_BINARY_SHIFT_RIGHT == static_cast<int>(cudf::binary_operator::SHIFT_RIGHT));
+static_assert(CUDF_BINARY_SHIFT_RIGHT_UNSIGNED ==
+              static_cast<int>(cudf::binary_operator::SHIFT_RIGHT_UNSIGNED));
+static_assert(CUDF_BINARY_BITWISE_AND == static_cast<int>(cudf::binary_operator::BITWISE_AND));
+static_assert(CUDF_BINARY_BITWISE_OR == static_cast<int>(cudf::binary_operator::BITWISE_OR));
+static_assert(CUDF_BINARY_BITWISE_XOR == static_cast<int>(cudf::binary_operator::BITWISE_XOR));
+static_assert(CUDF_BINARY_LOGICAL_AND == static_cast<int>(cudf::binary_operator::LOGICAL_AND));
+static_assert(CUDF_BINARY_LOGICAL_OR == static_cast<int>(cudf::binary_operator::LOGICAL_OR));
+static_assert(CUDF_BINARY_EQUAL == static_cast<int>(cudf::binary_operator::EQUAL));
+static_assert(CUDF_BINARY_NOT_EQUAL == static_cast<int>(cudf::binary_operator::NOT_EQUAL));
+static_assert(CUDF_BINARY_LESS == static_cast<int>(cudf::binary_operator::LESS));
+static_assert(CUDF_BINARY_GREATER == static_cast<int>(cudf::binary_operator::GREATER));
+static_assert(CUDF_BINARY_LESS_EQUAL == static_cast<int>(cudf::binary_operator::LESS_EQUAL));
+static_assert(CUDF_BINARY_GREATER_EQUAL == static_cast<int>(cudf::binary_operator::GREATER_EQUAL));
+static_assert(CUDF_BINARY_NULL_EQUALS == static_cast<int>(cudf::binary_operator::NULL_EQUALS));
+static_assert(CUDF_BINARY_NULL_NOT_EQUALS == static_cast<int>(cudf::binary_operator::NULL_NOT_EQUALS));
+static_assert(CUDF_BINARY_NULL_MAX == static_cast<int>(cudf::binary_operator::NULL_MAX));
 static_assert(CUDF_BINARY_NULL_MIN == static_cast<int>(cudf::binary_operator::NULL_MIN));
