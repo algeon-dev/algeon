@@ -193,6 +193,13 @@ extern "C" {
 
     // -- Table (owning) ------------------------------------------------------
 
+    /// Create a table from owning column handles.
+    ///
+    /// On success, all input column handles are consumed and moved into the
+    /// returned table.
+    ///
+    /// On failure, no input columns are consumed and the caller retains
+    /// ownership of every input handle.
     pub fn cudf_table_create(
         columns: *mut cudf_column_handle,
         num_columns: i32,
@@ -232,7 +239,8 @@ extern "C" {
     /// handles. Each must be destroyed with `cudf_column_destroy`, and the
     /// array freed with `cudf_free_column_array`.
     ///
-    /// On failure, `table` is NOT consumed.
+    /// On failure, including output-array allocation failure, `table` is NOT
+    /// consumed and remains owned by the caller.
     pub fn cudf_table_release_columns(
         table: cudf_table_handle,
         out_columns: *mut *mut cudf_column_handle,
@@ -606,6 +614,12 @@ extern "C" {
     pub fn cudf_replace_nulls_scalar(
         input: cudf_column_view_handle,
         replacement: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_replace_nulls_column(
+        input: cudf_column_view_handle,
+        replacement: cudf_column_view_handle,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 

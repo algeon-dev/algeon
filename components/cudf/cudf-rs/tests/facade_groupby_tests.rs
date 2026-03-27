@@ -1,26 +1,19 @@
-//! Tests for façade GroupBy types: Agg, AggSpec, GroupBy, GroupByOptions.
-//!
-//! These test the cuDF-Python-like groupby API alongside the existing
-//! `GroupByBuilder`.
+//! Tests for the `DataFrame::groupby` façade API: `GroupBy`, `Agg`, `AggSpec`,
+//! `GroupByOptions`.
 
-use cudf::{
-    column::Column,
-    dataframe::DataFrame,
-    error::ErrorKind,
-    groupby::{Agg, AggSpec},
-};
+use cudf::{Agg, AggSpec, DataFrame, column::Column, error::ErrorKind};
 
 // ---------------------------------------------------------------------------
 // GroupBy::agg with AggSpec — basic aggregations
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_sum() {
+fn groupby_sum() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows().unwrap(), 2);
@@ -35,12 +28,12 @@ fn facade_groupby_sum() {
 }
 
 #[test]
-fn facade_groupby_mean() {
+fn groupby_mean() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Mean)]).unwrap();
+    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Mean)]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_mean"]);
 
@@ -53,13 +46,12 @@ fn facade_groupby_mean() {
 }
 
 #[test]
-fn facade_groupby_count() {
+fn groupby_count() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result =
-        df.facade_groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: false })]).unwrap();
+    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Count { include_nulls: false })]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_count"]);
 
@@ -76,12 +68,12 @@ fn facade_groupby_count() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_alias() {
+fn groupby_alias() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum).with_alias("total")]).unwrap();
+    let result = df.groupby(&["key"]).agg(&[AggSpec::new("value", Agg::Sum).with_alias("total")]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "total"]);
 
@@ -94,13 +86,13 @@ fn facade_groupby_alias() {
 }
 
 #[test]
-fn facade_groupby_deterministic_naming_without_alias() {
+fn groupby_deterministic_naming_without_alias() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let prices = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let df = DataFrame::new(vec!["id".into(), "price".into()], vec![keys, prices]).unwrap();
 
     let result = df
-        .facade_groupby(&["id"])
+        .groupby(&["id"])
         .agg(&[
             AggSpec::new("price", Agg::Sum),
             AggSpec::new("price", Agg::Mean),
@@ -124,14 +116,14 @@ fn facade_groupby_deterministic_naming_without_alias() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_multi_column_agg_ordering() {
+fn groupby_multi_column_agg_ordering() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
 
     let result = df
-        .facade_groupby(&["key"])
+        .groupby(&["key"])
         .agg(&[AggSpec::new("a", Agg::Sum), AggSpec::new("b", Agg::Sum), AggSpec::new("a", Agg::Min)])
         .unwrap();
 
@@ -157,13 +149,13 @@ fn facade_groupby_multi_column_agg_ordering() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_missing_value_column() {
+fn groupby_missing_value_column() {
     let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df
-        .facade_groupby(&["key"])
+        .groupby(&["key"])
         .agg(&[AggSpec::new("nonexistent", Agg::Sum)])
         .expect_err("expected error for nonexistent column");
 
@@ -173,13 +165,13 @@ fn facade_groupby_missing_value_column() {
 }
 
 #[test]
-fn facade_groupby_missing_key_column() {
+fn groupby_missing_key_column() {
     let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let err = df
-        .facade_groupby(&["missing_key"])
+        .groupby(&["missing_key"])
         .agg(&[AggSpec::new("value", Agg::Sum)])
         .expect_err("expected error for nonexistent key column");
 
@@ -187,12 +179,12 @@ fn facade_groupby_missing_key_column() {
 }
 
 #[test]
-fn facade_groupby_empty_agg_specs() {
+fn groupby_empty_agg_specs() {
     let keys = Column::from_slice(&[1i32, 2, 1]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let err = df.facade_groupby(&["key"]).agg(&[]).expect_err("expected error for empty aggregation specs");
+    let err = df.groupby(&["key"]).agg(&[]).expect_err("expected error for empty aggregation specs");
 
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
@@ -202,12 +194,12 @@ fn facade_groupby_empty_agg_specs() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_sum_shortcut() {
+fn groupby_sum_shortcut() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).sum(&["value"]).unwrap();
+    let result = df.groupby(&["key"]).sum(&["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_sum"]);
 
@@ -220,12 +212,12 @@ fn facade_groupby_sum_shortcut() {
 }
 
 #[test]
-fn facade_groupby_mean_shortcut() {
+fn groupby_mean_shortcut() {
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).mean(&["value"]).unwrap();
+    let result = df.groupby(&["key"]).mean(&["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_mean"]);
 
@@ -238,12 +230,12 @@ fn facade_groupby_mean_shortcut() {
 }
 
 #[test]
-fn facade_groupby_count_shortcut() {
+fn groupby_count_shortcut() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).count(&["value"]).unwrap();
+    let result = df.groupby(&["key"]).count(&["value"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "value_count"]);
 
@@ -260,13 +252,13 @@ fn facade_groupby_count_shortcut() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_sum_shortcut_multi_columns() {
+fn groupby_sum_shortcut_multi_columns() {
     let keys = Column::from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let b = Column::from_slice(&[1i64, 2, 3, 4]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "a".into(), "b".into()], vec![keys, a, b]).unwrap();
 
-    let result = df.facade_groupby(&["key"]).sum(&["a", "b"]).unwrap();
+    let result = df.groupby(&["key"]).sum(&["a", "b"]).unwrap();
 
     assert_eq!(result.column_names(), vec!["key", "a_sum", "b_sum"]);
 
@@ -286,15 +278,15 @@ fn facade_groupby_sum_shortcut_multi_columns() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn facade_groupby_with_options_include_null_keys() {
-    use cudf::groupby::GroupByOptions;
+fn groupby_with_options_include_null_keys() {
+    use cudf::GroupByOptions;
 
     let keys = Column::from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = Column::from_slice(&[10i64, 20, 30, 40]).unwrap();
     let df = DataFrame::new(vec!["key".into(), "value".into()], vec![keys, vals]).unwrap();
 
     let options = GroupByOptions::default().include_null_keys(true);
-    let result = df.facade_groupby(&["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+    let result = df.groupby(&["key"]).options(options).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.num_rows().unwrap(), 2);

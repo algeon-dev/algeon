@@ -1,11 +1,6 @@
 //! Tests for `DataFrame::merge` façade and `MergeOptions` / `JoinType`.
 
-use cudf::{
-    column::Column,
-    dataframe::DataFrame,
-    error::ErrorKind,
-    join::{JoinType, MergeOptions},
-};
+use cudf::{DataFrame, JoinType, MergeOptions, column::Column, error::ErrorKind};
 
 // ---------------------------------------------------------------------------
 // Helpers

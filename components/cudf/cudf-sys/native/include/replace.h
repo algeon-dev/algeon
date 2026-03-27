@@ -15,6 +15,12 @@ cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
                                         cudf_scalar_handle replacement,
                                         cudf_column_handle* out);
 
+/// Replace null values in a column with corresponding values from another column.
+/// Both columns must have the same type and length.
+cudf_status_t cudf_replace_nulls_column(cudf_column_view_handle input,
+                                        cudf_column_view_handle replacement,
+                                        cudf_column_handle* out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -37,6 +37,12 @@ impl std::fmt::Debug for Series {
     }
 }
 
+impl From<Column> for Series {
+    fn from(col: Column) -> Self {
+        Self::from_column(col)
+    }
+}
+
 impl Series {
     // -- Constructors --------------------------------------------------------
 

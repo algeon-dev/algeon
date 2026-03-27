@@ -1,12 +1,6 @@
 //! Tests for `SortOptions` and the façade `DataFrame::sort_values`.
 
-use cudf::{
-    column::Column,
-    dataframe::DataFrame,
-    error::ErrorKind,
-    series::Series,
-    sorting::{Order, SortOptions},
-};
+use cudf::{DataFrame, Series, SortOptions, column::Column, error::ErrorKind, sorting::Order};
 
 /// Helper: build a 5-row DataFrame with id (i32) and score (f64) columns.
 fn sample_df() -> DataFrame {

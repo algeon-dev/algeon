@@ -15,8 +15,14 @@ typedef void* cudf_table_handle;
 /// Opaque handle to a cudf::table_view (non-owning).
 typedef void* cudf_table_view_handle;
 
-/// Create a table from an array of column handles. The columns are *moved*
-/// into the table — callers must NOT destroy the column handles afterwards.
+/// Create a table from an array of column handles.
+///
+/// On success, all input column handles are consumed and moved into the
+/// returned table. The caller must NOT destroy any of the consumed column
+/// handles after a successful call.
+///
+/// On failure, no input columns are consumed. The caller retains ownership of
+/// every input column handle and remains responsible for destroying them.
 cudf_status_t cudf_table_create(cudf_column_handle* columns, int32_t num_columns,
                                 cudf_table_handle* out);
 
@@ -66,7 +72,9 @@ cudf_status_t cudf_table_view_from_column_views(
 /// `cudf_column_destroy`. The array itself must be freed with
 /// `cudf_free_column_array` declared below.
 ///
-/// On failure, `table` is NOT consumed (caller must still destroy it).
+/// On failure, including host-side allocation failure while preparing
+/// `out_columns`, `table` is NOT consumed and remains owned by the caller,
+/// who must still destroy it.
 cudf_status_t cudf_table_release_columns(cudf_table_handle table,
                                          cudf_column_handle** out_columns,
                                          int32_t* out_count);
