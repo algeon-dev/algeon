@@ -1,8 +1,8 @@
 //! Scalar value types.
 
 use std::{
-    ffi::{CStr, CString},
-    os::raw::c_void,
+    ffi::CString,
+    os::raw::{c_char, c_void},
     ptr::{self, NonNull},
 };
 
@@ -139,14 +139,16 @@ impl Scalar {
     ///
     /// Returns an error if the scalar is not a string type.
     pub fn string_value(&self) -> Result<String> {
-        let mut ptr: *const std::os::raw::c_char = ptr::null();
+        let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;
         error::check_status_in(
             unsafe { cudf_sys::cudf_scalar_string_value(self.handle.as_ptr(), &mut ptr, &mut len) },
             "scalar::string_value",
         )?;
-        let c_str = unsafe { CStr::from_ptr(ptr) };
-        Ok(c_str.to_string_lossy().into_owned())
+        let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+        let value = String::from_utf8_lossy(bytes).into_owned();
+        unsafe { cudf_sys::cudf_string_free(ptr) };
+        Ok(value)
     }
 }
 

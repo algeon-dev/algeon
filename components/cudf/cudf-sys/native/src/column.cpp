@@ -1,4 +1,5 @@
 #include "column.h"
+#include "execution_context_internal.hpp"
 #include "scalar.h"
 #include "shim_common.h"
 
@@ -96,14 +97,24 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
 
 cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out) {
+  return cudf_column_copy_ex(src, nullptr, out);
+}
+
+cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
+                                  cudf_exec_options_t const* options,
+                                  cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                  cudf::get_current_device_resource_ref(),
+                                  nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* col = static_cast<cudf::column*>(src);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto copy = std::make_unique<cudf::column>(*col, stream, mr);
+    auto copy = std::make_unique<cudf::column>(*col, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(copy.release());
     return CUDF_SUCCESS;
   }
@@ -258,9 +269,22 @@ cudf_status_t cudf_column_view_offset(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
                                        void* host_buf, size_t buf_size) {
+  return cudf_column_view_to_host_ex(handle, host_buf, buf_size, nullptr);
+}
+
+cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
+                                          void* host_buf,
+                                          size_t buf_size,
+                                          cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(host_buf, "host_buf is null");
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                  cudf::get_current_device_resource_ref(),
+                                  nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* view = static_cast<cudf::column_view*>(handle);
     auto dtype = view->type();
     if (!cudf::is_fixed_width(dtype)) {
@@ -273,12 +297,13 @@ cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
       set_error("Buffer too small");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    auto stream = cudf::get_default_stream();
     // Copy from device to host.
     CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->data<uint8_t>(),
-                                  needed, cudaMemcpyDeviceToHost, stream.value()));
+                                  needed, cudaMemcpyDeviceToHost,
+                                  exec.stream.value()));
     // This API promises the caller's host buffer is populated on return.
-    stream.synchronize();
+    exec.stream.synchronize();
+    cudf_record_synchronized_stream(exec.stream);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

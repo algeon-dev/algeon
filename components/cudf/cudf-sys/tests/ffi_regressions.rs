@@ -118,29 +118,153 @@ fn last_error_message() -> String {
 
 unsafe extern "C" {
     fn cudf_test_fail_next_table_release_columns_handle_array_alloc();
+    fn cudf_test_exec_reset_observation();
+    fn cudf_test_exec_last_stream_value(out: *mut usize) -> i32;
+    fn cudf_test_exec_last_sync_stream_value(out: *mut usize) -> i32;
+    fn cudf_test_exec_last_mr_raw(out: *mut *mut c_void) -> i32;
+    fn cudf_test_default_stream_value(out: *mut usize) -> i32;
+    fn cudf_test_stream_handle_value(handle: *mut c_void, out: *mut usize) -> i32;
+    fn cudf_test_current_device_resource_raw(out: *mut *mut c_void) -> i32;
+    fn cudf_test_memory_resource_create_stats(out: *mut *mut c_void) -> i32;
+    fn cudf_test_memory_resource_allocation_count(handle: *mut c_void, out: *mut i64) -> i32;
+}
+
+fn reset_exec_observation() {
+    unsafe { cudf_test_exec_reset_observation() };
+}
+
+fn last_exec_stream_value() -> usize {
+    let mut out = usize::MAX;
+    let st = unsafe { cudf_test_exec_last_stream_value(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn last_exec_sync_stream_value() -> usize {
+    let mut out = usize::MAX;
+    let st = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn last_exec_mr_raw() -> *mut c_void {
+    let mut out = ptr::null_mut();
+    let st = unsafe { cudf_test_exec_last_mr_raw(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn default_stream_value() -> usize {
+    let mut out = usize::MAX;
+    let st = unsafe { cudf_test_default_stream_value(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn stream_value(stream: *mut c_void) -> usize {
+    let mut out = usize::MAX;
+    let st = unsafe { cudf_test_stream_handle_value(stream, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn current_device_resource_raw() -> *mut c_void {
+    let mut out = ptr::null_mut();
+    let st = unsafe { cudf_test_current_device_resource_raw(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn make_stats_memory_resource() -> *mut c_void {
+    let mut out = ptr::null_mut();
+    let st = unsafe { cudf_test_memory_resource_create_stats(&mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+fn memory_resource_allocation_count(handle: *mut c_void) -> i64 {
+    let mut out = -1;
+    let st = unsafe { cudf_test_memory_resource_allocation_count(handle, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    out
+}
+
+fn owned_string_value(ptr: *mut c_char, len: i32) -> String {
+    assert!(!ptr.is_null());
+    let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
+    let value = String::from_utf8(bytes.to_vec()).unwrap();
+    unsafe { cudf_sys::cudf_string_free(ptr) };
+    value
 }
 
 #[test]
-fn test_scalar_string_value_stability_until_next_call() {
+fn test_scalar_string_value_round_trips_empty_and_non_empty_values() {
+    for expected in ["hello", ""] {
+        let s = std::ffi::CString::new(expected).unwrap();
+        let mut scalar: *mut c_void = ptr::null_mut();
+        let st = unsafe { cudf_sys::cudf_scalar_create_string(s.as_ptr(), 1, &mut scalar) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+
+        let mut out: *mut c_char = ptr::null_mut();
+        let mut len: i32 = -1;
+        let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut out, &mut len) };
+        assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+        assert_eq!(len as usize, expected.len());
+        assert_eq!(owned_string_value(out, len), expected);
+
+        unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
+    }
+}
+
+#[test]
+fn test_scalar_string_value_owned_output_survives_subsequent_shim_calls() {
     let s = std::ffi::CString::new("hello").unwrap();
     let mut scalar: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_scalar_create_string(s.as_ptr(), 1, &mut scalar) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
 
-    let mut ptr1: *const c_char = ptr::null();
-    let mut len1: i32 = 0;
+    let mut ptr1: *mut c_char = ptr::null_mut();
+    let mut len1: i32 = -1;
     let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut ptr1, &mut len1) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(!ptr1.is_null());
-    assert_eq!(len1, 5);
 
-    // Next shim call may invalidate pointer according to contract.
-    let mut ptr2: *const c_char = ptr::null();
-    let mut len2: i32 = 0;
+    let mut type_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
+    let st = unsafe { cudf_sys::cudf_scalar_type(scalar, &mut type_id) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(type_id, cudf_sys::cudf_type_id_t::CUDF_TYPE_STRING);
+
+    let mut ptr2: *mut c_char = ptr::null_mut();
+    let mut len2: i32 = -1;
     let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut ptr2, &mut len2) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
-    assert!(!ptr2.is_null());
-    assert_eq!(len2, 5);
+
+    assert_eq!(owned_string_value(ptr1, len1), "hello");
+    assert_eq!(owned_string_value(ptr2, len2), "hello");
+
+    unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
+}
+
+#[test]
+fn test_scalar_string_value_null_handle_initializes_outputs_before_failure() {
+    let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
+    let mut len: i32 = 123;
+    let st = unsafe { cudf_sys::cudf_scalar_string_value(ptr::null_mut(), &mut out, &mut len) };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
+    assert!(out.is_null());
+    assert_eq!(len, 0);
+}
+
+#[test]
+fn test_scalar_string_value_wrong_type_initializes_outputs_before_failure() {
+    let scalar = make_i32_scalar(42);
+
+    let mut out = std::ptr::NonNull::<c_char>::dangling().as_ptr();
+    let mut len: i32 = 123;
+    let st = unsafe { cudf_sys::cudf_scalar_string_value(scalar, &mut out, &mut len) };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_TYPE);
+    assert!(out.is_null());
+    assert_eq!(len, 0);
 
     unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
 }
@@ -224,6 +348,131 @@ fn test_stream_create_is_ready_and_synchronize_smoke() {
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     unsafe { cudf_sys::cudf_stream_destroy(stream) };
+}
+
+#[test]
+fn test_execution_context_defaults_match_legacy_column_copy() {
+    let col = make_i32_column(&[1, 2, 3, 4]);
+    let default_stream = default_stream_value();
+    let default_mr = current_device_resource_raw();
+
+    reset_exec_observation();
+    let mut legacy_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy(col, &mut legacy_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_mr_raw(), default_mr);
+    assert_eq!(read_i32_column_data(legacy_out, 4), vec![1, 2, 3, 4]);
+
+    reset_exec_observation();
+    let mut null_opts_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy_ex(col, ptr::null(), &mut null_opts_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_mr_raw(), default_mr);
+    assert_eq!(read_i32_column_data(null_opts_out, 4), vec![1, 2, 3, 4]);
+
+    let exec = cudf_sys::ExecutionContext::new();
+    reset_exec_observation();
+    let mut explicit_defaults_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy_ex(col, exec.as_raw(), &mut explicit_defaults_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_mr_raw(), default_mr);
+    assert_eq!(read_i32_column_data(explicit_defaults_out, 4), vec![1, 2, 3, 4]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(explicit_defaults_out);
+        cudf_sys::cudf_column_destroy(null_opts_out);
+        cudf_sys::cudf_column_destroy(legacy_out);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_stream_handle_has_no_effect_until_attached_to_execution_context() {
+    let col = make_i32_column(&[7, 8, 9]);
+    let stream = cudf_sys::Stream::new().unwrap();
+    let explicit_stream = stream_value(stream.as_raw());
+
+    reset_exec_observation();
+    let mut legacy_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy(col, &mut legacy_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_ne!(last_exec_stream_value(), explicit_stream);
+
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    reset_exec_observation();
+    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy_ex(col, exec.as_raw(), &mut explicit_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(explicit_out);
+        cudf_sys::cudf_column_destroy(legacy_out);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_view_to_host_execution_context_defaults_and_sync_contract() {
+    let col = make_i32_column(&[11, 12, 13]);
+    let view = make_column_view(col);
+    let default_stream = default_stream_value();
+
+    let mut legacy_buf = vec![0i32; 3];
+    reset_exec_observation();
+    let st = unsafe {
+        cudf_sys::cudf_column_view_to_host(
+            view,
+            legacy_buf.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(legacy_buf.as_slice()),
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(legacy_buf, vec![11, 12, 13]);
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_sync_stream_value(), default_stream);
+
+    let stream = cudf_sys::Stream::new().unwrap();
+    let explicit_stream = stream_value(stream.as_raw());
+    let exec = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let mut explicit_buf = vec![0i32; 3];
+    reset_exec_observation();
+    let st = unsafe {
+        cudf_sys::cudf_column_view_to_host_ex(
+            view,
+            explicit_buf.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(explicit_buf.as_slice()),
+            exec.as_raw(),
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(explicit_buf, vec![11, 12, 13]);
+    assert_eq!(last_exec_stream_value(), explicit_stream);
+    assert_eq!(last_exec_sync_stream_value(), explicit_stream);
+
+    let explicit_defaults = cudf_sys::ExecutionContext::new();
+    let mut default_opts_buf = vec![0i32; 3];
+    reset_exec_observation();
+    let st = unsafe {
+        cudf_sys::cudf_column_view_to_host_ex(
+            view,
+            default_opts_buf.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(default_opts_buf.as_slice()),
+            explicit_defaults.as_raw(),
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(default_opts_buf, vec![11, 12, 13]);
+    assert_eq!(last_exec_stream_value(), default_stream);
+    assert_eq!(last_exec_sync_stream_value(), default_stream);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
 }
 
 #[test]
@@ -933,6 +1182,41 @@ fn test_memory_resource_cuda_create_destroy_smoke() {
     assert!(!mr.is_null());
 
     unsafe { cudf_sys::cudf_memory_resource_destroy(mr) };
+}
+
+#[test]
+fn test_memory_resource_has_no_effect_until_attached_to_execution_context() {
+    let col = make_i32_column(&[21, 22, 23]);
+    let stats_mr = make_stats_memory_resource();
+    let default_mr = current_device_resource_raw();
+
+    reset_exec_observation();
+    let mut legacy_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy(col, &mut legacy_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(memory_resource_allocation_count(stats_mr), 0);
+    assert_eq!(last_exec_mr_raw(), default_mr);
+
+    let exec_opts = cudf_sys::cudf_exec_options_t {
+        struct_size: std::mem::size_of::<cudf_sys::cudf_exec_options_t>(),
+        stream: ptr::null_mut(),
+        mr: stats_mr,
+        flags: 0,
+        reserved: [0; 4],
+    };
+    reset_exec_observation();
+    let mut explicit_out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_column_copy_ex(col, &exec_opts, &mut explicit_out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(memory_resource_allocation_count(stats_mr) > 0);
+    assert_ne!(last_exec_mr_raw(), default_mr);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(explicit_out);
+        cudf_sys::cudf_column_destroy(legacy_out);
+        cudf_sys::cudf_memory_resource_destroy(stats_mr);
+        cudf_sys::cudf_column_destroy(col);
+    }
 }
 
 #[test]

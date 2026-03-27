@@ -4,6 +4,7 @@
 
 #include "binary.h"
 #include "copying.h"
+#include "execution_context.h"
 #include "groupby.h"
 #include "join.h"
 #include "reduction.h"
@@ -20,6 +21,7 @@
 #include <cudf/unary.hpp>
 
 #include <cstdint>
+#include <cstddef>
 #include <type_traits>
 
 static_assert(sizeof(cudf_status_t) == sizeof(int32_t), "cudf_status_t must be 32-bit");
@@ -47,6 +49,18 @@ static_assert(sizeof(cudf_stream_compaction_null_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_null_equality_t must be 32-bit");
 static_assert(sizeof(cudf_stream_compaction_nan_equality_t) == sizeof(int32_t),
               "cudf_stream_compaction_nan_equality_t must be 32-bit");
+static_assert(std::is_standard_layout_v<cudf_exec_options_t>,
+              "cudf_exec_options_t must be standard layout");
+static_assert(offsetof(cudf_exec_options_t, struct_size) == 0,
+              "cudf_exec_options_t::struct_size must be the first field");
+static_assert(offsetof(cudf_exec_options_t, stream) > offsetof(cudf_exec_options_t, struct_size),
+              "cudf_exec_options_t::stream must follow struct_size");
+static_assert(offsetof(cudf_exec_options_t, mr) > offsetof(cudf_exec_options_t, stream),
+              "cudf_exec_options_t::mr must follow stream");
+static_assert(sizeof(((cudf_exec_options_t*)nullptr)->flags) == sizeof(uint64_t),
+              "cudf_exec_options_t::flags must be 64-bit");
+static_assert(sizeof(((cudf_exec_options_t*)nullptr)->reserved) == sizeof(uint64_t) * 4,
+              "cudf_exec_options_t::reserved must expose four 64-bit slots");
 
 static_assert(CUDF_SUCCESS == 0);
 static_assert(CUDF_ERROR_INVALID_OPERATION == 1);

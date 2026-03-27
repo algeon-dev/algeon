@@ -13,10 +13,9 @@ typedef void* cudf_stream_handle;
 
 /// Create a new CUDA stream.
 ///
-/// This handle is currently a standalone control surface for
-/// `cudf_stream_synchronize` and `cudf_stream_is_ready` only. Other compute
-/// APIs in this shim do not accept a stream handle and continue to execute on
-/// cuDF's default stream.
+/// Use this handle directly with `cudf_stream_synchronize` /
+/// `cudf_stream_is_ready`, or attach it to a `cudf_exec_options_t` to direct
+/// `_ex` APIs onto an explicit stream.
 cudf_status_t cudf_stream_create(cudf_stream_handle* out);
 
 /// Destroy a CUDA stream handle.

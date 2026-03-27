@@ -82,6 +82,7 @@ add_library(
   src/scalar.cpp
   src/stream.cpp
   src/rmm.cpp
+  src/execution_context.cpp
   src/io_parquet.cpp
   src/io_csv.cpp
   src/sorting.cpp

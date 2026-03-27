@@ -1,4 +1,5 @@
 #include "stream.h"
+#include "handle_access.hpp"
 #include "shim_common.h"
 
 #include <cudf/utilities/default_stream.hpp>
@@ -9,6 +10,10 @@
 #include <cuda_runtime_api.h>
 
 #include <string>
+
+rmm::cuda_stream_view cudf_stream_view_from_handle(cudf_stream_handle handle) {
+  return static_cast<rmm::cuda_stream*>(handle)->view();
+}
 
 extern "C" {
 
@@ -33,8 +38,7 @@ void cudf_stream_destroy(cudf_stream_handle handle) {
 cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle) {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
-    auto* stream = static_cast<rmm::cuda_stream*>(handle);
-    stream->synchronize();
+    cudf_stream_view_from_handle(handle).synchronize();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -47,8 +51,8 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out) {
   *out = 0;
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
-    auto* stream = static_cast<rmm::cuda_stream*>(handle);
-    cudaError_t err = cudaStreamQuery(stream->view().value());
+    auto stream = cudf_stream_view_from_handle(handle);
+    cudaError_t err = cudaStreamQuery(stream.value());
     if (err == cudaSuccess) {
       *out = 1;
     } else if (err == cudaErrorNotReady) {

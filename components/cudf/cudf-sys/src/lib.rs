@@ -4,15 +4,18 @@
 //! C shim layer that wraps cuDF's C++ API. It is not intended to be used
 //! directly — use the `cudf` crate for a safe, idiomatic Rust API.
 //!
-//! The stream and memory-resource handle APIs exposed here are currently
-//! standalone utilities only. They let callers create, destroy, and inspect
-//! CUDA streams and RMM resources, but the data-processing entry points in
-//! this shim still execute on cuDF's default stream and current device memory
+//! Stream and memory-resource handles can be attached to a size-tagged
+//! execution contract (`cudf_exec_options_t`) for `_ex` entry points.
+//! Passing a null options pointer, or null handles inside the struct, keeps the
+//! legacy behavior of using cuDF's default stream and current device memory
 //! resource.
 
 #![allow(non_camel_case_types)]
 
-use std::os::raw::{c_char, c_void};
+use std::{
+    marker::PhantomData,
+    os::raw::{c_char, c_void},
+};
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -88,6 +91,156 @@ pub type cudf_stream_handle = *mut c_void;
 pub type cudf_memory_resource_handle = *mut c_void;
 
 // ---------------------------------------------------------------------------
+// Execution options and typed handle wrappers
+// ---------------------------------------------------------------------------
+
+pub const CUDF_EXEC_OPTIONS_RESERVED_SLOTS: usize = 4;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct cudf_exec_options_t {
+    pub struct_size: usize,
+    pub stream: cudf_stream_handle,
+    pub mr: cudf_memory_resource_handle,
+    pub flags: u64,
+    pub reserved: [u64; CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
+}
+
+impl cudf_exec_options_t {
+    pub const fn defaults() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>(),
+            stream: std::ptr::null_mut(),
+            mr: std::ptr::null_mut(),
+            flags: 0,
+            reserved: [0; CUDF_EXEC_OPTIONS_RESERVED_SLOTS],
+        }
+    }
+}
+
+impl Default for cudf_exec_options_t {
+    fn default() -> Self {
+        Self::defaults()
+    }
+}
+
+fn status_to_result(status: cudf_status_t) -> Result<(), cudf_status_t> {
+    if status == CUDF_SUCCESS { Ok(()) } else { Err(status) }
+}
+
+#[derive(Debug)]
+pub struct Stream {
+    handle: cudf_stream_handle,
+}
+
+impl Stream {
+    pub fn new() -> Result<Self, cudf_status_t> {
+        let mut handle = std::ptr::null_mut();
+        status_to_result(unsafe { cudf_stream_create(&mut handle) })?;
+        Ok(Self { handle })
+    }
+
+    pub fn as_raw(&self) -> cudf_stream_handle {
+        self.handle
+    }
+
+    pub fn synchronize(&self) -> Result<(), cudf_status_t> {
+        status_to_result(unsafe { cudf_stream_synchronize(self.handle) })
+    }
+
+    pub fn is_ready(&self) -> Result<bool, cudf_status_t> {
+        let mut out = 0;
+        status_to_result(unsafe { cudf_stream_is_ready(self.handle, &mut out) })?;
+        Ok(out != 0)
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { cudf_stream_destroy(self.handle) };
+            self.handle = std::ptr::null_mut();
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MemoryResource {
+    handle: cudf_memory_resource_handle,
+}
+
+impl MemoryResource {
+    pub fn new_cuda() -> Result<Self, cudf_status_t> {
+        let mut handle = std::ptr::null_mut();
+        status_to_result(unsafe { cudf_memory_resource_create_cuda(&mut handle) })?;
+        Ok(Self { handle })
+    }
+
+    pub fn new_pool(initial_pool_size: usize, maximum_pool_size: usize) -> Result<Self, cudf_status_t> {
+        let mut handle = std::ptr::null_mut();
+        status_to_result(unsafe {
+            cudf_memory_resource_create_pool(initial_pool_size, maximum_pool_size, &mut handle)
+        })?;
+        Ok(Self { handle })
+    }
+
+    pub fn as_raw(&self) -> cudf_memory_resource_handle {
+        self.handle
+    }
+}
+
+impl Drop for MemoryResource {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { cudf_memory_resource_destroy(self.handle) };
+            self.handle = std::ptr::null_mut();
+        }
+    }
+}
+
+/// Typed builder for `cudf_exec_options_t`.
+///
+/// Null stream / memory-resource fields preserve cuDF defaults.
+/// If an explicit memory resource is attached, it must outlive any outputs
+/// allocated through the `_ex` call that consumes this context.
+#[derive(Debug, Clone, Copy)]
+pub struct ExecutionContext<'a> {
+    raw: cudf_exec_options_t,
+    _stream: PhantomData<&'a Stream>,
+    _mr: PhantomData<&'a MemoryResource>,
+}
+
+impl<'a> ExecutionContext<'a> {
+    pub fn new() -> Self {
+        Self { raw: cudf_exec_options_t::defaults(), _stream: PhantomData, _mr: PhantomData }
+    }
+
+    pub fn with_stream(mut self, stream: &'a Stream) -> Self {
+        self.raw.stream = stream.as_raw();
+        self
+    }
+
+    pub fn with_memory_resource(mut self, mr: &'a MemoryResource) -> Self {
+        self.raw.mr = mr.as_raw();
+        self
+    }
+
+    pub fn raw(&self) -> &cudf_exec_options_t {
+        &self.raw
+    }
+
+    pub fn as_raw(&self) -> *const cudf_exec_options_t {
+        self.raw()
+    }
+}
+
+impl Default for ExecutionContext<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FFI declarations
 // ---------------------------------------------------------------------------
 
@@ -130,6 +283,12 @@ extern "C" {
 
     pub fn cudf_column_copy(src: cudf_column_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
+    pub fn cudf_column_copy_ex(
+        src: cudf_column_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_copy_from_view(src: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
     pub fn cudf_column_destroy(handle: cudf_column_handle);
@@ -164,6 +323,13 @@ extern "C" {
         handle: cudf_column_view_handle,
         host_buf: *mut c_void,
         buf_size: usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_view_to_host_ex(
+        handle: cudf_column_view_handle,
+        host_buf: *mut c_void,
+        buf_size: usize,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     pub fn cudf_column_view_null_mask_to_host(
@@ -282,20 +448,23 @@ extern "C" {
 
     pub fn cudf_scalar_value(handle: cudf_scalar_handle, out: *mut c_void) -> cudf_status_t;
 
-    pub fn cudf_scalar_string_value(
-        handle: cudf_scalar_handle,
-        out: *mut *const c_char,
-        len_out: *mut i32,
-    ) -> cudf_status_t;
+    /// Materialize a string scalar into an owned host buffer.
+    ///
+    /// On success, `out` receives a heap-allocated, null-terminated UTF-8
+    /// string and `len_out` receives its byte length excluding the terminator.
+    /// The caller must release `out` with [`cudf_string_free`].
+    pub fn cudf_scalar_string_value(handle: cudf_scalar_handle, out: *mut *mut c_char, len_out: *mut i32)
+        -> cudf_status_t;
+
+    /// Free an owned host string returned by this shim.
+    pub fn cudf_string_free(ptr: *mut c_char);
 
     // -- Stream --------------------------------------------------------------
 
     /// Create an owned CUDA stream handle.
     ///
-    /// This handle is currently a standalone control surface for
-    /// [`cudf_stream_synchronize`] and [`cudf_stream_is_ready`] only. Other
-    /// `cudf-sys` compute APIs do not accept a stream handle and continue to
-    /// execute on cuDF's default stream.
+    /// Attach this handle to [`ExecutionContext`] or [`cudf_exec_options_t`]
+    /// when calling `_ex` APIs to direct work onto an explicit stream.
     pub fn cudf_stream_create(out: *mut cudf_stream_handle) -> cudf_status_t;
 
     /// Destroy a CUDA stream created by [`cudf_stream_create`].
@@ -311,16 +480,14 @@ extern "C" {
 
     /// Create an owned CUDA-backed RMM memory resource handle.
     ///
-    /// This handle is not yet threaded through the compute APIs in this shim.
-    /// Regular cuDF operations still allocate via
-    /// `cudf::get_current_device_resource_ref()`.
+    /// Attach this handle to [`ExecutionContext`] or [`cudf_exec_options_t`]
+    /// when calling `_ex` APIs to direct allocations through it.
     pub fn cudf_memory_resource_create_cuda(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
 
     /// Create an owned pool memory resource handle.
     ///
-    /// Like [`cudf_memory_resource_create_cuda`], this creates a standalone
-    /// resource object but does not install it as the allocator used by other
-    /// `cudf-sys` entry points.
+    /// Like [`cudf_memory_resource_create_cuda`], this creates an owned
+    /// resource object without changing the process-global allocator.
     pub fn cudf_memory_resource_create_pool(
         initial_pool_size: usize,
         maximum_pool_size: usize,
