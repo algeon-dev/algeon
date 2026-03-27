@@ -14,36 +14,36 @@ use cudf::{column::Column, series::Series, types::TypeId};
 fn test_new_i32_preserves_dtype_and_len() {
     let s = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.len().unwrap(), 3);
-    assert!(!s.is_empty().unwrap());
+    assert_eq!(s.len(), 3);
+    assert!(!s.is_empty());
 }
 
 #[test]
 fn test_new_f64_preserves_dtype_and_len() {
     let s = Series::new::<f64>("scores", &[1.0, 2.0]).unwrap();
     assert_eq!(s.dtype().unwrap().id(), TypeId::Float64);
-    assert_eq!(s.len().unwrap(), 2);
+    assert_eq!(s.len(), 2);
 }
 
 #[test]
 fn test_new_bool_preserves_dtype_and_len() {
     let s = Series::new::<bool>("flags", &[true, false, true]).unwrap();
     assert_eq!(s.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(s.len().unwrap(), 3);
+    assert_eq!(s.len(), 3);
 }
 
 #[test]
 fn test_new_empty_slice() {
     let s = Series::new::<i32>("empty", &[]).unwrap();
-    assert_eq!(s.len().unwrap(), 0);
-    assert!(s.is_empty().unwrap());
+    assert_eq!(s.len(), 0);
+    assert!(s.is_empty());
 }
 
 #[test]
 fn test_new_nullable_preserves_null_count() {
     let s = Series::new_nullable::<i32>("x", &[10, 20, 30], &[true, false, true]).unwrap();
-    assert_eq!(s.len().unwrap(), 3);
-    assert_eq!(s.null_count().unwrap(), 1);
+    assert_eq!(s.len(), 3);
+    assert_eq!(s.null_count(), 1);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
 }
 
@@ -51,14 +51,14 @@ fn test_new_nullable_preserves_null_count() {
 fn test_from_strings() {
     let s = Series::from_strings("names", &["alice", "bob"]).unwrap();
     assert_eq!(s.dtype().unwrap().id(), TypeId::String);
-    assert_eq!(s.len().unwrap(), 2);
+    assert_eq!(s.len(), 2);
 }
 
 #[test]
 fn test_from_strings_nullable() {
     let s = Series::from_strings_nullable("names", &["a", "b", "c"], &[true, false, true]).unwrap();
-    assert_eq!(s.null_count().unwrap(), 1);
-    assert_eq!(s.len().unwrap(), 3);
+    assert_eq!(s.null_count(), 1);
+    assert_eq!(s.len(), 3);
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ fn test_name_returns_constructor_name() {
 #[test]
 fn test_from_column_has_no_name() {
     let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let s = Series::from_column(col);
+    let s = Series::from_column(col).unwrap();
     assert_eq!(s.name(), None);
 }
 
@@ -117,7 +117,7 @@ fn test_clone_shares_gpu_data() {
 
     // Both are independently usable.
     assert_eq!(cloned.name(), Some("vals"));
-    assert_eq!(cloned.len().unwrap(), 2);
+    assert_eq!(cloned.len(), 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -127,11 +127,11 @@ fn test_clone_shares_gpu_data() {
 #[test]
 fn test_from_column_round_trip() {
     let col = Column::from_slice(&[5i32, 10, 15]).unwrap();
-    let s = Series::from_column(col);
+    let s = Series::from_column(col).unwrap();
 
     assert_eq!(s.name(), None);
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int32);
-    assert_eq!(s.len().unwrap(), 3);
+    assert_eq!(s.len(), 3);
 
     // Access the underlying column.
     let view = s.column().view().unwrap();
@@ -142,7 +142,7 @@ fn test_from_column_round_trip() {
 fn test_from_column_arc_shares_arc() {
     let col = Arc::new(Column::from_slice(&[1i64, 2]).unwrap());
     let arc_clone = Arc::clone(&col);
-    let s = Series::from_column_arc(arc_clone);
+    let s = Series::from_column_arc(arc_clone).unwrap();
 
     // The Series should share the same Arc (same device pointer).
     let ptr_orig = col.view().unwrap().device_data_ptr().unwrap();
@@ -150,7 +150,7 @@ fn test_from_column_arc_shares_arc() {
     assert_eq!(ptr_orig, ptr_series);
 
     assert_eq!(s.dtype().unwrap().id(), TypeId::Int64);
-    assert_eq!(s.len().unwrap(), 2);
+    assert_eq!(s.len(), 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -176,7 +176,7 @@ fn test_gt_scalar_i32() {
     let mask = s.gt_scalar(5i32).unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
-    assert_eq!(mask.len().unwrap(), 3);
+    assert_eq!(mask.len(), 3);
     assert_eq!(mask.name(), None); // result is unnamed
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
@@ -459,4 +459,25 @@ fn test_arithmetic_mixed_types() {
 
     assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
     assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
+}
+
+#[test]
+fn test_add_operator_with_borrowed_operands() {
+    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+
+    let result = &a + &b;
+
+    assert_eq!(result.name(), None);
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+}
+
+#[test]
+fn test_add_operator_with_owned_and_borrowed_operands() {
+    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+
+    let result = a + &b;
+
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
 }

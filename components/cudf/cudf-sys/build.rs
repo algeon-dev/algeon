@@ -1,38 +1,28 @@
+mod build_support;
+
 use std::{env, path::PathBuf};
 
 fn main() {
     let native_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("native");
+    let mut config = cmake::Config::new(&native_dir);
 
-    // Build the C++ shim library using CMake.
-    let dst = cmake::Config::new(&native_dir).define("BUILD_SHARED_LIBS", "ON").build();
-
-    // Tell cargo to link against the built library.
-    println!("cargo:rustc-link-search=native={}/lib", dst.display());
-    println!("cargo:rustc-link-lib=dylib=cudf_rust");
-
-    // Also need libcudf itself and CUDA runtime on the link path.
-    // These are typically found via the environment or CMake.
-    if let Ok(cudf_install) = env::var("CUDF_INSTALL_DIR") {
-        println!("cargo:rustc-link-search=native={}/lib", cudf_install);
-        println!("cargo:rustc-link-search=native={}/lib64", cudf_install);
-    }
-    if let Ok(cudf_build) = env::var("CUDF_CPP_BUILD_DIR") {
-        println!("cargo:rustc-link-search=native={}", cudf_build);
-        println!("cargo:rustc-link-search=native={}/lib", cudf_build);
-    }
-    if let Ok(cuda_path) = env::var("CUDA_HOME") {
-        println!("cargo:rustc-link-search=native={}/lib64", cuda_path);
-    } else if let Ok(cuda_path) = env::var("CUDA_PATH") {
-        println!("cargo:rustc-link-search=native={}/lib64", cuda_path);
+    if let Some(cuda_static_runtime) =
+        build_support::normalized_cmake_bool_from_env("CUDA_STATIC_RUNTIME").unwrap_or_else(|error| panic!("{error}"))
+    {
+        config.define("CUDA_STATIC_RUNTIME", cuda_static_runtime);
     }
 
-    println!("cargo:rustc-link-lib=dylib=cudf");
-    println!("cargo:rustc-link-lib=dylib=cudart");
+    // Build the C++ shim library using CMake, then replay the link directives it emitted.
+    let dst = config.build();
+    for directive in build_support::read_cargo_link_directives(&dst).unwrap_or_else(|error| panic!("{error}")) {
+        println!("{directive}");
+    }
 
-    // Re-run if native sources change.
+    // Re-run if native sources or build inputs change.
     println!("cargo:rerun-if-changed=native/");
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
     println!("cargo:rerun-if-env-changed=CUDF_CPP_BUILD_DIR");
     println!("cargo:rerun-if-env-changed=CUDA_HOME");
     println!("cargo:rerun-if-env-changed=CUDA_PATH");
+    println!("cargo:rerun-if-env-changed=CUDA_STATIC_RUNTIME");
 }

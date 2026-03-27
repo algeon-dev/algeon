@@ -43,5 +43,5 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
         map.insert(name, Arc::new(col));
     }
 
-    Ok(DataFrame::from_raw_parts(map, row_count))
+    Ok(DataFrame::from_raw_parts(map, row_count as usize))
 }

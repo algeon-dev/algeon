@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for zero-copy metadata ops (cuDF-style signatures).
 //!
 //! Tests: drop, rename_columns, with_column, assign, and Arc sharing verification.
@@ -33,7 +34,7 @@ fn test_drop_removes_single_column() {
 
     assert_eq!(result.num_columns(), 2);
     assert_eq!(result.column_names(), &["id", "flag"]);
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -74,7 +75,7 @@ fn test_drop_all_columns_preserves_row_count() {
     let result = df.drop(["id", "score", "flag"]).unwrap();
 
     assert_eq!(result.num_columns(), 0);
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -96,7 +97,7 @@ fn test_rename_columns_single_pair() {
     let result = df.rename_columns([("id", "identifier")]).unwrap();
 
     assert_eq!(result.column_names(), &["identifier", "score", "flag"]);
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -179,7 +180,7 @@ fn test_select_accepts_iterators() {
     let result = df.select(vec!["flag", "id"]).unwrap();
 
     assert_eq!(result.column_names(), &["flag", "id"]);
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -188,7 +189,7 @@ fn test_select_empty_preserves_row_count() {
     let result = df.select(std::iter::empty::<&str>()).unwrap();
 
     assert_eq!(result.num_columns(), 0);
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 // ===========================================================================
@@ -204,7 +205,7 @@ fn test_with_column_adds_new_column() {
 
     assert_eq!(result.num_columns(), 4);
     assert!(result.column_names().contains(&"extra"));
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 #[test]
@@ -337,7 +338,7 @@ fn test_assign_empty_iterator_returns_same_schema() {
     let result = df.assign(std::iter::empty::<(&str, Series)>()).unwrap();
 
     assert_eq!(result.column_names(), df.column_names());
-    assert_eq!(result.num_rows().unwrap(), df.num_rows().unwrap());
+    assert_eq!(result.num_rows(), df.num_rows());
 }
 
 #[test]

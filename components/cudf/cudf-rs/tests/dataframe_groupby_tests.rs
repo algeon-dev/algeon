@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame groupby aggregation (legacy `GroupByBuilder` API).
 
 #![allow(deprecated)]
@@ -21,7 +22,7 @@ fn test_groupby_single_key_sum() {
 
     // Should have 2 columns: "key" and "value_sum"
     assert_eq!(result.num_columns(), 2);
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
 
     // Check schema names
     let names = result.column_names();
@@ -52,7 +53,7 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
 
     // Should have 3 columns: "key", "score_min", "score_max"
     assert_eq!(result.num_columns(), 3);
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
 
     let names = result.column_names();
     assert_eq!(names[0], "key");
@@ -83,7 +84,7 @@ fn test_groupby_multiple_keys() {
 
     // Should have 3 columns: "a", "b", "value_sum"
     assert_eq!(result.num_columns(), 3);
-    assert_eq!(result.num_rows().unwrap(), 4);
+    assert_eq!(result.num_rows(), 4);
 
     let names = result.column_names();
     assert_eq!(names[0], "a");

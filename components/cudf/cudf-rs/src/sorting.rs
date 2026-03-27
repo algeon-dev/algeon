@@ -346,8 +346,9 @@ impl SortOptions {
 
     fn resolve_null_orders(&self, num_keys: usize) -> Result<Option<Vec<NullOrder>>> {
         if self.nulls_first.is_empty() {
-            // None → cuDF default (nulls after).
-            Ok(None)
+            // Expand the facade default explicitly so behavior stays stable
+            // even if cuDF's implicit default changes across versions.
+            Ok(Some(vec![NullOrder::After; num_keys]))
         } else if self.nulls_first.len() == num_keys {
             Ok(Some(self.nulls_first.iter().map(|&nf| if nf { NullOrder::Before } else { NullOrder::After }).collect()))
         } else {

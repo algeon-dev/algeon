@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame concat, copy, rename, select.
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind};
@@ -19,7 +20,7 @@ fn test_concat_matching_schemas() {
     let result = df1.concat(&df2).unwrap();
 
     assert_eq!(result.num_columns(), 2);
-    assert_eq!(result.num_rows().unwrap(), 4);
+    assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
     let a_vals: Vec<i32> = result.column("a").unwrap().to_vec::<i32>().unwrap();
@@ -106,7 +107,7 @@ fn test_copy_preserves_schema_and_data() {
     let copy = df.clone();
 
     assert_eq!(copy.num_columns(), 2);
-    assert_eq!(copy.num_rows().unwrap(), 3);
+    assert_eq!(copy.num_rows(), 3);
     assert_eq!(copy.column_names(), vec!["x", "y"]);
 
     let x_vals: Vec<i32> = copy.column("x").unwrap().to_vec::<i32>().unwrap();
@@ -174,7 +175,7 @@ fn test_select_subset_of_columns() {
     let selected = df.select(&["c", "a"]).unwrap();
 
     assert_eq!(selected.num_columns(), 2);
-    assert_eq!(selected.num_rows().unwrap(), 2);
+    assert_eq!(selected.num_rows(), 2);
     assert_eq!(selected.column_names(), vec!["c", "a"]);
 
     let c_vals: Vec<i64> = selected.column("c").unwrap().to_vec::<i64>().unwrap();
@@ -316,7 +317,7 @@ fn test_select_all_columns_returns_full_copy() {
 
     let selected = df.select(&["a", "b"]).unwrap();
     assert_eq!(selected.num_columns(), 2);
-    assert_eq!(selected.num_rows().unwrap(), 2);
+    assert_eq!(selected.num_rows(), 2);
     assert_eq!(selected.column_names(), vec!["a", "b"]);
 
     let a_vals: Vec<i32> = selected.column("a").unwrap().to_vec::<i32>().unwrap();

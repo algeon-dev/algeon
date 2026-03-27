@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for DataFrame façade methods (Task D3).
 //!
 //! Methods under test: `dropna`, `fillna`, `drop_duplicates`.
@@ -51,7 +52,7 @@ fn test_dropna_default_drops_any_null_row() {
     //       row 2 = (3, 30.0, null) — null in tag → dropped
     //       row 3 = (4, null, "d") — null in score → dropped
     //       row 4 = (5, 50.0, null) — null in tag → dropped
-    assert_eq!(result.num_rows().unwrap(), 1);
+    assert_eq!(result.num_rows(), 1);
     assert_eq!(result.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1]);
 }
 
@@ -67,7 +68,7 @@ fn test_dropna_how_all_keeps_partial_nulls() {
 
     // "all" means drop only rows where ALL columns are null.
     // No row has ALL three columns null, so all 5 rows survive.
-    assert_eq!(result.num_rows().unwrap(), 5);
+    assert_eq!(result.num_rows(), 5);
 }
 
 // ===========================================================================
@@ -81,7 +82,7 @@ fn test_dropna_subset_single_column() {
     let result = df.dropna(opts).unwrap();
 
     // score is null at rows 1,3 → 3 rows survive.
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
 }
 
@@ -92,7 +93,7 @@ fn test_dropna_subset_multiple_columns() {
     let result = df.dropna(opts).unwrap();
 
     // Rows with any null in score OR tag: rows 1,2,3,4 → only row 0 survives.
-    assert_eq!(result.num_rows().unwrap(), 1);
+    assert_eq!(result.num_rows(), 1);
 }
 
 // ===========================================================================
@@ -112,7 +113,7 @@ fn test_dropna_threshold() {
     // Row 2: score=valid, tag=null → 1 non-null → drop
     // Row 3: score=null, tag=valid → 1 non-null → drop
     // Row 4: score=valid, tag=null → 1 non-null → drop
-    assert_eq!(result.num_rows().unwrap(), 1);
+    assert_eq!(result.num_rows(), 1);
     assert_eq!(result.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1]);
 }
 
@@ -124,7 +125,7 @@ fn test_dropna_threshold_one_keeps_most_rows() {
     let result = df.dropna(opts).unwrap();
 
     // All 5 rows have at least 1 non-null in {score, tag}.
-    assert_eq!(result.num_rows().unwrap(), 5);
+    assert_eq!(result.num_rows(), 5);
 }
 
 // ===========================================================================
@@ -151,7 +152,7 @@ fn test_dropna_empty_result_preserves_schema() {
     let df = DataFrame::from_columns([("a", a), ("b", b)]).unwrap();
 
     let result = df.dropna(Default::default()).unwrap();
-    assert_eq!(result.num_rows().unwrap(), 0);
+    assert_eq!(result.num_rows(), 0);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 }
 
@@ -165,7 +166,7 @@ fn test_drop_duplicates_default() {
     let result = df.drop_duplicates(Default::default()).unwrap();
 
     // 3 distinct rows: (1,10), (2,20), (3,30)
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 // ===========================================================================
@@ -179,7 +180,7 @@ fn test_drop_duplicates_subset() {
     let result = df.drop_duplicates(opts).unwrap();
 
     // 3 distinct values of "a": 1, 2, 3
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 // ===========================================================================
@@ -195,7 +196,7 @@ fn test_drop_duplicates_keep_first() {
     let opts = DistinctOptions::new().subset(&["a"]).keep(DuplicateKeepOption::KeepFirst);
     let result = df.drop_duplicates(opts).unwrap();
 
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     // First occurrence of a=1 has b=10.
     let mut rows: Vec<(i32, i32)> = result
         .column("a")
@@ -218,7 +219,7 @@ fn test_drop_duplicates_keep_last() {
     let opts = DistinctOptions::new().subset(&["a"]).keep(DuplicateKeepOption::KeepLast);
     let result = df.drop_duplicates(opts).unwrap();
 
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     let mut rows: Vec<(i32, i32)> = result
         .column("a")
         .unwrap()
@@ -241,7 +242,7 @@ fn test_drop_duplicates_keep_none() {
     let result = df.drop_duplicates(opts).unwrap();
 
     // a=1 appears twice → both removed; a=2 appears once → kept.
-    assert_eq!(result.num_rows().unwrap(), 1);
+    assert_eq!(result.num_rows(), 1);
     assert_eq!(result.column("a").unwrap().to_vec::<i32>().unwrap(), vec![2]);
 }
 
@@ -333,7 +334,7 @@ fn test_fillna_preserves_schema() {
     let result = df.fillna("score", &fill).unwrap();
 
     assert_eq!(result.column_names(), vec!["id", "score", "tag"]);
-    assert_eq!(result.num_rows().unwrap(), 5);
+    assert_eq!(result.num_rows(), 5);
 }
 
 // ===========================================================================
@@ -351,7 +352,7 @@ fn test_dropna_options_builder_chaining() {
     let result = df.dropna(subset_opts).unwrap();
     // how=all on just "score": drop only when score is null.
     // score null at rows 1,3 → 3 rows survive.
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 // ===========================================================================
@@ -364,7 +365,7 @@ fn test_distinct_options_default_is_keep_any() {
     let opts = DistinctOptions::new();
     let result = df.drop_duplicates(opts).unwrap();
     // Default keep=KeepAny → 3 distinct rows
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
 }
 
 // ===========================================================================

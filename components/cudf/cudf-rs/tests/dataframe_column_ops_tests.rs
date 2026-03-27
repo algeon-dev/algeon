@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame column-level convenience.
 
 use cudf::{
@@ -20,7 +21,7 @@ fn test_with_column_adds_new_column() {
     let result = df.with_column("b", new_col).unwrap();
 
     assert_eq!(result.num_columns(), 2);
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["a", "b"]);
 
     // Original column preserved.

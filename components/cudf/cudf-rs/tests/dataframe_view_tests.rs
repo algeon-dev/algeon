@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for `DataFrameView` — a named borrow of all DataFrame columns.
 //!
 //! All tests require a GPU.

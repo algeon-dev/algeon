@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for `SortOptions` and the façade `DataFrame::sort_values`.
 
 use cudf::{DataFrame, Series, SortOptions, column::Column, error::ErrorKind, sorting::Order};
@@ -190,6 +191,21 @@ fn test_sort_values_nulls_first() {
     // We check that non-null values appear at the end in correct order.
     assert_eq!(id_vals[2], 1);
     assert_eq!(id_vals[3], 2);
+}
+
+#[test]
+fn test_sort_values_default_places_nulls_last() {
+    let ids = Column::from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
+    let vals = Column::from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
+    let df = DataFrame::new(vec!["id".to_string(), "val".to_string()], vec![ids.unwrap(), vals.unwrap()]).unwrap();
+
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+    let id_col = sorted.column("id").unwrap();
+    let id_vals = id_col.to_vec::<i32>().unwrap();
+
+    assert_eq!(id_vals[0], 1);
+    assert_eq!(id_vals[1], 2);
+    assert_eq!(id_col.validity().unwrap().unwrap(), vec![true, true, false, false]);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame joins.
 
 use cudf::{column::Column, dataframe::DataFrame, error::ErrorKind};
@@ -32,7 +33,7 @@ fn test_inner_join_single_key() {
     let result = left.inner_join(&right, &["id"]).unwrap();
 
     // Inner join on id: matches are 2 and 3.
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     assert_eq!(result.num_columns(), 3);
 
     // Merged schema: left keys + left payload + right payload.
@@ -64,7 +65,7 @@ fn test_inner_join_multi_key() {
     let result = left.inner_join(&right, &["a", "b"]).unwrap();
 
     // Matches: (1,10) and (2,10) → 2 rows.
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     assert_eq!(result.column_names(), vec!["a", "b", "val", "rval"]);
 }
 
@@ -80,7 +81,7 @@ fn test_left_join_preserves_all_left_rows() {
     let result = left.left_join(&right, &["id"]).unwrap();
 
     // Left join: all 3 left rows preserved.
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
 }
 
@@ -96,7 +97,7 @@ fn test_full_join_preserves_all_rows() {
     let result = left.full_join(&right, &["id"]).unwrap();
 
     // Full join: keys 1,2,3,4 → 4 rows total.
-    assert_eq!(result.num_rows().unwrap(), 4);
+    assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
 }
 
@@ -159,7 +160,7 @@ fn test_inner_join_on_asymmetric_keys() {
     let result = left.inner_join_on(&right, &["left_id"], &["right_id"]).unwrap();
 
     // Inner join: matches on 2 and 3 → 2 rows.
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
 
     // Schema: left key name + left payload + right payload.
     assert_eq!(result.column_names(), vec!["left_id", "score", "value"]);
@@ -177,7 +178,7 @@ fn test_left_join_on_asymmetric_keys() {
     let result = left.left_join_on(&right, &["left_id"], &["right_id"]).unwrap();
 
     // All 3 left rows preserved.
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
     assert_eq!(result.column_names(), vec!["left_id", "score", "value"]);
 }
 
@@ -189,7 +190,7 @@ fn test_full_join_on_asymmetric_keys() {
     let result = left.full_join_on(&right, &["left_id"], &["right_id"]).unwrap();
 
     // Full join: keys 1, 2, 3, 4 → 4 rows.
-    assert_eq!(result.num_rows().unwrap(), 4);
+    assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["left_id", "score", "value"]);
 }
 
@@ -209,7 +210,7 @@ fn test_join_on_multi_key_asymmetric() {
     let result = left.inner_join_on(&right, &["la", "lb"], &["ra", "rb"]).unwrap();
 
     // Matches: (1,10) and (2,10) → 2 rows.
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     // Output uses left key names.
     assert_eq!(result.column_names(), vec!["la", "lb", "val", "rval"]);
 }

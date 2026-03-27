@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for `DataFrame::merge` façade and `MergeOptions` / `JoinType`.
 
 use cudf::{DataFrame, JoinType, MergeOptions, column::Column, error::ErrorKind};
@@ -90,7 +91,7 @@ fn test_inner_merge_same_key() {
     let result = left.merge(&right, MergeOptions::new().on(&["id"])).unwrap();
 
     // Inner: matches on 2 and 3 → 2 rows.
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     // Schema: shared key + left payload + right payload.
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
 
@@ -112,7 +113,7 @@ fn test_left_merge_asymmetric_keys() {
         left.merge(&right, MergeOptions::new().how_left().left_on(&["left_id"]).right_on(&["right_id"])).unwrap();
 
     // Left: all 3 left rows preserved.
-    assert_eq!(result.num_rows().unwrap(), 3);
+    assert_eq!(result.num_rows(), 3);
     // With left_on/right_on, both key columns are preserved in MVP.
     assert!(result.column("left_id").is_ok());
     assert!(result.column("right_id").is_ok());
@@ -171,7 +172,7 @@ fn test_full_merge() {
     let result = left.merge(&right, MergeOptions::new().how_full().on(&["id"])).unwrap();
 
     // Full: keys 1,2,3,4 → 4 rows.
-    assert_eq!(result.num_rows().unwrap(), 4);
+    assert_eq!(result.num_rows(), 4);
     assert_eq!(result.column_names(), vec!["id", "score", "value"]);
 }
 
@@ -258,7 +259,7 @@ fn test_merge_multi_key_inner() {
     let result = left.merge(&right, MergeOptions::new().on(&["a", "b"])).unwrap();
 
     // Matches: (1,10) and (2,10) → 2 rows.
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     assert_eq!(result.column_names(), vec!["a", "b", "val", "rval"]);
 }
 
@@ -281,9 +282,9 @@ fn test_merge_null_equality_unequal() {
 
     // With Equal: null == null matches → 3 rows.
     let eq_result = left.merge(&right, MergeOptions::new().on(&["id"]).null_equality(NullEquality::Equal)).unwrap();
-    assert_eq!(eq_result.num_rows().unwrap(), 3);
+    assert_eq!(eq_result.num_rows(), 3);
 
     // With Unequal: null != null → only rows with id=1 and id=3 match → 2 rows.
     let ne_result = left.merge(&right, MergeOptions::new().on(&["id"]).null_equality(NullEquality::Unequal)).unwrap();
-    assert_eq!(ne_result.num_rows().unwrap(), 2);
+    assert_eq!(ne_result.num_rows(), 2);
 }

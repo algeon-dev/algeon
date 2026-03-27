@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame Display and Debug formatting.
 
 use cudf::{column::Column, dataframe::DataFrame};

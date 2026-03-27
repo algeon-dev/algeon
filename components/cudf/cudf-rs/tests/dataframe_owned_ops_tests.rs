@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for consuming `_owned()` DataFrame method variants.
 //!
 //! Each `_owned` variant takes `self` by value. For libcudf-calling methods
@@ -26,7 +27,7 @@ fn test_filter_by_mask_owned_basic() {
     let mask = mask_col.view().unwrap();
     let filtered = df.filter_by_mask_owned(&mask).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 3);
+    assert_eq!(filtered.num_rows(), 3);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
     assert_eq!(filtered.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 40.0, 50.0]);
 }
@@ -96,7 +97,7 @@ fn test_filter_isin_owned_basic() {
     let values_view = values.view().unwrap();
     let filtered = df.filter_isin_owned("id", &values_view).unwrap();
 
-    assert_eq!(filtered.num_rows().unwrap(), 3); // rows with id 1,1,5
+    assert_eq!(filtered.num_rows(), 3); // rows with id 1,1,5
     let mut ids = filtered.column("id").unwrap().to_vec::<i32>().unwrap();
     ids.sort();
     assert_eq!(ids, vec![1, 1, 5]);
@@ -182,7 +183,7 @@ fn test_drop_nulls_any_owned_basic() {
 
     let cleaned = df.drop_nulls_any_owned(&["id"]).unwrap();
 
-    assert_eq!(cleaned.num_rows().unwrap(), 3);
+    assert_eq!(cleaned.num_rows(), 3);
     assert_eq!(cleaned.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 3, 5]);
     assert_eq!(cleaned.column("val").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 30.0, 50.0]);
 }
@@ -230,7 +231,7 @@ fn test_select_owned_basic() {
     let selected = df.select_owned(&["score"]).unwrap();
 
     assert_eq!(selected.num_columns(), 1);
-    assert_eq!(selected.num_rows().unwrap(), 5);
+    assert_eq!(selected.num_rows(), 5);
     assert_eq!(selected.column_names(), vec!["score"]);
     assert_eq!(selected.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 15.0, 50.0]);
 }
@@ -326,7 +327,7 @@ fn test_head_owned_basic() {
     let df = sample_df();
     let h = df.head_owned(2).unwrap();
 
-    assert_eq!(h.num_rows().unwrap(), 2);
+    assert_eq!(h.num_rows(), 2);
     assert_eq!(h.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 1]);
     assert_eq!(h.column("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0]);
 }
@@ -335,14 +336,14 @@ fn test_head_owned_basic() {
 fn test_head_owned_clamps_to_num_rows() {
     let df = sample_df();
     let h = df.head_owned(100).unwrap();
-    assert_eq!(h.num_rows().unwrap(), 5);
+    assert_eq!(h.num_rows(), 5);
 }
 
 #[test]
 fn test_head_owned_zero_rows() {
     let df = sample_df();
     let h = df.head_owned(0).unwrap();
-    assert_eq!(h.num_rows().unwrap(), 0);
+    assert_eq!(h.num_rows(), 0);
     assert_eq!(h.column_names(), vec!["id", "score"]);
 }
 
@@ -369,7 +370,7 @@ fn test_tail_owned_basic() {
     let df = sample_df();
     let t = df.tail_owned(2).unwrap();
 
-    assert_eq!(t.num_rows().unwrap(), 2);
+    assert_eq!(t.num_rows(), 2);
     assert_eq!(t.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 5]);
     assert_eq!(t.column("score").unwrap().to_vec::<f64>().unwrap(), vec![15.0, 50.0]);
 }
@@ -378,14 +379,14 @@ fn test_tail_owned_basic() {
 fn test_tail_owned_clamps_to_num_rows() {
     let df = sample_df();
     let t = df.tail_owned(100).unwrap();
-    assert_eq!(t.num_rows().unwrap(), 5);
+    assert_eq!(t.num_rows(), 5);
 }
 
 #[test]
 fn test_tail_owned_zero_rows() {
     let df = sample_df();
     let t = df.tail_owned(0).unwrap();
-    assert_eq!(t.num_rows().unwrap(), 0);
+    assert_eq!(t.num_rows(), 0);
     assert_eq!(t.column_names(), vec!["id", "score"]);
 }
 
@@ -423,7 +424,7 @@ fn test_owned_method_chaining() {
         .head_owned(2)
         .unwrap();
 
-    assert_eq!(result.num_rows().unwrap(), 2);
+    assert_eq!(result.num_rows(), 2);
     assert_eq!(result.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4]);
 }
 

@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for `SeriesView` — a named borrow of a GPU column.
 //!
 //! All tests require a GPU.
@@ -68,7 +69,7 @@ fn deref_device_ptr() {
 #[test]
 fn unnamed_series_view() {
     let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
-    let s = Series::from_column(col);
+    let s = Series::from_column(col).unwrap();
 
     let sv = s.view().unwrap();
     assert_eq!(sv.name(), None);

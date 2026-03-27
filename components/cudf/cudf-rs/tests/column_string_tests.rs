@@ -1,6 +1,6 @@
 //! Tests for string column creation and reading.
 
-use cudf::{column::Column, types::TypeId};
+use cudf::{column::Column, series::Series, types::TypeId};
 
 #[test]
 fn test_from_strings_basic() {
@@ -126,6 +126,34 @@ fn test_to_strings_rejects_non_string_column() {
     let view = col.view().unwrap();
 
     let result = view.to_strings();
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_eq!(err.kind(), cudf::ErrorKind::TypeError);
+}
+
+#[test]
+fn test_to_optional_strings_distinguishes_null_from_empty() {
+    let col = Column::from_strings_nullable(&["", "placeholder", ""], &[true, false, true]).unwrap();
+    let view = col.view().unwrap();
+
+    let result = view.to_optional_strings().unwrap();
+    assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);
+}
+
+#[test]
+fn test_series_to_optional_strings_distinguishes_null_from_empty() {
+    let series = Series::from_strings_nullable("names", &["", "placeholder", ""], &[true, false, true]).unwrap();
+
+    let result = series.to_optional_strings().unwrap();
+    assert_eq!(result, vec![Some(String::new()), None, Some(String::new())]);
+}
+
+#[test]
+fn test_to_optional_strings_rejects_non_string_column() {
+    let col = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+
+    let result = view.to_optional_strings();
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), cudf::ErrorKind::TypeError);

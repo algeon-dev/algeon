@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame ↔ Arrow RecordBatch interop (feature-gated behind "arrow").
 
 #![cfg(feature = "arrow")]
@@ -209,7 +210,7 @@ fn test_from_record_batch_creates_dataframe() {
 
     let df = dataframe_from_record_batch(&batch).unwrap();
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["x", "y"]);
 
     let x_vals: Vec<i32> = df.column("x").unwrap().to_vec::<i32>().unwrap();
@@ -351,7 +352,7 @@ fn test_from_record_batch_string_array() {
             .unwrap();
 
     let df = dataframe_from_record_batch(&batch).unwrap();
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column("name").unwrap().data_type().unwrap().id(), TypeId::String);
     let strs = df.column("name").unwrap().to_strings().unwrap();
     assert_eq!(strs, vec!["alpha", "beta", "gamma"]);
@@ -399,7 +400,7 @@ fn test_round_trip_empty_string_schema() {
 
     let df2 = dataframe_from_record_batch(&batch).unwrap();
     assert_eq!(df2.column_names(), vec!["s"]);
-    assert_eq!(df2.num_rows().unwrap(), 0);
+    assert_eq!(df2.num_rows(), 0);
     assert_eq!(df2.column("s").unwrap().data_type().unwrap().id(), TypeId::String);
     let strs = df2.column("s").unwrap().to_strings().unwrap();
     assert!(strs.is_empty());

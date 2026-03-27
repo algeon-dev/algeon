@@ -1,3 +1,4 @@
+#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame I/O integration.
 
 use cudf::{column::Column, dataframe::DataFrame, io::parquet::ParquetReaderOptions};
@@ -20,7 +21,7 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     let df = DataFrame::read_parquet(&path).unwrap();
 
     assert_eq!(df.num_columns(), 2);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
 
     let col = df.column("id").unwrap();
@@ -47,7 +48,7 @@ fn test_read_parquet_with_options() {
     let df = DataFrame::read_parquet_with_options(opts).unwrap();
 
     assert_eq!(df.num_columns(), 1);
-    assert_eq!(df.num_rows().unwrap(), 3);
+    assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["b"]);
 
     let col = df.column("b").unwrap();
@@ -68,7 +69,7 @@ fn test_write_parquet_preserves_schema() {
     // Read back and verify schema preserved.
     let df2 = DataFrame::read_parquet(&path).unwrap();
     assert_eq!(df2.column_names(), vec!["x", "y"]);
-    assert_eq!(df2.num_rows().unwrap(), 2);
+    assert_eq!(df2.num_rows(), 2);
 
     let col = df2.column("x").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![100, 200]);
@@ -94,7 +95,7 @@ fn test_roundtrip_create_write_read() {
     let df2 = DataFrame::read_parquet(&path).unwrap();
     assert_eq!(df2.column_names(), vec!["alpha", "beta", "gamma"]);
     assert_eq!(df2.num_columns(), 3);
-    assert_eq!(df2.num_rows().unwrap(), 3);
+    assert_eq!(df2.num_rows(), 3);
 
     assert_eq!(df2.column("alpha").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
     assert_eq!(df2.column("beta").unwrap().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);

@@ -58,7 +58,7 @@ impl std::fmt::Debug for SeriesView<'_> {
         ds.field("name", &self.name);
         let dtype_str = self.view.data_type().map(|dt| format!("{:?}", dt.id())).unwrap_or_else(|_| "?".to_string());
         ds.field("dtype", &dtype_str);
-        let len = self.view.len().unwrap_or(-1);
+        let len = self.view.len().unwrap_or(0);
         ds.field("len", &len);
         ds.finish()
     }
