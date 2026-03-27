@@ -12,9 +12,10 @@ extern "C" {
 cudf_status_t cudf_contains(cudf_column_view_handle haystack,
                             cudf_column_view_handle needles,
                             cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_NULL_CHECK(haystack, "haystack is null");
   CUDF_RUST_NULL_CHECK(needles, "needles is null");
-  CUDF_RUST_NULL_CHECK(out, "out is null");
   CUDF_RUST_TRY {
     auto* haystack_view = static_cast<cudf::column_view*>(haystack);
     auto* needles_view = static_cast<cudf::column_view*>(needles);

@@ -24,6 +24,7 @@ extern "C" {
 cudf_status_t cudf_memory_resource_create_cuda(
     cudf_memory_resource_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto owner = std::make_unique<memory_resource_owner>();
     owner->mr = std::make_unique<rmm::mr::cuda_memory_resource>();
@@ -40,6 +41,7 @@ cudf_status_t cudf_memory_resource_create_pool(
     size_t initial_pool_size, size_t maximum_pool_size,
     cudf_memory_resource_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto owner = std::make_unique<memory_resource_owner>();
     owner->upstream = std::make_shared<rmm::mr::cuda_memory_resource>();

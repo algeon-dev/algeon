@@ -18,6 +18,7 @@ cudf_status_t cudf_concatenate_columns(
     int32_t num_columns,
     cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (num_columns < 0) {
     set_error("num_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -25,7 +26,6 @@ cudf_status_t cudf_concatenate_columns(
   if (num_columns > 0) {
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     std::vector<cudf::column_view> views;
     views.reserve(num_columns);
@@ -50,6 +50,7 @@ cudf_status_t cudf_concatenate_tables(
     int32_t num_tables,
     cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (num_tables < 0) {
     set_error("num_tables must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -57,7 +58,6 @@ cudf_status_t cudf_concatenate_tables(
   if (num_tables > 0) {
     CUDF_RUST_NULL_CHECK(tables, "tables is null");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     std::vector<cudf::table_view> views;
     views.reserve(num_tables);

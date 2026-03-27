@@ -18,7 +18,8 @@
 //! - [`Table`] — An owned GPU table (collection of columns).
 //! - [`TableView`] — A non-owning borrow of a table.
 //! - [`Scalar`] — A single value on the GPU.
-//! - [`CudaStream`] — A CUDA stream for async operations.
+//! - [`CudaStream`] — A standalone CUDA stream wrapper; current compute APIs
+//!   still run on cuDF's default stream.
 //!
 //! # Example
 //!

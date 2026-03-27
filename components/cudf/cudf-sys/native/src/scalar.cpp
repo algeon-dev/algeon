@@ -30,6 +30,8 @@ static std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
                                      stream, mr);
   static_cast<cudf::numeric_scalar<T>*>(s.get())->set_value(val, stream);
   s->set_valid_async(is_valid, stream);
+  // The handle escapes without any associated stream token, so materialize the
+  // scalar state before returning it to the caller.
   stream.synchronize();
   return s;
 }
@@ -95,12 +97,17 @@ cudf_status_t cudf_scalar_create_string(const char* value, int32_t is_valid,
                                         cudf_scalar_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  if (is_valid != 0) {
+    CUDF_RUST_NULL_CHECK(value, "value is null");
+  }
   CUDF_RUST_TRY {
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
     std::string str_val = (value != nullptr) ? std::string(value) : std::string();
     auto s = cudf::make_string_scalar(str_val, stream, mr);
     s->set_valid_async(is_valid != 0, stream);
+    // The returned scalar is documented as immediately usable by subsequent
+    // shim calls, so wait for the async validity update to complete.
     stream.synchronize();
     *out = static_cast<cudf_scalar_handle>(s.release());
     return CUDF_SUCCESS;
@@ -114,8 +121,9 @@ void cudf_scalar_destroy(cudf_scalar_handle handle) {
 
 cudf_status_t cudf_scalar_type(cudf_scalar_handle handle,
                                cudf_type_id_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = CUDF_TYPE_EMPTY;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* s = static_cast<cudf::scalar*>(handle);
     *out = static_cast<cudf_type_id_t>(s->type().id());
@@ -125,8 +133,9 @@ cudf_status_t cudf_scalar_type(cudf_scalar_handle handle,
 }
 
 cudf_status_t cudf_scalar_is_valid(cudf_scalar_handle handle, int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* s = static_cast<cudf::scalar*>(handle);
     auto stream = cudf::get_default_stream();
@@ -175,11 +184,11 @@ cudf_status_t cudf_scalar_value(cudf_scalar_handle handle, void* out) {
 
 cudf_status_t cudf_scalar_string_value(cudf_scalar_handle handle,
                                        const char** out, int32_t* len_out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  CUDF_RUST_NULL_CHECK(len_out, "len_out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(len_out, "len_out is null");
   *len_out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* s = static_cast<cudf::scalar*>(handle);
     if (s->type().id() != cudf::type_id::STRING) {

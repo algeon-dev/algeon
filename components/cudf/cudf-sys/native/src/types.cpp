@@ -14,6 +14,7 @@ extern "C" {
 cudf_status_t cudf_data_type_create(cudf_type_id_t type_id,
                                     cudf_data_type_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto* dt = new cudf::data_type(to_cudf_type_id(type_id));
     *out = static_cast<cudf_data_type_handle>(dt);
@@ -26,6 +27,7 @@ cudf_status_t cudf_data_type_create_fixed_point(cudf_type_id_t type_id,
                                                 int32_t scale,
                                                 cudf_data_type_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   CUDF_RUST_TRY {
     auto* dt = new cudf::data_type(to_cudf_type_id(type_id), scale);
     *out = static_cast<cudf_data_type_handle>(dt);
@@ -40,8 +42,9 @@ void cudf_data_type_destroy(cudf_data_type_handle handle) {
 
 cudf_status_t cudf_data_type_id(cudf_data_type_handle handle,
                                 cudf_type_id_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = CUDF_TYPE_EMPTY;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* dt = static_cast<cudf::data_type*>(handle);
     *out = static_cast<cudf_type_id_t>(dt->id());
@@ -52,8 +55,9 @@ cudf_status_t cudf_data_type_id(cudf_data_type_handle handle,
 
 cudf_status_t cudf_data_type_scale(cudf_data_type_handle handle,
                                    int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* dt = static_cast<cudf::data_type*>(handle);
     *out = dt->scale();
@@ -64,6 +68,7 @@ cudf_status_t cudf_data_type_scale(cudf_data_type_handle handle,
 
 cudf_status_t cudf_type_size(cudf_type_id_t type_id, int32_t* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
   CUDF_RUST_TRY {
     auto dtype = cudf::data_type(to_cudf_type_id(type_id));
     if (cudf::is_fixed_width(dtype)) {

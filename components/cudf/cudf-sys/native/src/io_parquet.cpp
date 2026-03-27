@@ -20,8 +20,9 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    int32_t num_columns,
                                    int64_t skip_rows, int64_t num_rows,
                                    cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   if (num_columns < 0) {
     set_error("num_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -42,6 +43,10 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
     if (columns != nullptr && num_columns > 0) {
+      auto status = validate_c_string_array(columns, num_columns, "columns");
+      if (status != CUDF_SUCCESS) {
+        return status;
+      }
       std::vector<std::string> col_names;
       col_names.reserve(num_columns);
       for (int32_t i = 0; i < num_columns; ++i) {
@@ -89,6 +94,11 @@ cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
         cudf::io::parquet_writer_options::builder(sink, *view);
 
     if (column_names != nullptr && num_columns > 0) {
+      auto status =
+          validate_c_string_array(column_names, num_columns, "column_names");
+      if (status != CUDF_SUCCESS) {
+        return status;
+      }
       cudf::io::table_input_metadata table_meta(*view);
       for (int32_t i = 0; i < num_columns && i < static_cast<int32_t>(table_meta.column_metadata.size()); ++i) {
         table_meta.column_metadata[i].set_name(std::string(column_names[i]));
@@ -111,10 +121,13 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
                                                   cudf_table_handle* out_table,
                                                   char*** out_names,
                                                   int32_t* out_num_names) {
-  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   CUDF_RUST_NULL_CHECK(out_table, "out_table is null");
+  *out_table = nullptr;
   CUDF_RUST_NULL_CHECK(out_names, "out_names is null");
+  *out_names = nullptr;
   CUDF_RUST_NULL_CHECK(out_num_names, "out_num_names is null");
+  *out_num_names = 0;
+  CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
   if (num_columns < 0) {
     set_error("num_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -135,6 +148,10 @@ cudf_status_t cudf_io_read_parquet_with_metadata(const char* filepath,
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
     if (columns != nullptr && num_columns > 0) {
+      auto status = validate_c_string_array(columns, num_columns, "columns");
+      if (status != CUDF_SUCCESS) {
+        return status;
+      }
       std::vector<std::string> col_names;
       col_names.reserve(num_columns);
       for (int32_t i = 0; i < num_columns; ++i) {

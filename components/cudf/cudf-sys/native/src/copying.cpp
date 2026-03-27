@@ -14,10 +14,10 @@ cudf_status_t cudf_gather(cudf_table_view_handle input,
                           cudf_column_view_handle gather_map,
                           cudf_out_of_bounds_policy_t bounds_policy,
                           cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
-  CUDF_RUST_NULL_CHECK(gather_map, "gather_map is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
+  CUDF_RUST_NULL_CHECK(gather_map, "gather_map is null");
 
   cudf::out_of_bounds_policy policy;
   switch (bounds_policy) {

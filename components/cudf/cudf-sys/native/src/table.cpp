@@ -61,6 +61,7 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
                                 int32_t num_columns,
                                 cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (num_columns < 0) {
     set_error("num_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -68,7 +69,6 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
   if (num_columns > 0) {
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     auto const validation_status =
         validate_table_create_columns(columns, num_columns);
@@ -103,9 +103,9 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
 
 cudf_status_t cudf_table_copy(cudf_table_handle src,
                                cudf_table_handle* out) {
-  CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
     auto* tbl = static_cast<cudf::table*>(src);
     auto stream = cudf::get_default_stream();
@@ -123,8 +123,9 @@ void cudf_table_destroy(cudf_table_handle handle) {
 
 cudf_status_t cudf_table_view(cudf_table_handle handle,
                               cudf_table_view_handle* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* tbl = static_cast<cudf::table*>(handle);
     auto* view = new cudf::table_view(tbl->view());
@@ -140,8 +141,9 @@ void cudf_table_view_destroy(cudf_table_view_handle handle) {
 
 cudf_status_t cudf_table_view_num_columns(cudf_table_view_handle handle,
                                           int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(handle);
     *out = view->num_columns();
@@ -152,8 +154,9 @@ cudf_status_t cudf_table_view_num_columns(cudf_table_view_handle handle,
 
 cudf_status_t cudf_table_view_num_rows(cudf_table_view_handle handle,
                                        int32_t* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(handle);
     *out = view->num_rows();
@@ -165,8 +168,9 @@ cudf_status_t cudf_table_view_num_rows(cudf_table_view_handle handle,
 cudf_status_t cudf_table_view_column(cudf_table_view_handle handle,
                                      int32_t index,
                                      cudf_column_view_handle* out) {
-  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(handle);
     auto* col_view = new cudf::column_view(view->column(index));
@@ -180,6 +184,7 @@ cudf_status_t cudf_table_view_from_column_views(
     cudf_column_view_handle* column_views, int32_t num_columns,
     cudf_table_view_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
   if (num_columns < 0) {
     set_error("num_columns must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
@@ -187,7 +192,6 @@ cudf_status_t cudf_table_view_from_column_views(
   if (num_columns > 0) {
     CUDF_RUST_NULL_CHECK(column_views, "column_views is null");
   }
-  *out = nullptr;
   CUDF_RUST_TRY {
     std::vector<cudf::column_view> views;
     views.reserve(num_columns);
@@ -206,11 +210,11 @@ cudf_status_t cudf_table_view_from_column_views(
 cudf_status_t cudf_table_release_columns(cudf_table_handle table,
                                          cudf_column_handle** out_columns,
                                          int32_t* out_count) {
-  CUDF_RUST_NULL_CHECK(table, "table is null");
   CUDF_RUST_NULL_CHECK(out_columns, "out_columns is null");
-  CUDF_RUST_NULL_CHECK(out_count, "out_count is null");
   *out_columns = nullptr;
+  CUDF_RUST_NULL_CHECK(out_count, "out_count is null");
   *out_count = 0;
+  CUDF_RUST_NULL_CHECK(table, "table is null");
   CUDF_RUST_TRY {
     auto* tbl = static_cast<cudf::table*>(table);
     auto num_cols = static_cast<int32_t>(tbl->num_columns());

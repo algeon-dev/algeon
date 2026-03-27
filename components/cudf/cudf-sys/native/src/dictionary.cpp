@@ -19,9 +19,9 @@ extern "C" {
 cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
                                      cudf_type_id_t indices_type_id,
                                      cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto indices_type = cudf::data_type(to_cudf_type_id(indices_type_id));
@@ -36,9 +36,9 @@ cudf_status_t cudf_dictionary_encode(cudf_column_view_handle input,
 
 cudf_status_t cudf_dictionary_decode(cudf_column_view_handle dict_column,
                                      cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
@@ -53,9 +53,9 @@ cudf_status_t cudf_dictionary_decode(cudf_column_view_handle dict_column,
 
 cudf_status_t cudf_dictionary_keys(cudf_column_view_handle dict_column,
                                    cudf_column_view_handle* out) {
-  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
@@ -68,9 +68,9 @@ cudf_status_t cudf_dictionary_keys(cudf_column_view_handle dict_column,
 
 cudf_status_t cudf_dictionary_indices(cudf_column_view_handle dict_column,
                                       cudf_column_view_handle* out) {
-  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
@@ -84,10 +84,10 @@ cudf_status_t cudf_dictionary_indices(cudf_column_view_handle dict_column,
 cudf_status_t cudf_dictionary_set_keys(cudf_column_view_handle dict_column,
                                        cudf_column_view_handle keys,
                                        cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
-  CUDF_RUST_NULL_CHECK(keys, "keys is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  CUDF_RUST_NULL_CHECK(dict_column, "dict_column is null");
+  CUDF_RUST_NULL_CHECK(keys, "keys is null");
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(dict_column);
     cudf::dictionary_column_view dict_view(*view);
@@ -105,8 +105,8 @@ cudf_status_t cudf_dictionary_match_dictionaries(
     const cudf_column_view_handle* dict_columns,
     int32_t num_columns,
     cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(dict_columns, "dict_columns is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  CUDF_RUST_NULL_CHECK(dict_columns, "dict_columns is null");
   if (num_columns <= 0) {
     set_error("num_columns must be > 0");
     return CUDF_ERROR_INVALID_OPERATION;
