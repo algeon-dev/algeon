@@ -7,19 +7,16 @@
 //! # Example
 //!
 //! ```no_run
-//! use cudf::{column::Column, dataframe::DataFrame};
+//! use cudf::{DataFrame, Series};
 //!
-//! let ids = Column::from_slice(&[1i32, 2, 3]).unwrap();
-//! let scores = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+//! let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
+//! let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
 //!
-//! let df = DataFrame::new(
-//!     vec!["id".to_string(), "score".to_string()],
-//!     vec![ids, scores],
-//! )
-//! .unwrap();
+//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
 //! assert_eq!(df.num_columns(), 2);
-//! let col = df.column("score").unwrap();
+//! let score = df.series("score").unwrap();
+//! assert_eq!(score.len().unwrap(), 3);
 //! ```
 
 use std::{path::Path, sync::Arc};
@@ -1293,6 +1290,67 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
+    /// Return a new DataFrame with multiple columns renamed at once.
+    ///
+    /// Each pair in `renames` is `(old_name, new_name)`. All renames are
+    /// applied atomically: swapping two column names (e.g. `[("a","b"),("b","a")]`)
+    /// is supported.
+    ///
+    /// This is a zero-copy metadata operation — all columns are shared via
+    /// `Arc::clone`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Any source name is not in the schema
+    /// - Any target name would conflict with an existing column that is not
+    ///   itself being renamed
+    /// - Multiple renames produce the same target name
+    pub fn rename_columns<I, S1, S2>(&self, renames: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S1, S2)>,
+        S1: AsRef<str>,
+        S2: AsRef<str>,
+    {
+        let pairs: Vec<(String, String)> =
+            renames.into_iter().map(|(old, new)| (old.as_ref().to_string(), new.as_ref().to_string())).collect();
+
+        // Build a map from old name → new name.
+        let mut rename_map = std::collections::HashMap::with_capacity(pairs.len());
+        for (old, new) in &pairs {
+            if !self.columns.contains_key(old.as_str()) {
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
+                    .with_operation("dataframe::rename_columns")
+                    .with_context("column_name", old.clone()));
+            }
+            rename_map.insert(old.as_str(), new.as_str());
+        }
+
+        // Compute the full target name set and check for conflicts.
+        let mut target_names = std::collections::HashSet::with_capacity(self.columns.len());
+
+        for name in self.columns.keys() {
+            let target = if let Some(&new_name) = rename_map.get(name.as_str()) { new_name } else { name.as_str() };
+            if !target_names.insert(target.to_string()) {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("rename would produce duplicate column name '{}'", target),
+                )
+                .with_operation("dataframe::rename_columns")
+                .with_context("target_name", target.to_string()));
+            }
+        }
+
+        let mut new_columns = IndexMap::with_capacity(self.columns.len());
+        for (name, col) in &self.columns {
+            let target =
+                if let Some(&new_name) = rename_map.get(name.as_str()) { new_name.to_string() } else { name.clone() };
+            new_columns.insert(target, Arc::clone(col));
+        }
+
+        Ok(Self { columns: new_columns, row_count: self.row_count })
+    }
+
     /// Return a new DataFrame containing only the specified columns.
     ///
     /// The columns appear in the order given in `columns`. Each selected
@@ -1302,29 +1360,36 @@ impl DataFrame {
     ///
     /// Returns an error if any name in `columns` is not in the schema, or if
     /// `columns` contains duplicates.
-    pub fn select(&self, columns: &[&str]) -> Result<Self> {
+    pub fn select<I, S>(&self, columns: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let columns: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
+
         // Reject duplicates to keep schema (name -> index) consistent.
         let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        for &name in columns {
-            if !seen.insert(name) {
+        for name in &columns {
+            if !seen.insert(name.as_str()) {
                 return Err(Error::new(ErrorKind::InvalidOperation, "selected columns must be unique")
                     .with_operation("dataframe::select")
-                    .with_context("duplicate_column", name.to_string())
+                    .with_context("duplicate_column", name.clone())
                     .with_context("selected_column_count", columns.len().to_string()));
             }
         }
 
         let mut new_columns = IndexMap::with_capacity(columns.len());
-        for &name in columns {
-            let col = self.columns.get(name).ok_or_else(|| {
+        for name in &columns {
+            let col = self.columns.get(name.as_str()).ok_or_else(|| {
                 Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
                     .with_operation("dataframe::select")
-                    .with_context("column_name", name.to_string())
+                    .with_context("column_name", name.clone())
             })?;
-            new_columns.insert(name.to_string(), Arc::clone(col));
+            new_columns.insert(name.clone(), Arc::clone(col));
         }
 
-        Ok(Self { columns: new_columns, row_count: self.row_count })
+        let row_count = if new_columns.is_empty() { 0 } else { self.row_count };
+        Ok(Self { columns: new_columns, row_count })
     }
 
     /// Return a new DataFrame containing only the specified columns,
@@ -1355,6 +1420,51 @@ impl DataFrame {
         }
 
         Ok(Self { columns: new_columns, row_count: self.row_count })
+    }
+
+    /// Return a new DataFrame with the specified columns removed.
+    ///
+    /// Columns not in `columns` are preserved in their original order via
+    /// `Arc::clone` (zero GPU copy).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any name in `columns` is not in the schema.
+    pub fn drop<I>(&self, columns: I) -> Result<Self>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        let to_drop: std::collections::HashSet<String> = columns.into_iter().map(|s| s.as_ref().to_string()).collect();
+
+        for name in &to_drop {
+            if !self.columns.contains_key(name.as_str()) {
+                return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", name))
+                    .with_operation("dataframe::drop")
+                    .with_context("column_name", name.clone()));
+            }
+        }
+
+        let mut new_columns = IndexMap::with_capacity(self.columns.len().saturating_sub(to_drop.len()));
+        for (name, col) in &self.columns {
+            if !to_drop.contains(name.as_str()) {
+                new_columns.insert(name.clone(), Arc::clone(col));
+            }
+        }
+
+        let row_count = if new_columns.is_empty() { 0 } else { self.row_count };
+        Ok(Self { columns: new_columns, row_count })
+    }
+
+    /// Return a new DataFrame with the specified columns removed.
+    ///
+    /// Alias for [`drop`](Self::drop) kept for compatibility.
+    pub fn drop_columns<I>(&self, columns: I) -> Result<Self>
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        self.drop(columns)
     }
 
     // -- Column-level convenience --------------------------------------------
@@ -1424,6 +1534,86 @@ impl DataFrame {
         self.columns.insert(name.to_string(), Arc::new(col));
 
         Ok(Self { columns: self.columns, row_count })
+    }
+
+    /// Return a new DataFrame with the given [`Series`] added or replaced.
+    ///
+    /// Like [`with_column`](Self::with_column), but accepts a `Series`
+    /// and shares the `Arc<Column>` directly (zero GPU copy for the
+    /// inserted column as well as all unchanged columns).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the row counts do not match.
+    pub fn with_column_series(&self, name: &str, series: Series) -> Result<Self> {
+        let series_rows = series.len()?;
+        let self_rows = self.num_rows()?;
+
+        if self.num_columns() > 0 && series_rows != self_rows {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                format!("series has {} rows but DataFrame has {} rows", series_rows, self_rows),
+            )
+            .with_operation("dataframe::with_column_series")
+            .with_context("column_name", name.to_string())
+            .with_context("series_rows", series_rows.to_string())
+            .with_context("dataframe_rows", self_rows.to_string()));
+        }
+
+        let mut new_columns = self.columns.clone();
+        new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
+
+        let row_count = if self.num_columns() > 0 { self.row_count } else { series_rows };
+        Ok(Self { columns: new_columns, row_count })
+    }
+
+    /// Return a new DataFrame with the given [`Series`] added or replaced.
+    ///
+    /// Alias for [`with_column_series`](Self::with_column_series) kept for compatibility.
+    pub fn with_series(&self, name: &str, series: Series) -> Result<Self> {
+        self.with_column_series(name, series)
+    }
+
+    /// Return a new DataFrame with multiple columns added or replaced from
+    /// `(name, Series)` pairs.
+    ///
+    /// For each pair, if `name` already exists the column is replaced;
+    /// otherwise it is appended. All unchanged columns are shared via
+    /// `Arc::clone` (zero GPU copy).
+    ///
+    /// If the same name appears more than once in `pairs`, the last value wins.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any Series has a different row count than the
+    /// DataFrame.
+    pub fn assign<I, S>(&self, pairs: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S, Series)>,
+        S: AsRef<str>,
+    {
+        let mut new_columns = self.columns.clone();
+        let self_rows = self.num_rows()?;
+
+        for (name, series) in pairs {
+            let name = name.as_ref();
+            let series_rows = series.len()?;
+
+            if self.num_columns() > 0 && series_rows != self_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
+                )
+                .with_operation("dataframe::assign")
+                .with_context("column_name", name.to_string())
+                .with_context("series_rows", series_rows.to_string())
+                .with_context("dataframe_rows", self_rows.to_string()));
+            }
+
+            new_columns.insert(name.to_string(), Arc::clone(series.column_arc()));
+        }
+
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     /// Return a new DataFrame with null values in the named column replaced
