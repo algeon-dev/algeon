@@ -200,12 +200,58 @@ fn test_eq_scalar_i32() {
 }
 
 #[test]
-fn test_eq_scalar_string() {
+fn test_eq_scalar_str() {
     let s = Series::from_strings("status", &["active", "inactive", "active"]).unwrap();
-    let mask = s.eq_scalar_string("active").unwrap();
+    let mask = s.eq_scalar_str("active").unwrap();
 
     assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
     assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn test_ne_scalar_str() {
+    let s = Series::from_strings("status", &["active", "inactive", "active"]).unwrap();
+    let mask = s.ne_scalar_str("active").unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_gt_scalar_str() {
+    // Lexicographic: "banana" > "apple", "cherry" > "apple", "apple" == "apple"
+    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let mask = s.gt_scalar_str("apple").unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
+}
+
+#[test]
+fn test_lt_scalar_str() {
+    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let mask = s.lt_scalar_str("banana").unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_ge_scalar_str() {
+    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let mask = s.ge_scalar_str("banana").unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
+}
+
+#[test]
+fn test_le_scalar_str() {
+    let s = Series::from_strings("fruit", &["apple", "banana", "cherry"]).unwrap();
+    let mask = s.le_scalar_str("banana").unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
 #[test]

@@ -12,6 +12,38 @@
 
 #include <memory>
 
+namespace {
+
+cudf_status_t to_scan_type(cudf_scan_type_t input, cudf::scan_type* out) {
+  switch (input) {
+    case CUDF_SCAN_INCLUSIVE:
+      *out = cudf::scan_type::INCLUSIVE;
+      return CUDF_SUCCESS;
+    case CUDF_SCAN_EXCLUSIVE:
+      *out = cudf::scan_type::EXCLUSIVE;
+      return CUDF_SUCCESS;
+    default:
+      set_error("invalid scan_type");
+      return CUDF_ERROR_INVALID_OPERATION;
+  }
+}
+
+cudf_status_t to_null_policy(int32_t input, cudf::null_policy* out) {
+  switch (input) {
+    case 0:
+      *out = cudf::null_policy::EXCLUDE;
+      return CUDF_SUCCESS;
+    case 1:
+      *out = cudf::null_policy::INCLUDE;
+      return CUDF_SUCCESS;
+    default:
+      set_error("invalid null_policy");
+      return CUDF_ERROR_INVALID_OPERATION;
+  }
+}
+
+}  // namespace
+
 extern "C" {
 
 cudf_status_t cudf_reduce_aggregation_create(
@@ -148,15 +180,19 @@ cudf_status_t cudf_scan(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(agg, "agg is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
+  cudf::scan_type cudf_scan_type;
+  auto status = to_scan_type(scan_type, &cudf_scan_type);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
+  cudf::null_policy cudf_null_policy;
+  status = to_null_policy(null_policy, &cudf_null_policy);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto* scan_agg = static_cast<cudf::scan_aggregation*>(agg);
-    auto cudf_scan_type = (scan_type == CUDF_SCAN_INCLUSIVE)
-                              ? cudf::scan_type::INCLUSIVE
-                              : cudf::scan_type::EXCLUSIVE;
-    auto cudf_null_policy = (null_policy == 1)
-                                ? cudf::null_policy::INCLUDE
-                                : cudf::null_policy::EXCLUDE;
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
 

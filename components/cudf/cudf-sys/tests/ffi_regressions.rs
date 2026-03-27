@@ -28,6 +28,14 @@ fn make_empty_i32_column() -> *mut c_void {
     out
 }
 
+fn make_empty_table() -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_table_create(ptr::null_mut(), 0, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
 fn make_column_view(col: *mut c_void) -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_column_view(col, &mut out) };
@@ -60,6 +68,29 @@ fn read_i32_column_data(col: *mut c_void, expected_len: usize) -> Vec<i32> {
 fn make_table_view(tbl: *mut c_void) -> *mut c_void {
     let mut out: *mut c_void = ptr::null_mut();
     let st = unsafe { cudf_sys::cudf_table_view(tbl, &mut out) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+fn make_i32_scalar(value: i32) -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_scalar_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            &value as *const i32 as *const c_void,
+            1,
+            &mut out,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!out.is_null());
+    out
+}
+
+fn make_i32_data_type() -> *mut c_void {
+    let mut out: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_data_type_create(cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32, &mut out) };
     assert_eq!(st, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     out
@@ -556,6 +587,265 @@ fn test_groupby_aggregation_count_mismatch_rejected() {
         cudf_sys::cudf_column_destroy(val_col);
         cudf_sys::cudf_table_view_destroy(keys_view);
         cudf_sys::cudf_table_destroy(keys_tbl);
+    }
+}
+
+#[test]
+fn test_aggregation_create_count_invalid_null_policy_rejected() {
+    let mut agg: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_aggregation_create_count(99, &mut agg) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(agg.is_null());
+    assert!(last_error_message().contains("invalid null_policy"));
+}
+
+#[test]
+fn test_groupby_invalid_keys_null_policy_rejected() {
+    let key_col = make_i32_column(&[1, 1, 2]);
+    let val_col = make_i32_column(&[10, 20, 30]);
+    let keys_tbl = make_table_from_one_column(key_col);
+    let keys_view = make_table_view(keys_tbl);
+    let val_view = make_column_view(val_col);
+    let values = [val_view];
+    let agg_counts = [1i32];
+
+    let mut agg: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_aggregation_create(0, &mut agg) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!agg.is_null());
+    let aggregations = [agg];
+
+    let mut out_keys: *mut c_void = ptr::null_mut();
+    let mut out_vals: *mut *mut c_void = ptr::null_mut();
+    let mut out_total: i32 = -1;
+    let status = unsafe {
+        cudf_sys::cudf_groupby_aggregate(
+            keys_view,
+            values.as_ptr(),
+            aggregations.as_ptr(),
+            agg_counts.as_ptr(),
+            1,
+            1,
+            99,
+            &mut out_keys,
+            &mut out_vals,
+            &mut out_total,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_keys.is_null());
+    assert!(out_vals.is_null());
+    assert_eq!(out_total, 0);
+    assert!(last_error_message().contains("invalid keys_null_policy"));
+
+    unsafe {
+        cudf_sys::cudf_aggregation_destroy(agg);
+        cudf_sys::cudf_column_view_destroy(val_view);
+        cudf_sys::cudf_column_destroy(val_col);
+        cudf_sys::cudf_table_view_destroy(keys_view);
+        cudf_sys::cudf_table_destroy(keys_tbl);
+    }
+}
+
+fn assert_join_invalid_null_equality_rejected(
+    join_fn: unsafe extern "C" fn(
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        *mut c_void,
+        i32,
+        *mut *mut c_void,
+        *mut *mut c_void,
+    ) -> i32,
+) {
+    let left_key_col = make_i32_column(&[1, 2]);
+    let right_key_col = make_i32_column(&[2, 3]);
+    let left_keys_tbl = make_table_from_one_column(left_key_col);
+    let right_keys_tbl = make_table_from_one_column(right_key_col);
+    let left_keys_view = make_table_view(left_keys_tbl);
+    let right_keys_view = make_table_view(right_keys_tbl);
+    let left_payload_tbl = make_empty_table();
+    let right_payload_tbl = make_empty_table();
+    let left_payload_view = make_table_view(left_payload_tbl);
+    let right_payload_view = make_table_view(right_payload_tbl);
+
+    let mut out_left: *mut c_void = ptr::null_mut();
+    let mut out_right: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        join_fn(
+            left_keys_view,
+            right_keys_view,
+            left_payload_view,
+            right_payload_view,
+            99,
+            &mut out_left,
+            &mut out_right,
+        )
+    };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out_left.is_null());
+    assert!(out_right.is_null());
+    assert!(last_error_message().contains("invalid null_equality"));
+
+    unsafe {
+        cudf_sys::cudf_table_view_destroy(right_payload_view);
+        cudf_sys::cudf_table_view_destroy(left_payload_view);
+        cudf_sys::cudf_table_view_destroy(right_keys_view);
+        cudf_sys::cudf_table_view_destroy(left_keys_view);
+        cudf_sys::cudf_table_destroy(right_payload_tbl);
+        cudf_sys::cudf_table_destroy(left_payload_tbl);
+        cudf_sys::cudf_table_destroy(right_keys_tbl);
+        cudf_sys::cudf_table_destroy(left_keys_tbl);
+    }
+}
+
+#[test]
+fn test_inner_join_invalid_null_equality_rejected() {
+    assert_join_invalid_null_equality_rejected(cudf_sys::cudf_inner_join);
+}
+
+#[test]
+fn test_left_join_invalid_null_equality_rejected() {
+    assert_join_invalid_null_equality_rejected(cudf_sys::cudf_left_join);
+}
+
+#[test]
+fn test_full_join_invalid_null_equality_rejected() {
+    assert_join_invalid_null_equality_rejected(cudf_sys::cudf_full_join);
+}
+
+#[test]
+fn test_scan_invalid_scan_type_rejected() {
+    let col = make_i32_column(&[1, 2, 3]);
+    let view = make_column_view(col);
+    let mut agg: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_scan_aggregation_create(0, &mut agg) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!agg.is_null());
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_scan(view, agg, 99, 0, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid scan_type"));
+
+    unsafe {
+        cudf_sys::cudf_scan_aggregation_destroy(agg);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_scan_invalid_null_policy_rejected() {
+    let col = make_i32_column(&[1, 2, 3]);
+    let view = make_column_view(col);
+    let mut agg: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_scan_aggregation_create(0, &mut agg) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!agg.is_null());
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_scan(view, agg, 0, 99, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid null_policy"));
+
+    unsafe {
+        cudf_sys::cudf_scan_aggregation_destroy(agg);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_unary_operation_invalid_operator_rejected() {
+    let col = make_i32_column(&[1, 2, 3]);
+    let view = make_column_view(col);
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_unary_operation(view, 99, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid unary operator"));
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_binary_operation_vv_invalid_operator_rejected() {
+    let lhs_col = make_i32_column(&[1, 2, 3]);
+    let rhs_col = make_i32_column(&[4, 5, 6]);
+    let lhs_view = make_column_view(lhs_col);
+    let rhs_view = make_column_view(rhs_col);
+    let dtype = make_i32_data_type();
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_binary_operation_vv(lhs_view, rhs_view, 99, dtype, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid binary operator"));
+
+    unsafe {
+        cudf_sys::cudf_data_type_destroy(dtype);
+        cudf_sys::cudf_column_view_destroy(rhs_view);
+        cudf_sys::cudf_column_view_destroy(lhs_view);
+        cudf_sys::cudf_column_destroy(rhs_col);
+        cudf_sys::cudf_column_destroy(lhs_col);
+    }
+}
+
+#[test]
+fn test_binary_operation_vs_invalid_operator_rejected() {
+    let lhs_col = make_i32_column(&[1, 2, 3]);
+    let lhs_view = make_column_view(lhs_col);
+    let rhs_scalar = make_i32_scalar(4);
+    let dtype = make_i32_data_type();
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_binary_operation_vs(lhs_view, rhs_scalar, 99, dtype, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid binary operator"));
+
+    unsafe {
+        cudf_sys::cudf_data_type_destroy(dtype);
+        cudf_sys::cudf_scalar_destroy(rhs_scalar);
+        cudf_sys::cudf_column_view_destroy(lhs_view);
+        cudf_sys::cudf_column_destroy(lhs_col);
+    }
+}
+
+#[test]
+fn test_binary_operation_sv_invalid_operator_rejected() {
+    let lhs_scalar = make_i32_scalar(4);
+    let rhs_col = make_i32_column(&[1, 2, 3]);
+    let rhs_view = make_column_view(rhs_col);
+    let dtype = make_i32_data_type();
+
+    let mut out: *mut c_void = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_binary_operation_sv(lhs_scalar, rhs_view, 99, dtype, &mut out) };
+
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(out.is_null());
+    assert!(last_error_message().contains("invalid binary operator"));
+
+    unsafe {
+        cudf_sys::cudf_data_type_destroy(dtype);
+        cudf_sys::cudf_column_view_destroy(rhs_view);
+        cudf_sys::cudf_column_destroy(rhs_col);
+        cudf_sys::cudf_scalar_destroy(lhs_scalar);
     }
 }
 

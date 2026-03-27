@@ -497,21 +497,33 @@ impl<'a> GroupBy<'a> {
     }
 
     /// Shortcut: compute the sum of each named column per group.
-    pub fn sum(self, columns: &[&str]) -> Result<crate::dataframe::DataFrame> {
-        let specs: Vec<AggSpec> = columns.iter().map(|&col| AggSpec::new(col, Agg::Sum)).collect();
+    pub fn sum<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Sum)).collect();
         self.agg(&specs)
     }
 
     /// Shortcut: compute the mean of each named column per group.
-    pub fn mean(self, columns: &[&str]) -> Result<crate::dataframe::DataFrame> {
-        let specs: Vec<AggSpec> = columns.iter().map(|&col| AggSpec::new(col, Agg::Mean)).collect();
+    pub fn mean<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let specs: Vec<AggSpec> = columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Mean)).collect();
         self.agg(&specs)
     }
 
     /// Shortcut: count non-null values of each named column per group.
-    pub fn count(self, columns: &[&str]) -> Result<crate::dataframe::DataFrame> {
+    pub fn count<I, S>(self, columns: I) -> Result<crate::dataframe::DataFrame>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
         let specs: Vec<AggSpec> =
-            columns.iter().map(|&col| AggSpec::new(col, Agg::Count { include_nulls: false })).collect();
+            columns.into_iter().map(|col| AggSpec::new(col.as_ref(), Agg::Count { include_nulls: false })).collect();
         self.agg(&specs)
     }
 }

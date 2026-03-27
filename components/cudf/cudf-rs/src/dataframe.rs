@@ -200,7 +200,7 @@ fn display_dataframe(df: &DataFrame, f: &mut std::fmt::Formatter<'_>, max_rows: 
     let num_rows = df.num_rows().unwrap_or(0);
 
     if num_cols == 0 {
-        return write!(f, "DataFrame [0 columns × 0 rows]");
+        return write!(f, "DataFrame [0 columns × {} rows]", num_rows);
     }
 
     let names: Vec<&str> = df.column_names();
@@ -463,7 +463,14 @@ impl DataFrame {
         self.columns.keys().map(|s| s.as_str()).collect()
     }
 
-    /// Borrow a column view by name.
+    /// Borrow a low-level [`ColumnView`] by name.
+    ///
+    /// This returns the raw GPU column view without name metadata.
+    /// **Prefer [`series()`](Self::series)** for façade-level code — it returns a
+    /// named [`Series`] with the same zero-copy cost.
+    ///
+    /// `column()` is mainly useful when you need to pass a `ColumnView` directly
+    /// to a low-level operation that does not accept `Series`.
     ///
     /// # Errors
     ///
@@ -478,10 +485,15 @@ impl DataFrame {
         col.view()
     }
 
-    /// Return a named [`Series`] for the given column, sharing the `Arc<Column>`.
+    /// Return a named [`Series`] for the given column — the primary façade accessor.
     ///
-    /// The returned Series has its name set to the DataFrame column name.
-    /// This is a zero-copy metadata operation.
+    /// The returned `Series` shares the underlying `Arc<Column>`, so this is a
+    /// zero-copy metadata operation. The series name is set to the DataFrame
+    /// column name.
+    ///
+    /// Use this method for all façade-level column access. The lower-level
+    /// [`column()`](Self::column) method is available when you need a raw
+    /// [`ColumnView`] for low-level operations.
     ///
     /// # Errors
     ///
@@ -901,9 +913,15 @@ impl DataFrame {
     ///     .sort_values(&["id"], SortOptions::new().with_descending(vec![true]))
     ///     .unwrap();
     /// ```
-    pub fn sort_values(&self, by: &[&str], options: SortOptions) -> Result<Self> {
-        let key_indices = resolve_column_names(&self.columns, by, "dataframe::sort_values")?;
-        let (orders, null_orders) = options.resolve(by.len())?;
+    pub fn sort_values<I, S>(&self, by: I, options: SortOptions) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let by: Vec<String> = by.into_iter().map(|s| s.as_ref().to_string()).collect();
+        let by_refs: Vec<&str> = by.iter().map(|s| s.as_str()).collect();
+        let key_indices = resolve_column_names(&self.columns, &by_refs, "dataframe::sort_values")?;
+        let (orders, null_orders) = options.resolve(by_refs.len())?;
 
         let null_order_ref = null_orders.as_deref();
 
@@ -1349,8 +1367,12 @@ impl DataFrame {
     /// let result =
     ///     df.groupby(&["key"]).agg(&[AggSpec::new("val", Agg::Sum)]).unwrap();
     /// ```
-    pub fn groupby<'a>(&'a self, keys: &[&str]) -> groupby::GroupBy<'a> {
-        groupby::GroupBy::new(self, keys.iter().map(|s| s.to_string()).collect())
+    pub fn groupby<I, S>(&self, keys: I) -> groupby::GroupBy<'_>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        groupby::GroupBy::new(self, keys.into_iter().map(|s| s.as_ref().to_string()).collect())
     }
 
     /// Low-level groupby using [`GroupByBuilder`] with [`Aggregation`] variants.
@@ -1612,8 +1634,7 @@ impl DataFrame {
             new_columns.insert(name.clone(), Arc::clone(col));
         }
 
-        let row_count = if new_columns.is_empty() { 0 } else { self.row_count };
-        Ok(Self { columns: new_columns, row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     /// Return a new DataFrame containing only the specified columns,
@@ -1676,8 +1697,7 @@ impl DataFrame {
             }
         }
 
-        let row_count = if new_columns.is_empty() { 0 } else { self.row_count };
-        Ok(Self { columns: new_columns, row_count })
+        Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
     /// Return a new DataFrame with the specified columns removed.

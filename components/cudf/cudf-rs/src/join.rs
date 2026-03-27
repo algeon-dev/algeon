@@ -176,20 +176,32 @@ impl MergeOptions {
     }
 
     /// Set shared key column names (both sides must have these names).
-    pub fn on(mut self, keys: &[&str]) -> Self {
-        self.on = Some(keys.iter().map(|s| s.to_string()).collect());
+    pub fn on<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.on = Some(keys.into_iter().map(|s| s.as_ref().to_string()).collect());
         self
     }
 
     /// Set left-side key column names.
-    pub fn left_on(mut self, keys: &[&str]) -> Self {
-        self.left_on = Some(keys.iter().map(|s| s.to_string()).collect());
+    pub fn left_on<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.left_on = Some(keys.into_iter().map(|s| s.as_ref().to_string()).collect());
         self
     }
 
     /// Set right-side key column names.
-    pub fn right_on(mut self, keys: &[&str]) -> Self {
-        self.right_on = Some(keys.iter().map(|s| s.to_string()).collect());
+    pub fn right_on<I, S>(mut self, keys: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.right_on = Some(keys.into_iter().map(|s| s.as_ref().to_string()).collect());
         self
     }
 

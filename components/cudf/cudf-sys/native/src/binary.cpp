@@ -9,6 +9,20 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+namespace {
+
+cudf_status_t to_binary_operator(cudf_binary_operator_t input,
+                                 cudf::binary_operator* out) {
+  if (input < CUDF_BINARY_ADD || input > CUDF_BINARY_NULL_MIN) {
+    set_error("invalid binary operator");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  *out = static_cast<cudf::binary_operator>(input);
+  return CUDF_SUCCESS;
+}
+
+}  // namespace
+
 extern "C" {
 
 cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
@@ -20,10 +34,15 @@ cudf_status_t cudf_binary_operation_vv(cudf_column_view_handle lhs,
   CUDF_RUST_NULL_CHECK(rhs, "rhs is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  cudf::binary_operator cudf_op;
+  auto status = to_binary_operator(op, &cudf_op);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* lhs_view = static_cast<cudf::column_view*>(lhs);
     auto* rhs_view = static_cast<cudf::column_view*>(rhs);
-    auto cudf_op = static_cast<cudf::binary_operator>(op);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
@@ -45,10 +64,15 @@ cudf_status_t cudf_binary_operation_vs(cudf_column_view_handle lhs,
   CUDF_RUST_NULL_CHECK(rhs, "rhs is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  cudf::binary_operator cudf_op;
+  auto status = to_binary_operator(op, &cudf_op);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* lhs_view = static_cast<cudf::column_view*>(lhs);
     auto* rhs_scalar = static_cast<cudf::scalar*>(rhs);
-    auto cudf_op = static_cast<cudf::binary_operator>(op);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
@@ -70,10 +94,15 @@ cudf_status_t cudf_binary_operation_sv(cudf_scalar_handle lhs,
   CUDF_RUST_NULL_CHECK(rhs, "rhs is null");
   CUDF_RUST_NULL_CHECK(output_type, "output_type is null");
   CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  cudf::binary_operator cudf_op;
+  auto status = to_binary_operator(op, &cudf_op);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* lhs_scalar = static_cast<cudf::scalar*>(lhs);
     auto* rhs_view = static_cast<cudf::column_view*>(rhs);
-    auto cudf_op = static_cast<cudf::binary_operator>(op);
     auto* dtype = static_cast<cudf::data_type*>(output_type);
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();

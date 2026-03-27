@@ -48,6 +48,21 @@ std::unique_ptr<cudf::table> gather_table(
   return cudf::gather(source, map_view, oob_policy, stream, mr);
 }
 
+cudf_status_t to_null_equality(cudf_null_equality_t input,
+                               cudf::null_equality* out) {
+  switch (input) {
+    case CUDF_NULL_EQUALITY_EQUAL:
+      *out = cudf::null_equality::EQUAL;
+      return CUDF_SUCCESS;
+    case CUDF_NULL_EQUALITY_UNEQUAL:
+      *out = cudf::null_equality::UNEQUAL;
+      return CUDF_SUCCESS;
+    default:
+      set_error("invalid null_equality");
+      return CUDF_ERROR_INVALID_OPERATION;
+  }
+}
+
 }  // namespace
 
 extern "C" {
@@ -65,15 +80,18 @@ cudf_status_t cudf_inner_join(cudf_table_view_handle left_keys,
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
   CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
   CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
+  *out_left = nullptr;
+  *out_right = nullptr;
+  cudf::null_equality null_eq;
+  auto status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* lk = static_cast<cudf::table_view*>(left_keys);
     auto* rk = static_cast<cudf::table_view*>(right_keys);
     auto* lp = static_cast<cudf::table_view*>(left_payload);
     auto* rp = static_cast<cudf::table_view*>(right_payload);
-
-    auto null_eq = (null_equality == CUDF_NULL_EQUALITY_EQUAL)
-                       ? cudf::null_equality::EQUAL
-                       : cudf::null_equality::UNEQUAL;
 
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
@@ -109,15 +127,18 @@ cudf_status_t cudf_left_join(cudf_table_view_handle left_keys,
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
   CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
   CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
+  *out_left = nullptr;
+  *out_right = nullptr;
+  cudf::null_equality null_eq;
+  auto status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* lk = static_cast<cudf::table_view*>(left_keys);
     auto* rk = static_cast<cudf::table_view*>(right_keys);
     auto* lp = static_cast<cudf::table_view*>(left_payload);
     auto* rp = static_cast<cudf::table_view*>(right_payload);
-
-    auto null_eq = (null_equality == CUDF_NULL_EQUALITY_EQUAL)
-                       ? cudf::null_equality::EQUAL
-                       : cudf::null_equality::UNEQUAL;
 
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
@@ -153,15 +174,18 @@ cudf_status_t cudf_full_join(cudf_table_view_handle left_keys,
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
   CUDF_RUST_NULL_CHECK(out_left, "out_left is null");
   CUDF_RUST_NULL_CHECK(out_right, "out_right is null");
+  *out_left = nullptr;
+  *out_right = nullptr;
+  cudf::null_equality null_eq;
+  auto status = to_null_equality(null_equality, &null_eq);
+  if (status != CUDF_SUCCESS) {
+    return status;
+  }
   CUDF_RUST_TRY {
     auto* lk = static_cast<cudf::table_view*>(left_keys);
     auto* rk = static_cast<cudf::table_view*>(right_keys);
     auto* lp = static_cast<cudf::table_view*>(left_payload);
     auto* rp = static_cast<cudf::table_view*>(right_payload);
-
-    auto null_eq = (null_equality == CUDF_NULL_EQUALITY_EQUAL)
-                       ? cudf::null_equality::EQUAL
-                       : cudf::null_equality::UNEQUAL;
 
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
