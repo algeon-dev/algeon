@@ -2,6 +2,7 @@
 #define CUDF_RUST_COLUMN_H
 
 #include "error.h"
+#include "scalar.h"
 #include "types.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -143,6 +144,14 @@ cudf_status_t cudf_column_create_strings(
     const uint8_t* null_mask,
     int32_t null_count,
     cudf_column_handle* out);
+
+/// Create a column by repeating a scalar value `size` times.
+///
+/// Uses `cudf::make_column_from_scalar` under the hood.
+/// For `size == 0`, an empty column of the scalar's type is returned.
+cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
+                                      int32_t size,
+                                      cudf_column_handle* out);
 
 /// Copy string column data to host buffers.
 ///

@@ -179,6 +179,12 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_from_scalar(
+        scalar: cudf_scalar_handle,
+        size: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_create_strings(
         strings: *const *const c_char,
         lengths: *const i32,

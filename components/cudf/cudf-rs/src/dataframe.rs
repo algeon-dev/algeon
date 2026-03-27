@@ -1949,6 +1949,46 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count })
     }
 
+    /// Evaluate expressions against this DataFrame and add/replace the
+    /// resulting columns.
+    ///
+    /// All expressions are evaluated against the **original** state of `self`
+    /// — not an incrementally mutated copy. This ensures that expressions can
+    /// reference columns that other expressions will overwrite, and the order
+    /// of evaluation does not matter.
+    ///
+    /// Each expression must have a determinable output name: either via
+    /// [`.alias()`](crate::expr::Expr::alias) or by being a bare
+    /// [`col()`](crate::expr::col) reference. Expressions without a name
+    /// produce an error **before** any GPU work.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any expression lacks an output name, or if
+    /// evaluation of any expression fails.
+    pub fn with_columns<I>(&self, exprs: I) -> Result<Self>
+    where I: IntoIterator<Item = crate::expr::Expr> {
+        let exprs: Vec<crate::expr::Expr> = exprs.into_iter().collect();
+
+        // Validate all names up-front before doing any GPU work.
+        let names: Vec<&str> = exprs
+            .iter()
+            .map(|e| {
+                e.output_name().ok_or_else(|| {
+                    Error::new(ErrorKind::InvalidOperation, "expression has no output name; use .alias() to name it")
+                        .with_operation("dataframe::with_columns")
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        // Evaluate all expressions against the original DataFrame.
+        let results: Vec<Series> = exprs.iter().map(|e| e.eval(self)).collect::<Result<Vec<_>>>()?;
+
+        // Build the new DataFrame.
+        let pairs: Vec<(&str, Series)> = names.into_iter().zip(results).collect();
+        self.assign(pairs)
+    }
+
     /// Return a new DataFrame with null values in the named column replaced
     /// by a scalar value.
     ///
