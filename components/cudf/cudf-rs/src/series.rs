@@ -10,8 +10,14 @@ use std::sync::Arc;
 use crate::{
     column::{Column, ColumnView},
     error::Result,
+    internal::temp_table::TempTableView,
+    replace,
     scalar::Scalar,
-    types::{CudfType, DataType},
+    series_view::SeriesView,
+    sorting::SortOptions,
+    stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
+    types::{CudfType, DataType, TypeId},
+    unary,
 };
 
 /// A named, reference-counted GPU column.
@@ -126,8 +132,18 @@ impl Series {
         &self.column
     }
 
-    /// Creates a borrowed `ColumnView` for passing to low-level operations.
-    pub fn view(&self) -> Result<ColumnView<'_>> {
+    /// Creates a borrowed [`SeriesView`] carrying this series' name.
+    ///
+    /// The returned view implements `Deref<Target = ColumnView>`, so all
+    /// low-level column operations are accessible directly.
+    pub fn view(&self) -> Result<SeriesView<'_>> {
+        let cv = self.column.view()?;
+        Ok(SeriesView::new(self.name.as_deref(), cv))
+    }
+
+    /// Creates a borrowed `ColumnView` for passing to low-level operations
+    /// that require an unnamed view.
+    pub fn column_view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
     }
 
@@ -322,5 +338,151 @@ impl Series {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.div_scalar(&s)?;
         Ok(Self::from_column(col))
+    }
+
+    // -- Convenience methods (D2) --------------------------------------------
+
+    /// Return a BOOL8 mask: `true` where elements are null.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new BOOL8 column on the device.
+    pub fn is_null(&self) -> Result<Series> {
+        let cv = self.column.view()?;
+        let col = unary::is_null(&cv)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Return a BOOL8 mask: `true` where elements are valid (non-null).
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new BOOL8 column on the device.
+    pub fn is_not_null(&self) -> Result<Series> {
+        let cv = self.column.view()?;
+        let col = unary::is_valid(&cv)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Cast this series to the given type. Returns an unnamed Series.
+    ///
+    /// Equivalent to cuDF Python's `Series.astype()`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with the target dtype.
+    pub fn astype(&self, target: TypeId) -> Result<Series> {
+        let cv = self.column.view()?;
+        let dt = DataType::new(target);
+        let col = unary::cast(&cv, &dt)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Replace null values with a scalar. Returns an unnamed Series.
+    ///
+    /// Equivalent to cuDF Python's `Series.fillna(scalar)`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with nulls replaced.
+    pub fn fillna<T: CudfType>(&self, value: T) -> Result<Series> {
+        let cv = self.column.view()?;
+        let scalar = Scalar::from_value(value)?;
+        let col = replace::replace_nulls(&cv, &scalar)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Replace null values using corresponding elements from another Series.
+    /// Returns an unnamed Series.
+    ///
+    /// Both series must have the same dtype and length.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced with nulls replaced.
+    pub fn fillna_with_series(&self, other: &Series) -> Result<Series> {
+        let cv = self.column.view()?;
+        let other_cv = other.column.view()?;
+        let col = replace::replace_nulls_column(&cv, &other_cv)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise membership test. Returns a BOOL8 Series where `true`
+    /// indicates the element is present in `values`.
+    ///
+    /// Equivalent to cuDF Python's `Series.isin()`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new BOOL8 column.
+    pub fn isin(&self, values: &Series) -> Result<Series> {
+        let cv = self.column.view()?;
+        let values_cv = values.column.view()?;
+        let col = cv.isin(&values_cv)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Return a Series with duplicate values removed.
+    ///
+    /// The order of elements in the result is **not** specified.
+    ///
+    /// Equivalent to cuDF Python's `Series.unique()`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new column containing only distinct values.
+    pub fn unique(&self) -> Result<Series> {
+        let cv = self.column.view()?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let result = stream_compaction::distinct(
+            ttv.table(),
+            &[0],
+            DuplicateKeepOption::KeepAny,
+            NullEquality::Equal,
+            NanEquality::AllEqual,
+        )?;
+        let mut cols = result.into_columns()?;
+        Ok(Self::from_column(cols.remove(0)))
+    }
+
+    /// Return the number of distinct non-null values.
+    ///
+    /// Equivalent to cuDF Python's `Series.nunique()`.
+    ///
+    /// # Cost
+    /// GPU-allocating: internally computes `unique()` and counts rows.
+    pub fn nunique(&self) -> Result<i32> {
+        let uniq = self.unique()?;
+        // Exclude nulls from the count (matches cuDF Python default).
+        let total = uniq.len()?;
+        let nulls = uniq.null_count()?;
+        Ok(total - nulls)
+    }
+
+    /// Encode the series as integer codes and a set of unique values.
+    ///
+    /// Returns `(codes, uniques)` where `codes` is an `Int32` Series mapping
+    /// each element to its index in `uniques`.
+    ///
+    /// Equivalent to cuDF Python's `Series.factorize()`.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces two new columns (codes + uniques).
+    pub fn factorize(&self) -> Result<(Series, Series)> {
+        let cv = self.column.view()?;
+        let (codes, uniques) = cv.factorize()?;
+        Ok((Self::from_column(codes), Self::from_column(uniques)))
+    }
+
+    /// Sort the series according to the given options. Returns an unnamed Series.
+    ///
+    /// Equivalent to cuDF Python's `Series.sort_values()`.
+    ///
+    /// # Cost
+    /// GPU-allocating: a new sorted column is produced.
+    pub fn sort_values(&self, options: SortOptions) -> Result<Series> {
+        let (orders, null_orders) = options.resolve(1)?;
+        let cv = self.column.view()?;
+        let ttv = TempTableView::from_column_views(vec![cv])?;
+        let sorted = if options.stable {
+            crate::sorting::stable_sort(ttv.table(), Some(&orders), null_orders.as_deref())?
+        } else {
+            crate::sorting::sort(ttv.table(), Some(&orders), null_orders.as_deref())?
+        };
+        let mut cols = sorted.into_columns()?;
+        Ok(Self::from_column(cols.remove(0)))
     }
 }
