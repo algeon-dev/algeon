@@ -21,7 +21,7 @@ fn test_filter_basic() {
     // Keep rows where id > 2: rows 0 (3), 2 (4), 4 (5)
     let mask_col = Column::from_slice(&[true, false, true, false, true]).unwrap();
     let mask = mask_col.view().unwrap();
-    let filtered = df.filter(&mask).unwrap();
+    let filtered = df.filter_by_mask(&mask).unwrap();
 
     assert_eq!(filtered.num_rows().unwrap(), 3);
     assert_eq!(filtered.column("id").unwrap().to_vec::<i32>().unwrap(), vec![3, 4, 5]);
@@ -33,7 +33,7 @@ fn test_filter_preserves_schema() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[true, true, true, true, true]).unwrap();
     let mask = mask_col.view().unwrap();
-    let filtered = df.filter(&mask).unwrap();
+    let filtered = df.filter_by_mask(&mask).unwrap();
 
     assert_eq!(filtered.column_names(), vec!["id", "score"]);
     assert_eq!(filtered.column_index("id"), Some(0));
@@ -45,7 +45,7 @@ fn test_filter_all_false() {
     let df = sample_df();
     let mask_col = Column::from_slice(&[false, false, false, false, false]).unwrap();
     let mask = mask_col.view().unwrap();
-    let filtered = df.filter(&mask).unwrap();
+    let filtered = df.filter_by_mask(&mask).unwrap();
 
     assert_eq!(filtered.num_rows().unwrap(), 0);
     assert_eq!(filtered.column_names(), vec!["id", "score"]);

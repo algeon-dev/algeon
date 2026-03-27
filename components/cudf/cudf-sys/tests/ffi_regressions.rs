@@ -83,6 +83,56 @@ fn test_scalar_string_value_stability_until_next_call() {
 }
 
 #[test]
+fn test_scalar_create_numeric_invalid_allows_null_value() {
+    let mut scalar: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_scalar_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            ptr::null(),
+            0,
+            &mut scalar,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!scalar.is_null());
+
+    let mut is_valid = -1;
+    let st = unsafe { cudf_sys::cudf_scalar_is_valid(scalar, &mut is_valid) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(is_valid, 0);
+
+    unsafe { cudf_sys::cudf_scalar_destroy(scalar) };
+}
+
+#[test]
+fn test_scalar_create_numeric_valid_requires_value() {
+    let mut scalar: *mut c_void = ptr::null_mut();
+    let st = unsafe {
+        cudf_sys::cudf_scalar_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            ptr::null(),
+            1,
+            &mut scalar,
+        )
+    };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
+    assert!(scalar.is_null());
+}
+
+#[test]
+fn test_stream_is_ready_null_out_rejected() {
+    let mut stream: *mut c_void = ptr::null_mut();
+    let st = unsafe { cudf_sys::cudf_stream_create(&mut stream) };
+    assert_eq!(st, cudf_sys::CUDF_SUCCESS);
+    assert!(!stream.is_null());
+
+    let st = unsafe { cudf_sys::cudf_stream_is_ready(stream, ptr::null_mut()) };
+    assert_eq!(st, cudf_sys::CUDF_ERROR_NULL);
+
+    unsafe { cudf_sys::cudf_stream_destroy(stream) };
+}
+
+#[test]
 fn test_concatenate_columns_null_element_returns_null_error() {
     let col = make_i32_column(&[1, 2, 3]);
     let view = make_column_view(col);
@@ -280,6 +330,63 @@ fn test_column_create_numeric_null_count_requires_mask() {
     };
     assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
     assert!(out.is_null());
+}
+
+#[test]
+fn test_column_view_to_host_string_type_rejected() {
+    let strings = [
+        std::ffi::CString::new("ab").unwrap(),
+        std::ffi::CString::new("cd").unwrap(),
+    ];
+    let string_ptrs = [strings[0].as_ptr(), strings[1].as_ptr()];
+    let lengths = [2i32, 2i32];
+
+    let mut col: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_strings(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            2,
+            ptr::null(),
+            0,
+            &mut col,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!col.is_null());
+
+    let view = make_column_view(col);
+    let mut buf = [0u8; 16];
+    let status = unsafe {
+        cudf_sys::cudf_column_view_to_host(view, buf.as_mut_ptr() as *mut c_void, buf.len())
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_TYPE);
+
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    }
+}
+
+#[test]
+fn test_column_create_strings_negative_length_rejected() {
+    let strings = [std::ffi::CString::new("ab").unwrap()];
+    let string_ptrs = [strings[0].as_ptr()];
+    let lengths = [-1i32];
+
+    let mut col: *mut c_void = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_strings(
+            string_ptrs.as_ptr(),
+            lengths.as_ptr(),
+            1,
+            ptr::null(),
+            0,
+            &mut col,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(col.is_null());
 }
 
 #[test]

@@ -23,7 +23,9 @@ static std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
   auto stream = cudf::get_default_stream();
   auto mr = cudf::get_current_device_resource_ref();
   T val{};
-  std::memcpy(&val, value, sizeof(T));
+  if (value != nullptr) {
+    std::memcpy(&val, value, sizeof(T));
+  }
   auto s = cudf::make_numeric_scalar(cudf::data_type(cudf::type_to_id<T>()),
                                      stream, mr);
   static_cast<cudf::numeric_scalar<T>*>(s.get())->set_value(val, stream);
@@ -38,11 +40,13 @@ cudf_status_t cudf_scalar_create_numeric(cudf_type_id_t type_id,
                                          const void* value, int32_t is_valid,
                                          cudf_scalar_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
-  CUDF_RUST_NULL_CHECK(value, "value is null");
   *out = nullptr;
   CUDF_RUST_TRY {
     std::unique_ptr<cudf::scalar> s;
     bool valid = is_valid != 0;
+    if (valid) {
+      CUDF_RUST_NULL_CHECK(value, "value is null");
+    }
     switch (to_cudf_type_id(type_id)) {
       case cudf::type_id::INT8:
         s = make_numeric_scalar<int8_t>(value, valid);
