@@ -4,7 +4,7 @@
 # Usage:
 #   fixture/scripts/workloads/clickbench/fetch.sh --layout single
 #   fixture/scripts/workloads/clickbench/fetch.sh --layout partitioned
-#   fixture/scripts/workloads/clickbench/fetch.sh --layout both --out /opt/dlami/nvme/clickbench
+#   fixture/scripts/workloads/clickbench/fetch.sh --layout both --out ./fixture/data/clickbench
 #
 # The output layout is:
 #   <output-dir>/hits.parquet

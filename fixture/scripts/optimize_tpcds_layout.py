@@ -30,8 +30,8 @@ Usage::
 
 Example::
 
-    optimize_tpcds_layout.py /opt/dlami/nvme/tpcds/sf10/parquet \
-                             /opt/dlami/nvme/tpcds/sf10_optimized/parquet
+    optimize_tpcds_layout.py ./fixture/data/tpcds/sf10/parquet \
+                             ./fixture/data/tpcds/sf10_optimized/parquet
 """
 
 from __future__ import annotations
