@@ -32,7 +32,7 @@ cudf_status_t cudf_io_read_csv(const char* filepath, char delimiter,
     *out = static_cast<cudf_table_handle>(result.tbl.release());
     return CUDF_SUCCESS;
   }
-  CUDF_RUST_CATCH
+  CUDF_RUST_IO_CATCH
 }
 
 cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
@@ -76,7 +76,7 @@ cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
     cudf::io::write_csv(options);
     return CUDF_SUCCESS;
   }
-  CUDF_RUST_CATCH
+  CUDF_RUST_IO_CATCH
 }
 
 }  // extern "C"

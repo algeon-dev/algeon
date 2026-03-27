@@ -10,6 +10,8 @@
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <new>
+
 static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
   return static_cast<cudf::type_id>(id);
 }
@@ -104,15 +106,16 @@ cudf_status_t cudf_dictionary_set_keys(cudf_column_view_handle dict_column,
 cudf_status_t cudf_dictionary_match_dictionaries(
     const cudf_column_view_handle* dict_columns,
     int32_t num_columns,
-    cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
+    cudf_column_handle** out_columns,
+    int32_t* out_count) {
+  CUDF_RUST_NULL_CHECK(out_columns, "out_columns is null");
+  *out_columns = nullptr;
+  CUDF_RUST_NULL_CHECK(out_count, "out_count is null");
+  *out_count = 0;
   CUDF_RUST_NULL_CHECK(dict_columns, "dict_columns is null");
   if (num_columns <= 0) {
     set_error("num_columns must be > 0");
     return CUDF_ERROR_INVALID_OPERATION;
-  }
-  for (int32_t i = 0; i < num_columns; ++i) {
-    out[i] = nullptr;
   }
   CUDF_RUST_TRY {
     std::vector<cudf::dictionary_column_view> dict_views;
@@ -125,9 +128,19 @@ cudf_status_t cudf_dictionary_match_dictionaries(
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
     auto results = cudf::dictionary::match_dictionaries(dict_views, stream, mr);
-    for (int32_t i = 0; i < num_columns; ++i) {
-      out[i] = static_cast<cudf_column_handle>(results[i].release());
+
+    auto* columns = new (std::nothrow) cudf_column_handle[num_columns];
+    if (columns == nullptr) {
+      set_error("failed to allocate dictionary match result column handle array");
+      return CUDF_ERROR_OUT_OF_MEMORY;
     }
+
+    for (int32_t i = 0; i < num_columns; ++i) {
+      columns[i] = static_cast<cudf_column_handle>(results[i].release());
+    }
+
+    *out_columns = columns;
+    *out_count = num_columns;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

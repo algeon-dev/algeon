@@ -31,6 +31,7 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
 
 /// Read a Parquet file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
+/// When `out_num_names` is zero, `*out_names` is NULL.
 /// The caller must free the names with `cudf_io_free_column_names()`.
 ///
 /// Contract:

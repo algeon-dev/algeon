@@ -2,6 +2,7 @@
 
 #include <cudf/utilities/error.hpp>
 
+#include <ios>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -36,9 +37,9 @@ void cudf_clear_error(void) {
 
 }  // extern "C"
 
-// Exception-catching helper used by all C shim functions.
-// Returns the appropriate cudf_status_t for the caught exception.
-cudf_status_t translate_exception() {
+namespace {
+
+cudf_status_t translate_exception_impl(cudf_status_t runtime_error_status) {
   try {
     throw;  // re-throw current exception
   } catch (cudf::fatal_cuda_error const& e) {
@@ -62,9 +63,12 @@ cudf_status_t translate_exception() {
   } catch (std::invalid_argument const& e) {
     set_error(e.what());
     return CUDF_ERROR_INVALID_OPERATION;
-  } catch (std::runtime_error const& e) {
+  } catch (std::ios_base::failure const& e) {
     set_error(e.what());
     return CUDF_ERROR_IO;
+  } catch (std::runtime_error const& e) {
+    set_error(e.what());
+    return runtime_error_status;
   } catch (std::exception const& e) {
     set_error(e.what());
     return CUDF_ERROR_UNKNOWN;
@@ -73,6 +77,42 @@ cudf_status_t translate_exception() {
     return CUDF_ERROR_UNKNOWN;
   }
 }
+
+}  // namespace
+
+// Exception-catching helper used by all C shim functions.
+// Returns the appropriate cudf_status_t for the caught exception.
+cudf_status_t translate_exception() {
+  return translate_exception_impl(CUDF_ERROR_UNKNOWN);
+}
+
+cudf_status_t translate_io_exception() {
+  return translate_exception_impl(CUDF_ERROR_IO);
+}
+
+extern "C" {
+
+cudf_status_t cudf_test_throw_runtime_error() {
+  cudf_clear_error();
+  try {
+    throw std::runtime_error("non-io runtime failure");
+  }
+  catch (...) {
+    return translate_exception();
+  }
+}
+
+cudf_status_t cudf_test_throw_bad_alloc() {
+  cudf_clear_error();
+  try {
+    throw std::bad_alloc();
+  }
+  catch (...) {
+    return translate_exception();
+  }
+}
+
+}  // extern "C"
 
 // Macro used throughout the C shim to wrap function bodies.
 // Usage:

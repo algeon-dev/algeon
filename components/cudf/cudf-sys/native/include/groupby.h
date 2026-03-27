@@ -66,7 +66,8 @@ void cudf_aggregation_destroy(cudf_aggregation_handle handle);
 /// @param keys_null_policy  Null handling for keys (EXCLUDE or INCLUDE).
 /// @param out_keys       Output: table of unique key groups. Set to NULL on failure.
 /// @param out_values     Output: array of column handles for aggregation results.
-///                        The array has `sum(agg_counts)` entries. Caller must
+///                        The array has `sum(agg_counts)` entries. When the
+///                        total is zero, `*out_values` is NULL. Caller must
 ///                        free each column and then the array with cudf_free_column_array.
 /// @param out_total_columns  Output: total number of result columns. Set to 0 on failure.
 cudf_status_t cudf_groupby_aggregate(

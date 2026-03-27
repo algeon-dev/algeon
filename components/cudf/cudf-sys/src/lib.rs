@@ -453,8 +453,11 @@ extern "C" {
     /// On success, `out` receives a heap-allocated, null-terminated UTF-8
     /// string and `len_out` receives its byte length excluding the terminator.
     /// The caller must release `out` with [`cudf_string_free`].
-    pub fn cudf_scalar_string_value(handle: cudf_scalar_handle, out: *mut *mut c_char, len_out: *mut i32)
-        -> cudf_status_t;
+    pub fn cudf_scalar_string_value(
+        handle: cudf_scalar_handle,
+        out: *mut *mut c_char,
+        len_out: *mut i32,
+    ) -> cudf_status_t;
 
     /// Free an owned host string returned by this shim.
     pub fn cudf_string_free(ptr: *mut c_char);
@@ -519,6 +522,10 @@ extern "C" {
         out_num_names: *mut i32,
     ) -> cudf_status_t;
 
+    /// Free a heap-allocated array of host column names returned by this shim.
+    ///
+    /// When the associated count is zero, the shim returns a null pointer and
+    /// this function may be skipped.
     pub fn cudf_io_free_column_names(names: *mut *mut c_char, num_names: i32);
 
     pub fn cudf_io_write_parquet(
@@ -618,6 +625,11 @@ extern "C" {
 
     pub fn cudf_aggregation_destroy(handle: *mut c_void);
 
+    /// Perform a groupby aggregation and return the keys table plus a
+    /// heap-allocated flat array of result columns.
+    ///
+    /// On failure, all outputs are initialized to null / zero. When the total
+    /// number of result columns is zero, `out_values` is returned as null.
     pub fn cudf_groupby_aggregate(
         keys: cudf_table_view_handle,
         values: *const cudf_column_view_handle,
@@ -631,6 +643,8 @@ extern "C" {
         out_total_columns: *mut i32,
     ) -> cudf_status_t;
 
+    /// Free a heap-allocated array of owning column handles returned by this
+    /// shim. Does not destroy the individual columns.
     pub fn cudf_free_column_array(array: *mut cudf_column_handle);
 
     // -- Unary ---------------------------------------------------------------
@@ -759,10 +773,17 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    /// Align multiple dictionary columns to a shared key set.
+    ///
+    /// On success, `out_columns` receives a heap-allocated array of
+    /// `out_count` owning column handles. Destroy each column individually,
+    /// then free the array with [`cudf_free_column_array`]. On failure, the
+    /// shim initializes `out_columns` to null and `out_count` to zero.
     pub fn cudf_dictionary_match_dictionaries(
         dict_columns: *const cudf_column_view_handle,
         num_columns: i32,
-        out: *mut cudf_column_handle,
+        out_columns: *mut *mut cudf_column_handle,
+        out_count: *mut i32,
     ) -> cudf_status_t;
 
     // -- Hashing -------------------------------------------------------------

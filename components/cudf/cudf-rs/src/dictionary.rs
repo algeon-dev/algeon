@@ -150,13 +150,46 @@ pub fn match_dictionaries(dict_columns: &[&ColumnView<'_>]) -> Result<Vec<Column
     }
 
     let handles: Vec<*mut std::ffi::c_void> = dict_columns.iter().map(|c| c.raw_handle()).collect();
-    let mut out: Vec<*mut std::ffi::c_void> = vec![ptr::null_mut(); n];
+    let mut out_columns: *mut *mut std::ffi::c_void = ptr::null_mut();
+    let mut out_count: i32 = 0;
 
     error::check_status_in_with(
-        unsafe { cudf_sys::cudf_dictionary_match_dictionaries(handles.as_ptr(), n as i32, out.as_mut_ptr()) },
+        unsafe {
+            cudf_sys::cudf_dictionary_match_dictionaries(handles.as_ptr(), n as i32, &mut out_columns, &mut out_count)
+        },
         "dictionary::match_dictionaries",
         [("num_columns", n.to_string())],
     )?;
 
-    Ok(out.into_iter().map(|h| unsafe { Column::from_raw(h) }).collect())
+    if out_count != n as i32 {
+        if !out_columns.is_null() {
+            let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count.max(0) as usize) };
+            for &handle in returned {
+                if !handle.is_null() {
+                    unsafe { cudf_sys::cudf_column_destroy(handle) };
+                }
+            }
+            unsafe { cudf_sys::cudf_free_column_array(out_columns) };
+        }
+        return Err(error::Error::new(
+            error::ErrorKind::InvalidOperation,
+            "ffi returned unexpected dictionary match result count",
+        )
+        .with_operation("dictionary::match_dictionaries")
+        .with_context("expected_count", n.to_string())
+        .with_context("actual_count", out_count.to_string()));
+    }
+    if out_count > 0 && out_columns.is_null() {
+        return Err(error::Error::new(
+            error::ErrorKind::InvalidOperation,
+            "ffi returned null dictionary match result array with positive count",
+        )
+        .with_operation("dictionary::match_dictionaries")
+        .with_context("num_columns", n.to_string()));
+    }
+
+    let returned = unsafe { std::slice::from_raw_parts(out_columns, out_count as usize) };
+    let columns = returned.iter().copied().map(|handle| unsafe { Column::from_raw(handle) }).collect();
+    unsafe { cudf_sys::cudf_free_column_array(out_columns) };
+    Ok(columns)
 }
