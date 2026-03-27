@@ -2,7 +2,6 @@
 #include "shim_common.h"
 
 #include <cudf/scalar/scalar.hpp>
-#include <cudf/scalar/scalar_factories.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/default_stream.hpp>
 #include <cudf/utilities/memory_resource.hpp>
@@ -28,14 +27,7 @@ static std::unique_ptr<cudf::scalar> make_numeric_scalar(const void* value,
   if (value != nullptr) {
     std::memcpy(&val, value, sizeof(T));
   }
-  auto s = cudf::make_numeric_scalar(cudf::data_type(cudf::type_to_id<T>()),
-                                     stream, mr);
-  static_cast<cudf::numeric_scalar<T>*>(s.get())->set_value(val, stream);
-  s->set_valid_async(is_valid, stream);
-  // The handle escapes without any associated stream token, so materialize the
-  // scalar state before returning it to the caller.
-  stream.synchronize();
-  return s;
+  return std::make_unique<cudf::numeric_scalar<T>>(val, is_valid, stream, mr);
 }
 
 extern "C" {
@@ -106,11 +98,7 @@ cudf_status_t cudf_scalar_create_string(const char* value, int32_t is_valid,
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
     std::string str_val = (value != nullptr) ? std::string(value) : std::string();
-    auto s = cudf::make_string_scalar(str_val, stream, mr);
-    s->set_valid_async(is_valid != 0, stream);
-    // The returned scalar is documented as immediately usable by subsequent
-    // shim calls, so wait for the async validity update to complete.
-    stream.synchronize();
+    auto s = std::make_unique<cudf::string_scalar>(str_val, is_valid != 0, stream, mr);
     *out = static_cast<cudf_scalar_handle>(s.release());
     return CUDF_SUCCESS;
   }

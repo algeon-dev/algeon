@@ -332,16 +332,39 @@ extern "C" {
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
+    /// Materialize a column null mask into a host buffer.
+    ///
+    /// This helper synchronizes cuDF's default stream before return so
+    /// `host_buf` is fully populated on success.
     pub fn cudf_column_view_null_mask_to_host(
         handle: cudf_column_view_handle,
         host_buf: *mut u8,
         buf_size: usize,
     ) -> cudf_status_t;
 
+    /// Create a column by copying from a borrowed device pointer.
+    ///
+    /// This legacy helper synchronizes cuDF's default stream before return so
+    /// the borrowed `device_data` pointer is no longer in use on success.
     pub fn cudf_column_create_from_device_data(
         type_id: cudf_type_id_t,
         device_data: *const c_void,
         size: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Create a column by copying from a borrowed device pointer with
+    /// explicit execution options.
+    ///
+    /// Unlike [`cudf_column_create_from_device_data`], this `_ex` variant does
+    /// not synchronize before returning. The caller must keep `device_data`
+    /// valid until the selected stream has completed the copy and must
+    /// establish any required cross-stream ordering for downstream consumers.
+    pub fn cudf_column_create_from_device_data_ex(
+        type_id: cudf_type_id_t,
+        device_data: *const c_void,
+        size: i32,
+        options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
@@ -360,6 +383,10 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    /// Materialize string offsets, and optionally chars, into host buffers.
+    ///
+    /// This helper synchronizes cuDF's default stream before return whenever
+    /// it must populate one of the provided host buffers.
     pub fn cudf_column_view_strings_to_host(
         handle: cudf_column_view_handle,
         offsets_buf: *mut i32,
@@ -427,6 +454,8 @@ extern "C" {
 
     // -- Scalar --------------------------------------------------------------
 
+    /// Create a numeric scalar on cuDF's default stream without an extra
+    /// synchronization barrier before returning.
     pub fn cudf_scalar_create_numeric(
         type_id: cudf_type_id_t,
         value: *const c_void,
@@ -434,6 +463,8 @@ extern "C" {
         out: *mut cudf_scalar_handle,
     ) -> cudf_status_t;
 
+    /// Create a string scalar on cuDF's default stream without an extra
+    /// synchronization barrier before returning.
     pub fn cudf_scalar_create_string(
         value: *const c_char,
         is_valid: i32,

@@ -26,6 +26,57 @@ static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
   return static_cast<cudf::type_id>(id);
 }
 
+static cudf_status_t create_column_from_device_data_impl(
+    cudf_type_id_t type_id,
+    const void* device_data,
+    int32_t size,
+    cudf_exec_options_t const* options,
+    bool synchronize_before_return,
+    cudf_column_handle* out) {
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  if (size < 0) {
+    set_error("size must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (size > 0) {
+    CUDF_RUST_NULL_CHECK(device_data, "device_data is null");
+  }
+  CUDF_RUST_TRY {
+    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                  cudf::get_current_device_resource_ref(),
+                                  nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    if (size == 0) {
+      auto col = cudf::make_empty_column(dtype);
+      *out = static_cast<cudf_column_handle>(col.release());
+      return CUDF_SUCCESS;
+    }
+
+    auto elem_size = cudf::size_of(dtype);
+    size_t data_bytes = static_cast<size_t>(size) * elem_size;
+
+    rmm::device_buffer dev_data(data_bytes, exec.stream, exec.mr);
+    CUDF_CUDA_TRY(cudaMemcpyAsync(dev_data.data(), device_data, data_bytes,
+                                  cudaMemcpyDeviceToDevice, exec.stream.value()));
+    if (synchronize_before_return) {
+      exec.stream.synchronize();
+      cudf_record_synchronized_stream(exec.stream);
+    }
+
+    auto col = std::make_unique<cudf::column>(
+        dtype, static_cast<cudf::size_type>(size), std::move(dev_data),
+        rmm::device_buffer{}, 0);
+
+    *out = static_cast<cudf_column_handle>(col.release());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 extern "C" {
 
 cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
@@ -334,6 +385,7 @@ cudf_status_t cudf_column_view_null_mask_to_host(
                                   cudaMemcpyDeviceToHost, stream.value()));
     // This API promises the caller's host buffer is populated on return.
     stream.synchronize();
+    cudf_record_synchronized_stream(stream);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -344,47 +396,18 @@ cudf_status_t cudf_column_create_from_device_data(
     const void* device_data,
     int32_t size,
     cudf_column_handle* out) {
-  CUDF_RUST_NULL_CHECK(out, "out is null");
-  *out = nullptr;
-  if (size < 0) {
-    set_error("size must be >= 0");
-    return CUDF_ERROR_INVALID_OPERATION;
-  }
-  if (size > 0) {
-    CUDF_RUST_NULL_CHECK(device_data, "device_data is null");
-  }
-  CUDF_RUST_TRY {
-    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+  return create_column_from_device_data_impl(type_id, device_data, size, nullptr,
+                                             true, out);
+}
 
-    if (size == 0) {
-      auto col = cudf::make_empty_column(dtype);
-      *out = static_cast<cudf_column_handle>(col.release());
-      return CUDF_SUCCESS;
-    }
-
-    // Compute data size in bytes.
-    auto elem_size = cudf::size_of(dtype);
-    size_t data_bytes = static_cast<size_t>(size) * elem_size;
-
-    // Device-to-device copy into a new rmm::device_buffer.
-    rmm::device_buffer dev_data(data_bytes, stream, mr);
-    CUDF_CUDA_TRY(cudaMemcpyAsync(dev_data.data(), device_data, data_bytes,
-                                  cudaMemcpyDeviceToDevice, stream.value()));
-    // The input pointer is borrowed from the caller with no stream handoff.
-    // Complete the copy before returning an owning column handle.
-    stream.synchronize();
-
-    // Construct an owning column from the device buffer (no null mask).
-    auto col = std::make_unique<cudf::column>(
-        dtype, static_cast<cudf::size_type>(size), std::move(dev_data),
-        rmm::device_buffer{}, 0);
-
-    *out = static_cast<cudf_column_handle>(col.release());
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
+cudf_status_t cudf_column_create_from_device_data_ex(
+    cudf_type_id_t type_id,
+    const void* device_data,
+    int32_t size,
+    cudf_exec_options_t const* options,
+    cudf_column_handle* out) {
+  return create_column_from_device_data_impl(type_id, device_data, size,
+                                             options, false, out);
 }
 
 cudf_status_t cudf_column_create_strings(
@@ -529,6 +552,7 @@ cudf_status_t cudf_column_view_strings_to_host(
                                   needed_offsets_bytes, cudaMemcpyDeviceToHost, stream.value()));
     // We need the copied offsets on host before we can size the chars copy.
     stream.synchronize();
+    cudf_record_synchronized_stream(stream);
 
     // Compute total chars bytes from offsets
     int32_t char_begin = offsets_buf[0];
@@ -555,6 +579,7 @@ cudf_status_t cudf_column_view_strings_to_host(
                                       cudaMemcpyDeviceToHost, stream.value()));
         // This API promises the caller's chars buffer is populated on return.
         stream.synchronize();
+        cudf_record_synchronized_stream(stream);
       }
       // If chars_buf is null, we just return total_chars_bytes without copying.
     }

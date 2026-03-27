@@ -24,6 +24,8 @@ int cudf_rust_c_header_smoke(void)
     &cudf_column_copy_ex;
   cudf_status_t (*f14)(cudf_column_view_handle, void*, size_t, const cudf_exec_options_t*) =
     &cudf_column_view_to_host_ex;
+  cudf_status_t (*f15)(cudf_type_id_t, const void*, int32_t, const cudf_exec_options_t*, cudf_column_handle*) =
+    &cudf_column_create_from_device_data_ex;
   cudf_exec_options_t opts = CUDF_EXEC_OPTIONS_INITIALIZER;
 
   (void)f1;
@@ -40,6 +42,7 @@ int cudf_rust_c_header_smoke(void)
   (void)f12;
   (void)f13;
   (void)f14;
+  (void)f15;
   (void)opts;
   return 0;
 }
