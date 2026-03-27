@@ -400,6 +400,7 @@ extern "C" {
         aggregations: *const *mut c_void,
         agg_counts: *const i32,
         num_requests: i32,
+        num_aggregations: i32,
         keys_null_policy: i32,
         out_keys: *mut cudf_table_handle,
         out_values: *mut *mut cudf_column_handle,

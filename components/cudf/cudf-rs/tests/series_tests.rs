@@ -165,3 +165,252 @@ fn test_view_matches_column_data() {
     assert_eq!(view.len().unwrap(), 3);
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![100, 200, 300]);
 }
+
+// ===========================================================================
+// B2a — Minimal scalar comparison ops
+// ===========================================================================
+
+#[test]
+fn test_gt_scalar_i32() {
+    let s = Series::new::<i32>("x", &[1, 5, 10]).unwrap();
+    let mask = s.gt_scalar(5i32).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.len().unwrap(), 3);
+    assert_eq!(mask.name(), None); // result is unnamed
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, false, true]);
+}
+
+#[test]
+fn test_lt_scalar_f64() {
+    let s = Series::new::<f64>("y", &[1.0, 5.0, 10.0]).unwrap();
+    let mask = s.lt_scalar(5.0f64).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_eq_scalar_i32() {
+    let s = Series::new::<i32>("z", &[1, 2, 2, 3]).unwrap();
+    let mask = s.eq_scalar(2i32).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true, false]);
+}
+
+#[test]
+fn test_eq_scalar_string() {
+    let s = Series::from_strings("status", &["active", "inactive", "active"]).unwrap();
+    let mask = s.eq_scalar_string("active").unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn test_gt_scalar_preserves_input() {
+    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let _mask = s.gt_scalar(2i32).unwrap();
+
+    // Original series is unchanged.
+    assert_eq!(s.name(), Some("x"));
+    assert_eq!(s.view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+// ===========================================================================
+// B2b — Extended scalar comparison ops
+// ===========================================================================
+
+#[test]
+fn test_ne_scalar_i32() {
+    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let mask = s.ne_scalar(2i32).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn test_ge_scalar_i32() {
+    let s = Series::new::<i32>("x", &[1, 5, 10]).unwrap();
+    let mask = s.ge_scalar(5i32).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
+}
+
+#[test]
+fn test_le_scalar_i32() {
+    let s = Series::new::<i32>("x", &[1, 5, 10]).unwrap();
+    let mask = s.le_scalar(5i32).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, true, false]);
+}
+
+// ===========================================================================
+// B2b — Column-vs-column comparison ops
+// ===========================================================================
+
+#[test]
+fn test_eq_series() {
+    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[1, 9, 3]).unwrap();
+    let mask = a.eq(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.name(), None);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn test_ne_series() {
+    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[1, 9, 3]).unwrap();
+    let mask = a.ne(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_gt_series() {
+    let a = Series::new::<i32>("a", &[1, 5, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[2, 3, 3]).unwrap();
+    let mask = a.gt(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, false]);
+}
+
+#[test]
+fn test_lt_series() {
+    let a = Series::new::<i32>("a", &[1, 5, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[2, 3, 3]).unwrap();
+    let mask = a.lt(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, false]);
+}
+
+#[test]
+fn test_ge_series() {
+    let a = Series::new::<i32>("a", &[1, 5, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[2, 3, 3]).unwrap();
+    let mask = a.ge(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![false, true, true]);
+}
+
+#[test]
+fn test_le_series() {
+    let a = Series::new::<i32>("a", &[1, 5, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[2, 3, 3]).unwrap();
+    let mask = a.le(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+#[test]
+fn test_comparison_mixed_types_f64_i32() {
+    // Column comparison with mixed numeric types should work (type promotion).
+    let a = Series::new::<f64>("a", &[1.0, 2.5, 3.0]).unwrap();
+    let b = Series::new::<i32>("b", &[1, 3, 3]).unwrap();
+    let mask = a.eq(&b).unwrap();
+
+    assert_eq!(mask.dtype().unwrap().id(), TypeId::Bool8);
+    assert_eq!(mask.view().unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+}
+
+// ===========================================================================
+// B2b — Arithmetic ops
+// ===========================================================================
+
+#[test]
+fn test_add_series() {
+    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = Series::new::<i32>("b", &[10, 20, 30]).unwrap();
+    let result = a.add(&b).unwrap();
+
+    assert_eq!(result.name(), None);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 22, 33]);
+}
+
+#[test]
+fn test_sub_series() {
+    let a = Series::new::<i32>("a", &[10, 20, 30]).unwrap();
+    let b = Series::new::<i32>("b", &[1, 2, 3]).unwrap();
+    let result = a.sub(&b).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![9, 18, 27]);
+}
+
+#[test]
+fn test_mul_series() {
+    let a = Series::new::<i32>("a", &[2, 3, 4]).unwrap();
+    let b = Series::new::<i32>("b", &[10, 10, 10]).unwrap();
+    let result = a.mul(&b).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![20, 30, 40]);
+}
+
+#[test]
+fn test_div_series_f64() {
+    let a = Series::new::<f64>("a", &[10.0, 20.0, 30.0]).unwrap();
+    let b = Series::new::<f64>("b", &[2.0, 4.0, 5.0]).unwrap();
+    let result = a.div(&b).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![5.0, 5.0, 6.0]);
+}
+
+#[test]
+fn test_add_scalar_i32() {
+    let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
+    let result = s.add_scalar(10i32).unwrap();
+
+    assert_eq!(result.name(), None);
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Int32);
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![11, 12, 13]);
+}
+
+#[test]
+fn test_sub_scalar_i32() {
+    let s = Series::new::<i32>("x", &[10, 20, 30]).unwrap();
+    let result = s.sub_scalar(5i32).unwrap();
+
+    assert_eq!(result.view().unwrap().to_vec::<i32>().unwrap(), vec![5, 15, 25]);
+}
+
+#[test]
+fn test_mul_scalar_f64() {
+    let s = Series::new::<f64>("x", &[1.0, 2.0, 3.0]).unwrap();
+    let result = s.mul_scalar(2.0f64).unwrap();
+
+    assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+}
+
+#[test]
+fn test_div_scalar_f64() {
+    let s = Series::new::<f64>("x", &[10.0, 20.0, 30.0]).unwrap();
+    let result = s.div_scalar(5.0f64).unwrap();
+
+    assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![2.0, 4.0, 6.0]);
+}
+
+#[test]
+fn test_arithmetic_mixed_types() {
+    // i32 + f64 should promote to f64
+    let a = Series::new::<i32>("a", &[1, 2, 3]).unwrap();
+    let b = Series::new::<f64>("b", &[0.5, 0.5, 0.5]).unwrap();
+    let result = a.add(&b).unwrap();
+
+    assert_eq!(result.dtype().unwrap().id(), TypeId::Float64);
+    assert_eq!(result.view().unwrap().to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
+}

@@ -1,4 +1,4 @@
-//! Tests for Column::factorize (Task 1).
+//! Tests for Column::factorize
 
 use cudf::{column::Column, types::TypeId};
 

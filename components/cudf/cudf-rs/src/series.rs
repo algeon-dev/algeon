@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::{
     column::{Column, ColumnView},
     error::Result,
+    scalar::Scalar,
     types::{CudfType, DataType},
 };
 
@@ -122,5 +123,152 @@ impl Series {
     /// Creates a borrowed `ColumnView` for passing to low-level operations.
     pub fn view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
+    }
+
+    // -- Scalar comparison ops (B2a) -----------------------------------------
+
+    /// Element-wise `self > scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn gt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.gt_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self < scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn lt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.lt_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self == scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn eq_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.eq_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self == string_scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn eq_scalar_string(&self, rhs: &str) -> Result<Series> {
+        let s = Scalar::from_string(rhs)?;
+        let col = self.column.eq_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    // -- Extended scalar comparison ops (B2b) --------------------------------
+
+    /// Element-wise `self != scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn ne_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.ne_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self >= scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn ge_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.ge_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self <= scalar`. Returns an unnamed `BOOL8` Series.
+    pub fn le_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.le_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    // -- Column-vs-column comparison ops (B2b) -------------------------------
+
+    /// Element-wise `self == rhs`. Returns an unnamed `BOOL8` Series.
+    pub fn eq(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.eq_col(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self != rhs`. Returns an unnamed `BOOL8` Series.
+    pub fn ne(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.ne_col(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self > rhs`. Returns an unnamed `BOOL8` Series.
+    pub fn gt(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.gt_col(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self < rhs`. Returns an unnamed `BOOL8` Series.
+    pub fn lt(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.lt_col(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self >= rhs`. Returns an unnamed `BOOL8` Series.
+    pub fn ge(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.ge_col(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self <= rhs`. Returns an unnamed `BOOL8` Series.
+    pub fn le(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.le_col(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    // -- Arithmetic ops (B2b) ------------------------------------------------
+
+    /// Element-wise `self + rhs`. Output type inferred. Returns an unnamed Series.
+    pub fn add(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.add(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self - rhs`. Output type inferred. Returns an unnamed Series.
+    pub fn sub(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.sub(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self * rhs`. Output type inferred. Returns an unnamed Series.
+    pub fn mul(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.mul(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self / rhs`. Output type inferred. Returns an unnamed Series.
+    pub fn div(&self, rhs: &Series) -> Result<Series> {
+        let col = self.column.div(&rhs.column)?;
+        Ok(Self::from_column(col))
+    }
+
+    // -- Scalar arithmetic ops (B2b) -----------------------------------------
+
+    /// Element-wise `self + scalar`. Returns an unnamed Series.
+    pub fn add_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.add_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self - scalar`. Returns an unnamed Series.
+    pub fn sub_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.sub_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self * scalar`. Returns an unnamed Series.
+    pub fn mul_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.mul_scalar(&s)?;
+        Ok(Self::from_column(col))
+    }
+
+    /// Element-wise `self / scalar`. Returns an unnamed Series.
+    pub fn div_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
+        let s = Scalar::from_value(rhs)?;
+        let col = self.column.div_scalar(&s)?;
+        Ok(Self::from_column(col))
     }
 }

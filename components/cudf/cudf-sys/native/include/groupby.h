@@ -61,6 +61,8 @@ void cudf_aggregation_destroy(cudf_aggregation_handle handle);
 /// @param agg_counts     Array of length `num_requests`. agg_counts[i] is the
 ///                        number of aggregations for value column `i`.
 /// @param num_requests   Number of aggregation requests (length of values/agg_counts).
+/// @param num_aggregations Total length of the flat `aggregations` array. Must
+///                        equal `sum(agg_counts)`.
 /// @param keys_null_policy  Null handling for keys (EXCLUDE or INCLUDE).
 /// @param out_keys       Output: table of unique key groups. Set to NULL on failure.
 /// @param out_values     Output: array of column handles for aggregation results.
@@ -73,6 +75,7 @@ cudf_status_t cudf_groupby_aggregate(
     const cudf_aggregation_handle* aggregations,
     const int32_t* agg_counts,
     int32_t num_requests,
+    int32_t num_aggregations,
     cudf_null_policy_t keys_null_policy,
     cudf_table_handle* out_keys,
     cudf_column_handle** out_values,

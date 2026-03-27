@@ -114,6 +114,7 @@ cudf_status_t cudf_groupby_aggregate(
     const cudf_aggregation_handle* aggregations,
     const int32_t* agg_counts,
     int32_t num_requests,
+    int32_t num_aggregations,
     cudf_null_policy_t keys_null_policy,
     cudf_table_handle* out_keys,
     cudf_column_handle** out_values,
@@ -129,10 +130,16 @@ cudf_status_t cudf_groupby_aggregate(
     set_error("num_requests must be >= 0");
     return CUDF_ERROR_INVALID_OPERATION;
   }
+  if (num_aggregations < 0) {
+    set_error("num_aggregations must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
   if (num_requests > 0) {
     CUDF_RUST_NULL_CHECK(values, "values is null");
-    CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null");
     CUDF_RUST_NULL_CHECK(agg_counts, "agg_counts is null");
+  }
+  if (num_aggregations > 0) {
+    CUDF_RUST_NULL_CHECK(aggregations, "aggregations is null");
   }
   CUDF_RUST_TRY {
     auto* keys_view = static_cast<cudf::table_view*>(keys);
@@ -146,11 +153,17 @@ cudf_status_t cudf_groupby_aggregate(
     std::vector<cudf::groupby::aggregation_request> requests;
     requests.reserve(num_requests);
 
+    int64_t required_aggregations = 0;
     for (int32_t i = 0; i < num_requests; ++i) {
       if (agg_counts[i] < 0) {
         set_error("agg_counts entries must be >= 0");
         return CUDF_ERROR_INVALID_OPERATION;
       }
+      required_aggregations += agg_counts[i];
+    }
+    if (required_aggregations != num_aggregations) {
+      set_error("num_aggregations must equal sum(agg_counts)");
+      return CUDF_ERROR_INVALID_OPERATION;
     }
 
     int32_t agg_offset = 0;

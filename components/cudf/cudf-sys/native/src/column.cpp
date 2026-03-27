@@ -259,8 +259,8 @@ cudf_status_t cudf_column_view_to_host(cudf_column_view_handle handle,
     }
     auto stream = cudf::get_default_stream();
     // Copy from device to host.
-    cudaMemcpyAsync(host_buf, view->data<uint8_t>(),
-                    needed, cudaMemcpyDeviceToHost, stream.value());
+    CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->data<uint8_t>(),
+                                  needed, cudaMemcpyDeviceToHost, stream.value()));
     stream.synchronize();
     return CUDF_SUCCESS;
   }
@@ -288,8 +288,8 @@ cudf_status_t cudf_column_view_null_mask_to_host(
       return CUDF_ERROR_INVALID_OPERATION;
     }
     auto stream = cudf::get_default_stream();
-    cudaMemcpyAsync(host_buf, view->null_mask(), mask_bytes,
-                    cudaMemcpyDeviceToHost, stream.value());
+    CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->null_mask(), mask_bytes,
+                                  cudaMemcpyDeviceToHost, stream.value()));
     stream.synchronize();
     return CUDF_SUCCESS;
   }
@@ -465,8 +465,8 @@ cudf_status_t cudf_column_view_strings_to_host(
 
     // Account for view offset in the offsets child
     auto offsets_data = offsets_view.data<int32_t>();
-    cudaMemcpyAsync(offsets_buf, offsets_data,
-                    needed_offsets_bytes, cudaMemcpyDeviceToHost, stream.value());
+    CUDF_CUDA_TRY(cudaMemcpyAsync(offsets_buf, offsets_data,
+                                  needed_offsets_bytes, cudaMemcpyDeviceToHost, stream.value()));
     stream.synchronize();
 
     // Compute total chars bytes from offsets
@@ -489,9 +489,9 @@ cudf_status_t cudf_column_view_strings_to_host(
 
         // chars_begin does NOT account for view offset, but the offsets
         // already tell us where chars start (offsets_buf[0] = char_begin).
-        cudaMemcpyAsync(chars_buf, chars_ptr + char_begin,
-                        static_cast<size_t>(total),
-                        cudaMemcpyDeviceToHost, stream.value());
+        CUDF_CUDA_TRY(cudaMemcpyAsync(chars_buf, chars_ptr + char_begin,
+                                      static_cast<size_t>(total),
+                                      cudaMemcpyDeviceToHost, stream.value()));
         stream.synchronize();
       }
       // If chars_buf is null, we just return total_chars_bytes without copying.
