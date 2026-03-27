@@ -78,7 +78,7 @@ pub mod unary;
 // Re-export façade types at crate root.
 // Re-export core types at crate root.
 pub use column::{Column, ColumnView, DeviceSlice};
-pub use dataframe::DataFrame;
+pub use dataframe::{DataFrame, DistinctOptions, DropNaOptions};
 pub use dataframe_view::DataFrameView;
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};

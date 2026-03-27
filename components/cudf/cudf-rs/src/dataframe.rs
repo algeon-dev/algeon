@@ -71,6 +71,110 @@ pub struct DataFrameJoinResult {
     pub right: DataFrame,
 }
 
+/// Options for [`DataFrame::dropna`].
+///
+/// Controls which rows are dropped based on null values. Mirrors the
+/// `dropna()` API from cuDF Python.
+///
+/// # Defaults
+///
+/// - `how` = any (drop if **any** subset column is null)
+/// - `subset` = all columns
+/// - `thresh` = `None` (when set, overrides `how`)
+#[derive(Debug, Clone)]
+pub struct DropNaOptions {
+    /// Column names to inspect. Empty means all columns.
+    subset: Vec<String>,
+    /// Minimum number of non-null values in subset required to keep the row.
+    /// `None` means derive from `how`.
+    thresh: Option<i32>,
+    /// If `true`, drop only when **all** subset columns are null.
+    /// If `false` (default), drop when **any** subset column is null.
+    how_all: bool,
+}
+
+impl Default for DropNaOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DropNaOptions {
+    /// Create default options: how=any, subset=all columns, no threshold override.
+    pub fn new() -> Self {
+        Self { subset: Vec::new(), thresh: None, how_all: false }
+    }
+
+    /// Specify which columns to check for nulls. If not called (or empty),
+    /// all columns are checked.
+    pub fn subset(mut self, columns: &[&str]) -> Self {
+        self.subset = columns.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Drop rows where **any** of the subset columns is null (default).
+    pub fn how_any(mut self) -> Self {
+        self.how_all = false;
+        self
+    }
+
+    /// Drop rows only when **all** subset columns are null.
+    pub fn how_all(mut self) -> Self {
+        self.how_all = true;
+        self
+    }
+
+    /// Set an explicit threshold: keep rows with at least `thresh` non-null
+    /// values in the subset columns. When set, this overrides `how`.
+    pub fn thresh(mut self, thresh: i32) -> Self {
+        self.thresh = Some(thresh);
+        self
+    }
+}
+
+/// Options for [`DataFrame::drop_duplicates`].
+///
+/// Controls deduplication behavior. Mirrors `drop_duplicates()` from cuDF
+/// Python.
+///
+/// # Defaults
+///
+/// - `subset` = all columns
+/// - `keep` = [`DuplicateKeepOption::KeepAny`]
+#[derive(Debug, Clone)]
+pub struct DistinctOptions {
+    /// Column names to use as deduplication keys. Empty means all columns.
+    subset: Vec<String>,
+    /// Which duplicate occurrence to keep.
+    keep: DuplicateKeepOption,
+}
+
+impl Default for DistinctOptions {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DistinctOptions {
+    /// Create default options: all columns, keep any.
+    pub fn new() -> Self {
+        Self { subset: Vec::new(), keep: DuplicateKeepOption::KeepAny }
+    }
+
+    /// Specify which columns to use as deduplication keys. If not called
+    /// (or empty), all columns are used.
+    pub fn subset(mut self, columns: &[&str]) -> Self {
+        self.subset = columns.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// Which duplicate occurrence to keep.
+    pub fn keep(mut self, keep: DuplicateKeepOption) -> Self {
+        self.keep = keep;
+        self
+    }
+}
+
 impl std::fmt::Debug for DataFrame {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Debug shows schema, row count, and column types — NO GPU data copy.
@@ -1885,6 +1989,117 @@ impl DataFrame {
 
         let cv = col.view()?;
         let new_col = unary::cast(&cv, target_type)?;
+
+        let mut new_columns = self.columns.clone();
+        new_columns.insert(column.to_string(), Arc::new(new_col));
+
+        Ok(Self { columns: new_columns, row_count: self.row_count })
+    }
+
+    // -- Façade: cuDF-style naming (D3) ----------------------------------------
+
+    /// Drop rows containing null values.
+    ///
+    /// Equivalent to cuDF Python's `DataFrame.dropna()`.
+    ///
+    /// - `how=any` (default): drop rows where **any** subset column is null.
+    /// - `how=all`: drop rows only when **all** subset columns are null.
+    /// - `thresh`: if set, keep rows with at least `thresh` non-null subset values
+    ///   (overrides `how`).
+    /// - `subset`: columns to inspect; defaults to all columns.
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new table with the surviving rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any column in `subset` is not in the schema.
+    pub fn dropna(&self, opts: DropNaOptions) -> Result<Self> {
+        let subset_names: Vec<&str> =
+            if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
+
+        let subset_len = i32::try_from(subset_names.len()).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "subset length exceeds i32::MAX")
+                .with_operation("dataframe::dropna")
+        })?;
+
+        let threshold = if let Some(t) = opts.thresh {
+            t
+        } else if opts.how_all {
+            // "all": drop only when every subset column is null → keep if ≥1 non-null.
+            1
+        } else {
+            // "any": drop if any subset column is null → keep if all non-null.
+            subset_len
+        };
+
+        self.drop_nulls(&subset_names, threshold).map_err(|e| e.with_operation("dataframe::dropna"))
+    }
+
+    /// Remove duplicate rows.
+    ///
+    /// Equivalent to cuDF Python's `DataFrame.drop_duplicates()`.
+    ///
+    /// - `subset`: columns to use as deduplication keys; defaults to all columns.
+    /// - `keep`: which occurrence to keep
+    ///   ([`DuplicateKeepOption::KeepAny`] by default).
+    ///
+    /// # Cost
+    /// GPU-allocating: produces a new table with duplicates removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any column in `subset` is not in the schema.
+    pub fn drop_duplicates(&self, opts: DistinctOptions) -> Result<Self> {
+        let subset_names: Vec<&str> =
+            if opts.subset.is_empty() { self.column_names() } else { opts.subset.iter().map(|s| s.as_str()).collect() };
+
+        self.distinct(&subset_names, opts.keep).map_err(|e| e.with_operation("dataframe::drop_duplicates"))
+    }
+
+    /// Replace null values in a single column with a scalar.
+    ///
+    /// Equivalent to cuDF Python's `DataFrame.fillna({column: scalar})`.
+    ///
+    /// Returns a new DataFrame with the named column's nulls replaced.
+    /// All other columns are preserved unchanged (zero-copy via Arc sharing).
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced for the filled column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema.
+    pub fn fillna(&self, column: &str, value: &Scalar) -> Result<Self> {
+        self.replace_nulls(column, value).map_err(|e| e.with_operation("dataframe::fillna"))
+    }
+
+    /// Replace null values in a single column using corresponding elements
+    /// from a [`Series`].
+    ///
+    /// Both the target column and `fill_series` must have compatible types and
+    /// matching lengths.
+    ///
+    /// Returns a new DataFrame with the named column's nulls replaced.
+    /// All other columns are preserved unchanged (zero-copy via Arc sharing).
+    ///
+    /// # Cost
+    /// GPU-allocating: a new column is produced for the filled column.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `column` is not in the schema, or if the types
+    /// or lengths are incompatible.
+    pub fn fillna_with_series(&self, column: &str, fill_series: &Series) -> Result<Self> {
+        let col = self.columns.get(column).ok_or_else(|| {
+            Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", column))
+                .with_operation("dataframe::fillna_with_series")
+                .with_context("column_name", column.to_string())
+        })?;
+
+        let cv = col.view()?;
+        let fill_cv = fill_series.column_view()?;
+        let new_col = replace::replace_nulls_column(&cv, &fill_cv)?;
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
