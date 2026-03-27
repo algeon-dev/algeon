@@ -1,36 +1,33 @@
-//! Self-borrowing temporary table view.
+//! Temporary table-view bundle.
 //!
-//! [`TempTableView`] owns a `Vec<ColumnView<'a>>` *and* the `TableView<'a>`
-//! built from them. This solves the common lifetime problem where column
-//! views must outlive the table view they are composed into — callers can
-//! hold a single `TempTableView` instead of juggling two separate values.
+//! [`TempTableView`] owns a `Vec<ColumnView<'a>>` alongside a `TableView<'a>`
+//! built from equivalent references. This solves the common lifetime problem
+//! where callers would otherwise need to keep both values alive separately —
+//! callers can hold a single `TempTableView` instead of juggling two values.
 
 use crate::{column::ColumnView, error::Result, table::TableView};
 
-/// A temporary table view that owns its column views.
+/// A temporary bundle of column views plus a table view.
 ///
-/// Many libcudf kernel wrappers accept a `&TableView`, which borrows from
-/// one or more `ColumnView`s. Without this helper, callers need to keep the
-/// `Vec<ColumnView>` alive alongside the `TableView`, leading to awkward
-/// `let (_views, tv) = …;` patterns.
+/// Many libcudf kernel wrappers accept a `&TableView`, which is typically
+/// created from a temporary `Vec<ColumnView>`. Without this helper, callers
+/// need to keep both the vector and the table view alive side by side,
+/// leading to awkward `let (_views, tv) = …;` patterns.
 ///
-/// `TempTableView` bundles both into one value: the column views are stored
-/// in `_views` and the table view borrows from them. Because both live in
-/// the same struct and `_views` is declared before `table`, Rust's drop
-/// order guarantees that `table` is dropped before `_views`.
+/// `TempTableView` simply stores both values together so they can be passed
+/// around as one unit.
 pub(crate) struct TempTableView<'a> {
-    /// Column views that the table view borrows from.
-    /// Must be declared before `table` for correct drop order.
+    /// Column views kept alive for the lifetime of this bundle.
     _views: Vec<ColumnView<'a>>,
-    /// The table view composed from `_views`.
+    /// The table view composed from equivalent column-view references.
     table: TableView<'a>,
 }
 
 impl<'a> TempTableView<'a> {
     /// Build a `TempTableView` from a pre-constructed vector of column views.
     ///
-    /// The column views are moved into the struct and the `TableView` is
-    /// built from references to them.
+    /// The column views and resulting `TableView` are stored together so
+    /// callers can carry them as a single value.
     ///
     /// # Errors
     ///

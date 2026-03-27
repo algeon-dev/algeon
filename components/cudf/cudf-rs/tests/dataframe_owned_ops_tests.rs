@@ -63,6 +63,28 @@ fn test_filter_by_mask_owned_matches_borrow_variant() {
     );
 }
 
+#[test]
+fn test_filter_by_mask_owned_rejects_non_bool_mask() {
+    let df = sample_df();
+    let mask_col = Column::from_slice(&[1i32, 0, 1, 0, 1]).unwrap();
+    let mask = mask_col.view().unwrap();
+
+    let err = df.filter_by_mask_owned(&mask).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::TypeError);
+    assert!(err.to_string().contains("Bool8"));
+}
+
+#[test]
+fn test_filter_by_mask_owned_rejects_wrong_length_mask() {
+    let df = sample_df();
+    let mask_col = Column::from_slice(&[true, false]).unwrap();
+    let mask = mask_col.view().unwrap();
+
+    let err = df.filter_by_mask_owned(&mask).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
+    assert!(err.to_string().contains("length"));
+}
+
 // ---------------------------------------------------------------------------
 // filter_isin_owned
 // ---------------------------------------------------------------------------

@@ -41,6 +41,13 @@ cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
                                 int32_t include_header) {
   CUDF_RUST_NULL_CHECK(table, "table is null");
   CUDF_RUST_NULL_CHECK(filepath, "filepath is null");
+  if (num_columns < 0) {
+    set_error("num_columns must be >= 0");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (num_columns > 0) {
+    CUDF_RUST_NULL_CHECK(column_names, "column_names is null");
+  }
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(table);
     auto sink = cudf::io::sink_info(std::string(filepath));

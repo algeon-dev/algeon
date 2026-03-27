@@ -17,6 +17,12 @@ extern "C" {
 /// Read a Parquet file into a table. `columns` is an optional array of
 /// null-terminated column name strings (pass NULL to read all columns).
 /// `num_columns` is the length of the `columns` array.
+///
+/// Contract:
+/// - `num_columns` must be >= 0
+/// - if `num_columns > 0`, `columns` must be non-NULL
+/// - `skip_rows` must be >= 0
+/// - `num_rows` must be >= -1 (`-1` means read all remaining rows)
 cudf_status_t cudf_io_read_parquet(const char* filepath,
                                    const char** columns,
                                    int32_t num_columns,
@@ -26,6 +32,12 @@ cudf_status_t cudf_io_read_parquet(const char* filepath,
 /// Read a Parquet file, returning the table and column names.
 /// `out_names` is populated with `out_num_names` null-terminated strings.
 /// The caller must free the names with `cudf_io_free_column_names()`.
+///
+/// Contract:
+/// - `num_columns` must be >= 0
+/// - if `num_columns > 0`, `columns` must be non-NULL
+/// - `skip_rows` must be >= 0
+/// - `num_rows` must be >= -1 (`-1` means read all remaining rows)
 cudf_status_t cudf_io_read_parquet_with_metadata(
     const char* filepath,
     const char** columns,
@@ -40,6 +52,10 @@ void cudf_io_free_column_names(char** names, int32_t num_names);
 
 /// Write a table to a Parquet file.
 /// `column_names` is an array of null-terminated strings (one per column).
+///
+/// Contract:
+/// - `num_columns` must be >= 0
+/// - if `num_columns > 0`, `column_names` must be non-NULL
 cudf_status_t cudf_io_write_parquet(cudf_table_view_handle table,
                                     const char* filepath,
                                     const char** column_names,
@@ -55,6 +71,10 @@ cudf_status_t cudf_io_read_csv(const char* filepath, char delimiter,
 
 /// Write a table to a CSV file.
 /// `column_names` is an array of null-terminated strings (one per column).
+///
+/// Contract:
+/// - `num_columns` must be >= 0
+/// - if `num_columns > 0`, `column_names` must be non-NULL
 cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
                                 const char* filepath,
                                 const char** column_names,

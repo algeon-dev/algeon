@@ -71,6 +71,11 @@ cudf_status_t cudf_dictionary_set_keys(cudf_column_view_handle dict_column,
 /// `out` is a caller-allocated array of `num_columns` column handles that
 /// will receive the matched columns. Each must be freed with
 /// `cudf_column_destroy`.
+///
+/// Contract:
+/// - `num_columns` must be > 0
+/// - `dict_columns` must point to at least `num_columns` entries
+/// - `out` must point to writable storage for at least `num_columns` entries
 cudf_status_t cudf_dictionary_match_dictionaries(
     const cudf_column_view_handle* dict_columns,
     int32_t num_columns,

@@ -70,14 +70,14 @@ pub mod types;
 pub mod unary;
 
 // Re-export façade types at crate root.
-// Future phases will add: SortOptions, MergeOptions, JoinType, Agg, AggSpec, GroupBy, etc.
-
+// Future phases will add: MergeOptions, JoinType, Agg, AggSpec, GroupBy, etc.
 // Re-export core types at crate root.
 pub use column::{Column, ColumnView, DeviceSlice};
 pub use dataframe::DataFrame;
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 pub use scalar::Scalar;
 pub use series::Series;
+pub use sorting::SortOptions;
 pub use stream::CudaStream;
 pub use table::{Table, TableView};
 pub use types::{CudfType, DataType, TypeId};

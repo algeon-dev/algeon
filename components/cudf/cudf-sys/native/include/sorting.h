@@ -39,13 +39,21 @@ cudf_status_t cudf_stable_sort(cudf_table_view_handle input,
                                int32_t num_keys,
                                cudf_table_handle* out);
 
-/// Sort `values` table by a separate `keys` table.
+/// Sort `values` table by a separate `keys` table (unstable).
 cudf_status_t cudf_sort_by_key(cudf_table_view_handle values,
                                cudf_table_view_handle keys,
                                const cudf_order_t* column_order,
                                const cudf_null_order_t* null_precedence,
                                int32_t num_key_columns,
                                cudf_table_handle* out);
+
+/// Stable sort `values` table by a separate `keys` table.
+cudf_status_t cudf_stable_sort_by_key(cudf_table_view_handle values,
+                                      cudf_table_view_handle keys,
+                                      const cudf_order_t* column_order,
+                                      const cudf_null_order_t* null_precedence,
+                                      int32_t num_key_columns,
+                                      cudf_table_handle* out);
 
 /// Return the row indices that would sort the table.
 /// Output is a single INT32 column.
