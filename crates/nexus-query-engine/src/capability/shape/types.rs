@@ -290,6 +290,8 @@ pub(in crate::capability) enum OutputLineage {
     },
 }
 
+/// Operator stages found between the root join and the sink. Each `NodeId`
+/// points at the stage node itself; discovered stage lists are root-to-sink.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::capability) enum PostRootStage {
     Filter(NodeId),

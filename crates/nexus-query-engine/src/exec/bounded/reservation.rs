@@ -94,10 +94,18 @@ impl ActiveReservationEventContext {
     }
 }
 
+/// Controls whether an active reservation charges capacity itself or only
+/// keeps already-charged bytes alive through another reservation lineage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::exec) enum ActiveReservationSemantics {
+    /// Charged bytes backing a resident frame or source read. Aliases may keep
+    /// those bytes reserved after the owner is released.
     OwnedResident,
+    /// Charged scratch or intermediate work space. It can be transferred to a
+    /// later reservation without creating a second capacity charge.
     Work,
+    /// Non-charging view of existing bytes. Releasing the last alias also
+    /// releases any owner charge that was deferred while aliases were alive.
     Alias,
 }
 
@@ -386,6 +394,13 @@ impl Drop for ActiveReservation {
         let _ = self.release();
     }
 }
+
+pub(in crate::exec) struct ResidentGpuFrame {
+    pub(in crate::exec) frame: GpuDataFrame,
+    pub(in crate::exec) reservation: ActiveReservation,
+}
+
+pub(in crate::exec) type CommittedPartial = ResidentGpuFrame;
 
 #[derive(Debug)]
 pub(in crate::exec) struct ReservationTracker {
@@ -992,10 +1007,3 @@ impl ReservationTracker {
         .with_fact("tracker_memory_space", self.memory_space))
     }
 }
-
-pub(in crate::exec) struct CommittedPartial {
-    pub(in crate::exec) frame: GpuDataFrame,
-    pub(in crate::exec) reservation: ActiveReservation,
-}
-
-pub(in crate::exec) type ResidentGpuFrame = CommittedPartial;

@@ -76,10 +76,10 @@ async fn direct_friendly_sql_global_aggregate_parity_functions_lower() {
 }
 
 #[tokio::test]
-async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
-    let dir = unique_temp_dir("datafusion-nexus-native-lowering-q6-shaped");
+async fn direct_friendly_sql_discounted_revenue_global_decimal_sum_lowers() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-discounted-revenue");
     let path = dir.join("lineitem.parquet");
-    write_q6_lineitem_parquet_file(&path);
+    write_discounted_revenue_lineitem_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
 
     let result = lower_physical_plan_to_native(plan);
@@ -88,7 +88,7 @@ async fn direct_friendly_sql_q6_shaped_global_decimal_sum_lowers() {
     assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
     let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
-        panic!("Q6-shaped global aggregate should lower to native");
+        panic!("discounted revenue global aggregate should lower to native");
     };
     assert_eq!(candidate.shape, "ProjectionExec(AggregateExec(FilterExec(LocalParquetScan)))");
     assert_eq!(candidate.operator_count, 4);

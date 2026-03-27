@@ -10,13 +10,25 @@ pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
     aggregate_over_join_subplan_topk_plan_inner(variant)
 }
 
+/// Mutates the multi-join TopK shape where a grouped aggregate is itself built
+/// over a join subplan.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     Admitted,
+    /// Drops the fetch from the final TopK so the final-sort contract is not
+    /// bounded by a row count.
     MissingFetchLimit,
+    /// Inserts a single-output keyed filtering join above the root; this is an
+    /// admitted post-root stage, not a second root.
     PostRootFilteringJoin,
+    /// Replaces the grouped aggregate subplan with a scalar aggregate, removing
+    /// the grouping key needed by this proof.
     ScalarAggregateSubplan,
+    /// Leaves one side of the root too shallow to prove the intended multi-join
+    /// topology.
     ShallowMultiJoinSide,
+    /// Keeps the shape close while forcing admission to report the unsupported
+    /// projection expression instead of a generic topology failure.
     UnsupportedPostRootProjectionExpression,
 }
 
@@ -752,32 +764,68 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
     }
 }
 
+/// Root TopK join/aggregate fixture variants. Each variant either proves a
+/// modeled subcontract or introduces one targeted gap so admission reports the
+/// intended local reason.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RootTopKJoinAggregateVariant {
+    /// Canonical root TopK shape: reduced source -> grouped aggregate fragment ->
+    /// keyed root join -> projection -> sort(fetch).
     Admitted,
+    /// No source under the aggregate input carries a reduction proof.
     MissingSourceReduction,
+    /// A source reduction exists, but only on a branch unrelated to the grouped
+    /// aggregate input that bounds the TopK result.
     SourceReductionOutsideAggregateInput,
+    // Shared-input fixtures distinguish harmless source reuse from computed
+    // producer fanout that needs an explicit shared-subplan proof.
     SharedSourceFanout,
     SharedComputedFanout,
     SharedGroupedAggregateFanout,
     SharedProjectionAggregateFanout,
+    /// Shared projection fanout whose joined aggregate inputs have exact small
+    /// sizes; this exercises captured one-shot strategy thresholds.
     SmallExactSharedProjectionAggregateFanout,
+    /// Removes the grouped aggregate fragment so generic fallback must not mask
+    /// the root TopK-specific shape miss.
     MissingGroupedAggregateFragment,
+    /// Uses `LIMIT 0, None` instead of a fetch limit; TopK admission requires a
+    /// real fetch bound.
     MissingFetchLimit,
+    // Distinct aggregate fixtures cover the explicit distinct subcontract
+    // and the unsafe variants that would need unmodeled distinct state.
     DistinctAggregate,
     DistinctAggregateBuildSideKeyedOuterJoin,
     DistinctAggregatePreservedSideAggregateOuterJoin,
+    /// Distinct aggregate connected through an extra outer join; state
+    /// preservation is no longer direct enough for the subcontract.
     DistinctAggregateTransitiveKeyedOuterJoin,
+    /// Distinct aggregate plus an unrelated keyed outer join, which should be
+    /// rejected by the local join-contract check.
     DistinctAggregateUnrelatedKeyedOuterJoin,
+    /// Distinct aggregate with a filter; filtered distinct state is intentionally
+    /// kept out until the state model is explicit.
     FilteredDistinctAggregate,
+    // Keyless/cross fixtures exercise the keyless-or-cross subcontract and the
+    // narrower keyless outer-cross window subcontract.
     KeylessJoin,
+    /// Adds an unrelated scalar aggregate before the keyless join, so the source
+    /// reduction proof no longer bounds the relevant aggregate input.
     KeylessJoinUnrelatedScalarAggregate,
     ProjectedCrossJoin,
+    /// Bare keyless outer-cross is rejected; only the modeled window variant has
+    /// enough output and gather-map contracts.
     KeylessOuterCrossJoin,
     KeylessOuterCrossWindow,
     KeylessOuterCrossWindowMissingSourceReduction,
+    /// Sends the keyless outer-cross output to both the modeled window path and
+    /// a direct join consumer; the extra consumer invalidates the subcontract.
     KeylessOuterCrossWindowWithDirectJoinConsumer,
+    /// Uses an unordered window input after the keyless outer-cross, so the
+    /// window subcontract cannot prove ordered input.
     KeylessOuterCrossUnorderedWindow,
+    // Window fixtures distinguish admitted ordered/rank windows from unsupported
+    // global, left-only full-outer, and unordered-rank variants.
     BranchLocalWindow,
     WindowInputSortFullOuterJoin,
     SortedAggregateWindow,
@@ -793,12 +841,16 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     SortFetchLeftAntiJoinInput,
     SortFetchKeylessJoinInput,
     SortFetchProjectedCrossJoinInput,
+    // Sort-fetch join-aggregate fixtures. Only the reduced or exact-small cases
+    // have enough evidence to admit.
     SortFetchSingleHashJoinAggregate,
     SortFetchSingleHashJoinAggregateSmallExact,
     SortFetchSingleHashJoinAggregateSourceAdjacentFilters,
     SortFetchSingleHashJoinAggregateLargeFullScan,
     SortFetchSingleHashJoinAggregateFullScan,
     SortFetchHashJoinAggregate,
+    // Null-filtered fan-in fixtures model left joins whose right-side marker is
+    // filtered with IS NULL and then rewritten to a bounded anti-join contract.
     SortFetchNullFilteredLeftAggregateFanIn,
     SortFetchNullFilteredLeftAggregateFanInMissingFilter,
     SortFetchNullFilteredLeftAggregateFanInWrongBuildSide,

@@ -517,7 +517,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                     && gate.required_contract == "rollup_rank_topk_wide_final_rollup_subcontract"
                     && gate.contract_status.as_str() == "modeled"
             }),
-            "q67 should expose the RTK-6 wide rollup/rank/top-k subcontract in strict report rows"
+            "q67 should expose the wide rollup/rank/top-k subcontract in strict report rows"
         );
         for (query_id, expected_contract) in [
             ("q01", "root_topk_sort_fetch_hash_join_input_subcontract"),
@@ -571,7 +571,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                             && gate.required_contract == expected_contract
                             && gate.contract_status.as_str() == "modeled"
                     }),
-                    "{query_id} should expose RTK-4 operator contract {expected_contract} in strict report rows"
+                    "{query_id} should expose window operator contract {expected_contract} in strict report rows"
                 );
             }
         }
@@ -587,7 +587,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                         && gate.required_contract == "query_engine_rank_filter_output_boundary"
                         && gate.contract_status.as_str() == "modeled"
                 }),
-                "{query_id} should expose RTK-4 rank/filter output boundary in strict report rows"
+                "{query_id} should expose rank/filter output boundary in strict report rows"
             );
         }
         let q51 = report.rows.iter().find(|row| row.query_id == "q51").unwrap_or_else(|| panic!("q51 is missing"));
@@ -598,7 +598,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                     && gate.required_contract == "root_topk_window_full_outer_join_subcontract"
                     && gate.contract_status.as_str() == "modeled"
             }),
-            "q51 should expose RTK-4 full-outer window subcontract in strict report rows"
+            "q51 should expose full-outer window subcontract in strict report rows"
         );
         let q44 = report.rows.iter().find(|row| row.query_id == "q44").unwrap_or_else(|| panic!("q44 is missing"));
         for (reservation_kind, required_contract) in [
@@ -614,7 +614,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                         && gate.required_contract == required_contract
                         && gate.contract_status.as_str() == "modeled"
                 }),
-                "q44 should expose RTK-5 keyless outer-cross contract {required_contract} in strict report rows"
+                "q44 should expose keyless outer-cross contract {required_contract} in strict report rows"
             );
         }
         for query_id in ["q30", "q59", "q65", "q81"] {
@@ -625,7 +625,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                 .unwrap_or_else(|| panic!("{query_id} is missing"));
             assert!(
                 row.native_optimizer.shared_subplan_materialization.considered_count > 0,
-                "{query_id} should retain RTK-2 shared-subplan discovery diagnostics"
+                "{query_id} should retain shared-subplan discovery diagnostics"
             );
             assert!(
                 row.native_optimizer.dynamic_filter_route_discovery.route_count > 0,
@@ -645,7 +645,7 @@ fn tpcds_sf1_current_partial_native_coverage_set_is_pinned() {
                 .unwrap_or_else(|| panic!("{query_id} is missing"));
             assert!(
                 row.native_optimizer.local_parquet_source_reuse.applied_count > 0,
-                "{query_id} should retain RTK-2 local source reuse diagnostics"
+                "{query_id} should retain local source reuse diagnostics"
             );
         }
     });

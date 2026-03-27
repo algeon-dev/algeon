@@ -357,8 +357,8 @@ fn dimension_pruning_key_accumulator_supports_q16_string_predicate_with_utf8view
     )
     .expect("test batch should be valid");
 
-    let filter = nexus_query_engine::dimension_key_filter_from_batch(&batch, "p_partkey", &q16_part_predicate())
-        .expect("Q16-like string predicate should be evaluable")
+    let filter = nexus_query_engine::dimension_key_filter_from_batch(&batch, "p_partkey", &part_brand_type_size_predicate())
+        .expect("part string predicate should be evaluable")
         .expect("qualifying part keys should build a filter");
 
     assert_eq!(filter.bounds(), nexus_query_engine::DimensionDerivedKeyRange { min: 10, max: 40 });
@@ -389,7 +389,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
         vec![Int32Array::from(vec![10, 20, 30, 40, 50]), Int32Array::from(vec![1, 1, 1, 1, 1])],
         1,
     );
-    write_q16_part_dimension_parquet(&part_path, Arc::clone(&part_schema), 1);
+    write_part_brand_type_size_dimension_parquet(&part_path, Arc::clone(&part_schema), 1);
 
     let mut builder = QueryPlanBuilder::new();
     let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
@@ -403,7 +403,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
             Arc::clone(&part_schema),
             vec!["p_partkey".to_string(), "p_brand".to_string(), "p_type".to_string(), "p_size".to_string()],
         )
-        .with_reader_predicate(q16_part_predicate()),
+        .with_reader_predicate(part_brand_type_size_predicate()),
     ));
     let join_schema = Arc::new(Schema::new(vec![Field::new("ps_partkey", DataType::Int32, false)]));
     let joined = builder.add_join(
@@ -437,7 +437,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
         .candidates
         .iter()
         .find(|candidate| candidate.applied)
-        .expect("Q16-like part predicate should prune partsupp row groups");
+        .expect("part brand/type/size predicate should prune partsupp row groups");
     assert_eq!(applied.dimension_key_column.as_deref(), Some("p_partkey"));
     assert_eq!(applied.target_key_column.as_deref(), Some("ps_partkey"));
     assert_eq!(applied.derived_min_key, Some(10));
@@ -968,7 +968,7 @@ fn aggregate_right_group_filter_left_join_plan(dir: &Path) -> nexus_query_engine
     builder.finish_gpu_resident(filtered)
 }
 
-fn q16_part_predicate() -> Expr {
+fn part_brand_type_size_predicate() -> Expr {
     let brand_ok = Expr::binary(
         Expr::column("p_brand"),
         BinaryOp::NotEq,
@@ -991,7 +991,7 @@ fn write_i32_record_batch_parquet(path: &Path, schema: Arc<Schema>, columns: Vec
     write_record_batch_parquet(path, schema, &batch, row_group_rows);
 }
 
-fn write_q16_part_dimension_parquet(path: &Path, schema: Arc<Schema>, row_group_rows: usize) {
+fn write_part_brand_type_size_dimension_parquet(path: &Path, schema: Arc<Schema>, row_group_rows: usize) {
     let batch = RecordBatch::try_new(
         Arc::clone(&schema),
         vec![

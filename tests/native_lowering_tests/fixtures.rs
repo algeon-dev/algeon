@@ -550,7 +550,7 @@ pub(super) fn write_parquet_file_with_tpch_like_columns(path: &std::path::Path) 
     write_batch(path, schema, batch);
 }
 
-pub(super) fn write_q6_lineitem_parquet_file(path: &std::path::Path) {
+pub(super) fn write_discounted_revenue_lineitem_parquet_file(path: &std::path::Path) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("l_quantity", DataType::Decimal128(15, 2), false),
         Field::new("l_extendedprice", DataType::Decimal128(15, 2), false),

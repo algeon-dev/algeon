@@ -58,7 +58,7 @@ async fn direct_friendly_sql_filter_without_scan_predicate_prunes_native_row_gro
 async fn direct_friendly_sql_date_conjunction_prunes_native_row_groups_from_metadata() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-date-row-group-pruning");
     let path = dir.join("lineitem.parquet");
-    write_q6_lineitem_parquet_file(&path);
+    write_discounted_revenue_lineitem_parquet_file(&path);
     let total_row_groups = parquet_row_group_count(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
 

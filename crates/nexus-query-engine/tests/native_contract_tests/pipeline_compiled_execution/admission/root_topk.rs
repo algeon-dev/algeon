@@ -68,7 +68,7 @@ fn compiled_bounded_support_accepts_root_topk_distinct_and_keyless_subcontract_g
         let analysis = plan.capability_analysis();
         assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let pipeline = compile_pipeline(&plan, &analysis)
-            .unwrap_or_else(|error| panic!("{variant:?} root TopK RTK-3 plan should compile: {error}"));
+            .unwrap_or_else(|error| panic!("{variant:?} distinct/keyless root TopK plan should compile: {error}"));
 
         assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
         assert_task_kind_count(&pipeline, PipelineTaskKind::Limit, 1);
@@ -164,7 +164,7 @@ fn compiled_bounded_support_accepts_root_topk_sort_fetch_hash_join_input_subcont
 }
 
 #[test]
-fn compiled_bounded_support_accepts_root_topk_rtk9_subcontract_graphs() {
+fn compiled_bounded_support_accepts_root_topk_sort_fetch_join_aggregate_subcontract_graphs() {
     for (variant, expected_contract) in [
         (
             RootTopKJoinAggregateVariant::SortFetchHashJoinAggregate,
@@ -318,7 +318,7 @@ fn compiled_bounded_support_rejects_rankless_non_rollup_grouping_sets_root_topk(
 }
 
 #[test]
-fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_in_graph() {
+fn compiled_bounded_support_accepts_root_topk_null_filtered_aggregate_fan_in_graph() {
     let optimized = optimize_query_plan(
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn),
         &NativeOptimizerOptions::default(),
@@ -327,8 +327,8 @@ fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_
     let plan = optimized.plan;
     let analysis = plan.capability_analysis();
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
-    let pipeline =
-        compile_pipeline(&plan, &analysis).expect("RTK-10 anti-rewritten aggregate fan-in plan should compile");
+    let pipeline = compile_pipeline(&plan, &analysis)
+        .expect("anti-rewritten null-filtered aggregate fan-in plan should compile");
 
     assert_task_kind_count(&pipeline, PipelineTaskKind::JoinMaterialize, 8);
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 6);
@@ -342,27 +342,27 @@ fn compiled_bounded_support_accepts_root_topk_rtk10_null_filtered_aggregate_fan_
     );
 
     let report = StrictBoundedContractReport::from_compiled_pipeline(&analysis, &pipeline)
-        .expect("RTK-10 compiled report should be valid");
+        .expect("null-filtered aggregate fan-in compiled report should be valid");
     assert_modeled_gate_row(
-        "rtk10 null-filtered aggregate fan-in",
+        "null-filtered aggregate fan-in",
         &report,
         ReservationKind::CapabilityContract,
         "root_topk_keyed_filtered_semi_join_subcontract",
     );
     assert_modeled_gate_row(
-        "rtk10 null-filtered aggregate fan-in",
+        "null-filtered aggregate fan-in",
         &report,
         ReservationKind::OperatorOutput,
         "aggregate_contract",
     );
     assert_modeled_gate_row(
-        "rtk10 null-filtered aggregate fan-in",
+        "null-filtered aggregate fan-in",
         &report,
         ReservationKind::FinalSort,
         "final_sort_contract",
     );
     assert_modeled_gate_row(
-        "rtk10 null-filtered aggregate fan-in",
+        "null-filtered aggregate fan-in",
         &report,
         ReservationKind::Materialization,
         "query_engine_explicit_sink_materialization_reservation",
