@@ -4,20 +4,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[allow(dead_code)]
+#[path = "../build_support.rs"]
+mod build_support;
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn include_dir() -> PathBuf {
-    // Mirror the fallback logic from build.rs: only use the env var if it
-    // actually contains cuGraph headers, otherwise fall back to the submodule.
-    if let Ok(val) = std::env::var("CUGRAPH_INCLUDE_DIR") {
-        let p = PathBuf::from(&val);
-        if p.join("cugraph_c").is_dir() {
-            return p;
-        }
-    }
-    manifest_dir().join("../cugraph/cpp/include")
+    let submodule_include = manifest_dir().join("../cugraph/cpp/include");
+    build_support::resolve_include_dir(std::env::var("CUGRAPH_INCLUDE_DIR").ok().as_deref(), &submodule_include)
+        .unwrap_or_else(|err| panic!("{err}"))
 }
 
 fn bindings_rs_path() -> PathBuf {

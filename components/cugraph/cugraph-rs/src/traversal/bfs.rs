@@ -8,46 +8,77 @@ use cugraph_sys::{
 };
 
 use crate::{
-    array::DeviceArrayView,
-    error::{Result, check_error},
+    array::{DeviceArrayView, RawDeviceArrayView},
+    error::{Error, ErrorKind, Result, check_error},
     graph::{Forward, Graph},
     handle::ResourceHandle,
     params::BfsDepthLimit,
-    types::to_bool_t,
+    structure::typed_results::{Distances, VertexIds},
+    types::{CugraphElement, to_bool_t},
 };
+
+/// Parameters for the BFS traversal algorithm.
+///
+/// Use the builder methods to configure optional settings. All fields
+/// default to "no limit, no predecessors" via [`Default`].
+///
+/// # Example
+///
+/// ```
+/// use cugraph::{params::BfsDepthLimit, traversal::BfsParams};
+///
+/// let params = BfsParams::default()
+///     .with_predecessors()
+///     .with_depth_limit(BfsDepthLimit::new(3).unwrap());
+/// assert!(params.compute_predecessors());
+/// assert_eq!(params.depth_limit().unwrap().get(), 3);
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BfsParams {
+    depth_limit: Option<BfsDepthLimit>,
+    compute_predecessors: bool,
+}
+
+impl BfsParams {
+    /// Enable computation of predecessor vertices in the BFS result.
+    pub fn with_predecessors(mut self) -> Self {
+        self.compute_predecessors = true;
+        self
+    }
+
+    /// Set the maximum BFS traversal depth.
+    pub fn with_depth_limit(mut self, limit: BfsDepthLimit) -> Self {
+        self.depth_limit = Some(limit);
+        self
+    }
+
+    /// Whether predecessor vertices will be computed.
+    pub fn compute_predecessors(&self) -> bool {
+        self.compute_predecessors
+    }
+
+    /// The maximum BFS depth, or `None` for unlimited traversal.
+    pub fn depth_limit(&self) -> Option<BfsDepthLimit> {
+        self.depth_limit
+    }
+}
 
 /// Perform breadth-first search from one or more source vertices.
 ///
-/// The graph must be stored in forward (non-transposed) form
-/// ([`Graph<Forward>`]). Use
-/// [`GraphBuilder::build_forward`](crate::graph::GraphBuilder::build_forward)
-/// to construct the graph.
-///
-/// # Arguments
-///
-/// - `handle` — resource handle for GPU operations
-/// - `graph` — the graph to traverse (must be [`Graph<Forward>`])
-/// - `sources` — source vertex ids (device array view, mutable because the C
-///   API may modify it if renumbering is enabled)
-/// - `depth_limit` — maximum BFS depth, or `None` for unlimited traversal.
-///   When provided, this uses [`BfsDepthLimit`] so invalid zero values are
-///   unrepresentable at the type level.
-///   `None` maps to `i32::MAX` (matching the C++ default of
-///   `std::numeric_limits<vertex_t>::max()`).
-/// - `compute_predecessors` — whether to compute predecessor vertices
-pub fn bfs(
+/// Prefer using [`Graph::bfs`](crate::graph::Graph::bfs) instead of calling
+/// this function directly.
+pub(crate) fn bfs<V: CugraphElement>(
     handle: &ResourceHandle,
     graph: &mut Graph<Forward>,
-    sources: &mut DeviceArrayView<'_>,
-    depth_limit: Option<BfsDepthLimit>,
-    compute_predecessors: bool,
+    sources: &DeviceArrayView<'_, V>,
+    params: &BfsParams,
 ) -> Result<BfsResult> {
     let mut result: *mut cugraph_paths_result_t = ptr::null_mut();
     let mut error: *mut cugraph_error_t = ptr::null_mut();
 
     // The C++ BFS defaults to std::numeric_limits<vertex_t>::max() for unlimited
     // depth. Since vertex_t is typically int32_t, we use i32::MAX.
-    let limit = depth_limit.map(usize::from).unwrap_or(i32::MAX as usize);
+    let limit = params.depth_limit.map(usize::from).unwrap_or(i32::MAX as usize);
 
     unsafe {
         let code = cugraph_bfs(
@@ -56,7 +87,7 @@ pub fn bfs(
             sources.as_ptr(),
             bool_t::FALSE, // direction_optimizing
             limit,
-            to_bool_t(compute_predecessors),
+            to_bool_t(params.compute_predecessors),
             bool_t::FALSE, // do_expensive_check
             &mut result,
             &mut error,
@@ -83,24 +114,73 @@ impl std::fmt::Debug for BfsResult {
 }
 
 impl BfsResult {
-    /// Get the vertex ids as a device array view.
-    pub fn vertices(&self) -> DeviceArrayView<'_> {
-        let view_ptr = unsafe { cugraph_paths_result_get_vertices(self.raw) };
-        unsafe { DeviceArrayView::from_borrowed(view_ptr) }
+    fn normalized_predecessors_raw(&self) -> Option<RawDeviceArrayView<'_>> {
+        let view_ptr = unsafe { cugraph_paths_result_get_predecessors(self.raw) };
+        if view_ptr.is_null() {
+            return None;
+        }
+
+        let raw = unsafe { RawDeviceArrayView::from_borrowed(view_ptr) };
+        if raw.is_empty() { None } else { Some(raw) }
     }
 
-    /// Get the BFS distances as a device array view.
-    pub fn distances(&self) -> DeviceArrayView<'_> {
-        let view_ptr = unsafe { cugraph_paths_result_get_distances(self.raw) };
-        unsafe { DeviceArrayView::from_borrowed(view_ptr) }
+    /// Get the vertex ids as a runtime-typed device array view.
+    ///
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn vertex_ids(&self) -> Result<VertexIds<'_>> {
+        VertexIds::from_raw(self.vertices_raw()?)
     }
 
-    /// Get the predecessor vertices as a device array view.
+    /// Get the BFS distances as a runtime-typed device array view.
+    ///
+    /// Returns [`Distances::I32`] or [`Distances::I64`] depending on the
+    /// graph's vertex type. BFS stores distances as integer hop counts
+    /// (`vertex_t`). A future SSSP binding will return [`Distances::F32`] or
+    /// [`Distances::F64`] (float weighted distances) from the same
+    /// `cugraph_paths_result_t` C API type.
+    pub fn distances(&self) -> Result<Distances<'_>> {
+        Distances::from_raw(self.distances_raw()?)
+    }
+
+    /// Get the predecessor vertices as a runtime-typed device array view.
     ///
     /// Returns `None` if `compute_predecessors` was `false` in the BFS call.
-    pub fn predecessors(&self) -> Option<DeviceArrayView<'_>> {
-        let view_ptr = unsafe { cugraph_paths_result_get_predecessors(self.raw) };
-        if view_ptr.is_null() { None } else { Some(unsafe { DeviceArrayView::from_borrowed(view_ptr) }) }
+    /// cuGraph may signal that state with either a null pointer or a
+    /// zero-length array view; both are normalized to `None`.
+    /// Returns [`VertexIds::I32`] or [`VertexIds::I64`] depending on the
+    /// graph's vertex type.
+    pub fn predecessors(&self) -> Result<Option<VertexIds<'_>>> {
+        match self.normalized_predecessors_raw() {
+            Some(raw) => VertexIds::from_raw(raw).map(Some),
+            None => Ok(None),
+        }
+    }
+
+    /// Get the raw vertices view.
+    pub(crate) fn vertices_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = unsafe { cugraph_paths_result_get_vertices(self.raw) };
+        if view_ptr.is_null() {
+            return Err(Error::new(ErrorKind::Unexpected, "BfsResult::vertices_raw")
+                .with_message("C API returned null pointer for vertices"));
+        }
+        Ok(unsafe { RawDeviceArrayView::from_borrowed(view_ptr) })
+    }
+
+    /// Get the raw distances view.
+    pub(crate) fn distances_raw(&self) -> Result<RawDeviceArrayView<'_>> {
+        let view_ptr = unsafe { cugraph_paths_result_get_distances(self.raw) };
+        if view_ptr.is_null() {
+            return Err(Error::new(ErrorKind::Unexpected, "BfsResult::distances_raw")
+                .with_message("C API returned null pointer for distances"));
+        }
+        Ok(unsafe { RawDeviceArrayView::from_borrowed(view_ptr) })
+    }
+
+    /// Get the raw predecessors view.
+    #[cfg(feature = "cudf-interop")]
+    pub(crate) fn predecessors_raw(&self) -> Option<RawDeviceArrayView<'_>> {
+        self.normalized_predecessors_raw()
     }
 }
 
@@ -109,26 +189,28 @@ impl BfsResult {
     /// Convert this BFS result to a cudf DataFrame.
     ///
     /// Returns a DataFrame with columns:
-    /// - `"vertex"` — vertex ids
-    /// - `"distance"` — BFS distances (Int32, unreachable = i32::MAX)
-    /// - `"predecessor"` — predecessor vertex ids (only if predecessors
-    ///   were computed; column is omitted otherwise)
+    /// - `"vertex"` — vertex ids with the underlying result dtype (`Int32` or `Int64`)
+    /// - `"distance"` — BFS distances with the underlying result dtype;
+    ///   unreachable vertices use that integer dtype's max sentinel value
+    /// - `"predecessor"` — predecessor vertex ids with the underlying result
+    ///   dtype, only if predecessors were computed; the column is omitted
+    ///   otherwise
     ///
     /// Performs a device-to-device copy.
     pub fn to_dataframe(&self) -> crate::error::Result<cudf::DataFrame> {
         use crate::{
-            cudf_interop::DeviceArrayViewExt,
+            cudf_interop::RawDeviceArrayViewExt,
             error::{Error, ErrorKind},
         };
 
-        let vertices = self.vertices();
-        let distances = self.distances();
-        let expected_len = vertices.len();
+        let vertices_raw = self.vertices_raw()?;
+        let distances_raw = self.distances_raw()?;
+        let expected_len = vertices_raw.len();
 
-        let vert_col = vertices.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
-        let dist_col = distances.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
+        let vert_col = vertices_raw.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
+        let dist_col = distances_raw.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
 
-        let (names, columns) = match self.predecessors() {
+        let (names, columns) = match self.predecessors_raw() {
             Some(preds) if preds.len() == expected_len => {
                 let pred_col = preds.to_cudf_column().map_err(|e| e.with_operation("BfsResult::to_dataframe"))?;
                 (vec!["vertex".into(), "distance".into(), "predecessor".into()], vec![vert_col, dist_col, pred_col])
@@ -162,9 +244,8 @@ impl Drop for BfsResult {
 mod tests {
     use super::*;
     use crate::{
-        array::device_array_from_host,
-        graph::GraphBuilder,
-        types::{DataType, GraphProperties},
+        array::DeviceArray,
+        graph::{Forward, GraphBuilder},
     };
 
     #[test]
@@ -177,30 +258,31 @@ mod tests {
         let dst_data: Vec<i32> = vec![1, 3, 4, 0, 1, 3, 5, 5];
         let wgt_data: Vec<f32> = vec![0.1, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-        let wgt = device_array_from_host(&handle, &wgt_data, DataType::Float32).expect("wgt");
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
+        let wgt = DeviceArray::from_slice(&handle, &wgt_data).expect("wgt");
 
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-
-        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view())
+        let mut graph = GraphBuilder::new(&src.view(), &dst.view())
             .weights(&wgt.view())
-            .renumber(true)
-            .build_forward(&handle)
+            .renumber()
+            .build::<Forward>(&handle)
             .expect("graph");
 
         // BFS from vertex 0
-        let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-        let mut sources_view = sources_arr.view();
+        let sources_arr = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+        let sources_view = sources_arr.view();
 
-        let result = bfs(&handle, &mut graph, &mut sources_view, None, true).expect("bfs");
+        let params = BfsParams::default().with_predecessors();
+        let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-        assert_eq!(result.vertices().len(), 6, "should have 6 vertices");
-        assert_eq!(result.distances().len(), 6, "should have 6 distances");
+        let vids = result.vertex_ids().expect("vertex_ids");
+        let dists = result.distances().expect("distances");
+        assert_eq!(vids.len(), 6, "should have 6 vertices");
+        assert_eq!(dists.len(), 6, "should have 6 distances");
 
         // Copy to host using typed helpers
-        let vertices: Vec<i32> = result.vertices().to_typed_vec(&handle).expect("vert copy");
-        let distances: Vec<i32> = result.distances().to_typed_vec(&handle).expect("dist copy");
+        let vertices: Vec<i32> = vids.to_vec_i32(&handle).expect("vert copy");
+        let distances: Vec<i32> = dists.to_vec_i32(&handle).expect("dist copy (BFS int hops)");
 
         // Build a map of vertex -> distance
         let mut dist_map = std::collections::HashMap::new();
@@ -217,7 +299,7 @@ mod tests {
         assert_eq!(dist_map[&5], 3, "vertex 5 should have distance 3");
 
         // Check predecessors are present
-        let preds = result.predecessors();
+        let preds = result.predecessors().expect("predecessors");
         assert!(preds.is_some(), "predecessors should be computed");
     }
 
@@ -229,21 +311,20 @@ mod tests {
         let src_data: Vec<i32> = vec![0, 1, 2, 3];
         let dst_data: Vec<i32> = vec![1, 2, 3, 4];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let mut graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Forward>(&handle).expect("graph");
 
-        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view()).build_forward(&handle).expect("graph");
+        let sources_arr = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+        let sources_view = sources_arr.view();
 
-        let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-        let mut sources_view = sources_arr.view();
+        let params = BfsParams::default().with_depth_limit(BfsDepthLimit::new(2).unwrap());
+        let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-        let result =
-            bfs(&handle, &mut graph, &mut sources_view, Some(BfsDepthLimit::new(2).unwrap()), false).expect("bfs");
-
-        let vertices: Vec<i32> = result.vertices().to_typed_vec(&handle).expect("vert copy");
-        let distances: Vec<i32> = result.distances().to_typed_vec(&handle).expect("dist copy");
+        let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vert copy");
+        let distances: Vec<i32> =
+            result.distances().expect("distances").to_vec_i32(&handle).expect("dist copy (BFS int hops)");
 
         let mut dist_map = std::collections::HashMap::new();
         for (v, d) in vertices.iter().zip(distances.iter()) {
@@ -264,19 +345,16 @@ mod tests {
         let src_data: Vec<i32> = vec![0, 1];
         let dst_data: Vec<i32> = vec![1, 2];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let mut graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Forward>(&handle).expect("graph");
 
-        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view()).build_forward(&handle).expect("graph");
+        let sources_arr = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+        let sources_view = sources_arr.view();
 
-        let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-        let mut sources_view = sources_arr.view();
-
-        let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
-        // When compute_predecessors is false, predecessors may be NULL
-        // (behavior depends on C implementation)
-        let _ = result.predecessors();
+        let params = BfsParams::default();
+        let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+        assert!(result.predecessors().expect("predecessors").is_none(), "predecessors should be omitted");
     }
 }

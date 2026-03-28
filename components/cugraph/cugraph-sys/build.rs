@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{env, path::PathBuf};
 
 #[path = "build_support.rs"]
 mod build_support;
@@ -17,20 +17,11 @@ fn main() {
     let library_dir = build_support::resolve_library_dir(library_from_env.as_deref(), &submodule_lib_candidates)
         .unwrap_or_else(|err| panic!("{err}"));
 
-    // If the directory exists, check that both required shared libraries are present.
-    if library_dir.exists() && !build_support::has_required_cugraph_libs(&library_dir) {
-        println!(
-            "cargo:warning=cuGraph library directory '{}' does not contain both required \
-             libraries (libcugraph and libcugraph_c). Build cuGraph C API libraries first \
-             (see README) or set CUGRAPH_LIBRARY_DIR.",
-            library_dir.display()
-        );
-    }
-
     println!("cargo:rustc-link-search=native={}", library_dir.display());
     println!("cargo:rustc-link-lib=dylib=cugraph");
     println!("cargo:rustc-link-lib=dylib=cugraph_c");
 
+    println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=CUGRAPH_INCLUDE_DIR");
     println!("cargo:rerun-if-env-changed=CUGRAPH_LIBRARY_DIR");
     println!("cargo:rerun-if-changed=wrapper.h");
@@ -66,10 +57,11 @@ fn main() {
         .newtype_enum("bool_")
         .newtype_enum("data_type_id_");
 
-    // Detect GCC system include paths so clang can find stddef.h etc.
-    if let Some(gcc_include) = detect_gcc_include_dir() {
-        builder = builder.clang_arg(format!("-isystem{}", gcc_include));
-    }
+    // Probe the selected C compiler for its system include search path so bindgen's
+    // clang invocation follows the build toolchain instead of a hard-coded host GCC.
+    let system_include_dir =
+        build_support::detect_system_include_dir(env::var("CC").ok().as_deref()).unwrap_or_else(|err| panic!("{err}"));
+    builder = builder.clang_arg(format!("-isystem{}", system_include_dir.display()));
 
     let bindings = builder.generate().expect("Unable to generate bindings");
 
@@ -80,34 +72,4 @@ fn main() {
     // Expose the generated bindings path to integration tests so they can
     // validate API coverage.
     println!("cargo:rustc-env=CUGRAPH_SYS_BINDINGS_RS={}", bindings_path.display());
-}
-
-/// Ask GCC for its built-in include directory (contains stddef.h, stdarg.h, etc.)
-fn detect_gcc_include_dir() -> Option<String> {
-    let output = Command::new("gcc")
-        .args(["-v", "-E", "-x", "c", "-"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .ok()?;
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut in_search = false;
-    for line in stderr.lines() {
-        if line.contains("#include <...> search starts here:") {
-            in_search = true;
-            continue;
-        }
-        if line.contains("End of search list.") {
-            break;
-        }
-        if in_search {
-            let path = line.trim();
-            if PathBuf::from(path).join("stddef.h").exists() {
-                return Some(path.to_string());
-            }
-        }
-    }
-    None
 }

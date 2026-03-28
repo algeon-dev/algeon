@@ -51,6 +51,21 @@ impl DataType {
             DataType::Int64 | DataType::Uint64 | DataType::Float64 | DataType::SizeT => 8,
         }
     }
+
+    /// Whether this is a vertex-compatible integer type (Int32 or Int64).
+    ///
+    /// The cuGraph C API accepts only `i32` and `i64` for vertex ids, edge ids,
+    /// edge type ids, and temporal arrays. Other integer widths are not valid.
+    pub fn is_integer(&self) -> bool {
+        matches!(self, DataType::Int32 | DataType::Int64)
+    }
+
+    /// Whether this is a float type (Float32 or Float64).
+    ///
+    /// The cuGraph C API accepts only `f32` and `f64` for edge weights.
+    pub fn is_float(&self) -> bool {
+        matches!(self, DataType::Float32 | DataType::Float64)
+    }
 }
 
 impl From<DataType> for cugraph_data_type_id_t {
@@ -144,6 +159,27 @@ pub struct GraphProperties {
     pub is_multigraph: bool,
 }
 
+impl GraphProperties {
+    /// A directed simple graph (`is_symmetric: false`, `is_multigraph: false`).
+    ///
+    /// This is the most common configuration and matches [`Default`].
+    pub fn directed() -> Self {
+        Self { is_symmetric: false, is_multigraph: false }
+    }
+
+    /// An undirected (symmetric) simple graph (`is_symmetric: true`, `is_multigraph: false`).
+    pub fn undirected() -> Self {
+        Self { is_symmetric: true, is_multigraph: false }
+    }
+}
+
+impl Default for GraphProperties {
+    /// Returns a directed simple graph (same as [`GraphProperties::directed()`]).
+    fn default() -> Self {
+        Self::directed()
+    }
+}
+
 impl fmt::Display for GraphProperties {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let symmetry = if self.is_symmetric { "symmetric" } else { "directed" };
@@ -228,10 +264,29 @@ mod tests {
 
     #[test]
     fn test_graph_properties_to_c() {
-        let props = GraphProperties { is_symmetric: true, is_multigraph: false };
+        let props = GraphProperties::undirected();
         let c_props: cugraph_graph_properties_t = props.into();
         assert_eq!(c_props.is_symmetric, bool_t::TRUE);
         assert_eq!(c_props.is_multigraph, bool_t::FALSE);
+    }
+
+    #[test]
+    fn test_graph_properties_directed() {
+        let props = GraphProperties::directed();
+        assert!(!props.is_symmetric);
+        assert!(!props.is_multigraph);
+    }
+
+    #[test]
+    fn test_graph_properties_undirected() {
+        let props = GraphProperties::undirected();
+        assert!(props.is_symmetric);
+        assert!(!props.is_multigraph);
+    }
+
+    #[test]
+    fn test_graph_properties_default_is_directed() {
+        assert_eq!(GraphProperties::default(), GraphProperties::directed());
     }
 
     #[test]
@@ -246,6 +301,38 @@ mod tests {
         assert_eq!(u64::data_type(), DataType::Uint64);
         assert_eq!(f32::data_type(), DataType::Float32);
         assert_eq!(f64::data_type(), DataType::Float64);
+    }
+
+    #[test]
+    fn test_data_type_is_integer() {
+        assert!(DataType::Int32.is_integer());
+        assert!(DataType::Int64.is_integer());
+        assert!(!DataType::Int8.is_integer());
+        assert!(!DataType::Int16.is_integer());
+        assert!(!DataType::Uint8.is_integer());
+        assert!(!DataType::Uint16.is_integer());
+        assert!(!DataType::Uint32.is_integer());
+        assert!(!DataType::Uint64.is_integer());
+        assert!(!DataType::Float32.is_integer());
+        assert!(!DataType::Float64.is_integer());
+        assert!(!DataType::SizeT.is_integer());
+        assert!(!DataType::Bool.is_integer());
+    }
+
+    #[test]
+    fn test_data_type_is_float() {
+        assert!(DataType::Float32.is_float());
+        assert!(DataType::Float64.is_float());
+        assert!(!DataType::Int32.is_float());
+        assert!(!DataType::Int64.is_float());
+        assert!(!DataType::Int8.is_float());
+        assert!(!DataType::Int16.is_float());
+        assert!(!DataType::Uint8.is_float());
+        assert!(!DataType::Uint16.is_float());
+        assert!(!DataType::Uint32.is_float());
+        assert!(!DataType::Uint64.is_float());
+        assert!(!DataType::SizeT.is_float());
+        assert!(!DataType::Bool.is_float());
     }
 
     #[test]

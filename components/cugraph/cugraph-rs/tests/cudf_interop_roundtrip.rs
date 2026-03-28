@@ -1,58 +1,101 @@
 //! Integration tests for cugraph → cudf result pathway (Task 3).
 //!
-//! These tests run actual GPU algorithms and convert results to cudf Columns,
-//! verifying the full round-trip: GPU algorithm → DeviceArrayView → cudf Column → host Vec.
-use std::collections::HashMap;
+//! These tests run actual GPU algorithms and convert results to cudf DataFrames,
+//! verifying the full round-trip: GPU algorithm → result → cudf DataFrame → host Vec.
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use cudf::{Column, io::parquet};
 use cugraph::{
-    array::device_array_from_host,
+    array::DeviceArray,
     cudf_interop::{
-        DeviceArrayViewExt, DeviceSliceExt, graph_from_dataframe, graph_from_parquet, graph_from_table_view,
+        DataFrameGraphOptions, ParquetGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_parquet,
+        graph_from_table_view,
     },
-    graph::{Forward, GraphBuilder},
+    graph::{Forward, GraphBuilder, Transposed},
     handle::ResourceHandle,
-    traversal::bfs,
-    types::{DataType, GraphProperties},
+    traversal::BfsParams,
+    types::GraphProperties,
 };
 
-/// Path to the BFS test graph shipped in the examples/data directory.
-const BFS_PARQUET: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/data/bfs_graph.parquet");
+static NEXT_TEMP_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
-/// Run BFS and convert vertices() and distances() to cudf Columns, then read
-/// back via to_vec() and verify the values match the known graph topology.
+fn bfs_graph_table() -> cudf::Table {
+    let src = Column::from_slice(&[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = Column::from_slice(&[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
+    let wgt = Column::from_slice(&[0.1f32, 2.1, 1.1, 5.1, 3.1, 4.1, 7.2, 3.2]).expect("wgt");
+    cudf::Table::from_columns(vec![src, dst, wgt]).expect("bfs graph table")
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let id = NEXT_TEMP_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!("cugraph_{prefix}_{}_{}", std::process::id(), id))
+}
+
+struct TempParquetFixture {
+    dir: PathBuf,
+    path: PathBuf,
+}
+
+impl TempParquetFixture {
+    fn bfs_graph() -> Self {
+        let dir = unique_temp_dir("bfs_graph");
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+
+        let path = dir.join("bfs_graph.parquet");
+        let table = bfs_graph_table();
+        let view = table.view().expect("table view");
+        let write_opts =
+            parquet::ParquetWriterOptions::new(&path).column_names(&["src", "dst", "weight"]).expect("writer opts");
+
+        parquet::write_parquet(&view, &write_opts).expect("write bfs fixture");
+
+        Self { dir, path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn path_str(&self) -> &str {
+        self.path.to_str().expect("utf8 path")
+    }
+}
+
+impl Drop for TempParquetFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Run BFS and convert results to a cudf DataFrame, then read
+/// back via column accessors and verify the values match the known graph topology.
 #[test]
-fn bfs_results_to_cudf_columns() {
+fn bfs_results_to_cudf_dataframe() {
     let handle = ResourceHandle::new().expect("handle");
 
     // Build graph from host data: directed, same topology as the unit test in bfs.rs.
     // 0->1, 1->3, 1->4, 2->0, 2->1, 2->3, 3->5, 4->5
-    let src_data: Vec<i32> = vec![0, 1, 1, 2, 2, 2, 3, 4];
-    let dst_data: Vec<i32> = vec![1, 3, 4, 0, 1, 3, 5, 5];
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
 
-    let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-    let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+    let mut graph = GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
 
-    let mut graph =
-        GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
+    let params = BfsParams::default().with_predecessors();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
+    // ── Convert BFS results to cudf DataFrame ───────────────────────────
+    let df = result.to_dataframe().expect("to_dataframe");
 
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, true).expect("bfs");
-
-    // ── Convert BFS results to cudf Columns ─────────────────────────────
-    let vert_col = result.vertices().to_cudf_column().expect("vertices to cudf column");
-    let dist_col = result.distances().to_cudf_column().expect("distances to cudf column");
-
-    // ── Read back via cudf Column::view().to_vec() ──────────────────────
-    let vert_view = vert_col.view().expect("vert view");
-    let dist_view = dist_col.view().expect("dist view");
-
-    let vertices: Vec<i32> = vert_view.to_vec().expect("vert to_vec");
-    let distances: Vec<i32> = dist_view.to_vec().expect("dist to_vec");
+    // ── Read back via DataFrame column accessors ────────────────────────
+    let vertices: Vec<i32> = df.series_view("vertex").expect("vertex column").to_vec().expect("vert to_vec");
+    let distances: Vec<i32> = df.series_view("distance").expect("distance column").to_vec().expect("dist to_vec");
 
     assert_eq!(vertices.len(), 6, "should have 6 vertices");
     assert_eq!(distances.len(), 6, "should have 6 distances");
@@ -68,45 +111,38 @@ fn bfs_results_to_cudf_columns() {
     assert_eq!(dist_map[&5], 3, "vertex 5 should have distance 3");
 }
 
-/// Run BFS from the Parquet-loaded graph, convert results to cudf Columns,
-/// build a cudf Table, write to Parquet, read back, and verify.
+/// Run BFS from the Parquet-loaded graph, convert results to cudf DataFrame,
+/// write to Parquet, read back, and verify.
 #[test]
 fn bfs_results_roundtrip_through_parquet() {
     // ── Load graph from Parquet ─────────────────────────────────────────
-    let options = parquet::ParquetReaderOptions::new(BFS_PARQUET).expect("reader options");
-    let table = parquet::read_parquet(&options).expect("read parquet");
-    let table_view = table.view().expect("table view");
-
-    let src_col = table_view.column(0).expect("src col");
-    let dst_col = table_view.column(1).expect("dst col");
-
-    let src_slice = src_col.device_slice::<i32>().expect("src slice");
-    let dst_slice = dst_col.device_slice::<i32>().expect("dst slice");
-
-    let src_cg = src_slice.as_cugraph_view().expect("src cugraph view");
-    let dst_cg = dst_slice.as_cugraph_view().expect("dst cugraph view");
-
     let handle = ResourceHandle::new().expect("handle");
+    let props = GraphProperties::directed();
+    let fixture = TempParquetFixture::bfs_graph();
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
+    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
+    let table = read_result.table;
+    let view = table.view().expect("table view");
 
-    let mut graph = GraphBuilder::new(props, &src_cg, &dst_cg).renumber(true).build_forward(&handle).expect("graph");
+    let opts = TableGraphOptions::new(0, 1).properties(props).renumber();
+    let mut graph = graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view");
 
     // ── Run BFS ─────────────────────────────────────────────────────────
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    // ── Convert results to cudf Columns ─────────────────────────────────
-    let vert_col = result.vertices().to_cudf_column().expect("vertices to cudf");
-    let dist_col = result.distances().to_cudf_column().expect("distances to cudf");
+    // ── Convert results to cudf DataFrame ───────────────────────────────
+    let df = result.to_dataframe().expect("to_dataframe");
 
     // Snapshot the expected values before writing to Parquet.
-    let expected_vertices: Vec<i32> = vert_col.view().expect("v").to_vec().expect("v vec");
-    let expected_distances: Vec<i32> = dist_col.view().expect("d").to_vec().expect("d vec");
+    let expected_vertices: Vec<i32> = df.series_view("vertex").expect("v").to_vec().expect("v vec");
+    let expected_distances: Vec<i32> = df.series_view("distance").expect("d").to_vec().expect("d vec");
 
     // ── Write results to a temporary Parquet file ───────────────────────
-    let result_table = cudf::Table::from_columns(vec![vert_col, dist_col]).expect("result table");
+    let result_table = df.to_table_copy().expect("to_table");
     let result_view = result_table.view().expect("result table view");
 
     let tmp_dir = std::env::temp_dir().join("cugraph_test_bfs_roundtrip");
@@ -114,14 +150,14 @@ fn bfs_results_roundtrip_through_parquet() {
     let out_path = tmp_dir.join("bfs_result.parquet");
 
     let write_opts =
-        parquet::ParquetWriterOptions::new(&out_path).expect("writer options").column_names(&["vertex", "distance"]);
+        parquet::ParquetWriterOptions::new(&out_path).column_names(&["vertex", "distance"]).expect("writer options");
 
     parquet::write_parquet(&result_view, &write_opts).expect("write parquet");
 
     // ── Read back and verify ────────────────────────────────────────────
-    let read_opts = parquet::ParquetReaderOptions::new(&out_path).expect("reader options");
-    let read_table = parquet::read_parquet(&read_opts).expect("read parquet");
-    let read_view = read_table.view().expect("read table view");
+    let read_opts = parquet::ParquetReaderOptions::new(&out_path);
+    let read_result = parquet::read_parquet_with_metadata(read_opts).expect("read parquet");
+    let read_view = read_result.table.view().expect("read table view");
 
     assert_eq!(read_view.num_columns().expect("ncols"), 2);
 
@@ -135,60 +171,28 @@ fn bfs_results_roundtrip_through_parquet() {
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
 
-/// Test that converting a DeviceArrayView with SizeT dtype to a cudf Column
-/// returns an appropriate error.
-#[test]
-fn size_t_view_to_cudf_column_returns_error() {
-    let handle = ResourceHandle::new().expect("handle");
-
-    // Create a device array with SizeT type.
-    let arr = device_array_from_host(&handle, &[42u64], DataType::SizeT).expect("create size_t array");
-    let view = arr.view();
-
-    let err = match view.to_cudf_column() {
-        Ok(_) => panic!("SizeT should not convert to cudf"),
-        Err(e) => e,
-    };
-    assert_eq!(err.kind(), cugraph::error::ErrorKind::UnsupportedType);
-    assert!(
-        err.operation().contains("to_cudf_column"),
-        "error operation should mention to_cudf_column, got: {}",
-        err.operation()
-    );
-}
-
 /// Build a graph from Parquet using `graph_from_parquet`, then run BFS and
 /// verify the results match the known graph topology.
 #[test]
 fn graph_from_parquet_then_bfs() {
     let handle = ResourceHandle::new().expect("handle");
+    let props = GraphProperties::directed();
+    let fixture = TempParquetFixture::bfs_graph();
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-
-    let (_table, mut graph) = graph_from_parquet::<Forward>(
-        &handle,
-        BFS_PARQUET,
-        0,       // src column
-        1,       // dst column
-        Some(2), // weight column
-        props,
-        true, // renumber
-    )
-    .expect("graph_from_parquet");
+    let opts = ParquetGraphOptions::new(fixture.path_str(), 0, 1).weight_col(2).properties(props).renumber();
+    let loaded = graph_from_parquet::<Forward>(&handle, &opts).expect("graph_from_parquet");
+    let mut graph = loaded.graph;
 
     // Run BFS from vertex 0
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
 
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    // Verify we get results for all vertices
-    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
-    let dist_bytes = result.distances().to_host_vec(&handle).expect("distances");
-
-    let vertices: Vec<i32> = vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-    let distances: Vec<i32> =
-        dist_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+    // Verify we get results for all vertices via typed accessors
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&handle).expect("distances");
 
     assert!(!vertices.is_empty(), "graph_from_parquet should produce a non-empty graph");
     assert_eq!(vertices.len(), distances.len());
@@ -202,29 +206,21 @@ fn graph_from_parquet_then_bfs() {
 #[test]
 fn graph_from_parquet_without_weights() {
     let handle = ResourceHandle::new().expect("handle");
+    let props = GraphProperties::directed();
+    let fixture = TempParquetFixture::bfs_graph();
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-
-    let (_table, mut graph) = graph_from_parquet::<Forward>(
-        &handle,
-        BFS_PARQUET,
-        0,    // src column
-        1,    // dst column
-        None, // no weight column
-        props,
-        true, // renumber
-    )
-    .expect("graph_from_parquet without weights");
+    let opts = ParquetGraphOptions::new(fixture.path_str(), 0, 1).properties(props).renumber();
+    let loaded = graph_from_parquet::<Forward>(&handle, &opts).expect("graph_from_parquet without weights");
+    let mut graph = loaded.graph;
 
     // Verify the graph is valid by running BFS
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
 
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
-    let vertices: Vec<i32> = vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
     assert!(!vertices.is_empty(), "graph should have vertices");
 }
 
@@ -232,19 +228,12 @@ fn graph_from_parquet_without_weights() {
 #[test]
 fn graph_from_parquet_rejects_out_of_bounds_column() {
     let handle = ResourceHandle::new().expect("handle");
-
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let props = GraphProperties::directed();
+    let fixture = TempParquetFixture::bfs_graph();
 
     // The test Parquet has 3 columns (src, dst, wgt), so index 10 is OOB.
-    let result = graph_from_parquet::<Forward>(
-        &handle,
-        BFS_PARQUET,
-        0,
-        10, // out of bounds
-        None,
-        props,
-        true,
-    );
+    let opts = ParquetGraphOptions::new(fixture.path_str(), 0, 10).properties(props).renumber();
+    let result = graph_from_parquet::<Forward>(&handle, &opts);
 
     let err = match result {
         Ok(_) => panic!("should reject out-of-bounds column index"),
@@ -260,17 +249,12 @@ fn graph_from_parquet_rejects_out_of_bounds_column() {
 fn graph_from_parquet_rejects_nonexistent_file() {
     let handle = ResourceHandle::new().expect("handle");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let props = GraphProperties::directed();
 
-    let result = graph_from_parquet::<Forward>(
-        &handle,
-        "/tmp/this_file_definitely_does_not_exist_12345.parquet",
-        0,
-        1,
-        None,
-        props,
-        true,
-    );
+    let opts = ParquetGraphOptions::new("/tmp/this_file_definitely_does_not_exist_12345.parquet", 0, 1)
+        .properties(props)
+        .renumber();
+    let result = graph_from_parquet::<Forward>(&handle, &opts);
 
     let err = match result {
         Ok(_) => panic!("should reject non-existent file"),
@@ -295,13 +279,15 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     let path = tmp_dir.join("edges_with_null_src.parquet");
 
     let table_view = table.view().expect("table view");
-    let write_opts = parquet::ParquetWriterOptions::new(&path).expect("writer options");
+    let write_opts = parquet::ParquetWriterOptions::new(&path);
     parquet::write_parquet(&table_view, &write_opts).expect("write parquet");
 
     let handle = ResourceHandle::new().expect("handle");
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let props = GraphProperties::directed();
 
-    let result = graph_from_parquet::<Forward>(&handle, path.to_str().expect("utf8 path"), 0, 1, Some(2), props, true);
+    let opts =
+        ParquetGraphOptions::new(path.to_str().expect("utf8 path"), 0, 1).weight_col(2).properties(props).renumber();
+    let result = graph_from_parquet::<Forward>(&handle, &opts);
 
     let err = match result {
         Ok(_) => panic!("should reject nullable src column"),
@@ -322,33 +308,23 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
 #[test]
 fn graph_from_table_view_then_bfs() {
     let handle = ResourceHandle::new().expect("handle");
+    let fixture = TempParquetFixture::bfs_graph();
 
-    let options = parquet::ParquetReaderOptions::new(BFS_PARQUET).expect("reader options");
-    let table = parquet::read_parquet(&options).expect("read parquet");
+    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
+    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
+    let table = read_result.table;
     let view = table.view().expect("table view");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
+    let mut graph = graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view");
 
-    let mut graph = graph_from_table_view::<Forward>(
-        &handle,
-        &view,
-        0,       // src
-        1,       // dst
-        Some(2), // wgt
-        props,
-        true,
-    )
-    .expect("graph_from_table_view");
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
-
-    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
-    let distances_bytes = result.distances().to_host_vec(&handle).expect("distances");
-    let vertices: Vec<i32> = vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-    let distances: Vec<i32> =
-        distances_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&handle).expect("distances");
 
     assert!(!vertices.is_empty(), "should produce a non-empty graph");
 
@@ -360,25 +336,23 @@ fn graph_from_table_view_then_bfs() {
 #[test]
 fn graph_from_table_view_without_weights() {
     let handle = ResourceHandle::new().expect("handle");
+    let fixture = TempParquetFixture::bfs_graph();
 
-    let options = parquet::ParquetReaderOptions::new(BFS_PARQUET).expect("reader options");
-    let table = parquet::read_parquet(&options).expect("read parquet");
+    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
+    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
+    let table = read_result.table;
     let view = table.view().expect("table view");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let opts = TableGraphOptions::new(0, 1).properties(GraphProperties::directed()).renumber();
+    let mut graph =
+        graph_from_table_view::<Forward>(&handle, &view, &opts).expect("graph_from_table_view without weights");
 
-    let mut graph = graph_from_table_view::<Forward>(
-        &handle, &view, 0, 1, None, // no weight column
-        props, true,
-    )
-    .expect("graph_from_table_view without weights");
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
-
-    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
-    let vertices: Vec<i32> = vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
     assert!(!vertices.is_empty(), "graph should have vertices");
 }
 
@@ -386,17 +360,15 @@ fn graph_from_table_view_without_weights() {
 #[test]
 fn graph_from_table_view_rejects_out_of_bounds_column() {
     let handle = ResourceHandle::new().expect("handle");
+    let fixture = TempParquetFixture::bfs_graph();
 
-    let options = parquet::ParquetReaderOptions::new(BFS_PARQUET).expect("reader options");
-    let table = parquet::read_parquet(&options).expect("read parquet");
+    let reader_opts = parquet::ParquetReaderOptions::new(fixture.path());
+    let read_result = parquet::read_parquet_with_metadata(reader_opts).expect("read parquet");
+    let table = read_result.table;
     let view = table.view().expect("table view");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-
-    let result = graph_from_table_view::<Forward>(
-        &handle, &view, 0, 99, // out of bounds
-        None, props, true,
-    );
+    let opts = TableGraphOptions::new(0, 99).properties(GraphProperties::directed()).renumber();
+    let result = graph_from_table_view::<Forward>(&handle, &view, &opts);
 
     let err = result.expect_err("should reject out-of-bounds column index");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -414,9 +386,10 @@ fn graph_from_table_view_rejects_nullable_column() {
     let view = table.view().expect("table view");
 
     let handle = ResourceHandle::new().expect("handle");
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let props = GraphProperties::directed();
 
-    let result = graph_from_table_view::<Forward>(&handle, &view, 0, 1, Some(2), props, true);
+    let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(props).renumber();
+    let result = graph_from_table_view::<Forward>(&handle, &view, &opts);
 
     let err = result.expect_err("should reject nullable column");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -436,20 +409,18 @@ fn graph_from_dataframe_by_name() {
     let df = cudf::DataFrame::new(vec!["src".into(), "dst".into(), "weight".into()], vec![src, dst, wgt])
         .expect("dataframe");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let props = GraphProperties::directed();
 
-    let mut graph = graph_from_dataframe::<Forward>(&handle, &df, "src", "dst", Some("weight"), props, true)
-        .expect("graph_from_dataframe");
+    let opts = DataFrameGraphOptions::new("src", "dst").weight_col("weight").properties(props).renumber();
+    let mut graph = graph_from_dataframe::<Forward>(&handle, &df, &opts).expect("graph_from_dataframe");
 
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
-    let vert_bytes = result.vertices().to_host_vec(&handle).expect("vertices");
-    let distances_bytes = result.distances().to_host_vec(&handle).expect("distances");
-    let vertices: Vec<i32> = vert_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
-    let distances: Vec<i32> =
-        distances_bytes.chunks_exact(4).map(|c| i32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let vertices: Vec<i32> = result.vertex_ids().expect("vertex_ids").to_vec_i32(&handle).expect("vertices");
+    let distances: Vec<i32> = result.distances().expect("distances").to_vec_i32(&handle).expect("distances");
 
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
     assert_eq!(dist_map[&0], 0, "source vertex 0 should have distance 0");
@@ -465,17 +436,10 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
     let df = cudf::DataFrame::new(vec!["src".into(), "dst".into()], vec![src, dst]).expect("dataframe");
 
     let handle = ResourceHandle::new().expect("handle");
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+    let props = GraphProperties::directed();
 
-    let result = graph_from_dataframe::<Forward>(
-        &handle,
-        &df,
-        "nonexistent", // unknown column
-        "dst",
-        None,
-        props,
-        true,
-    );
+    let opts = DataFrameGraphOptions::new("nonexistent", "dst").properties(props).renumber();
+    let result = graph_from_dataframe::<Forward>(&handle, &df, &opts);
 
     let err = result.expect_err("should reject unknown column name");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -487,24 +451,22 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
 /// 2 columns named "vertex" and "value", row count == 3.
 #[test]
 fn centrality_result_to_dataframe() {
-    use cugraph::centrality::{PageRankParams, pagerank};
+    use cugraph::centrality::PageRankParams;
 
     let handle = ResourceHandle::new().expect("handle");
 
-    let src_data: Vec<i32> = vec![0, 1, 2, 1, 2, 0];
-    let dst_data: Vec<i32> = vec![1, 2, 0, 0, 1, 2];
-
-    let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-    let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-    let props = GraphProperties { is_symmetric: true, is_multigraph: false };
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0, 0, 1, 2]).expect("dst");
 
     let src_view = src.view();
     let dst_view = dst.view();
-    let mut graph =
-        GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Transposed>(&handle)
+        .expect("graph");
 
-    let result = pagerank(&handle, &mut graph, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
     let df = result.to_dataframe().expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 2);
@@ -512,19 +474,17 @@ fn centrality_result_to_dataframe() {
     assert_eq!(names[0], "vertex");
     assert_eq!(names[1], "value");
 
-    let num_rows = df.num_rows().expect("num_rows");
+    let num_rows = df.num_rows();
     assert_eq!(num_rows, 3, "should have 3 vertices");
 
     // Verify all vertex ids are present
-    let vert_col = df.column("vertex").expect("vertex column");
-    let vertices: Vec<i32> = vert_col.to_vec().expect("vertex to_vec");
+    let vertices: Vec<i32> = df.series_view("vertex").expect("vertex column").to_vec().expect("vertex to_vec");
     let mut sorted = vertices.clone();
     sorted.sort();
     assert_eq!(sorted, vec![0, 1, 2]);
 
     // Verify values are finite positive floats
-    let val_col = df.column("value").expect("value column");
-    let values: Vec<f32> = val_col.to_vec().expect("value to_vec");
+    let values: Vec<f32> = df.series_view("value").expect("value column").to_vec().expect("value to_vec");
     for (i, &v) in values.iter().enumerate() {
         assert!(v.is_finite() && v > 0.0, "value[{}] = {} should be finite positive", i, v);
     }
@@ -535,7 +495,7 @@ fn centrality_result_to_dataframe() {
 #[test]
 fn layout_result_to_dataframe() {
     use cugraph::{
-        layout::{ForceAtlas2Params, force_atlas2},
+        layout::{ForceAtlas2Options, ForceAtlas2Params},
         params::IterationCount,
         random::RngState,
     };
@@ -543,20 +503,21 @@ fn layout_result_to_dataframe() {
     let handle = ResourceHandle::new().expect("handle");
     let mut rng = RngState::new(&handle, 42).expect("rng");
 
-    let src_data: Vec<i32> = vec![0, 1, 2, 1, 2, 0];
-    let dst_data: Vec<i32> = vec![1, 2, 0, 0, 1, 2];
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0, 0, 1, 2]).expect("dst");
 
-    let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-    let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+    let mut graph = GraphBuilder::new(&src.view(), &dst.view())
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&handle)
+        .expect("graph");
 
-    let props = GraphProperties { is_symmetric: true, is_multigraph: false };
+    let options = ForceAtlas2Options {
+        params: ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() },
+        ..Default::default()
+    };
 
-    let mut graph =
-        GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
-
-    let params = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
-
-    let result = force_atlas2(&handle, &mut rng, &mut graph, &params, None, None).expect("fa2");
+    let result = graph.force_atlas2(&handle, &mut rng, &options).expect("fa2");
     let df = result.to_dataframe().expect("to_dataframe");
 
     assert_eq!(df.num_columns(), 3);
@@ -565,14 +526,12 @@ fn layout_result_to_dataframe() {
     assert_eq!(names[1], "x");
     assert_eq!(names[2], "y");
 
-    let num_rows = df.num_rows().expect("num_rows");
+    let num_rows = df.num_rows();
     assert_eq!(num_rows, 3);
 
     // Verify coordinates are finite
-    let x_col = df.column("x").expect("x column");
-    let y_col = df.column("y").expect("y column");
-    let x_vals: Vec<f32> = x_col.to_vec().expect("x to_vec");
-    let y_vals: Vec<f32> = y_col.to_vec().expect("y to_vec");
+    let x_vals: Vec<f32> = df.series_view("x").expect("x column").to_vec().expect("x to_vec");
+    let y_vals: Vec<f32> = df.series_view("y").expect("y column").to_vec().expect("y to_vec");
     for (i, (&x, &y)) in x_vals.iter().zip(y_vals.iter()).enumerate() {
         assert!(x.is_finite(), "x[{}] = {} should be finite", i, x);
         assert!(y.is_finite(), "y[{}] = {} should be finite", i, y);
@@ -585,20 +544,15 @@ fn layout_result_to_dataframe() {
 fn bfs_result_to_dataframe_with_predecessors() {
     let handle = ResourceHandle::new().expect("handle");
 
-    let src_data: Vec<i32> = vec![0, 1, 1, 2, 2, 2, 3, 4];
-    let dst_data: Vec<i32> = vec![1, 3, 4, 0, 1, 3, 5, 5];
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 1, 2, 2, 2, 3, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 3, 4, 0, 1, 3, 5, 5]).expect("dst");
 
-    let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-    let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+    let mut graph = GraphBuilder::new(&src.view(), &dst.view()).renumber().build::<Forward>(&handle).expect("graph");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-
-    let mut graph =
-        GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
-
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, true).expect("bfs");
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
+    let params = BfsParams::default().with_predecessors();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
 
     let df = result.to_dataframe().expect("to_dataframe");
 
@@ -609,10 +563,8 @@ fn bfs_result_to_dataframe_with_predecessors() {
     assert_eq!(names[2], "predecessor");
 
     // Verify source vertex has distance 0
-    let vert_col = df.column("vertex").expect("vertex column");
-    let dist_col = df.column("distance").expect("distance column");
-    let vertices: Vec<i32> = vert_col.to_vec().expect("vertex to_vec");
-    let distances: Vec<i32> = dist_col.to_vec().expect("distance to_vec");
+    let vertices: Vec<i32> = df.series_view("vertex").expect("vertex column").to_vec().expect("vertex to_vec");
+    let distances: Vec<i32> = df.series_view("distance").expect("distance column").to_vec().expect("distance to_vec");
     let dist_map: HashMap<i32, i32> = vertices.into_iter().zip(distances).collect();
     assert_eq!(dist_map[&0], 0, "source vertex should have distance 0");
 }
@@ -623,19 +575,16 @@ fn bfs_result_to_dataframe_with_predecessors() {
 fn bfs_result_to_dataframe_without_predecessors() {
     let handle = ResourceHandle::new().expect("handle");
 
-    let src_data: Vec<i32> = vec![0, 1];
-    let dst_data: Vec<i32> = vec![1, 2];
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2]).expect("dst");
 
-    let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-    let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
+    let mut graph = GraphBuilder::new(&src.view(), &dst.view()).build::<Forward>(&handle).expect("graph");
 
-    let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-
-    let mut graph = GraphBuilder::new(props, &src.view(), &dst.view()).build_forward(&handle).expect("graph");
-
-    let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
-    let mut sources_view = sources.view();
-    let result = bfs(&handle, &mut graph, &mut sources_view, None, false).expect("bfs");
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let sources_view = sources.view();
+    let params = BfsParams::default();
+    let result = graph.bfs(&handle, &sources_view, &params).expect("bfs");
+    assert!(result.predecessors().expect("predecessors").is_none(), "predecessors should be omitted");
 
     let df = result.to_dataframe().expect("to_dataframe");
 
@@ -649,44 +598,43 @@ fn bfs_result_to_dataframe_without_predecessors() {
 /// column names and values match.
 #[test]
 fn centrality_to_dataframe_write_parquet_roundtrip() {
-    use cugraph::centrality::{PageRankParams, pagerank};
+    use cugraph::centrality::PageRankParams;
 
     let handle = ResourceHandle::new().expect("handle");
 
-    let src_data: Vec<i32> = vec![0, 1, 2, 1, 2, 0];
-    let dst_data: Vec<i32> = vec![1, 2, 0, 0, 1, 2];
-
-    let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-    let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-    let props = GraphProperties { is_symmetric: true, is_multigraph: false };
+    let src = DeviceArray::from_slice(&handle, &[0i32, 1, 2, 1, 2, 0]).expect("src");
+    let dst = DeviceArray::from_slice(&handle, &[1i32, 2, 0, 0, 1, 2]).expect("dst");
 
     let src_view = src.view();
     let dst_view = dst.view();
-    let mut graph =
-        GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Transposed>(&handle)
+        .expect("graph");
 
-    let result = pagerank(&handle, &mut graph, &PageRankParams::default()).expect("pagerank");
+    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
     let df = result.to_dataframe().expect("to_dataframe");
 
     // Snapshot expected values
-    let expected_vertices: Vec<i32> = df.column("vertex").expect("v").to_vec().expect("v vec");
-    let expected_values: Vec<f32> = df.column("value").expect("val").to_vec().expect("val vec");
+    let expected_vertices: Vec<i32> = df.series_view("vertex").expect("v").to_vec().expect("v vec");
+    let expected_values: Vec<f32> = df.series_view("value").expect("val").to_vec().expect("val vec");
 
     // Write to Parquet
     let tmp_dir = std::env::temp_dir().join("cugraph_test_centrality_df_roundtrip");
     std::fs::create_dir_all(&tmp_dir).expect("create tmp dir");
     let out_path = tmp_dir.join("centrality.parquet");
 
-    let table_view = df.table().view().expect("table view");
+    let table = df.to_table_copy().expect("to_table");
+    let table_view = table.view().expect("table view");
     let write_opts =
-        parquet::ParquetWriterOptions::new(&out_path).expect("writer options").column_names(&["vertex", "value"]);
+        parquet::ParquetWriterOptions::new(&out_path).column_names(&["vertex", "value"]).expect("writer options");
     parquet::write_parquet(&table_view, &write_opts).expect("write parquet");
 
     // Read back and verify
-    let read_opts = parquet::ParquetReaderOptions::new(&out_path).expect("reader options");
-    let read_table = parquet::read_parquet(&read_opts).expect("read parquet");
-    let read_view = read_table.view().expect("read table view");
+    let read_opts = parquet::ParquetReaderOptions::new(&out_path);
+    let read_result = parquet::read_parquet_with_metadata(read_opts).expect("read parquet");
+    let read_view = read_result.table.view().expect("read table view");
 
     assert_eq!(read_view.num_columns().expect("ncols"), 2);
 

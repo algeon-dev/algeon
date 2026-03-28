@@ -1,5 +1,5 @@
 use cugraph::{
-    array::{DeviceArray, DeviceArrayView, HostArrayView},
+    array::{DeviceArray, DeviceArrayView},
     centrality::{BetweennessCentralityResult, PageRankResult},
     graph::{Forward, Graph, Transposed},
     layout::LayoutResult,
@@ -10,9 +10,8 @@ use static_assertions::assert_not_impl_any;
 
 #[test]
 fn graph_and_result_types_are_not_send_or_sync() {
-    assert_not_impl_any!(DeviceArray: Send, Sync);
-    assert_not_impl_any!(DeviceArrayView<'static>: Send, Sync);
-    assert_not_impl_any!(HostArrayView<'static>: Send, Sync);
+    assert_not_impl_any!(DeviceArray<i32>: Send, Sync);
+    assert_not_impl_any!(DeviceArrayView<'static, i32>: Send, Sync);
 
     assert_not_impl_any!(Graph: Send, Sync);
     assert_not_impl_any!(Graph<Forward>: Send, Sync);

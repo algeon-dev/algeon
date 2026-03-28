@@ -728,8 +728,8 @@ mod tests {
 
     #[test]
     fn positive_f64_into_f64() {
-        let val = PositiveF64::new(3.14).unwrap();
-        assert_eq!(f64::from(val), 3.14);
+        let val = PositiveF64::new(3.15).unwrap();
+        assert_eq!(f64::from(val), 3.15);
     }
 
     #[test]

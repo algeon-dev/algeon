@@ -150,7 +150,7 @@ fn iteration_count_i32_roundtrip() {
 
 #[test]
 fn positive_f64_f64_roundtrip() {
-    let val = PositiveF64::new(3.14).unwrap();
+    let val = PositiveF64::new(3.15).unwrap();
     let raw: f64 = val.into();
     let back = PositiveF64::new(raw).unwrap();
     assert_eq!(val, back);

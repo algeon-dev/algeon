@@ -2,4 +2,4 @@
 
 pub mod force_atlas2;
 
-pub use force_atlas2::{ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions, LayoutResult, force_atlas2};
+pub use force_atlas2::{ForceAtlas2Options, ForceAtlas2Params, ForceAtlas2VertexAttrs, InitialPositions, LayoutResult};

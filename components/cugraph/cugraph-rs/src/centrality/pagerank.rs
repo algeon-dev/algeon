@@ -66,14 +66,9 @@ impl Default for PageRankParams {
 
 /// Compute PageRank on a graph.
 ///
-/// The graph must be stored in transposed form ([`Graph<Transposed>`]).
-/// Use [`GraphBuilder::build_transposed`](crate::graph::GraphBuilder::build_transposed)
-/// to construct the graph.
-///
-/// Returns a [`PageRankResult`] containing vertex ids, PageRank values,
-/// iteration count, and convergence status. The result must be kept alive as
-/// long as any [`crate::array::DeviceArrayView`] borrowed from it is in use.
-pub fn pagerank(
+/// Prefer using [`Graph::pagerank`](crate::graph::Graph::pagerank) instead
+/// of calling this function directly.
+pub(crate) fn pagerank(
     handle: &ResourceHandle,
     graph: &mut Graph<Transposed>,
     params: &PageRankParams,
@@ -104,11 +99,11 @@ pub fn pagerank(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::PageRankParams;
     use crate::{
-        array::device_array_from_host,
-        graph::GraphBuilder,
-        types::{DataType, GraphProperties},
+        array::DeviceArray,
+        graph::{GraphBuilder, Transposed},
+        handle::ResourceHandle,
     };
 
     #[test]
@@ -119,30 +114,28 @@ mod tests {
         let src_data: Vec<i32> = vec![1, 2, 3, 0, 0, 0];
         let dst_data: Vec<i32> = vec![0, 0, 0, 1, 2, 3];
 
-        let src = device_array_from_host(&handle, &src_data, DataType::Int32).expect("src");
-        let dst = device_array_from_host(&handle, &dst_data, DataType::Int32).expect("dst");
-
-        let props = GraphProperties { is_symmetric: false, is_multigraph: false };
+        let src = DeviceArray::from_slice(&handle, &src_data).expect("src");
+        let dst = DeviceArray::from_slice(&handle, &dst_data).expect("dst");
 
         let src_view = src.view();
         let dst_view = dst.view();
-        let mut graph = GraphBuilder::new(props, &src_view, &dst_view).build_transposed(&handle).expect("graph");
+        let mut graph = GraphBuilder::new(&src_view, &dst_view).build::<Transposed>(&handle).expect("graph");
 
         let params = PageRankParams::default();
-        let result = pagerank(&handle, &mut graph, &params).expect("pagerank");
+        let result = graph.pagerank(&handle, &params).expect("pagerank");
 
         assert!(result.converged().expect("converged"), "PageRank should converge");
         assert!(result.num_iterations() > 0, "should do at least 1 iteration");
 
-        let vertices_view = result.vertices();
-        let values_view = result.values();
+        let vertices_view = result.vertex_ids().expect("vertex_ids");
+        let values_view = result.scores().expect("scores");
 
         assert_eq!(vertices_view.len(), 4);
         assert_eq!(values_view.len(), 4);
 
         // Copy results to host and verify hub (node 0) has the highest rank
-        let vertices: Vec<i32> = vertices_view.to_typed_vec(&handle).expect("vert copy");
-        let values: Vec<f32> = values_view.to_typed_vec(&handle).expect("val copy");
+        let vertices: Vec<i32> = vertices_view.to_vec_i32(&handle).expect("vert copy");
+        let values: Vec<f32> = values_view.to_vec_f32(&handle).expect("val copy");
 
         // Find the PageRank of vertex 0 (hub) — should be highest
         let hub_idx = vertices.iter().position(|&v| v == 0).expect("hub vertex");
