@@ -11,18 +11,20 @@ use crate::{
     table::{Table, TableView},
 };
 
-/// Options for reading a CSV file.
+/// Options for reading a CSV file into a low-level [`Table`].
+///
+/// This type controls parsing only. It does not carry schema names because
+/// the low-level CSV reader returns an unnamed [`Table`].
 pub struct CsvReaderOptions {
     filepath: PathBuf,
     delimiter: u8,
     has_header: bool,
-    column_names: Option<Vec<String>>,
 }
 
 impl CsvReaderOptions {
     /// Create options to read from the given file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true, column_names: None }
+        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true }
     }
 
     /// Set the field delimiter character (default: `,`).
@@ -34,15 +36,6 @@ impl CsvReaderOptions {
     /// Set whether the file has a header row (default: `true`).
     pub fn has_header(mut self, has: bool) -> Self {
         self.has_header = has;
-        self
-    }
-
-    /// Override the output column names used by the high-level DataFrame CSV facade.
-    ///
-    /// When set, these names take precedence over both header-derived names
-    /// and generated fallback names.
-    pub fn column_names(mut self, names: &[&str]) -> Self {
-        self.column_names = Some(names.iter().map(|s| (*s).to_string()).collect());
         self
     }
 }
@@ -69,62 +62,10 @@ pub fn read_csv(options: &CsvReaderOptions) -> Result<Table> {
     Ok(unsafe { Table::from_raw(table_handle) })
 }
 
-pub(crate) fn resolve_column_names(options: &CsvReaderOptions, num_columns: usize) -> Result<Vec<String>> {
-    let operation = "io::csv::resolve_column_names";
-
-    if let Some(names) = options.column_names.as_ref() {
-        validate_column_name_count(names.len(), num_columns, operation)?;
-        return Ok(names.clone());
-    }
-
-    if options.has_header {
-        let names = read_header_names(options)?;
-        validate_column_name_count(names.len(), num_columns, operation)?;
-        return Ok(names);
-    }
-
-    Ok((0..num_columns).map(|idx| format!("column_{idx}")).collect())
-}
-
-fn validate_column_name_count(name_count: usize, num_columns: usize, operation: &'static str) -> Result<()> {
-    if name_count != num_columns {
-        return Err(Error::new(
-            ErrorKind::InvalidOperation,
-            format!("column name count ({name_count}) does not match table column count ({num_columns})"),
-        )
-        .with_operation(operation)
-        .with_context("column_name_count", name_count.to_string())
-        .with_context("table_column_count", num_columns.to_string()));
-    }
-
-    Ok(())
-}
-
-fn read_header_names(options: &CsvReaderOptions) -> Result<Vec<String>> {
-    let operation = "io::csv::resolve_column_names";
-
-    let mut reader = ::csv::ReaderBuilder::new()
-        .has_headers(true)
-        .delimiter(options.delimiter)
-        .from_path(&options.filepath)
-        .map_err(|source| {
-            Error::new(ErrorKind::IoError, "failed to open CSV file for header parsing")
-                .with_operation(operation)
-                .with_context("path", options.filepath.display().to_string())
-                .set_source(source)
-        })?;
-
-    let headers = reader.headers().map_err(|source| {
-        Error::new(ErrorKind::IoError, "failed to read CSV header")
-            .with_operation(operation)
-            .with_context("path", options.filepath.display().to_string())
-            .set_source(source)
-    })?;
-
-    Ok(headers.iter().map(str::to_owned).collect())
-}
-
-/// Options for writing a CSV file.
+/// Options for writing a low-level [`Table`] to a CSV file.
+///
+/// Column names here control only the emitted CSV header row. They do not
+/// rename the input table because [`Table`] itself is unnamed.
 pub struct CsvWriterOptions {
     filepath: PathBuf,
     column_names: Option<Vec<String>>,

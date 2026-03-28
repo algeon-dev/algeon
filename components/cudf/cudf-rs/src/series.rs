@@ -241,92 +241,92 @@ impl Series {
 
     // -- Scalar comparison ops -----------------------------------------
 
-    /// Element-wise `self > scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self > scalar`. Inherits the source Series' name.
     pub fn gt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.gt_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self < scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self < scalar`. Inherits the source Series' name.
     pub fn lt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.lt_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self == scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self == scalar`. Inherits the source Series' name.
     pub fn eq_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.eq_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
     // -- String scalar comparison ops ----------------------------------------
 
-    /// Element-wise `self == string_scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self == string_scalar`. Inherits the source Series' name.
     pub fn eq_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.eq_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self != string_scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self != string_scalar`. Inherits the source Series' name.
     pub fn ne_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.ne_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self > string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self > string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn gt_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.gt_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self < string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self < string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn lt_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.lt_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self >= string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self >= string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn ge_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.ge_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self <= string_scalar` (lexicographic). Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self <= string_scalar` (lexicographic). Inherits the source Series' name.
     pub fn le_scalar_str(&self, rhs: &str) -> Result<Series> {
         let s = Scalar::from_string(rhs)?;
         let col = self.column.le_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
     // -- Extended scalar comparison ops --------------------------------
 
-    /// Element-wise `self != scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self != scalar`. Inherits the source Series' name.
     pub fn ne_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.ne_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self >= scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self >= scalar`. Inherits the source Series' name.
     pub fn ge_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.ge_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self <= scalar`. Returns an unnamed `BOOL8` Series.
+    /// Element-wise `self <= scalar`. Inherits the source Series' name.
     pub fn le_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.le_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
     // -- Column-vs-column comparison ops -------------------------------
@@ -395,32 +395,32 @@ impl Series {
 
     // -- Scalar arithmetic ops -----------------------------------------
 
-    /// Element-wise `self + scalar`. Returns an unnamed Series.
+    /// Element-wise `self + scalar`. Inherits the source Series' name.
     pub fn add_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.add_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self - scalar`. Returns an unnamed Series.
+    /// Element-wise `self - scalar`. Inherits the source Series' name.
     pub fn sub_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.sub_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self * scalar`. Returns an unnamed Series.
+    /// Element-wise `self * scalar`. Inherits the source Series' name.
     pub fn mul_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.mul_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
-    /// Element-wise `self / scalar`. Returns an unnamed Series.
+    /// Element-wise `self / scalar`. Inherits the source Series' name.
     pub fn div_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
         let s = Scalar::from_value(rhs)?;
         let col = self.column.div_scalar(&s)?;
-        Self::from_column(col)
+        self.with_inherited_name(col)
     }
 
     // -- Convenience methods --------------------------------------------
@@ -554,6 +554,10 @@ impl Series {
     /// Returns `(codes, uniques)` where `codes` is an `Int32` Series mapping
     /// each element to its index in `uniques`.
     ///
+    /// Name behavior:
+    /// - named input => `"{name}_codes"` and `"{name}_uniques"`
+    /// - unnamed input => both outputs stay unnamed
+    ///
     /// Equivalent to cuDF Python's `Series.factorize()`.
     ///
     /// # Cost
@@ -561,7 +565,13 @@ impl Series {
     pub fn factorize(&self) -> Result<(Series, Series)> {
         let cv = self.column.view()?;
         let (codes, uniques) = cv.factorize()?;
-        Ok((Self::from_column(codes)?, Self::from_column(uniques)?))
+        let codes = Self::from_column(codes)?;
+        let uniques = Self::from_column(uniques)?;
+        if let Some(name) = self.name() {
+            Ok((codes.rename(format!("{name}_codes")), uniques.rename(format!("{name}_uniques"))))
+        } else {
+            Ok((codes, uniques))
+        }
     }
 
     /// Sort the series according to the given options. Inherits the source
