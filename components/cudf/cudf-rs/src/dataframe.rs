@@ -29,7 +29,10 @@ use crate::{
     dataframe_view::DataFrameView,
     error::{Error, ErrorKind, Result},
     filter, groupby,
-    io::parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
+    io::{
+        csv::{self, CsvReaderOptions, CsvWriterOptions},
+        parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
+    },
     join, replace,
     scalar::Scalar,
     series::Series,
@@ -693,7 +696,49 @@ impl DataFrame {
         &self.columns
     }
 
-    // -- I/O (Parquet) -------------------------------------------------------
+    // -- I/O -----------------------------------------------------------------
+
+    /// Read a CSV file into a `DataFrame`.
+    ///
+    /// If the caller does not provide explicit names through
+    /// [`CsvReaderOptions::column_names`], names come from the header row when
+    /// `has_header == true`, or fall back to generated names such as
+    /// `"column_0"` when reading headerless CSV.
+    pub fn read_csv(path: impl AsRef<Path>) -> Result<Self> {
+        Self::read_csv_with_options(CsvReaderOptions::new(path))
+    }
+
+    /// Read a CSV file into a `DataFrame` using caller-provided options.
+    ///
+    /// When `has_header == true`, the high-level facade parses the header row
+    /// on the host to recover schema names. This metadata parsing does not
+    /// materialize data columns through host memory.
+    pub fn read_csv_with_options(options: CsvReaderOptions) -> Result<Self> {
+        let table = csv::read_csv(&options)?;
+        let num_columns = {
+            let view = table.view()?;
+            view.num_columns()? as usize
+        };
+        let names = csv::resolve_column_names(&options, num_columns)?;
+        Self::from_table(table, names)
+    }
+
+    /// Write this `DataFrame` to a CSV file, preserving the DataFrame schema
+    /// as the output header row.
+    pub fn write_csv(&self, path: impl AsRef<Path>) -> Result<()> {
+        self.write_csv_with_options(CsvWriterOptions::new(path))
+    }
+
+    /// Write this `DataFrame` to a CSV file using caller-provided options.
+    ///
+    /// The DataFrame's schema names are always used as the output column
+    /// names so the high-level round-trip path remains truthful.
+    pub fn write_csv_with_options(&self, options: CsvWriterOptions) -> Result<()> {
+        let names: Vec<&str> = self.column_names();
+        let opts = options.column_names(&names);
+        let tv = self.build_table_view()?;
+        csv::write_csv(tv.table(), &opts)
+    }
 
     /// Read a Parquet file into a `DataFrame`, using column names from the
     /// file's schema metadata.
@@ -2168,25 +2213,23 @@ fn merge_join_result_with_suffixes(
 
 /// Construct a [`DataFrame`](crate::dataframe::DataFrame) from named columns.
 ///
-/// This macro is column-oriented: each value must evaluate to an owned
-/// [`Column`](crate::Column). For the primary user-facing path, prefer
-/// [`DataFrame::from_columns`] with named [`Series`](crate::Series) values.
+/// This macro is Series-oriented: each value must evaluate to a
+/// [`Series`](crate::Series). The pair key becomes the DataFrame schema name.
 ///
 /// # Example
 ///
 /// ```no_run
-/// use cudf::column::Column;
+/// use cudf::Series;
 ///
-/// let x = Column::from_slice(&[1i32, 2, 3]).unwrap();
-/// let y = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
+/// let x = Series::new::<i32>("source_x", &[1, 2, 3]).unwrap();
+/// let y = Series::new::<f64>("source_y", &[10.0, 20.0, 30.0]).unwrap();
 /// let df = cudf::dataframe! { "x" => x, "y" => y }.unwrap();
 /// ```
 #[macro_export]
 macro_rules! dataframe {
-    ($($name:expr => $col:expr),+ $(,)?) => {{
-        $crate::DataFrame::new(
-            vec![$($name.to_string()),+],
-            vec![$($col),+],
-        )
+    ($($name:expr => $series:expr),+ $(,)?) => {{
+        $crate::DataFrame::from_series(vec![
+            $(($name.to_string(), $series)),+
+        ])
     }};
 }
