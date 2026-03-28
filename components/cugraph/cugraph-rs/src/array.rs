@@ -7,7 +7,7 @@
 //! - [`DeviceArrayView`] — non-owning view into device memory, lifetime-tied
 //! - [`HostArrayView`] — non-owning view into host memory, lifetime-tied
 
-use std::{marker::PhantomData, ptr};
+use std::{fmt, marker::PhantomData, ptr};
 
 use cugraph_sys::{
     cugraph_error_t, cugraph_type_erased_device_array_create, cugraph_type_erased_device_array_free,
@@ -33,6 +33,16 @@ use crate::{
 pub struct DeviceArray {
     raw: *mut cugraph_type_erased_device_array_t,
     _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl fmt::Debug for DeviceArray {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let view = self.view();
+        f.debug_struct("DeviceArray")
+            .field("len", &view.len())
+            .field("dtype", &view.dtype().ok())
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeviceArray {
@@ -166,6 +176,15 @@ pub struct DeviceArrayView<'a> {
     _nosend_nosync: PhantomData<*mut ()>,
 }
 
+impl fmt::Debug for DeviceArrayView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceArrayView")
+            .field("len", &self.len())
+            .field("dtype", &self.dtype().ok())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> DeviceArrayView<'a> {
     /// Wrap a raw C view pointer that is NOT owned by us (e.g., returned from a
     /// result accessor). The caller must ensure the pointer stays valid for `'a`.
@@ -231,6 +250,51 @@ impl<'a> DeviceArrayView<'a> {
         self.raw
     }
 
+    /// Copy device array data to a typed host vector.
+    ///
+    /// This is a convenience wrapper around [`to_host_vec`](Self::to_host_vec) that
+    /// reinterprets the raw bytes as a `Vec<T>`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `size_of::<T>()` does not match the element size of this
+    /// array's [`DataType`], or if the device-to-host copy fails.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use cugraph::handle::ResourceHandle;
+    /// # fn example(view: &cugraph::array::DeviceArrayView<'_>) -> cugraph::error::Result<()> {
+    /// # let handle = ResourceHandle::new()?;
+    /// let vertices: Vec<i32> = view.to_typed_vec(&handle)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn to_typed_vec<T: Copy>(&self, handle: &ResourceHandle) -> Result<Vec<T>> {
+        let type_size = std::mem::size_of::<T>();
+        let dtype = self.dtype()?;
+        let elem_size = dtype.size_of();
+        if type_size != elem_size {
+            return Err(Error::new(ErrorKind::InvalidInput, "to_typed_vec").with_message(format!(
+                "type size mismatch: size_of::<T>() = {type_size} but dtype {dtype:?} has size {elem_size}"
+            )));
+        }
+
+        let bytes = self.to_host_vec(handle)?;
+        let len = bytes.len() / type_size;
+
+        let mut result = Vec::with_capacity(len);
+        for chunk in bytes.chunks_exact(type_size) {
+            // SAFETY: chunk has exactly `size_of::<T>()` bytes and `T: Copy` has no
+            // drop glue. `read_unaligned` avoids any alignment requirement on the
+            // source pointer, which is safe since `Vec<u8>` may not be aligned to `T`.
+            let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr() as *const T) };
+            result.push(value);
+        }
+
+        Ok(result)
+    }
+
     /// Copy the device data to a host Vec.
     pub fn to_host_vec(&self, handle: &ResourceHandle) -> Result<Vec<u8>> {
         let byte_len = self.len() * self.dtype()?.size_of();
@@ -267,6 +331,12 @@ pub struct HostArrayView<'a> {
     raw: *mut cugraph_type_erased_host_array_view_t,
     _lifetime: PhantomData<&'a ()>,
     _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl fmt::Debug for HostArrayView<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HostArrayView").finish_non_exhaustive()
+    }
 }
 
 impl<'a> HostArrayView<'a> {

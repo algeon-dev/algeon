@@ -2,7 +2,6 @@
 //!
 //! These tests run actual GPU algorithms and convert results to cudf Columns,
 //! verifying the full round-trip: GPU algorithm → DeviceArrayView → cudf Column → host Vec.
-
 use std::collections::HashMap;
 
 use cudf::{Column, io::parquet};
@@ -11,7 +10,7 @@ use cugraph::{
     cudf_interop::{
         DeviceArrayViewExt, DeviceSliceExt, graph_from_dataframe, graph_from_parquet, graph_from_table_view,
     },
-    graph::Graph,
+    graph::{Forward, GraphBuilder},
     handle::ResourceHandle,
     traversal::bfs,
     types::{DataType, GraphProperties},
@@ -37,7 +36,7 @@ fn bfs_results_to_cudf_columns() {
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
     let mut graph =
-        Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true).expect("graph");
+        GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
     let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
     let mut sources_view = sources.view();
@@ -91,8 +90,7 @@ fn bfs_results_roundtrip_through_parquet() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let mut graph =
-        Graph::from_edge_list(&handle, props, &src_cg, &dst_cg, None, None, None, false, true).expect("graph");
+    let mut graph = GraphBuilder::new(props, &src_cg, &dst_cg).renumber(true).build_forward(&handle).expect("graph");
 
     // ── Run BFS ─────────────────────────────────────────────────────────
     let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
@@ -167,15 +165,14 @@ fn graph_from_parquet_then_bfs() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let (_table, mut graph) = graph_from_parquet(
+    let (_table, mut graph) = graph_from_parquet::<Forward>(
         &handle,
         BFS_PARQUET,
         0,       // src column
         1,       // dst column
         Some(2), // weight column
         props,
-        false, // store_transposed
-        true,  // renumber
+        true, // renumber
     )
     .expect("graph_from_parquet");
 
@@ -208,15 +205,14 @@ fn graph_from_parquet_without_weights() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let (_table, mut graph) = graph_from_parquet(
+    let (_table, mut graph) = graph_from_parquet::<Forward>(
         &handle,
         BFS_PARQUET,
         0,    // src column
         1,    // dst column
         None, // no weight column
         props,
-        false, // store_transposed
-        true,  // renumber
+        true, // renumber
     )
     .expect("graph_from_parquet without weights");
 
@@ -240,14 +236,13 @@ fn graph_from_parquet_rejects_out_of_bounds_column() {
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
     // The test Parquet has 3 columns (src, dst, wgt), so index 10 is OOB.
-    let result = graph_from_parquet(
+    let result = graph_from_parquet::<Forward>(
         &handle,
         BFS_PARQUET,
         0,
         10, // out of bounds
         None,
         props,
-        false,
         true,
     );
 
@@ -267,14 +262,13 @@ fn graph_from_parquet_rejects_nonexistent_file() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let result = graph_from_parquet(
+    let result = graph_from_parquet::<Forward>(
         &handle,
         "/tmp/this_file_definitely_does_not_exist_12345.parquet",
         0,
         1,
         None,
         props,
-        false,
         true,
     );
 
@@ -307,7 +301,7 @@ fn graph_from_parquet_rejects_nulls_in_src_column() {
     let handle = ResourceHandle::new().expect("handle");
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let result = graph_from_parquet(&handle, path.to_str().expect("utf8 path"), 0, 1, Some(2), props, false, true);
+    let result = graph_from_parquet::<Forward>(&handle, path.to_str().expect("utf8 path"), 0, 1, Some(2), props, true);
 
     let err = match result {
         Ok(_) => panic!("should reject nullable src column"),
@@ -335,14 +329,13 @@ fn graph_from_table_view_then_bfs() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let mut graph = graph_from_table_view(
+    let mut graph = graph_from_table_view::<Forward>(
         &handle,
         &view,
         0,       // src
         1,       // dst
         Some(2), // wgt
         props,
-        false,
         true,
     )
     .expect("graph_from_table_view");
@@ -374,9 +367,9 @@ fn graph_from_table_view_without_weights() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let mut graph = graph_from_table_view(
+    let mut graph = graph_from_table_view::<Forward>(
         &handle, &view, 0, 1, None, // no weight column
-        props, false, true,
+        props, true,
     )
     .expect("graph_from_table_view without weights");
 
@@ -400,9 +393,9 @@ fn graph_from_table_view_rejects_out_of_bounds_column() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let result = graph_from_table_view(
+    let result = graph_from_table_view::<Forward>(
         &handle, &view, 0, 99, // out of bounds
-        None, props, false, true,
+        None, props, true,
     );
 
     let err = result.expect_err("should reject out-of-bounds column index");
@@ -423,7 +416,7 @@ fn graph_from_table_view_rejects_nullable_column() {
     let handle = ResourceHandle::new().expect("handle");
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let result = graph_from_table_view(&handle, &view, 0, 1, Some(2), props, false, true);
+    let result = graph_from_table_view::<Forward>(&handle, &view, 0, 1, Some(2), props, true);
 
     let err = result.expect_err("should reject nullable column");
     assert_eq!(err.kind(), cugraph::error::ErrorKind::InvalidInput);
@@ -445,7 +438,7 @@ fn graph_from_dataframe_by_name() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let mut graph = graph_from_dataframe(&handle, &df, "src", "dst", Some("weight"), props, false, true)
+    let mut graph = graph_from_dataframe::<Forward>(&handle, &df, "src", "dst", Some("weight"), props, true)
         .expect("graph_from_dataframe");
 
     let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
@@ -474,14 +467,13 @@ fn graph_from_dataframe_rejects_unknown_column_name() {
     let handle = ResourceHandle::new().expect("handle");
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let result = graph_from_dataframe(
+    let result = graph_from_dataframe::<Forward>(
         &handle,
         &df,
         "nonexistent", // unknown column
         "dst",
         None,
         props,
-        false,
         true,
     );
 
@@ -507,18 +499,10 @@ fn centrality_result_to_dataframe() {
 
     let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-    let mut graph = Graph::from_edge_list(
-        &handle,
-        props,
-        &src.view(),
-        &dst.view(),
-        None,
-        None,
-        None,
-        true, // PageRank needs transposed
-        true,
-    )
-    .expect("graph");
+    let src_view = src.view();
+    let dst_view = dst.view();
+    let mut graph =
+        GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
 
     let result = pagerank(&handle, &mut graph, &PageRankParams::default()).expect("pagerank");
     let df = result.to_dataframe().expect("to_dataframe");
@@ -568,7 +552,7 @@ fn layout_result_to_dataframe() {
     let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
     let mut graph =
-        Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true).expect("graph");
+        GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
     let params = ForceAtlas2Params { max_iter: IterationCount::new(50).unwrap(), ..Default::default() };
 
@@ -610,7 +594,7 @@ fn bfs_result_to_dataframe_with_predecessors() {
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
     let mut graph =
-        Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, true).expect("graph");
+        GraphBuilder::new(props, &src.view(), &dst.view()).renumber(true).build_forward(&handle).expect("graph");
 
     let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
     let mut sources_view = sources.view();
@@ -647,8 +631,7 @@ fn bfs_result_to_dataframe_without_predecessors() {
 
     let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-    let mut graph =
-        Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, false, false).expect("graph");
+    let mut graph = GraphBuilder::new(props, &src.view(), &dst.view()).build_forward(&handle).expect("graph");
 
     let sources = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
     let mut sources_view = sources.view();
@@ -678,8 +661,10 @@ fn centrality_to_dataframe_write_parquet_roundtrip() {
 
     let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
+    let src_view = src.view();
+    let dst_view = dst.view();
     let mut graph =
-        Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, true, true).expect("graph");
+        GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
 
     let result = pagerank(&handle, &mut graph, &PageRankParams::default()).expect("pagerank");
     let df = result.to_dataframe().expect("to_dataframe");

@@ -10,7 +10,7 @@ use cugraph_sys::{
 use crate::{
     array::DeviceArrayView,
     error::{Result, check_error},
-    graph::Graph,
+    graph::{Forward, Graph},
     handle::ResourceHandle,
     params::BfsDepthLimit,
     types::to_bool_t,
@@ -18,10 +18,15 @@ use crate::{
 
 /// Perform breadth-first search from one or more source vertices.
 ///
+/// The graph must be stored in forward (non-transposed) form
+/// ([`Graph<Forward>`]). Use
+/// [`GraphBuilder::build_forward`](crate::graph::GraphBuilder::build_forward)
+/// to construct the graph.
+///
 /// # Arguments
 ///
 /// - `handle` — resource handle for GPU operations
-/// - `graph` — the graph to traverse
+/// - `graph` — the graph to traverse (must be [`Graph<Forward>`])
 /// - `sources` — source vertex ids (device array view, mutable because the C
 ///   API may modify it if renumbering is enabled)
 /// - `depth_limit` — maximum BFS depth, or `None` for unlimited traversal.
@@ -32,7 +37,7 @@ use crate::{
 /// - `compute_predecessors` — whether to compute predecessor vertices
 pub fn bfs(
     handle: &ResourceHandle,
-    graph: &mut Graph,
+    graph: &mut Graph<Forward>,
     sources: &mut DeviceArrayView<'_>,
     depth_limit: Option<BfsDepthLimit>,
     compute_predecessors: bool,
@@ -69,6 +74,12 @@ pub fn bfs(
 pub struct BfsResult {
     raw: *mut cugraph_paths_result_t,
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
+}
+
+impl std::fmt::Debug for BfsResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BfsResult").finish_non_exhaustive()
+    }
 }
 
 impl BfsResult {
@@ -152,6 +163,7 @@ mod tests {
     use super::*;
     use crate::{
         array::device_array_from_host,
+        graph::GraphBuilder,
         types::{DataType, GraphProperties},
     };
 
@@ -171,18 +183,11 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            Some(&wgt.view()),
-            None,
-            None,
-            false, // store_transposed (BFS needs non-transposed)
-            true,  // renumber
-        )
-        .expect("graph");
+        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view())
+            .weights(&wgt.view())
+            .renumber(true)
+            .build_forward(&handle)
+            .expect("graph");
 
         // BFS from vertex 0
         let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
@@ -237,18 +242,7 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false, // store_transposed (BFS needs non-transposed)
-            false, // renumber (IDs are sequential)
-        )
-        .expect("graph");
+        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view()).build_forward(&handle).expect("graph");
 
         let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
         let mut sources_view = sources_arr.view();
@@ -288,18 +282,7 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(
-            &handle,
-            props,
-            &src.view(),
-            &dst.view(),
-            None,
-            None,
-            None,
-            false, // store_transposed (BFS needs non-transposed)
-            false, // renumber (not needed, IDs are 0-based sequential)
-        )
-        .expect("graph");
+        let mut graph = GraphBuilder::new(props, &src.view(), &dst.view()).build_forward(&handle).expect("graph");
 
         let sources_arr = device_array_from_host(&handle, &[0i32], DataType::Int32).expect("sources");
         let mut sources_view = sources_arr.view();

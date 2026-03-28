@@ -14,11 +14,14 @@ use cugraph_sys::{
 use crate::{
     array::DeviceArrayView,
     error::{Result, check_error},
-    graph::Graph,
+    graph::{Graph, Transposed},
     handle::ResourceHandle,
 };
 
 /// Compute both in-degrees and out-degrees for vertices in a graph.
+///
+/// The graph must be stored in transposed form ([`Graph<Transposed>`]) because
+/// the in-degree computation requires transposed storage.
 ///
 /// If `source_vertices` is `None`, computes degrees for all vertices.
 /// Otherwise, computes degrees only for the specified vertices.
@@ -28,7 +31,7 @@ use crate::{
 /// [`DeviceArrayView`] borrowed from it is in use.
 pub fn degrees(
     handle: &ResourceHandle,
-    graph: &mut Graph,
+    graph: &mut Graph<Transposed>,
     source_vertices: Option<&DeviceArrayView<'_>>,
 ) -> Result<DegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
@@ -53,6 +56,9 @@ pub fn degrees(
 
 /// Compute only in-degrees for vertices in a graph.
 ///
+/// The graph must be stored in transposed form ([`Graph<Transposed>`]) for
+/// in-degree computation.
+///
 /// If `source_vertices` is `None`, computes in-degrees for all vertices.
 /// Otherwise, computes in-degrees only for the specified vertices.
 ///
@@ -61,7 +67,7 @@ pub fn degrees(
 /// result and is therefore optional in the Rust API.
 pub fn in_degrees(
     handle: &ResourceHandle,
-    graph: &mut Graph,
+    graph: &mut Graph<Transposed>,
     source_vertices: Option<&DeviceArrayView<'_>>,
 ) -> Result<DegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
@@ -86,15 +92,18 @@ pub fn in_degrees(
 
 /// Compute only out-degrees for vertices in a graph.
 ///
+/// Works with either [`Forward`](crate::graph::Forward) or
+/// [`Transposed`](crate::graph::Transposed) graphs.
+///
 /// If `source_vertices` is `None`, computes out-degrees for all vertices.
 /// Otherwise, computes out-degrees only for the specified vertices.
 ///
 /// Returns a [`DegreesResult`]. [`DegreesResult::out_degrees()`] is expected to
 /// be available. [`DegreesResult::in_degrees()`] may be unavailable for this
 /// result and is therefore optional in the Rust API.
-pub fn out_degrees(
+pub fn out_degrees<T>(
     handle: &ResourceHandle,
-    graph: &mut Graph,
+    graph: &mut Graph<T>,
     source_vertices: Option<&DeviceArrayView<'_>>,
 ) -> Result<DegreesResult> {
     let mut result: *mut cugraph_degrees_result_t = ptr::null_mut();
@@ -124,6 +133,12 @@ pub fn out_degrees(
 pub struct DegreesResult {
     raw: *mut cugraph_degrees_result_t,
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
+}
+
+impl std::fmt::Debug for DegreesResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DegreesResult").finish_non_exhaustive()
+    }
 }
 
 impl DegreesResult {
@@ -174,12 +189,13 @@ mod tests {
     use super::*;
     use crate::{
         array::device_array_from_host,
+        graph::GraphBuilder,
         types::{DataType, GraphProperties},
     };
 
     /// Helper: create a star graph where vertices 1,2,3 all point to vertex 0.
     /// With store_transposed=true and renumber=true (needed for degree computation).
-    fn make_star_graph(handle: &ResourceHandle) -> Graph {
+    fn make_star_graph(handle: &ResourceHandle) -> Graph<Transposed> {
         // Directed star: 1->0, 2->0, 3->0
         let src_data: Vec<i32> = vec![1, 2, 3];
         let dst_data: Vec<i32> = vec![0, 0, 0];
@@ -192,12 +208,7 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        Graph::from_edge_list(
-            handle, props, &src_view, &dst_view, None, None, None,
-            true, // store_transposed (needed for in-degree computation)
-            true, // renumber
-        )
-        .expect("star graph")
+        GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(handle).expect("star graph")
     }
 
     /// Helper: decode device array bytes into Vec<i32>
@@ -367,8 +378,10 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, true, true)
-            .expect("graph");
+        let src_view = src.view();
+        let dst_view = dst.view();
+        let mut graph =
+            GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
 
         let result = degrees(&handle, &mut graph, None).expect("degrees");
         let map = degree_map(&handle, &result);
@@ -404,11 +417,7 @@ mod tests {
     fn test_degrees_isolated_vertex() {
         let handle = ResourceHandle::new().expect("handle");
 
-        // Graph: 0->1 (vertex 2 exists but is isolated via explicit edge 2->2
-        // trick doesn't work cleanly; instead we create 0->1, 2->2 self-loop)
-        // Actually, for cuGraph, isolated vertices that aren't endpoints of any
-        // edge won't appear. Let's use a graph where vertex 2 has no edges by
-        // making edges: 0->1, 3->4 — so vertices 0,1,3,4 appear, and we check
+        // Graph: 0->1, 3->4 — vertices 0,1,3,4 appear, and we check
         // that all degrees are correct.
         let src_data: Vec<i32> = vec![0, 3];
         let dst_data: Vec<i32> = vec![1, 4];
@@ -418,8 +427,10 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: false, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, true, true)
-            .expect("graph");
+        let src_view = src.view();
+        let dst_view = dst.view();
+        let mut graph =
+            GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
 
         let result = degrees(&handle, &mut graph, None).expect("degrees");
         let map = degree_map(&handle, &result);
@@ -447,8 +458,10 @@ mod tests {
 
         let props = GraphProperties { is_symmetric: true, is_multigraph: false };
 
-        let mut graph = Graph::from_edge_list(&handle, props, &src.view(), &dst.view(), None, None, None, true, true)
-            .expect("graph");
+        let src_view = src.view();
+        let dst_view = dst.view();
+        let mut graph =
+            GraphBuilder::new(props, &src_view, &dst_view).renumber(true).build_transposed(&handle).expect("graph");
 
         let result = degrees(&handle, &mut graph, None).expect("degrees");
         let map = degree_map(&handle, &result);

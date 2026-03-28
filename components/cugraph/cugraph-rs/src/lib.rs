@@ -9,7 +9,7 @@
 //! use cugraph::{
 //!     array::device_array_from_host,
 //!     centrality::{PageRankParams, pagerank},
-//!     graph::Graph,
+//!     graph::GraphBuilder,
 //!     handle::ResourceHandle,
 //!     types::{DataType, GraphProperties},
 //! };
@@ -22,18 +22,12 @@
 //!     .unwrap();
 //!
 //! let props = GraphProperties { is_symmetric: false, is_multigraph: false };
-//! let mut graph = Graph::from_edge_list(
-//!     &handle,
-//!     props,
-//!     &src.view(),
-//!     &dst.view(),
-//!     None,
-//!     None,
-//!     None,
-//!     false,
-//!     true,
-//! )
-//! .unwrap();
+//! let src_view = src.view();
+//! let dst_view = dst.view();
+//! let mut graph = GraphBuilder::new(props, &src_view, &dst_view)
+//!     .renumber(true)
+//!     .build_transposed(&handle)
+//!     .unwrap();
 //!
 //! let result =
 //!     pagerank(&handle, &mut graph, &PageRankParams::default()).unwrap();

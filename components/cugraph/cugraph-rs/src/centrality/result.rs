@@ -28,6 +28,12 @@ pub struct CentralityResult {
     _nosend_nosync: std::marker::PhantomData<*mut ()>,
 }
 
+impl std::fmt::Debug for CentralityResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CentralityResult").finish_non_exhaustive()
+    }
+}
+
 impl CentralityResult {
     /// Wrap a raw centrality result pointer.
     ///

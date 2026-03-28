@@ -4,7 +4,7 @@
 //! underlying CUDA stream and RAFT handle. The handle is **not** `Send` or
 //! `Sync` because GPU state is thread-local.
 
-use std::{marker::PhantomData, ptr};
+use std::{fmt, marker::PhantomData, ptr};
 
 use cugraph_sys::{cugraph_create_resource_handle, cugraph_free_resource_handle, cugraph_resource_handle_t};
 
@@ -18,6 +18,12 @@ pub struct ResourceHandle {
     raw: *mut cugraph_resource_handle_t,
     // !Send + !Sync marker: cuGraph handle owns thread-affine GPU resources.
     _nosend_nosync: PhantomData<*mut ()>,
+}
+
+impl fmt::Debug for ResourceHandle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResourceHandle").finish_non_exhaustive()
+    }
 }
 
 impl ResourceHandle {

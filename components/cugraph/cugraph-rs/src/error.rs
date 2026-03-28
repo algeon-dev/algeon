@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_error_display_with_message_and_context() {
-        let err = Error::new(ErrorKind::InvalidInput, "Graph::from_edge_list")
+        let err = Error::new(ErrorKind::InvalidInput, "GraphBuilder::build")
             .with_message("src and dst must have the same length")
             .with_context("src_len", "10")
             .with_context("dst_len", "5");
@@ -403,7 +403,7 @@ mod tests {
         let display = err.to_string();
         assert_eq!(
             display,
-            "InvalidInput (permanent) at Graph::from_edge_list \
+            "InvalidInput (permanent) at GraphBuilder::build \
              => src and dst must have the same length, \
              context: { src_len: 10, dst_len: 5 }"
         );
