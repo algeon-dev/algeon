@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision};
+use crate::{
+    capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
+    datatypes::arrow_fixed_width_byte_size,
+};
 
 #[cfg(test)]
 pub(super) fn select_partial_aggregate_strategy_decision(
@@ -1000,7 +1003,7 @@ fn estimate_grouped_key_output_bytes(
     let mut bytes_per_group = 0u64;
     for expr in &spec.group_exprs {
         let field = input_schema.field_with_name(plain_group_key_column_name(expr)?).ok()?;
-        bytes_per_group = bytes_per_group.checked_add(fixed_width_dtype_size(field.data_type())?)?;
+        bytes_per_group = bytes_per_group.checked_add(arrow_fixed_width_byte_size(field.data_type())?)?;
     }
     bytes_per_group.checked_mul(output_group_count)
 }
@@ -1013,31 +1016,8 @@ fn plain_group_key_column_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn fixed_width_dtype_size(data_type: &ArrowDataType) -> Option<u64> {
-    match data_type {
-        ArrowDataType::Boolean => Some(1),
-        ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),
-        ArrowDataType::Int16 | ArrowDataType::UInt16 => Some(2),
-        ArrowDataType::Int32
-        | ArrowDataType::UInt32
-        | ArrowDataType::Float32
-        | ArrowDataType::Date32
-        | ArrowDataType::Time32(_) => Some(4),
-        ArrowDataType::Int64
-        | ArrowDataType::UInt64
-        | ArrowDataType::Float64
-        | ArrowDataType::Date64
-        | ArrowDataType::Time64(_)
-        | ArrowDataType::Timestamp(_, _)
-        | ArrowDataType::Duration(_) => Some(8),
-        ArrowDataType::Decimal128(_, _) => Some(16),
-        ArrowDataType::Decimal256(_, _) => Some(32),
-        _ => None,
-    }
-}
-
 fn exact_grouped_key_cardinality_probe_dtype_supported(data_type: &ArrowDataType) -> bool {
-    fixed_width_dtype_size(data_type).is_some()
+    arrow_fixed_width_byte_size(data_type).is_some()
         || matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
@@ -1053,7 +1033,7 @@ fn extended_grouped_cardinality_probe_shape_supported(
         })
         .count();
     let fixed_width_key_count =
-        key_types.iter().filter(|data_type| fixed_width_dtype_size(data_type).is_some()).count();
+        key_types.iter().filter(|data_type| arrow_fixed_width_byte_size(data_type).is_some()).count();
     match key_types.len() {
         3 => {
             input_rows <= options.exact_three_key_cardinality_probe_max_input_rows()
@@ -1266,7 +1246,7 @@ pub(super) fn source_chunk_structural_part(chunk: &SourceChunk) -> String {
         chunk.file_index,
         chunk.location.diagnostic_stable_id(chunk.stable_id.as_str()),
         chunk.location.diagnostic_location(),
-        source_chunk_path_fact(chunk),
+        crate::source::parquet_source_path_fact(&chunk.location, &chunk.path),
         chunk.read_columns.join(","),
         chunk.partition_values.iter().map(|value| format!("{value:?}")).collect::<Vec<_>>().join(","),
         format_usize_list(&chunk.row_group_indexes),
@@ -1289,12 +1269,4 @@ pub(super) fn source_chunk_structural_part(chunk: &SourceChunk) -> String {
 
 fn format_usize_list(values: &[usize]) -> String {
     values.iter().map(|value| value.to_string()).collect::<Vec<_>>().join(",")
-}
-
-fn source_chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
 }

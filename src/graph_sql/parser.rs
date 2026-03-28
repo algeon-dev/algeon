@@ -8,7 +8,7 @@ use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
     CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable,
     CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType, CugraphSqlConfig, CugraphTableReference,
-    plan_error, result_schema_for_params,
+    literal_string_arg, plan_error, result_schema_for_params,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -844,19 +844,6 @@ fn parse_degree_type(value: &str, key: &str) -> Result<CugraphKCoreDegreeType> {
         "out" => Ok(CugraphKCoreDegreeType::Out),
         "in_out" => Ok(CugraphKCoreDegreeType::InOut),
         other => Err(plan_error(format!("unsupported '{key}' value '{other}', expected 'in', 'out', or 'in_out'"))),
-    }
-}
-
-fn literal_string_arg(args: &[Expr], index: usize, name: &str) -> Result<String> {
-    match args.get(index) {
-        Some(Expr::Literal(value, _)) => match value {
-            ScalarValue::Utf8(Some(value))
-            | ScalarValue::LargeUtf8(Some(value))
-            | ScalarValue::Utf8View(Some(value)) => Ok(value.clone()),
-            _ => Err(plan_error(format!("{name} must be a non-null string literal"))),
-        },
-        Some(_) => Err(plan_error(format!("{name} must be a literal"))),
-        None => Err(plan_error(format!("missing {name} argument"))),
     }
 }
 

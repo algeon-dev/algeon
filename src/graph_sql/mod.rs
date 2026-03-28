@@ -8,7 +8,10 @@ mod parser;
 mod table_function;
 mod types;
 
-use datafusion::common::DataFusionError;
+use datafusion::{
+    common::{DataFusionError, Result, ScalarValue, TableReference},
+    logical_expr::Expr,
+};
 pub use exec::CugraphAlgoExec;
 pub(crate) use exec::gpu_resident_producer;
 pub use parser::parse_cugraph_algorithm_spec;
@@ -38,4 +41,26 @@ pub(crate) use types::{CugraphVertexIdDomain, vertex_id_domain_for_call};
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
     DataFusionError::Plan(message.into())
+}
+
+fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {
+    match table.parts() {
+        [table] => TableReference::bare(table.as_str()),
+        [schema, table] => TableReference::partial(schema.as_str(), table.as_str()),
+        [catalog, schema, table] => TableReference::full(catalog.as_str(), schema.as_str(), table.as_str()),
+        _ => unreachable!("CugraphTableReference::parse validates one to three identifier parts"),
+    }
+}
+
+fn literal_string_arg(args: &[Expr], index: usize, name: &str) -> Result<String> {
+    match args.get(index) {
+        Some(Expr::Literal(value, _)) => match value {
+            ScalarValue::Utf8(Some(value))
+            | ScalarValue::LargeUtf8(Some(value))
+            | ScalarValue::Utf8View(Some(value)) => Ok(value.clone()),
+            _ => Err(plan_error(format!("{name} must be a non-null string literal"))),
+        },
+        Some(_) => Err(plan_error(format!("{name} must be a literal"))),
+        None => Err(plan_error(format!("missing {name} argument"))),
+    }
 }

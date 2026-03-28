@@ -66,7 +66,7 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
     Ok((frame, prepared_spec, Arc::new(Schema::new(fields))))
 }
 
-fn filtered_aggregate_value_expr(aggregate_expr: &AggregateExpr) -> Expr {
+pub(super) fn filtered_aggregate_value_expr(aggregate_expr: &AggregateExpr) -> Expr {
     if aggregate_expr.function == AggregateFunction::Count
         && !aggregate_expr.distinct
         && global_count_star_expr(&aggregate_expr.expr)
@@ -87,43 +87,56 @@ pub(super) fn filtered_aggregate_input_type(
     {
         return Ok(ArrowDataType::Int64);
     }
-    aggregate_expr_type(&aggregate_expr.expr, input_schema)
+    aggregate_expr_input_type(&aggregate_expr.expr, input_schema, "nexus_query_engine.aggregate.filter_input_type")
 }
 
-fn aggregate_expr_type(expr: &Expr, input_schema: &ArrowSchemaRef) -> Result<ArrowDataType> {
+pub(super) fn aggregate_expr_input_type(
+    expr: &Expr,
+    input_schema: &ArrowSchemaRef,
+    operation: &'static str,
+) -> Result<ArrowDataType> {
     match expr {
         Expr::Column(column) => {
             input_schema.field_with_name(column.name()).map(|field| field.data_type().clone()).map_err(|error| {
                 QueryError::new(
                     QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.aggregate.filter_input_type",
-                    "aggregate filter input references a missing column",
+                    operation,
+                    aggregate_expr_input_type_missing_column_message(operation),
                 )
                 .with_fact("column", column.name())
                 .with_fact("arrow_error", error.to_string())
             })
         },
-        Expr::Alias { expr, .. } => aggregate_expr_type(expr, input_schema),
+        Expr::Alias { expr, .. } => aggregate_expr_input_type(expr, input_schema, operation),
         Expr::Literal(value) => Ok(value.data_type()),
         _ => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
-            "nexus_query_engine.aggregate.filter_input_type",
-            "filtered aggregate input must be a prepared column or literal",
+            operation,
+            aggregate_expr_input_type_unsupported_message(operation),
         )
         .with_fact("expression", expr.to_string())),
     }
 }
 
+fn aggregate_expr_input_type_missing_column_message(operation: &'static str) -> &'static str {
+    match operation {
+        "nexus_query_engine.filtered_global_aggregate.state_schema" => {
+            "aggregate state references a column missing from its input schema"
+        },
+        _ => "aggregate filter input references a missing column",
+    }
+}
+
+fn aggregate_expr_input_type_unsupported_message(operation: &'static str) -> &'static str {
+    match operation {
+        "nexus_query_engine.filtered_global_aggregate.state_schema" => {
+            "filtered global aggregate state input must be a prepared column or literal"
+        },
+        _ => "filtered aggregate input must be a prepared column or literal",
+    }
+}
+
 fn unique_filtered_aggregate_alias(index: usize, fields: &[Field]) -> String {
     let base = format!("__cudf_filtered_aggregate_arg_{index}");
-    if fields.iter().all(|field| field.name() != base.as_str()) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let alias = format!("{base}_{suffix}");
-        if fields.iter().all(|field| field.name() != alias.as_str()) {
-            return alias;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    crate::naming::unique_alias_with_suffix(base.as_str(), |alias| fields.iter().any(|field| field.name() == alias))
 }

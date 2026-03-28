@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::ExecutionPlan;
-use nexus_query_engine::{Expr as NativeExpr, QueryPlanBuilder as NativeQueryPlanBuilder};
+use nexus_query_engine::QueryPlanBuilder as NativeQueryPlanBuilder;
 
 use super::{
-    FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, expr::alias_if_needed,
-    lower_native_input, projection_outputs,
+    FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, lower_native_input,
+    project_bindings_to_schema,
 };
 use crate::{
     native::{normalize::NormalizedNativeUnion, validate::validate_schema},
@@ -68,13 +68,5 @@ fn project_union_child_to_output_schema(
         return Ok(LoweredNativeInput::with_bindings(input.node, input.schema, bindings.to_vec()));
     }
 
-    let expressions = bindings
-        .iter()
-        .map(|binding| {
-            let input_binding = input.binding_for_frontend_index(binding.frontend_index)?;
-            Ok(alias_if_needed(NativeExpr::column(input_binding.native_name.as_str()), binding.native_name.as_str()))
-        })
-        .collect::<Result<Vec<_>, FallbackReason>>()?;
-    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
-    Ok(LoweredNativeInput::with_bindings(node, schema, bindings.to_vec()))
+    project_bindings_to_schema(builder, input, schema, bindings.to_vec())
 }

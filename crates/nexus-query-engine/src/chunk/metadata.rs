@@ -96,36 +96,17 @@ impl SourceMetadataCache {
                     continue;
                 },
             };
-            let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
-                bucket: fetch_location.bucket.clone(),
-                region: fetch_location.region.clone(),
-                storage_profile_id: fetch_location.storage_profile_id.clone(),
-            }) {
-                Ok(store) => store,
-                Err(_error) => {
-                    self.footers.insert(key, None);
-                    continue;
-                },
-            };
-            let Some(operation_permit) = context.execution_context.acquire_source_fetch_operation_with_timeout(
-                OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT,
+            let Some(fetch) = spawn_footer_metadata_fetch(
+                context,
+                fetch_location,
                 "nexus_query_engine.source_metadata.object_store_footer_prefetch",
             )?
             else {
                 self.footers.insert(key, None);
                 continue;
             };
-            let (sender, receiver) = std::sync::mpsc::channel();
-            let key_path = fetch_location.key;
-            let fetch_handle = context.execution_context.spawn_object_store_custom_fetch(
-                move || fetch_object_store_parquet_metadata(store, key_path),
-                move |fetch_result| {
-                    let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
-                    let _ = sender.send(metadata);
-                    drop(operation_permit);
-                },
-            );
-            pending.push(PendingFooterMetadataFetch { key, handle: fetch_handle, receiver });
+            let FooterMetadataFetch { handle, receiver, wait_started: _ } = fetch;
+            pending.push(PendingFooterMetadataFetch { key, handle, receiver });
         }
 
         while !pending.is_empty() {
@@ -219,6 +200,45 @@ impl Drop for PendingFooterMetadataFetch {
     }
 }
 
+struct FooterMetadataFetch {
+    wait_started: Instant,
+    handle: tokio::task::JoinHandle<()>,
+    receiver: std::sync::mpsc::Receiver<Result<Arc<ParquetMetaData>>>,
+}
+
+fn spawn_footer_metadata_fetch(
+    context: &SourceMetadataLoadContext<'_>,
+    fetch_location: SourceMetadataFetchLocation,
+    operation: &'static str,
+) -> Result<Option<FooterMetadataFetch>> {
+    let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
+        bucket: fetch_location.bucket.clone(),
+        region: fetch_location.region.clone(),
+        storage_profile_id: fetch_location.storage_profile_id.clone(),
+    }) {
+        Ok(store) => store,
+        Err(_error) => return Ok(None),
+    };
+    let wait_started = Instant::now();
+    let Some(operation_permit) = context
+        .execution_context
+        .acquire_source_fetch_operation_with_timeout(OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT, operation)?
+    else {
+        return Ok(None);
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let key = fetch_location.key;
+    let handle = context.execution_context.spawn_object_store_custom_fetch(
+        move || fetch_object_store_parquet_metadata(store, key),
+        move |fetch_result| {
+            let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
+            let _ = sender.send(metadata);
+            drop(operation_permit);
+        },
+    );
+    Ok(Some(FooterMetadataFetch { wait_started, handle, receiver }))
+}
+
 fn load_local_parquet_footer_metadata(file: &LocalParquetFile) -> Option<Arc<ParquetMetaData>> {
     local_parquet_footer_metadata_path(file).and_then(|path| {
         let content_identity = sidecar_content_identity(file);
@@ -272,31 +292,10 @@ fn load_object_store_parquet_footer_metadata(
         Ok(fetch_location) => fetch_location,
         Err(_error) => return Ok(None),
     };
-    let store = match context.execution_context.s3_object_store(S3ObjectStoreKey {
-        bucket: fetch_location.bucket.clone(),
-        region: fetch_location.region.clone(),
-        storage_profile_id: fetch_location.storage_profile_id.clone(),
-    }) {
-        Ok(store) => store,
-        Err(_error) => return Ok(None),
-    };
-    let wait_started = Instant::now();
-    let Some(operation_permit) = context
-        .execution_context
-        .acquire_source_fetch_operation_with_timeout(OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT, OPERATION)?
-    else {
+    let Some(fetch) = spawn_footer_metadata_fetch(context, fetch_location, OPERATION)? else {
         return Ok(None);
     };
-    let (sender, receiver) = std::sync::mpsc::channel();
-    let key = fetch_location.key;
-    let fetch_handle = context.execution_context.spawn_object_store_custom_fetch(
-        move || fetch_object_store_parquet_metadata(store, key),
-        move |fetch_result| {
-            let metadata = fetch_result.value.map(|(metadata, _file_size)| metadata);
-            let _ = sender.send(metadata);
-            drop(operation_permit);
-        },
-    );
+    let FooterMetadataFetch { wait_started, handle: fetch_handle, receiver } = fetch;
     loop {
         if let Err(error) = context.execution_context.check_cancellation(OPERATION) {
             fetch_handle.abort();

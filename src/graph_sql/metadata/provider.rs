@@ -17,14 +17,15 @@ use super::{
     super::{
         CUGRAPH_DESCRIBE_ALGORITHM_FUNCTION, CUGRAPH_DESCRIBE_ALGORITHM_SCHEMA_VERSION,
         CUGRAPH_LIST_ALGORITHMS_FUNCTION, CUGRAPH_LIST_ALGORITHMS_SCHEMA_VERSION, CUGRAPH_OPERATION_REGISTRY,
-        CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphSqlConfig, plan_error, stable_result_schema,
+        CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphSqlConfig, literal_string_arg, plan_error,
+        stable_result_schema,
     },
     ERROR_OK, ERROR_UNKNOWN_ALGORITHM, algorithm_for_metadata_name,
     descriptions::{
         argument_descriptions_json, examples_json, limitations_json, purpose, result_field_descriptions_json, summary,
     },
     json_schema::{graph_options_json, mode_schemas_json, option_defaults_json, options_schema_json, schema_json},
-    validate::{cugraph_validate_call, literal_string_arg},
+    validate::cugraph_validate_call,
 };
 
 pub(crate) fn cugraph_metadata_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {

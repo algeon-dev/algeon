@@ -1,9 +1,13 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::Field;
+use datafusion::physical_expr::PhysicalExpr;
 
 use super::*;
-use crate::native::lowering::expr::physical_expr_field;
+use crate::native::lowering::{
+    expr::physical_expr_field,
+    naming::{sanitize_field_name, unique_name_with_suffix},
+};
 
 // Projection that materializes aggregate inputs into executable native columns.
 pub(super) struct SyntheticAggregateInputProjection {
@@ -22,17 +26,8 @@ pub(super) fn synthetic_aggregate_input_projection(
     let frontend_schema = aggregate.input().schema();
     let mut expressions = Vec::new();
     let mut fields = Vec::new();
-    let mut group_expr_aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
-
-    for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
-        let executable_alias = unique_synthetic_aggregate_group_alias(index, alias, &fields);
-        expressions.push(alias_if_needed(
-            lower_physical_expr_with_bindings(group_expr, &frontend_schema, Some(&input.bindings))?,
-            executable_alias.as_str(),
-        ));
-        fields.push(physical_expr_field(group_expr, &frontend_schema, executable_alias.as_str())?);
-        group_expr_aliases.push(executable_alias);
-    }
+    let group_expr_aliases =
+        append_synthetic_group_expr_projections(aggregate, input, &frontend_schema, &mut expressions, &mut fields)?;
 
     let mut aggregate_arg_aliases = Vec::with_capacity(aggregate.aggr_expr().len());
     let mut filter_aliases = vec![None; aggregate.aggr_expr().len()];
@@ -51,23 +46,17 @@ pub(super) fn synthetic_aggregate_input_projection(
         ));
         fields.push(physical_expr_field(arg, &frontend_schema, alias.as_str())?);
         aggregate_arg_aliases.push(alias);
-
         if let Some(filter) = aggregate.filter_expr().get(index).and_then(Option::as_ref) {
-            let key = filter.to_string();
-            let alias = if let Some(alias) = filters_by_expression.get(&key) {
-                alias.clone()
-            } else {
-                let alias =
-                    unique_synthetic_aggregate_filter_alias(filters_by_expression.len(), &input.schema, &fields);
-                expressions.push(alias_if_needed(
-                    lower_physical_expr_with_bindings(filter, &frontend_schema, Some(&input.bindings))?,
-                    alias.as_str(),
-                ));
-                fields.push(physical_expr_field(filter, &frontend_schema, alias.as_str())?);
-                filters_by_expression.insert(key, alias.clone());
-                alias
-            };
-            filter_aliases[index] = Some(alias);
+            append_synthetic_filter_projection(
+                index,
+                filter,
+                input,
+                &frontend_schema,
+                &mut expressions,
+                &mut fields,
+                &mut filter_aliases,
+                &mut filters_by_expression,
+            )?;
         }
     }
 
@@ -103,17 +92,13 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
     let mut fields = input.schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
 
     let group_expr_aliases = if needs_group_projection {
-        let mut aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
-        for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
-            let executable_alias = unique_synthetic_aggregate_group_alias(index, alias, &fields);
-            expressions.push(alias_if_needed(
-                lower_physical_expr_with_bindings(group_expr, &frontend_schema, Some(&input.bindings))?,
-                executable_alias.as_str(),
-            ));
-            fields.push(physical_expr_field(group_expr, &frontend_schema, executable_alias.as_str())?);
-            aliases.push(executable_alias);
-        }
-        Some(aliases)
+        Some(append_synthetic_group_expr_projections(
+            aggregate,
+            input,
+            &frontend_schema,
+            &mut expressions,
+            &mut fields,
+        )?)
     } else {
         None
     };
@@ -137,29 +122,14 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
     }
     let mut filter_aliases = vec![None; aggregate.aggr_expr().len()];
     if needs_filter_projection {
-        let mut filters_by_expression = HashMap::<String, String>::new();
-        for (index, filter) in aggregate
-            .filter_expr()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, filter)| filter.as_ref().map(|filter| (index, filter)))
-        {
-            let key = filter.to_string();
-            let alias = if let Some(alias) = filters_by_expression.get(&key) {
-                alias.clone()
-            } else {
-                let alias =
-                    unique_synthetic_aggregate_filter_alias(filters_by_expression.len(), &input.schema, &fields);
-                expressions.push(alias_if_needed(
-                    lower_physical_expr_with_bindings(filter, &frontend_schema, Some(&input.bindings))?,
-                    alias.as_str(),
-                ));
-                fields.push(physical_expr_field(filter, &frontend_schema, alias.as_str())?);
-                filters_by_expression.insert(key, alias.clone());
-                alias
-            };
-            filter_aliases[index] = Some(alias);
-        }
+        append_synthetic_filter_projections(
+            aggregate,
+            input,
+            &frontend_schema,
+            &mut expressions,
+            &mut fields,
+            &mut filter_aliases,
+        )?;
     }
     let mut bindings = input.bindings.clone();
     bindings.extend(aggregate_arg_aliases.iter().enumerate().map(|(index, alias)| FieldBinding {
@@ -178,63 +148,105 @@ pub(super) fn synthetic_aggregate_input_projection_if_needed(
     }))
 }
 
+fn append_synthetic_group_expr_projections(
+    aggregate: &AggregateExec,
+    input: &LoweredNativeInput,
+    frontend_schema: &SchemaRef,
+    expressions: &mut Vec<NativeExpr>,
+    fields: &mut Vec<Field>,
+) -> Result<Vec<String>, FallbackReason> {
+    let mut aliases = Vec::with_capacity(aggregate.group_expr().expr().len());
+    for (index, (group_expr, alias)) in aggregate.group_expr().expr().iter().enumerate() {
+        let executable_alias = unique_synthetic_aggregate_group_alias(index, alias, fields);
+        expressions.push(alias_if_needed(
+            lower_physical_expr_with_bindings(group_expr, frontend_schema, Some(&input.bindings))?,
+            executable_alias.as_str(),
+        ));
+        fields.push(physical_expr_field(group_expr, frontend_schema, executable_alias.as_str())?);
+        aliases.push(executable_alias);
+    }
+    Ok(aliases)
+}
+
+fn append_synthetic_filter_projections(
+    aggregate: &AggregateExec,
+    input: &LoweredNativeInput,
+    frontend_schema: &SchemaRef,
+    expressions: &mut Vec<NativeExpr>,
+    fields: &mut Vec<Field>,
+    filter_aliases: &mut [Option<String>],
+) -> Result<(), FallbackReason> {
+    let mut filters_by_expression = HashMap::<String, String>::new();
+    for (index, filter) in aggregate
+        .filter_expr()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, filter)| filter.as_ref().map(|filter| (index, filter)))
+    {
+        append_synthetic_filter_projection(
+            index,
+            filter,
+            input,
+            frontend_schema,
+            expressions,
+            fields,
+            filter_aliases,
+            &mut filters_by_expression,
+        )?;
+    }
+    Ok(())
+}
+
+fn append_synthetic_filter_projection(
+    index: usize,
+    filter: &Arc<dyn PhysicalExpr>,
+    input: &LoweredNativeInput,
+    frontend_schema: &SchemaRef,
+    expressions: &mut Vec<NativeExpr>,
+    fields: &mut Vec<Field>,
+    filter_aliases: &mut [Option<String>],
+    filters_by_expression: &mut HashMap<String, String>,
+) -> Result<(), FallbackReason> {
+    let key = filter.to_string();
+    let alias = if let Some(alias) = filters_by_expression.get(&key) {
+        alias.clone()
+    } else {
+        let alias = unique_synthetic_aggregate_filter_alias(filters_by_expression.len(), &input.schema, fields);
+        expressions.push(alias_if_needed(
+            lower_physical_expr_with_bindings(filter, frontend_schema, Some(&input.bindings))?,
+            alias.as_str(),
+        ));
+        fields.push(physical_expr_field(filter, frontend_schema, alias.as_str())?);
+        filters_by_expression.insert(key, alias.clone());
+        alias
+    };
+    let slot = filter_aliases.get_mut(index).ok_or(FallbackReason::UnsupportedExpression)?;
+    *slot = Some(alias);
+    Ok(())
+}
+
 fn unique_synthetic_aggregate_group_alias(index: usize, alias: &str, fields: &[Field]) -> String {
     if fields.iter().all(|field| field.name() != alias) {
         return alias.to_string();
     }
 
-    let sanitized = sanitize_synthetic_alias_component(alias);
+    let sanitized = sanitize_field_name(alias);
     let base = format!("__cudf_group_expr_{index}_{sanitized}");
-    if fields.iter().all(|field| field.name() != base.as_str()) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if fields.iter().all(|field| field.name() != candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    unique_name_with_suffix(base.as_str(), |candidate| fields.iter().all(|field| field.name() != candidate))
 }
 
 fn unique_synthetic_aggregate_arg_alias(index: usize, input_schema: &SchemaRef, fields: &[Field]) -> String {
     let base = format!("__cudf_aggregate_arg_{index}");
-    if synthetic_alias_is_available(base.as_str(), input_schema, fields) {
-        return base;
-    }
-
-    for suffix in 1usize.. {
-        let alias = format!("{base}_{suffix}");
-        if synthetic_alias_is_available(alias.as_str(), input_schema, fields) {
-            return alias;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    unique_name_with_suffix(base.as_str(), |alias| synthetic_alias_is_available(alias, input_schema, fields))
 }
 
 fn unique_synthetic_aggregate_filter_alias(index: usize, input_schema: &SchemaRef, fields: &[Field]) -> String {
     let base = format!("__cudf_aggregate_filter_{index}");
-    if synthetic_alias_is_available(base.as_str(), input_schema, fields) {
-        return base;
-    }
-
-    for suffix in 1usize.. {
-        let alias = format!("{base}_{suffix}");
-        if synthetic_alias_is_available(alias.as_str(), input_schema, fields) {
-            return alias;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    unique_name_with_suffix(base.as_str(), |alias| synthetic_alias_is_available(alias, input_schema, fields))
 }
 
 fn synthetic_alias_is_available(alias: &str, input_schema: &SchemaRef, fields: &[Field]) -> bool {
     input_schema.index_of(alias).is_err() && fields.iter().all(|field| field.name() != alias)
-}
-
-fn sanitize_synthetic_alias_component(name: &str) -> String {
-    let sanitized =
-        name.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' }).collect::<String>();
-    if sanitized.is_empty() { "field".to_string() } else { sanitized }
 }
 
 pub(in crate::native::lowering) struct PreparedAggregateInput {

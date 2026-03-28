@@ -101,6 +101,26 @@ pub(crate) fn s3_credential_source_default_chain_opt_in(mut get: impl FnMut(&str
         .is_some_and(|value| value.trim().eq_ignore_ascii_case(NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN))
 }
 
+pub(crate) fn insert_explicit_nexus_s3_credentials(
+    props: &mut HashMap<String, String>,
+    mut get: impl FnMut(&str) -> Option<String>,
+    disable_ambient_config_load_on_static_credentials: bool,
+) {
+    if let (Some(access_key_id), Some(secret_access_key)) =
+        (non_empty(get(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)), non_empty(get(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)))
+    {
+        props.insert(S3_ACCESS_KEY_ID.to_string(), access_key_id);
+        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret_access_key);
+        if disable_ambient_config_load_on_static_credentials {
+            props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
+            props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
+        }
+    }
+    if let Some(session_token) = non_empty(get(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
+        props.insert(S3_SESSION_TOKEN.to_string(), session_token);
+    }
+}
+
 /// Builds the adapter-owned Iceberg provider that plans scans into native
 /// table-format facts instead of delegating to an Arrow reader.
 pub fn table_provider(table: Table) -> crate::Result<CudfIcebergTableProvider> {
@@ -463,17 +483,7 @@ async fn load_glue_table_with_env(
     if let Some(path_style) = config.s3_path_style_access {
         props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
     }
-    if let (Some(access_key_id), Some(secret_access_key)) =
-        (non_empty(get(NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)), non_empty(get(NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)))
-    {
-        props.insert(S3_ACCESS_KEY_ID.to_string(), access_key_id);
-        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret_access_key);
-        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
-        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
-    }
-    if let Some(session_token) = non_empty(get(NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
-        props.insert(S3_SESSION_TOKEN.to_string(), session_token);
-    }
+    insert_explicit_nexus_s3_credentials(&mut props, |name| get(name), true);
 
     let catalog = GlueCatalogBuilder::default().load(config.catalog_name.clone(), props).await.map_err(|error| {
         glue_error("failed to load AWS Glue Iceberg catalog", &config, diagnostics.credential_source, error)
@@ -508,4 +518,63 @@ pub(crate) fn non_empty(value: Option<String>) -> Option<String> {
         let trimmed = value.trim();
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_nexus_s3_credentials_insert_static_pair_token_and_default_deny_when_requested() {
+        let mut props = HashMap::new();
+        let env = |name: &str| match name {
+            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("access".to_string()),
+            NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("secret".to_string()),
+            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("token".to_string()),
+            _ => None,
+        };
+
+        insert_explicit_nexus_s3_credentials(&mut props, env, true);
+
+        assert_eq!(props.get(S3_ACCESS_KEY_ID).map(String::as_str), Some("access"));
+        assert_eq!(props.get(S3_SECRET_ACCESS_KEY).map(String::as_str), Some("secret"));
+        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("token"));
+        assert_eq!(props.get(S3_DISABLE_CONFIG_LOAD).map(String::as_str), Some("true"));
+        assert_eq!(props.get(S3_DISABLE_EC2_METADATA).map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn explicit_nexus_s3_credentials_can_leave_default_chain_policy_to_caller() {
+        let mut props = HashMap::new();
+        let env = |name: &str| match name {
+            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("access".to_string()),
+            NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV => Some("secret".to_string()),
+            _ => None,
+        };
+
+        insert_explicit_nexus_s3_credentials(&mut props, env, false);
+
+        assert_eq!(props.get(S3_ACCESS_KEY_ID).map(String::as_str), Some("access"));
+        assert_eq!(props.get(S3_SECRET_ACCESS_KEY).map(String::as_str), Some("secret"));
+        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
+        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
+    }
+
+    #[test]
+    fn explicit_nexus_s3_credentials_preserve_token_without_static_pair() {
+        let mut props = HashMap::new();
+        let env = |name: &str| match name {
+            NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV => Some("access-only".to_string()),
+            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("token".to_string()),
+            _ => None,
+        };
+
+        insert_explicit_nexus_s3_credentials(&mut props, env, true);
+
+        assert!(!props.contains_key(S3_ACCESS_KEY_ID));
+        assert!(!props.contains_key(S3_SECRET_ACCESS_KEY));
+        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("token"));
+        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
+        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
+    }
 }

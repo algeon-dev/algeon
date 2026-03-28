@@ -132,22 +132,16 @@ pub(super) fn execute_join_leaf_source_stream_unary(
             .with_node_id(node_id)
             .with_stage(stage)
             .with_attempt(1, 1);
-    if output_bytes > work_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(work_reservation.bytes());
-        if let Err(error) =
-            reservations.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta), metrics)
-        {
-            drop(frame);
-            reservations.release(work_reservation, metrics);
-            return Err(error);
-        }
-    } else {
-        reservations.shrink_to_observed_with_request(
-            &mut work_reservation,
-            output_bytes,
-            output_request.clone(),
-            metrics,
-        );
+    if let Err(error) = reconcile_work_reservation_to_output(
+        reservations,
+        &mut work_reservation,
+        output_bytes,
+        &output_request,
+        metrics,
+    ) {
+        drop(frame);
+        reservations.release(work_reservation, metrics);
+        return Err(error);
     }
     let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })

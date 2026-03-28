@@ -1,3 +1,5 @@
+use nexus_query_engine::datatypes::arrow_field_metadata_matches_except_parquet_field_id;
+
 use super::*;
 
 pub(super) fn table_format_file_schema(scan_plan: &TableFormatScanPlan) -> SchemaRef {
@@ -90,12 +92,5 @@ pub(super) fn table_format_field_metadata_matches_except_parquet_field_id(
     left: &HashMap<String, String>,
     right: &HashMap<String, String>,
 ) -> bool {
-    let visible_len = |metadata: &HashMap<String, String>| {
-        metadata.keys().filter(|key| key.as_str() != PARQUET_FIELD_ID_META_KEY).count()
-    };
-    visible_len(left) == visible_len(right)
-        && left
-            .iter()
-            .filter(|(key, _value)| key.as_str() != PARQUET_FIELD_ID_META_KEY)
-            .all(|(key, value)| right.get(key) == Some(value))
+    arrow_field_metadata_matches_except_parquet_field_id(left, right)
 }

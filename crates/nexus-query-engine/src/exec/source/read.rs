@@ -28,7 +28,7 @@ pub(super) fn read_local_parquet_file(
             error,
             file,
         )
-        .with_fact("path", file_path_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
         .with_fact("read_columns", columns.len())
         .with_fact("row_groups_selected", file.selected_row_group_count())
     })?;
@@ -71,36 +71,17 @@ fn read_cudf_error_for_file(
     }
 }
 
-fn file_path_fact(file: &LocalParquetFile) -> String {
-    if file.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&file.path)
-    } else {
-        file.location.diagnostic_location()
-    }
-}
-
 fn local_file_selected_row_group_count(file: &LocalParquetFile) -> u64 {
     if let Some(row_groups) = &file.row_groups {
         return row_groups.len() as u64;
     }
-    if let Some(count) = represented_file_row_group_count(file) {
+    if let Some(count) = local_parquet_file_row_group_metadata_count(file) {
         return count as u64;
     }
     parquet::file::reader::SerializedFileReader::try_from(file.path.as_path())
         .ok()
         .map(|reader| reader.metadata().num_row_groups() as u64)
         .unwrap_or(0)
-}
-
-fn represented_file_row_group_count(file: &LocalParquetFile) -> Option<usize> {
-    file.row_group_bytes
-        .as_ref()
-        .or(file.projected_row_group_uncompressed_bytes.as_ref())
-        .or(file.projected_row_group_compressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
-        .or(file.row_group_rows.as_ref())
-        .map(Vec::len)
 }
 
 #[cfg(test)]
@@ -127,7 +108,7 @@ mod tests {
             cudf_error,
             &file,
         )
-        .with_fact("path", file_path_fact(&file));
+        .with_fact("path", parquet_file_path_fact(&file));
         let rendered = format!("{error}");
         let debug = format!("{error:?}");
 

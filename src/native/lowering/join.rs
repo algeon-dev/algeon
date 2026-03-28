@@ -18,7 +18,7 @@ use super::{
     LoweredNativeInput, RequiredFields,
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings, physical_expr_field},
     join_output::{
-        cross_join_output_requests, datafusion_join_output_side, hash_join_output_requests,
+        JoinOutputRequests, cross_join_output_requests, datafusion_join_output_side, hash_join_output_requests,
         nested_loop_join_output_requests,
     },
     join_residual::{JoinResidualMaterialization, LoweredJoinResidual, lower_join_filter},
@@ -125,6 +125,18 @@ fn add_join_residual_materializations(
     let schema = Arc::new(Schema::new(fields));
     let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
+}
+
+fn add_join_residual_materializations_by_side(
+    builder: &mut NativeQueryPlanBuilder,
+    left: LoweredNativeInput,
+    right: LoweredNativeInput,
+    residual: &LoweredJoinResidual,
+) -> Result<(LoweredNativeInput, LoweredNativeInput), FallbackReason> {
+    Ok((
+        add_join_residual_materializations(builder, left, residual.materializations.side(DataFusionJoinSide::Left)?)?,
+        add_join_residual_materializations(builder, right, residual.materializations.side(DataFusionJoinSide::Right)?)?,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -297,6 +309,35 @@ fn lower_prepared_join_keys(
         .collect()
 }
 
+fn extend_required_fields_from_join_outputs(
+    output_requests: &JoinOutputRequests,
+    left_required: &mut BTreeSet<usize>,
+    right_required: &mut BTreeSet<usize>,
+) {
+    for output in &output_requests.outputs {
+        match output.datafusion_side {
+            DataFusionJoinSide::Left => {
+                left_required.insert(output.input_index);
+            },
+            DataFusionJoinSide::Right => {
+                right_required.insert(output.input_index);
+            },
+            DataFusionJoinSide::None => {},
+        }
+    }
+}
+
+fn extend_required_fields_from_residual(
+    residual: Option<&LoweredJoinResidual>,
+    left_required: &mut BTreeSet<usize>,
+    right_required: &mut BTreeSet<usize>,
+) {
+    if let Some(residual) = residual {
+        left_required.extend(residual.left_required.iter().copied());
+        right_required.extend(residual.right_required.iter().copied());
+    }
+}
+
 pub(super) fn lower_hash_join_input(
     join: &NormalizedNativeHashJoin<'_>,
     builder: &mut NativeQueryPlanBuilder,
@@ -317,21 +358,8 @@ pub(super) fn lower_hash_join_input(
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
     let prepared_keys = prepare_join_keys(join, &mut left_required, &mut right_required)?;
-    for output in &output_requests.outputs {
-        match output.datafusion_side {
-            DataFusionJoinSide::Left => {
-                left_required.insert(output.input_index);
-            },
-            DataFusionJoinSide::Right => {
-                right_required.insert(output.input_index);
-            },
-            DataFusionJoinSide::None => {},
-        }
-    }
-    if let Some(residual) = &residual {
-        left_required.extend(residual.left_required.iter().copied());
-        right_required.extend(residual.right_required.iter().copied());
-    }
+    extend_required_fields_from_join_outputs(&output_requests, &mut left_required, &mut right_required);
+    extend_required_fields_from_residual(residual.as_ref(), &mut left_required, &mut right_required);
     let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
     let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
     let residual = if join.join.filter().is_some() {
@@ -360,18 +388,7 @@ pub(super) fn lower_hash_join_input(
         &prepared_keys.right_materializations,
     )?;
     let (left, right) = if let Some(residual) = &residual {
-        (
-            add_join_residual_materializations(
-                builder,
-                left,
-                residual.materializations.side(DataFusionJoinSide::Left)?,
-            )?,
-            add_join_residual_materializations(
-                builder,
-                right,
-                residual.materializations.side(DataFusionJoinSide::Right)?,
-            )?,
-        )
+        add_join_residual_materializations_by_side(builder, left, right, residual)?
     } else {
         (left, right)
     };
@@ -407,21 +424,8 @@ pub(super) fn lower_nested_loop_join_input(
     let output_requests = nested_loop_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
-    for output in &output_requests.outputs {
-        match output.datafusion_side {
-            DataFusionJoinSide::Left => {
-                left_required.insert(output.input_index);
-            },
-            DataFusionJoinSide::Right => {
-                right_required.insert(output.input_index);
-            },
-            DataFusionJoinSide::None => {},
-        }
-    }
-    if let Some(residual) = &residual {
-        left_required.extend(residual.left_required.iter().copied());
-        right_required.extend(residual.right_required.iter().copied());
-    }
+    extend_required_fields_from_join_outputs(&output_requests, &mut left_required, &mut right_required);
+    extend_required_fields_from_residual(residual.as_ref(), &mut left_required, &mut right_required);
     let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
     let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
     let residual = match join.join.filter() {
@@ -436,18 +440,7 @@ pub(super) fn lower_nested_loop_join_input(
     };
     let output_columns = output_requests.lower(&left, &right, canonical)?;
     let (left, right) = if let Some(residual) = &residual {
-        (
-            add_join_residual_materializations(
-                builder,
-                left,
-                residual.materializations.side(DataFusionJoinSide::Left)?,
-            )?,
-            add_join_residual_materializations(
-                builder,
-                right,
-                residual.materializations.side(DataFusionJoinSide::Right)?,
-            )?,
-        )
+        add_join_residual_materializations_by_side(builder, left, right, residual)?
     } else {
         (left, right)
     };
@@ -472,17 +465,7 @@ pub(super) fn lower_cross_join_input(
     let output_requests = cross_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
-    for output in &output_requests.outputs {
-        match output.datafusion_side {
-            DataFusionJoinSide::Left => {
-                left_required.insert(output.input_index);
-            },
-            DataFusionJoinSide::Right => {
-                right_required.insert(output.input_index);
-            },
-            DataFusionJoinSide::None => {},
-        }
-    }
+    extend_required_fields_from_join_outputs(&output_requests, &mut left_required, &mut right_required);
     let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
     let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
     let output_columns = output_requests.lower(&left, &right, canonical)?;

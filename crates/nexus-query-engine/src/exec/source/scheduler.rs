@@ -6,15 +6,12 @@ use std::{
 use parquet::file::reader::FileReader;
 
 use super::*;
-use crate::{
-    exec::bounded::{
-        ActiveReservation, ReservationTracker,
-        chunks::{
-            SourceReadReservationContractQuality, record_chunk_retry_error, source_read_budget_correction_from_error,
-            try_grow_source_read_reservation_for_budget_correction,
-        },
+use crate::exec::bounded::{
+    ActiveReservation, ReservationTracker,
+    chunks::{
+        SourceReadReservationContractQuality, record_chunk_retry_error, source_read_budget_correction_from_error,
+        try_grow_source_read_reservation_for_budget_correction,
     },
-    runtime::MemoryReservationRequest,
 };
 
 pub(in crate::exec) struct ScheduledLocalParquetRead {
@@ -162,7 +159,7 @@ impl ScheduledLocalParquetRead {
             )
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
-            .with_fact("path", chunk_path_fact(&chunk))
+            .with_fact("path", parquet_chunk_path_fact(&chunk))
             .with_row_group_facts(&chunk)
         })?;
         metrics.record_source_read_queue_wait(wait_timer.elapsed());
@@ -247,22 +244,21 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     };
     record_chunk_retry_error(error, metrics);
     metrics.record_source_chunk_retry();
-    let mut request = MemoryReservationRequest::new(ReservationKind::SourceRead, 0, reservations.budget())
-        .with_memory_boundary(budget_boundary)
-        .with_node_id(chunk.source_node_id)
-        .with_stage(budget_boundary)
-        .with_chunk_index(chunk.chunk_index)
-        .with_file_index(chunk.file_index)
-        .with_path(chunk_path_fact(chunk))
-        .with_attempt(attempt + 1, max_attempts)
-        .with_source_read_contract(
-            SourceReadReservationContractQuality::CorrectedLowerLevelBudget.as_str(),
-            Some(correction.previous_budget_bytes()),
-            Some(correction.corrected_budget_bytes()),
-        );
-    if !chunk.reads_all_row_groups {
-        request = request.with_row_groups(chunk.row_group_indexes.clone());
-    }
+    let request = source_read_request(
+        ReservationKind::SourceRead,
+        budget_boundary,
+        0,
+        reservations.budget(),
+        chunk.source_node_id,
+        chunk,
+        attempt + 1,
+        max_attempts,
+    )
+    .with_source_read_contract(
+        SourceReadReservationContractQuality::CorrectedLowerLevelBudget.as_str(),
+        Some(correction.previous_budget_bytes()),
+        Some(correction.corrected_budget_bytes()),
+    );
     try_grow_source_read_reservation_for_budget_correction(reservations, reservation, correction, request, metrics)?;
     metrics.record_source_chunk_attempt();
     let selected_row_groups_before_read = metrics.row_groups_selected;
@@ -277,14 +273,6 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
             metrics,
         ),
     }))
-}
-
-fn chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
 }
 
 struct ScheduledLocalParquetReadRetryOutput {

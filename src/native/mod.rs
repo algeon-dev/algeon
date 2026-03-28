@@ -4,7 +4,7 @@
 //! planning/source diagnostics, but does not execute or allocate GPU memory.
 
 pub mod lakehouse_pruning;
-mod literal;
+pub(crate) mod literal;
 mod lowering;
 mod normalize;
 mod pruning;

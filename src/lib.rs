@@ -26,6 +26,7 @@ pub mod iceberg;
 pub mod native;
 pub mod native_exec;
 pub mod native_report;
+mod physical_plan;
 pub mod planner;
 /// GPU fallback policy and stable fallback reason vocabulary.
 pub mod policy;

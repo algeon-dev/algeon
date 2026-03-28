@@ -1,3 +1,5 @@
+use nexus_query_engine::harness::StableFnv1a64;
+
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,13 +50,13 @@ pub(super) fn fingerprint_batches(
         }
     }
     hasher.update_field("schema_metadata");
-    update_metadata(&mut hasher, schema.metadata());
+    hasher.update_metadata(schema.metadata());
     for field in schema.fields() {
         hasher.update_field("field");
         hasher.update_field(field.name());
         hasher.update_field(&field.data_type().to_string());
         hasher.update_field(if field.is_nullable() { "nullable" } else { "non_nullable" });
-        update_metadata(&mut hasher, field.metadata());
+        hasher.update_metadata(field.metadata());
     }
     hasher.update_field(&batches.iter().map(RecordBatch::num_rows).sum::<usize>().to_string());
     hasher.update_field(&schema.fields().len().to_string());
@@ -72,41 +74,4 @@ pub(super) fn fingerprint_batches(
         }
     }
     Ok(format!("output-fnv1a64:{:016x}", hasher.finish()))
-}
-
-fn update_metadata(hasher: &mut StableFnv1a64, metadata: &std::collections::HashMap<String, String>) {
-    hasher.update_field(&metadata.len().to_string());
-    let mut keys = metadata.keys().collect::<Vec<_>>();
-    keys.sort();
-    for key in keys {
-        hasher.update_field(key);
-        hasher.update_field(metadata.get(key).expect("metadata key collected from map must exist"));
-    }
-}
-
-#[derive(Debug, Clone)]
-struct StableFnv1a64 {
-    state: u64,
-}
-
-impl StableFnv1a64 {
-    fn new() -> Self {
-        Self { state: 0xcbf29ce484222325 }
-    }
-
-    fn update_field(&mut self, value: &str) {
-        self.update_bytes(value.as_bytes());
-        self.update_bytes(&[0xff]);
-    }
-
-    fn update_bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.state ^= u64::from(*byte);
-            self.state = self.state.wrapping_mul(0x100000001b3);
-        }
-    }
-
-    fn finish(&self) -> u64 {
-        self.state
-    }
 }

@@ -24,6 +24,7 @@ use crate::{
     plan::{HashJoinBuildArtifactId, JoinNullEquality, ResultSink},
     runtime::{DevicePlacement, ExecutionContext},
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
+    util::escape_kv_delimited,
 };
 
 /// Local lookup table for GPU-resident inputs consumed by a query.
@@ -1365,16 +1366,7 @@ fn push_token(output: &mut String, key: impl AsRef<str>, value: impl ToString) {
 }
 
 fn escape_token(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '\\' => escaped.push_str("\\\\"),
-            '=' => escaped.push_str("\\="),
-            ';' => escaped.push_str("\\;"),
-            other => escaped.push(other),
-        }
-    }
-    escaped
+    escape_kv_delimited(value)
 }
 
 /// Output produced by native query execution.

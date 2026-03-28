@@ -1,5 +1,7 @@
 use datafusion_nexus::NativeStrictBoundedCompiledGraphDiagnostics;
-use nexus_query_engine::{AdaptivePipelineReportRow, StrictBoundedContractGateRow};
+use nexus_query_engine::{
+    AdaptivePipelineReportRow, StrictBoundedContractGateRow, harness::max_option as max_optional_usize,
+};
 
 use super::*;
 
@@ -873,14 +875,6 @@ fn aggregate_merge_status(metrics: &NativeDataFusionExecutionMetrics) -> &'stati
         return "thresholded";
     }
     "single_level"
-}
-
-fn max_optional_usize(left: Option<usize>, right: Option<usize>) -> Option<usize> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
 }
 
 #[derive(Debug, Clone, Default)]

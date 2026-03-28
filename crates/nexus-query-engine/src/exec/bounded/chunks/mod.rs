@@ -6,6 +6,7 @@ use super::{
     super::source::{
         ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, apply_source_scan_limit_to_frame,
         local_parquet_execution_frame_schema, read_local_parquet_chunk, read_local_parquet_chunk_batch,
+        source_read_batch_request, source_read_request,
     },
     *,
 };
@@ -1407,17 +1408,16 @@ pub(super) fn chunk_reservation_request(
     attempt: usize,
     max_attempts: usize,
 ) -> MemoryReservationRequest {
-    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
-        .with_memory_boundary(memory_boundary)
-        .with_node_id(chunk.source_node_id)
-        .with_stage(memory_boundary)
-        .with_chunk_index(chunk.chunk_index)
-        .with_file_index(chunk.file_index)
-        .with_path(chunk_path_fact(chunk))
-        .with_attempt(attempt, max_attempts);
-    if !chunk.reads_all_row_groups {
-        request = request.with_row_groups(chunk.row_group_indexes.clone());
-    }
+    let mut request = source_read_request(
+        kind,
+        memory_boundary,
+        requested_bytes,
+        budget_bytes,
+        chunk.source_node_id,
+        chunk,
+        attempt,
+        max_attempts,
+    );
     if let Some(operator_kind) = legacy_bounded_chunk_operator_kind(kind, memory_boundary) {
         request =
             request.with_compiled_task_id(legacy_bounded_chunk_task_id(operator_kind, memory_boundary, chunk, attempt));
@@ -1447,32 +1447,16 @@ pub(in crate::exec) fn source_chunk_batch_reservation_request(
         );
     }
 
-    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
-        .with_memory_boundary(memory_boundary)
-        .with_node_id(first_chunk.source_node_id)
-        .with_stage(memory_boundary)
-        .with_attempt(attempt, max_attempts);
-    let same_file =
-        batch.chunks.iter().all(|chunk| chunk.file_index == first_chunk.file_index && chunk.path == first_chunk.path);
-    if same_file {
-        request = request.with_file_index(first_chunk.file_index).with_path(chunk_path_fact(first_chunk));
-        if batch.chunks.iter().all(|chunk| !chunk.reads_all_row_groups) {
-            let mut row_groups =
-                batch.chunks.iter().flat_map(|chunk| chunk.row_group_indexes.iter().copied()).collect::<Vec<_>>();
-            row_groups.sort_unstable();
-            row_groups.dedup();
-            request = request.with_row_groups(row_groups);
-        }
-    }
-    request
-}
-
-fn chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
+    source_read_batch_request(
+        kind,
+        memory_boundary,
+        requested_bytes,
+        budget_bytes,
+        first_chunk.source_node_id,
+        batch,
+        attempt,
+        max_attempts,
+    )
 }
 
 fn legacy_bounded_chunk_operator_kind(kind: ReservationKind, memory_boundary: &str) -> Option<&'static str> {

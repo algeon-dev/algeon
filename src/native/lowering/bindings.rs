@@ -7,6 +7,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef};
 use datafusion::physical_expr::expressions::Column;
 use nexus_query_engine::NodeId as NativeNodeId;
 
+use super::naming::{sanitize_field_name, unique_name_with_suffix};
 use crate::policy::FallbackReason;
 
 /// Native node plus the schema visible to its parent lowering step.
@@ -154,20 +155,7 @@ fn unique_synthetic_field_name(
 ) -> String {
     let sanitized = sanitize_field_name(frontend_name);
     let base = format!("__cudf_field_{ordinal}_{sanitized}");
-    if !frontend_names.contains(base.as_str()) && !used_native_names.contains(base.as_str()) {
-        return base;
-    }
-    for suffix in 1usize.. {
-        let candidate = format!("{base}_{suffix}");
-        if !frontend_names.contains(candidate.as_str()) && !used_native_names.contains(candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
-}
-
-fn sanitize_field_name(name: &str) -> String {
-    let sanitized =
-        name.chars().map(|ch| if ch.is_ascii_alphanumeric() || ch == '_' { ch } else { '_' }).collect::<String>();
-    if sanitized.is_empty() { "field".to_string() } else { sanitized }
+    unique_name_with_suffix(base.as_str(), |candidate| {
+        !frontend_names.contains(candidate) && !used_native_names.contains(candidate)
+    })
 }

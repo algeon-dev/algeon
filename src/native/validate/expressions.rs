@@ -17,8 +17,12 @@ use super::{
     is_list_carry_type, is_supported_native_cast, is_supported_native_type, is_supported_to_timestamp_seconds_cast,
     is_timestamp_with_timezone_type,
 };
+pub(super) use crate::native::literal::literal_string;
 use crate::{
-    native::literal::{NativeLiteralContext, parse_yyyy_mm_dd_date32, validate_native_literal},
+    native::literal::{
+        NativeLiteralContext, is_interval_literal_expr, literal_i32, parse_yyyy_mm_dd_date32, substring_stop_position,
+        validate_native_literal,
+    },
     policy::FallbackReason,
 };
 
@@ -480,11 +484,6 @@ fn validate_datetime_interval_operand(
     }
 }
 
-fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
-    expr.downcast_ref::<Literal>()
-        .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
-}
-
 fn validate_integral_operand_type(
     expr: &Arc<dyn PhysicalExpr>,
     input_schema: &SchemaRef,
@@ -576,41 +575,6 @@ pub(super) fn validate_literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<()
     literal_string(expr).map(|_| ())
 }
 
-pub(super) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason> {
-    let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
-    };
-    match literal.value() {
-        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
-            Ok(value.clone())
-        },
-        _ => Err(FallbackReason::UnsupportedExpression),
-    }
-}
-
-fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
-    let Some(literal) = expr.downcast_ref::<Literal>() else {
-        return Err(FallbackReason::UnsupportedExpression);
-    };
-    match literal.value() {
-        ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::Int32(Some(value)) => Ok(*value),
-        ScalarValue::Int64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
-        ScalarValue::UInt32(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        ScalarValue::UInt64(Some(value)) => {
-            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
-        },
-        _ => Err(FallbackReason::UnsupportedExpression),
-    }
-}
-
 pub(super) fn validate_substring_arguments_contract(function: &ScalarFunctionExpr) -> Result<(), FallbackReason> {
     let args = function.args();
     if !(2..=3).contains(&args.len()) {
@@ -627,11 +591,6 @@ pub(super) fn validate_substring_arguments_contract(function: &ScalarFunctionExp
         }
     }
     Ok(())
-}
-
-fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
-    let zero_based_start = start.checked_sub(1)?;
-    zero_based_start.checked_add(length)
 }
 
 fn validate_string_expr(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), FallbackReason> {

@@ -46,9 +46,8 @@ use nexus_query_engine::{
 use crate::graph_sql::CugraphAlgoExec;
 use crate::{
     CandidateOutcome, FallbackReason, NativeCudfComposedExec, NativeCudfExec, NativeCudfExecutionConfig,
-    NativeCudfGpuProducerExec, lower_physical_plan_to_native,
-    planner::CudfNativePhysicalOptimizerRule,
-    report::{GpuCandidate, PlanningReport},
+    NativeCudfGpuProducerExec, lower_physical_plan_to_native, planner::CudfNativePhysicalOptimizerRule,
+    report::GpuCandidate,
 };
 
 mod dataset;
@@ -265,7 +264,7 @@ fn fallback_pressure_adaptive_pipeline_rows(
     let Some(plan) = lowering.plans.first() else {
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
-    let Some(candidate) = single_rewritten_candidate(&lowering.report).cloned() else {
+    let Some(candidate) = lowering.report.single_rewritten_candidate().cloned() else {
         return crate::planner::NativeAdaptivePipelineDiagnostics::default();
     };
     let memory_history = execution_config.adaptive_memory_history();
@@ -279,15 +278,6 @@ fn fallback_pressure_adaptive_pipeline_rows(
             AdaptivePipelineReport::diagnostic_failure(plan, ADAPTIVE_DIAGNOSTIC_CONSTRUCTION_FAILED_REASON),
         ),
     }
-}
-
-fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> {
-    let mut rewritten = report.outcomes().iter().filter_map(|outcome| match outcome {
-        CandidateOutcome::Rewritten { candidate } => Some(candidate),
-        CandidateOutcome::Rejected { .. } => None,
-    });
-    let candidate = rewritten.next()?;
-    rewritten.next().is_none().then_some(candidate)
 }
 
 fn post_native_plan_edge_normalize_inserted(plan: &dyn ExecutionPlan) -> bool {

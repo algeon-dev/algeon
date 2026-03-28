@@ -909,17 +909,13 @@ fn concatenate_partitioned_final_merge_outputs(
             .with_node_id(node_id)
             .with_stage("partitioned_final_merge")
             .with_compiled_task_id(task_id);
-    if output_bytes > concat_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(concat_reservation.bytes());
-        reservations.try_grow(&mut concat_reservation, output_request.clone().with_requested_bytes(delta), metrics)?;
-    } else {
-        reservations.shrink_to_observed_with_request(
-            &mut concat_reservation,
-            output_bytes,
-            output_request.clone(),
-            metrics,
-        );
-    }
+    reconcile_work_reservation_to_output(
+        reservations,
+        &mut concat_reservation,
+        output_bytes,
+        &output_request,
+        metrics,
+    )?;
     let output_reservation = reservations.transfer(concat_reservation, output_request, metrics);
     Ok(CommittedPartial { frame: concatenated, reservation: output_reservation })
 }

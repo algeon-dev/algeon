@@ -48,10 +48,88 @@ use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 pub use validate::validate_local_parquet_source;
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
 
+pub(in crate::exec) use crate::source::{
+    local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
+};
 use crate::{
     exec::types::{GpuLocalParquetSourceCacheInsert, GpuLocalParquetSourceCacheKey},
     metrics::SourceReadParquetEvidenceMetrics,
 };
+
+pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
+    crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)
+}
+
+pub(in crate::exec) fn parquet_chunk_stable_id_fact(chunk: &SourceChunk) -> String {
+    crate::source::parquet_source_stable_id_fact(&chunk.location, chunk.stable_id.as_str())
+}
+
+pub(in crate::exec) fn source_read_request(
+    kind: ReservationKind,
+    memory_boundary: &'static str,
+    requested_bytes: u64,
+    budget_bytes: u64,
+    node_id: NodeId,
+    chunk: &SourceChunk,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
+        .with_memory_boundary(memory_boundary)
+        .with_node_id(node_id)
+        .with_stage(memory_boundary)
+        .with_chunk_index(chunk.chunk_index)
+        .with_file_index(chunk.file_index)
+        .with_path(parquet_chunk_path_fact(chunk))
+        .with_attempt(attempt, max_attempts);
+    if !chunk.reads_all_row_groups {
+        request = request.with_row_groups(chunk.row_group_indexes.clone());
+    }
+    request
+}
+
+pub(in crate::exec) fn source_read_batch_request(
+    kind: ReservationKind,
+    memory_boundary: &'static str,
+    requested_bytes: u64,
+    budget_bytes: u64,
+    node_id: NodeId,
+    batch: &SourceChunkBatch,
+    attempt: usize,
+    max_attempts: usize,
+) -> MemoryReservationRequest {
+    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
+    if batch.is_singleton() {
+        return source_read_request(
+            kind,
+            memory_boundary,
+            requested_bytes,
+            budget_bytes,
+            node_id,
+            first_chunk,
+            attempt,
+            max_attempts,
+        );
+    }
+    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
+        .with_memory_boundary(memory_boundary)
+        .with_node_id(node_id)
+        .with_stage(memory_boundary)
+        .with_attempt(attempt, max_attempts);
+    let same_file =
+        batch.chunks.iter().all(|chunk| chunk.file_index == first_chunk.file_index && chunk.path == first_chunk.path);
+    if same_file {
+        request = request.with_file_index(first_chunk.file_index).with_path(parquet_chunk_path_fact(first_chunk));
+        if batch.chunks.iter().all(|chunk| !chunk.reads_all_row_groups) {
+            let mut row_groups =
+                batch.chunks.iter().flat_map(|chunk| chunk.row_group_indexes.iter().copied()).collect::<Vec<_>>();
+            row_groups.sort_unstable();
+            row_groups.dedup();
+            request = request.with_row_groups(row_groups);
+        }
+    }
+    request
+}
 
 /// Read a local Parquet source into a GPU dataframe.
 ///
@@ -299,8 +377,8 @@ fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
                 "nexus_query_engine.local_parquet_source.row_count",
                 "local parquet source with no read columns requires row-count metadata",
             )
-            .with_fact("path", file_path_fact(file))
-            .with_fact("stable_id", file_stable_id_fact(file))
+            .with_fact("path", parquet_file_path_fact(file))
+            .with_fact("stable_id", parquet_file_stable_id_fact(file))
             .with_fact("reason", "missing_row_count_metadata"));
         },
         (None, Some(row_group_rows)) => row_group_rows.iter().try_fold(0u64, |total, rows| total.checked_add(*rows)),
@@ -314,8 +392,8 @@ fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
             "nexus_query_engine.local_parquet_source.row_count",
             "local parquet source row-count metadata is invalid or overflows",
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("reason", "invalid_row_count_metadata")
     })?;
     usize::try_from(rows).map_err(|_error| {
@@ -324,8 +402,8 @@ fn local_parquet_file_row_count(file: &LocalParquetFile) -> Result<usize> {
             "nexus_query_engine.local_parquet_source.row_count",
             "local parquet source row count exceeds platform usize range",
         )
-        .with_fact("path", file_path_fact(file))
-        .with_fact("stable_id", file_stable_id_fact(file))
+        .with_fact("path", parquet_file_path_fact(file))
+        .with_fact("stable_id", parquet_file_stable_id_fact(file))
         .with_fact("rows", rows)
     })
 }
@@ -374,7 +452,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                 "nexus_query_engine.local_parquet_chunk.zero_column_count",
                 "zero-column count chunk requires parquet row-count metadata",
             )
-            .with_fact("path", chunk_path_fact(chunk))
+            .with_fact("path", parquet_chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_row_group_facts(chunk)
@@ -382,7 +460,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
         return zero_column_count_chunk_frame_with_budget(context, row_count, budget_bytes, budget_boundary, metrics)
             .map_err(|error| {
                 error
-                    .with_fact("path", chunk_path_fact(chunk))
+                    .with_fact("path", parquet_chunk_path_fact(chunk))
                     .with_fact("chunk_index", chunk.chunk_index)
                     .with_fact("file_index", chunk.file_index)
                     .with_row_group_facts(chunk)
@@ -407,7 +485,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
             "nexus_query_engine.local_parquet_chunk.budget",
             "bounded local parquet source chunk budget exceeds platform usize range",
         )
-        .with_fact("path", chunk_path_fact(chunk))
+        .with_fact("path", parquet_chunk_path_fact(chunk))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("budget_bytes", budget_bytes)
@@ -423,7 +501,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                 error,
                 chunk,
             )
-            .with_fact("path", chunk_path_fact(chunk))
+            .with_fact("path", parquet_chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_fact("read_columns", chunk.read_columns.len())
@@ -455,7 +533,7 @@ pub(super) fn read_local_parquet_chunk_with_reader_dynamic_filter_count(
                         error,
                         chunk,
                     )
-                    .with_fact("path", chunk_path_fact(chunk))
+                    .with_fact("path", parquet_chunk_path_fact(chunk))
                     .with_fact("chunk_index", chunk.chunk_index)
                     .with_fact("file_index", chunk.file_index)
                     .with_fact("read_columns", chunk.read_columns.len())
@@ -748,33 +826,13 @@ fn validate_local_parquet_chunk_batch(
                 "source chunk is not eligible for multi-source Parquet batching",
             )
             .with_fact("reason", "ineligible_chunk")
-            .with_fact("path", chunk_path_fact(chunk))
+            .with_fact("path", parquet_chunk_path_fact(chunk))
             .with_fact("chunk_index", chunk.chunk_index)
             .with_fact("file_index", chunk.file_index)
             .with_row_group_facts(chunk));
         }
     }
     Ok(())
-}
-
-fn chunk_path_fact(chunk: &SourceChunk) -> String {
-    if chunk.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&chunk.path)
-    } else {
-        chunk.location.diagnostic_location()
-    }
-}
-
-fn file_path_fact(file: &LocalParquetFile) -> String {
-    if file.location.is_local_path() {
-        crate::source::redacted_path_diagnostic(&file.path)
-    } else {
-        file.location.diagnostic_location()
-    }
-}
-
-fn file_stable_id_fact(file: &LocalParquetFile) -> String {
-    file.location.diagnostic_stable_id(file.stable_id.as_str())
 }
 
 fn optimized_cache_path_fact(entry: &LakehouseOptimizedBatchCacheEntry) -> String {
@@ -828,6 +886,44 @@ mod tests {
     fn test_source(files: Vec<LocalParquetFile>, read_columns: Vec<String>) -> LocalParquetSource {
         let schema = Arc::new(Schema::new(vec![Field::new("c1", ArrowDataType::Int32, true)]));
         LocalParquetSource::from_files(files, schema, read_columns)
+    }
+
+    #[test]
+    fn source_read_batch_request_preserves_shared_file_row_group_context() {
+        let source = test_source(
+            vec![
+                LocalParquetFile::new("/tmp/source-read-request.parquet")
+                    .with_row_groups(vec![0, 1])
+                    .with_row_group_rows(vec![10, 20]),
+            ],
+            vec!["c1".to_string()],
+        );
+        let node_id = NodeId::from_index_for_internal_use(7);
+        let plan = crate::chunk::plan_local_parquet_source_chunks(
+            node_id,
+            &source,
+            crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
+        )
+        .expect("chunk planning should split the file by row group");
+        assert_eq!(plan.chunks.len(), 2);
+
+        let batch = SourceChunkBatch {
+            batch_index: 0,
+            chunks: plan.chunks,
+            estimated_source_read_bytes: Some(30),
+            source_batching_reason: "batched".to_string(),
+        };
+        let request =
+            source_read_batch_request(ReservationKind::SourceRead, "source_read", 30, 100, node_id, &batch, 2, 5);
+
+        assert_eq!(request.node_id.as_deref(), Some("n7"));
+        assert_eq!(request.stage.as_deref(), Some("source_read"));
+        assert_eq!(request.file_index, Some(0));
+        assert_eq!(request.chunk_index, None);
+        assert_eq!(request.path.as_deref(), Some("/tmp/source-read-request.parquet"));
+        assert_eq!(request.row_groups, Some(vec![0, 1]));
+        assert_eq!(request.attempt, Some(2));
+        assert_eq!(request.max_attempts, Some(5));
     }
 
     #[test]
@@ -997,7 +1093,7 @@ mod tests {
             cudf_error,
             chunk,
         )
-        .with_fact("path", chunk_path_fact(chunk));
+        .with_fact("path", parquet_chunk_path_fact(chunk));
         let rendered = format!("{error}");
         let debug = format!("{error:?}");
 

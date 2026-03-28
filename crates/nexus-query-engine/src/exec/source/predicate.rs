@@ -10,7 +10,11 @@ use cudf::{
 };
 
 use super::*;
-use crate::source::SourceColumnRef;
+use crate::source::{
+    ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
+    reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,
+    reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_as,
+};
 
 const OP_READER_PREDICATE: &str = "nexus_query_engine.local_parquet_source.reader_predicate";
 
@@ -501,50 +505,13 @@ fn invert_binary_op(op: BinaryOp) -> Result<BinaryOp> {
 }
 
 fn source_reader_predicate_references_decimal_column(source: &LocalParquetSource, expr: &Expr) -> bool {
-    match expr {
-        Expr::Column(column) => source
+    reader_predicate_expr_references_decimal_column(expr, |column_name| {
+        source
             .schema
-            .field_with_name(column.name())
+            .field_with_name(column_name)
             .ok()
-            .is_some_and(|field| matches!(field.data_type(), ArrowDataType::Decimal128(_, _))),
-        Expr::Literal(_) => false,
-        Expr::Not(input)
-        | Expr::IsNull(input)
-        | Expr::IsNotNull(input)
-        | Expr::Alias { expr: input, .. }
-        | Expr::Cast { expr: input, .. }
-        | Expr::TryCast { expr: input, .. } => source_reader_predicate_references_decimal_column(source, input),
-        Expr::Binary { left, right, .. } => {
-            source_reader_predicate_references_decimal_column(source, left)
-                || source_reader_predicate_references_decimal_column(source, right)
-        },
-        Expr::InList { expr, list, .. } => {
-            source_reader_predicate_references_decimal_column(source, expr)
-                || list.iter().any(|value| source_reader_predicate_references_decimal_column(source, value))
-        },
-        Expr::Like { expr, .. }
-        | Expr::Substring { expr, .. }
-        | Expr::Lower(expr)
-        | Expr::Upper(expr)
-        | Expr::StringLength { expr, .. }
-        | Expr::RegexpReplace { expr, .. }
-        | Expr::Abs(expr)
-        | Expr::Sqrt { expr, .. }
-        | Expr::Round { expr, .. }
-        | Expr::Extract { expr, .. }
-        | Expr::DateTrunc { expr, .. } => source_reader_predicate_references_decimal_column(source, expr),
-        Expr::Concat(exprs) => exprs.iter().any(|expr| source_reader_predicate_references_decimal_column(source, expr)),
-        Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
-            source_reader_predicate_references_decimal_column(source, left)
-                || source_reader_predicate_references_decimal_column(source, right)
-        },
-        Expr::Case { branches, else_expr } => {
-            branches.iter().any(|branch| {
-                source_reader_predicate_references_decimal_column(source, &branch.when)
-                    || source_reader_predicate_references_decimal_column(source, &branch.then)
-            }) || source_reader_predicate_references_decimal_column(source, else_expr)
-        },
-    }
+            .is_some_and(|field| matches!(field.data_type(), ArrowDataType::Decimal128(_, _)))
+    })
 }
 
 fn lower_source_reader_ast_operator(op: BinaryOp) -> Result<AstOperator> {
@@ -601,7 +568,7 @@ fn lower_source_reader_ast_literal(
         LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value) => runtime.string_scalar(value),
         LiteralValue::Decimal128 { raw, scale, .. } => match target_type {
             Some(target_type) if target_type.id().is_decimal() => {
-                let raw = rescale_decimal_raw(
+                let raw = rescale_decimal_raw_or_query_error(
                     *raw,
                     crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
                     target_type.scale(),
@@ -690,10 +657,10 @@ fn lower_source_reader_ast_literal_with_target(
             _ => Ok(None),
         },
         TypeId::Decimal32 | TypeId::Decimal64 | TypeId::Decimal128 => {
-            let raw = if let Some(raw) = integer_literal_as_decimal_raw(value, target_type.scale())? {
+            let raw = if let Some(raw) = integer_literal_as_decimal_raw_or_query_error(value, target_type.scale())? {
                 raw
             } else if let LiteralValue::Decimal128 { raw, scale, .. } = value {
-                rescale_decimal_raw(
+                rescale_decimal_raw_or_query_error(
                     *raw,
                     crate::datatypes::arrow_decimal_scale_to_cudf_scale(*scale),
                     target_type.scale(),
@@ -725,121 +692,62 @@ fn lower_source_reader_ast_literal_with_target(
 
 fn integer_literal_as<T>(value: &LiteralValue) -> Option<T>
 where T: TryFrom<i128> {
-    integer_literal_raw(value).and_then(|value| T::try_from(value).ok())
+    reader_predicate_integer_literal_as(value)
 }
 
 fn unsigned_literal_as<T>(value: &LiteralValue) -> Option<T>
 where T: TryFrom<u128> {
-    unsigned_literal_raw(value).and_then(|value| T::try_from(value).ok())
+    reader_predicate_unsigned_literal_as(value)
 }
 
-fn unsigned_literal_raw(value: &LiteralValue) -> Option<u128> {
-    match value {
-        LiteralValue::UInt8(value) => Some(u128::from(*value)),
-        LiteralValue::UInt16(value) => Some(u128::from(*value)),
-        LiteralValue::UInt32(value) => Some(u128::from(*value)),
-        LiteralValue::UInt64(value) => Some(u128::from(*value)),
-        LiteralValue::Int8(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int16(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int32(value) => u128::try_from(*value).ok(),
-        LiteralValue::Int64(value) => u128::try_from(*value).ok(),
-        _ => None,
-    }
+fn integer_literal_as_decimal_raw_or_query_error(value: &LiteralValue, target_scale: i32) -> Result<Option<i128>> {
+    reader_predicate_integer_literal_as_decimal_raw(value, target_scale).map_err(decimal_scale_error_to_query_error)
 }
 
-fn integer_literal_as_decimal_raw(value: &LiteralValue, target_scale: i32) -> Result<Option<i128>> {
-    let Some(raw) = integer_literal_raw(value) else {
-        return Ok(None);
-    };
-    decimal_raw_for_integer_value(raw, target_scale).map(Some)
+fn rescale_decimal_raw_or_query_error(raw: i128, source_scale: i32, target_scale: i32) -> Result<i128> {
+    reader_predicate_rescale_decimal_raw(raw, source_scale, target_scale).map_err(decimal_scale_error_to_query_error)
 }
 
-fn integer_literal_raw(value: &LiteralValue) -> Option<i128> {
-    match value {
-        LiteralValue::Int8(value) => Some(i128::from(*value)),
-        LiteralValue::Int16(value) => Some(i128::from(*value)),
-        LiteralValue::Int32(value) => Some(i128::from(*value)),
-        LiteralValue::Int64(value) => Some(i128::from(*value)),
-        LiteralValue::UInt8(value) => Some(i128::from(*value)),
-        LiteralValue::UInt16(value) => Some(i128::from(*value)),
-        LiteralValue::UInt32(value) => Some(i128::from(*value)),
-        LiteralValue::UInt64(value) => Some(i128::from(*value)),
-        _ => None,
-    }
-}
-
-fn decimal_raw_for_integer_value(value: i128, target_scale: i32) -> Result<i128> {
-    if target_scale <= 0 {
-        let multiplier = checked_pow10(target_scale.unsigned_abs())?;
-        value.checked_mul(multiplier).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                OP_READER_PREDICATE,
-                "integer reader predicate literal raw value overflows target decimal scale",
-            )
-            .with_fact("target_scale", target_scale)
-        })
-    } else {
-        let divisor = checked_pow10(target_scale as u32)?;
-        if value % divisor != 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                OP_READER_PREDICATE,
-                "integer reader predicate literal cannot be represented exactly at target decimal scale",
-            )
-            .with_fact("target_scale", target_scale));
-        }
-        Ok(value / divisor)
-    }
-}
-
-fn rescale_decimal_raw(raw: i128, source_scale: i32, target_scale: i32) -> Result<i128> {
-    let scale_delta = source_scale.checked_sub(target_scale).ok_or_else(|| {
-        QueryError::new(
+fn decimal_scale_error_to_query_error(error: ReaderPredicateDecimalScaleError) -> QueryError {
+    match error {
+        ReaderPredicateDecimalScaleError::ScaleFactorOverflow { exponent } => QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "decimal reader predicate scale factor overflows i128",
+        )
+        .with_fact("exponent", exponent),
+        ReaderPredicateDecimalScaleError::IntegerRawOverflow { target_scale } => QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "integer reader predicate literal raw value overflows target decimal scale",
+        )
+        .with_fact("target_scale", target_scale),
+        ReaderPredicateDecimalScaleError::IntegerInexact { target_scale } => QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "integer reader predicate literal cannot be represented exactly at target decimal scale",
+        )
+        .with_fact("target_scale", target_scale),
+        ReaderPredicateDecimalScaleError::ScaleAlignmentOverflow { source_scale, target_scale } => QueryError::new(
             QueryErrorCode::UnsupportedExpression,
             OP_READER_PREDICATE,
             "decimal reader predicate literal scale alignment overflowed",
         )
         .with_fact("source_scale", source_scale)
-        .with_fact("target_scale", target_scale)
-    })?;
-    if scale_delta >= 0 {
-        let multiplier = checked_pow10(scale_delta as u32)?;
-        raw.checked_mul(multiplier).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                OP_READER_PREDICATE,
-                "decimal reader predicate literal raw value overflows target scale",
-            )
-            .with_fact("source_scale", source_scale)
-            .with_fact("target_scale", target_scale)
-        })
-    } else {
-        let divisor = checked_pow10(scale_delta.unsigned_abs())?;
-        if raw % divisor != 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                OP_READER_PREDICATE,
-                "decimal reader predicate literal cannot be represented exactly at target scale",
-            )
-            .with_fact("source_scale", source_scale)
-            .with_fact("target_scale", target_scale));
-        }
-        Ok(raw / divisor)
+        .with_fact("target_scale", target_scale),
+        ReaderPredicateDecimalScaleError::DecimalRawOverflow { source_scale, target_scale } => QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "decimal reader predicate literal raw value overflows target scale",
+        )
+        .with_fact("source_scale", source_scale)
+        .with_fact("target_scale", target_scale),
+        ReaderPredicateDecimalScaleError::DecimalInexact { source_scale, target_scale } => QueryError::new(
+            QueryErrorCode::UnsupportedExpression,
+            OP_READER_PREDICATE,
+            "decimal reader predicate literal cannot be represented exactly at target scale",
+        )
+        .with_fact("source_scale", source_scale)
+        .with_fact("target_scale", target_scale),
     }
-}
-
-fn checked_pow10(exponent: u32) -> Result<i128> {
-    let mut value = 1i128;
-    for _ in 0..exponent {
-        value = value.checked_mul(10).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                OP_READER_PREDICATE,
-                "decimal reader predicate scale factor overflows i128",
-            )
-            .with_fact("exponent", exponent)
-        })?;
-    }
-    Ok(value)
 }

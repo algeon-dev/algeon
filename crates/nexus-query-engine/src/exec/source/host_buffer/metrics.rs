@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use super::{object_store_fetch::HostParquetBuffer, *};
-use crate::parquet_metadata::parse_complete_parquet_metadata;
+use crate::{
+    exec::source::{parquet_chunk_path_fact, parquet_file_path_fact},
+    parquet_metadata::parse_complete_parquet_metadata,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(in crate::exec::source) struct HostBufferFetchRuntimeMetrics {
@@ -11,22 +14,6 @@ pub(in crate::exec::source) struct HostBufferFetchRuntimeMetrics {
     pub(in crate::exec::source) requested_range_bytes: u64,
     pub(in crate::exec::source) original_file_bytes: u64,
     pub(in crate::exec::source) mini_parquet_footer_bytes: u64,
-}
-
-pub(super) fn parquet_file_path_fact(file: &LocalParquetFile) -> String {
-    file.location.diagnostic_location()
-}
-
-pub(super) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
-    chunk.location.diagnostic_location()
-}
-
-pub(super) fn parquet_file_stable_id_fact(file: &LocalParquetFile) -> String {
-    file.location.diagnostic_stable_id(file.stable_id.as_str())
-}
-
-pub(super) fn parquet_chunk_stable_id_fact(chunk: &SourceChunk) -> String {
-    chunk.location.diagnostic_stable_id(chunk.stable_id.as_str())
 }
 
 pub(super) fn record_host_buffer_file_read_metrics(
@@ -91,7 +78,7 @@ fn fetched_file_row_group_count(file: &LocalParquetFile, fetch: &HostParquetBuff
     if let Some(row_groups) = &file.row_groups {
         return row_groups.len() as u64;
     }
-    super::represented_file_row_group_count(file)
+    super::local_parquet_file_row_group_metadata_count(file)
         .or_else(|| {
             parse_complete_parquet_metadata(
                 fetch.bytes(),

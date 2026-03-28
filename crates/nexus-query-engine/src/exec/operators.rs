@@ -1023,16 +1023,7 @@ fn rank_partition_keys(
 
 fn unique_temp_column_name(frame: &DataFrame, base: &str) -> String {
     let names = frame.column_names();
-    if !names.contains(&base) {
-        return base.to_string();
-    }
-    for index in 0usize.. {
-        let candidate = format!("{base}_{index}");
-        if !names.contains(&candidate.as_str()) {
-            return candidate;
-        }
-    }
-    unreachable!("usize suffix space is finite but practically inexhaustible")
+    crate::naming::unique_name_with_suffix_from(base, 0, |candidate| names.contains(&candidate))
 }
 
 pub(super) fn execute_limit_on_frame(

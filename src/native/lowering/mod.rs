@@ -4,6 +4,7 @@ mod expr;
 mod join;
 mod join_output;
 mod join_residual;
+mod naming;
 mod root;
 mod sort;
 mod source;
@@ -67,6 +68,26 @@ pub(super) fn projection_outputs(
         .zip(schema.fields().iter())
         .map(|(expr, field)| NativeProjectionOutput::new(expr, field.as_ref().clone()))
         .collect())
+}
+
+fn project_bindings_to_schema(
+    builder: &mut NativeQueryPlanBuilder,
+    input: LoweredNativeInput,
+    schema: SchemaRef,
+    bindings: Vec<FieldBinding>,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    let expressions = bindings
+        .iter()
+        .map(|binding| {
+            let input_binding = input.binding_for_frontend_index(binding.frontend_index)?;
+            Ok(expr::alias_if_needed(
+                NativeExpr::column(input_binding.native_name.as_str()),
+                binding.native_name.as_str(),
+            ))
+        })
+        .collect::<Result<Vec<_>, FallbackReason>>()?;
+    let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+    Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 
 /// Recursively lowers a normalized input subtree.

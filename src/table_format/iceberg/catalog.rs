@@ -22,10 +22,7 @@ use datafusion::{
 };
 use iceberg::{
     Catalog, CatalogBuilder as _, NamespaceIdent, TableIdent,
-    io::{
-        S3_ACCESS_KEY_ID, S3_DISABLE_CONFIG_LOAD, S3_DISABLE_EC2_METADATA, S3_ENDPOINT, S3_PATH_STYLE_ACCESS,
-        S3_REGION, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN,
-    },
+    io::{S3_DISABLE_CONFIG_LOAD, S3_DISABLE_EC2_METADATA, S3_ENDPOINT, S3_PATH_STYLE_ACCESS, S3_REGION},
 };
 use iceberg_catalog_glue::{
     AWS_ACCESS_KEY_ID, AWS_PROFILE_NAME, AWS_REGION_NAME, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN,
@@ -45,6 +42,129 @@ use crate::{
 };
 
 const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
+
+fn catalog_backend_error(message: &'static str, catalog_type: &'static str, source: iceberg::Error) -> Error {
+    Error::new(ErrorCode::CudfDependencyFailure, CATALOG_BACKEND_OP, message)
+        .with_fact("catalog_type", catalog_type)
+        .with_source(source)
+}
+
+async fn catalog_backend_list_namespaces(
+    catalog: &Arc<dyn Catalog>,
+    catalog_type: &'static str,
+    message: &'static str,
+) -> Result<Vec<NamespaceIdent>> {
+    catalog.list_namespaces(None).await.map_err(|error| catalog_backend_error(message, catalog_type, error))
+}
+
+async fn catalog_backend_list_tables(
+    catalog: &Arc<dyn Catalog>,
+    namespace: &NamespaceIdent,
+    catalog_type: &'static str,
+    message: &'static str,
+) -> Result<Vec<TableIdent>> {
+    catalog.list_tables(namespace).await.map_err(|error| {
+        catalog_backend_error(message, catalog_type, error).with_fact("namespace", namespace.to_string())
+    })
+}
+
+async fn catalog_backend_load_table(
+    catalog: &Arc<dyn Catalog>,
+    table: &TableIdent,
+    catalog_type: &'static str,
+    message: &'static str,
+) -> Result<iceberg::table::Table> {
+    catalog.load_table(table).await.map_err(|error| {
+        catalog_backend_error(message, catalog_type, error)
+            .with_fact("namespace", table.namespace().to_string())
+            .with_fact("table", table.name())
+    })
+}
+
+#[derive(Clone, Copy)]
+struct S3FileIoConfig<'a> {
+    endpoint: Option<&'a str>,
+    region: Option<&'a str>,
+    path_style_access: Option<bool>,
+}
+
+impl<'a> S3FileIoConfig<'a> {
+    fn from_glue(config: &'a GlueIcebergCatalogConfig) -> Self {
+        Self {
+            endpoint: config.s3_endpoint.as_deref(),
+            region: config.s3_region.as_deref(),
+            path_style_access: config.s3_path_style_access,
+        }
+    }
+
+    fn from_rest(config: &'a RestIcebergCatalogConfig) -> Self {
+        Self {
+            endpoint: config.s3_endpoint.as_deref(),
+            region: config.s3_region.as_deref(),
+            path_style_access: config.s3_path_style_access,
+        }
+    }
+
+    fn apply_parquet_read_strategy_config(
+        self,
+        mut config: TableFormatParquetReadStrategyConfig,
+        force_scoped_resolved: bool,
+    ) -> TableFormatParquetReadStrategyConfig {
+        config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
+        if let Some(endpoint) = self.non_empty_endpoint() {
+            config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
+        }
+        if force_scoped_resolved
+            || self.non_empty_region().is_some()
+            || self.non_empty_endpoint().is_some()
+            || self.path_style_access.is_some()
+        {
+            config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
+        }
+        if self.non_empty_endpoint().is_some() && self.path_style_access == Some(false) {
+            config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
+        }
+        config
+    }
+
+    fn apply_catalog_props(self, props: &mut HashMap<String, String>) {
+        if let Some(endpoint) = self.non_empty_endpoint() {
+            props.insert(S3_ENDPOINT.to_string(), endpoint.to_string());
+        }
+        if let Some(region) = self.non_empty_region() {
+            props.insert(S3_REGION.to_string(), region.to_string());
+        }
+        if let Some(path_style) = self.path_style_access {
+            props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
+        }
+    }
+
+    fn apply_source_storage_profile(
+        self,
+        mut s3: S3SourceStorageProfile,
+        fallback_region: Option<&str>,
+    ) -> (S3SourceStorageProfile, bool) {
+        if let Some(region) = self.non_empty_region().or(fallback_region) {
+            s3 = s3.with_region(region.to_string());
+        }
+        let has_s3_endpoint = self.non_empty_endpoint().is_some();
+        if let Some(endpoint) = self.non_empty_endpoint() {
+            s3 = s3.with_endpoint(endpoint.to_string());
+        }
+        if let Some(path_style) = self.path_style_access {
+            s3 = s3.with_path_style_access(path_style);
+        }
+        (s3, has_s3_endpoint)
+    }
+
+    fn non_empty_endpoint(self) -> Option<&'a str> {
+        self.endpoint.filter(|endpoint| !endpoint.trim().is_empty())
+    }
+
+    fn non_empty_region(self) -> Option<&'a str> {
+        self.region.filter(|region| !region.trim().is_empty())
+    }
+}
 
 #[cfg(feature = "server")]
 fn log_iceberg_metadata_lookup(
@@ -691,39 +811,16 @@ impl GlueIcebergCatalogConfig {
     /// caller-owned table-format Parquet read-strategy config.
     pub fn parquet_read_strategy_config_from(
         &self,
-        mut config: TableFormatParquetReadStrategyConfig,
+        config: TableFormatParquetReadStrategyConfig,
     ) -> TableFormatParquetReadStrategyConfig {
-        config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
-        if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
-            config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
-        }
-        if !self.region.trim().is_empty()
-            || self.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
-            || self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-            || self.s3_path_style_access.is_some()
-        {
-            config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
-        }
-        if self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-            && self.s3_path_style_access == Some(false)
-        {
-            config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
-        }
-        config
+        S3FileIoConfig::from_glue(self).apply_parquet_read_strategy_config(config, !self.region.trim().is_empty())
     }
 
     /// Builds the native source storage profile for this Glue catalog using the
     /// same AWS credential environment accepted by the Glue catalog loader.
     pub fn source_storage_profile_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> SourceStorageProfile {
-        let region = self.s3_region.as_ref().filter(|value| !value.trim().is_empty()).unwrap_or(&self.region);
-        let mut s3 = S3SourceStorageProfile::default_chain().with_region(region.clone());
-        let has_s3_endpoint = self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty());
-        if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
-            s3 = s3.with_endpoint(endpoint.clone());
-        }
-        if let Some(path_style) = self.s3_path_style_access {
-            s3 = s3.with_path_style_access(path_style);
-        }
+        let (mut s3, has_s3_endpoint) = S3FileIoConfig::from_glue(self)
+            .apply_source_storage_profile(S3SourceStorageProfile::default_chain(), Some(&self.region));
 
         let explicit_s3_credentials = (
             super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
@@ -781,8 +878,9 @@ fn glue_catalog_props(
     if let Some(profile) = config.profile.as_ref().filter(|v| !v.trim().is_empty()) {
         props.insert(AWS_PROFILE_NAME.to_string(), profile.clone());
     }
-    if let Some(endpoint) = config.s3_endpoint.as_ref().filter(|v| !v.trim().is_empty()) {
-        props.insert(S3_ENDPOINT.to_string(), endpoint.clone());
+    let s3_file_io = S3FileIoConfig::from_glue(config);
+    if s3_file_io.non_empty_endpoint().is_some() {
+        s3_file_io.apply_catalog_props(&mut props);
         // Custom endpoints default-deny ambient credential discovery unless
         // the operator explicitly opted into the AWS default chain via
         // NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE=default_chain.
@@ -790,12 +888,8 @@ fn glue_catalog_props(
             props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
             props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
         }
-    }
-    if let Some(region) = config.s3_region.as_ref().filter(|v| !v.trim().is_empty()) {
-        props.insert(S3_REGION.to_string(), region.clone());
-    }
-    if let Some(path_style) = config.s3_path_style_access {
-        props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
+    } else {
+        s3_file_io.apply_catalog_props(&mut props);
     }
 
     if let (Some(key_id), Some(secret)) = (
@@ -812,18 +906,7 @@ fn glue_catalog_props(
         props.insert(AWS_SESSION_TOKEN.to_string(), token);
     }
 
-    if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
-    ) {
-        props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
-        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
-        props.insert(S3_DISABLE_CONFIG_LOAD.to_string(), "true".to_string());
-        props.insert(S3_DISABLE_EC2_METADATA.to_string(), "true".to_string());
-    }
-    if let Some(token) = super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
-        props.insert(S3_SESSION_TOKEN.to_string(), token);
-    }
+    super::insert_explicit_nexus_s3_credentials(&mut props, |name| get(name), true);
 
     props
 }
@@ -850,15 +933,10 @@ impl GlueIcebergCatalogBackend {
     /// Properties are passed through to `GlueCatalogBuilder` as-is and may
     /// contain secrets; callers should avoid logging them.
     pub async fn from_props(catalog_handle: impl Into<String>, props: HashMap<String, String>) -> Result<Self> {
-        let glue = GlueCatalogBuilder::default().load(catalog_handle, props).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to connect to AWS Glue Iceberg catalog",
-            )
-            .with_fact("catalog_type", "glue")
-            .with_source(error)
-        })?;
+        let glue = GlueCatalogBuilder::default()
+            .load(catalog_handle, props)
+            .await
+            .map_err(|error| catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", "glue", error))?;
         Ok(Self { catalog: Arc::new(glue), parquet_read_strategy_config: None })
     }
 
@@ -914,42 +992,27 @@ impl GlueIcebergCatalogBackend {
 #[async_trait]
 impl IcebergCatalogBackend for GlueIcebergCatalogBackend {
     async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>> {
-        self.catalog.list_namespaces(None).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to list namespaces from AWS Glue Iceberg catalog",
-            )
-            .with_fact("catalog_type", "glue")
-            .with_source(error)
-        })
+        catalog_backend_list_namespaces(
+            &self.catalog,
+            "glue",
+            "failed to list namespaces from AWS Glue Iceberg catalog",
+        )
+        .await
     }
 
     async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
-        self.catalog.list_tables(namespace).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to list tables from AWS Glue Iceberg catalog",
-            )
-            .with_fact("catalog_type", "glue")
-            .with_fact("namespace", namespace.to_string())
-            .with_source(error)
-        })
+        catalog_backend_list_tables(
+            &self.catalog,
+            namespace,
+            "glue",
+            "failed to list tables from AWS Glue Iceberg catalog",
+        )
+        .await
     }
 
     async fn load_table(&self, table: &TableIdent) -> Result<iceberg::table::Table> {
-        self.catalog.load_table(table).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to load table from AWS Glue Iceberg catalog",
-            )
-            .with_fact("catalog_type", "glue")
-            .with_fact("namespace", table.namespace().to_string())
-            .with_fact("table", table.name())
-            .with_source(error)
-        })
+        catalog_backend_load_table(&self.catalog, table, "glue", "failed to load table from AWS Glue Iceberg catalog")
+            .await
     }
 
     fn parquet_read_strategy_config(&self) -> Option<TableFormatParquetReadStrategyConfig> {
@@ -1077,40 +1140,16 @@ impl RestIcebergCatalogConfig {
     /// caller-owned table-format Parquet read-strategy config.
     pub fn parquet_read_strategy_config_from(
         &self,
-        mut config: TableFormatParquetReadStrategyConfig,
+        config: TableFormatParquetReadStrategyConfig,
     ) -> TableFormatParquetReadStrategyConfig {
-        config.storage_profile_id = Some(DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID.to_string());
-        if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
-            config.storage_endpoint = Some(credential_free_endpoint_identity(endpoint));
-        }
-        if self.s3_region.as_ref().is_some_and(|region| !region.trim().is_empty())
-            || self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-            || self.s3_path_style_access.is_some()
-        {
-            config.credential_mode = nexus_query_engine::CredentialMode::ScopedResolved;
-        }
-        if self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty())
-            && self.s3_path_style_access == Some(false)
-        {
-            config.remote_direct_profile_unsupported_reason = Some("remote_direct_virtual_hosted_endpoint_unsupported");
-        }
-        config
+        S3FileIoConfig::from_rest(self).apply_parquet_read_strategy_config(config, false)
     }
 
     /// Builds the native source storage profile for this REST catalog using the
     /// explicit `NEXUS_ICEBERG_S3_*` credential environment.
     pub fn source_storage_profile_with_env(&self, mut get: impl FnMut(&str) -> Option<String>) -> SourceStorageProfile {
-        let mut s3 = S3SourceStorageProfile::default_chain();
-        let has_s3_endpoint = self.s3_endpoint.as_ref().is_some_and(|endpoint| !endpoint.trim().is_empty());
-        if let Some(region) = self.s3_region.as_ref().filter(|region| !region.trim().is_empty()) {
-            s3 = s3.with_region(region.clone());
-        }
-        if let Some(endpoint) = self.s3_endpoint.as_ref().filter(|endpoint| !endpoint.trim().is_empty()) {
-            s3 = s3.with_endpoint(endpoint.clone());
-        }
-        if let Some(path_style) = self.s3_path_style_access {
-            s3 = s3.with_path_style_access(path_style);
-        }
+        let (mut s3, has_s3_endpoint) =
+            S3FileIoConfig::from_rest(self).apply_source_storage_profile(S3SourceStorageProfile::default_chain(), None);
         if let (Some(access_key_id), Some(secret_access_key)) = (
             super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
             super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
@@ -1173,25 +1212,8 @@ fn rest_catalog_props(
     if let Some(token) = config.token.as_ref().filter(|v| !v.trim().is_empty()) {
         props.insert("token".to_string(), token.clone());
     }
-    if let Some(endpoint) = config.s3_endpoint.as_ref().filter(|v| !v.trim().is_empty()) {
-        props.insert(S3_ENDPOINT.to_string(), endpoint.clone());
-    }
-    if let Some(region) = config.s3_region.as_ref().filter(|v| !v.trim().is_empty()) {
-        props.insert(S3_REGION.to_string(), region.clone());
-    }
-    if let Some(path_style) = config.s3_path_style_access {
-        props.insert(S3_PATH_STYLE_ACCESS.to_string(), path_style.to_string());
-    }
-    if let (Some(key_id), Some(secret)) = (
-        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV)),
-        super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV)),
-    ) {
-        props.insert(S3_ACCESS_KEY_ID.to_string(), key_id);
-        props.insert(S3_SECRET_ACCESS_KEY.to_string(), secret);
-    }
-    if let Some(token) = super::non_empty(get(crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV)) {
-        props.insert(S3_SESSION_TOKEN.to_string(), token);
-    }
+    S3FileIoConfig::from_rest(config).apply_catalog_props(&mut props);
+    super::insert_explicit_nexus_s3_credentials(&mut props, |name| get(name), false);
     props
 }
 
@@ -1245,15 +1267,7 @@ impl RestIcebergCatalogBackend {
             .with_storage_factory(rest_storage_factory())
             .load(catalog_handle, props)
             .await
-            .map_err(|error| {
-                Error::new(
-                    ErrorCode::CudfDependencyFailure,
-                    CATALOG_BACKEND_OP,
-                    "failed to connect to Iceberg REST catalog",
-                )
-                .with_fact("catalog_type", "rest")
-                .with_source(error)
-            })?;
+            .map_err(|error| catalog_backend_error("failed to connect to Iceberg REST catalog", "rest", error))?;
         Ok(Self { catalog: Arc::new(rest), parquet_read_strategy_config: None })
     }
 
@@ -1306,42 +1320,17 @@ impl RestIcebergCatalogBackend {
 #[async_trait]
 impl IcebergCatalogBackend for RestIcebergCatalogBackend {
     async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>> {
-        self.catalog.list_namespaces(None).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to list namespaces from Iceberg REST catalog",
-            )
-            .with_fact("catalog_type", "rest")
-            .with_source(error)
-        })
+        catalog_backend_list_namespaces(&self.catalog, "rest", "failed to list namespaces from Iceberg REST catalog")
+            .await
     }
 
     async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
-        self.catalog.list_tables(namespace).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to list tables from Iceberg REST catalog",
-            )
-            .with_fact("catalog_type", "rest")
-            .with_fact("namespace", namespace.to_string())
-            .with_source(error)
-        })
+        catalog_backend_list_tables(&self.catalog, namespace, "rest", "failed to list tables from Iceberg REST catalog")
+            .await
     }
 
     async fn load_table(&self, table: &TableIdent) -> Result<iceberg::table::Table> {
-        self.catalog.load_table(table).await.map_err(|error| {
-            Error::new(
-                ErrorCode::CudfDependencyFailure,
-                CATALOG_BACKEND_OP,
-                "failed to load table from Iceberg REST catalog",
-            )
-            .with_fact("catalog_type", "rest")
-            .with_fact("namespace", table.namespace().to_string())
-            .with_fact("table", table.name())
-            .with_source(error)
-        })
+        catalog_backend_load_table(&self.catalog, table, "rest", "failed to load table from Iceberg REST catalog").await
     }
 
     fn parquet_read_strategy_config(&self) -> Option<TableFormatParquetReadStrategyConfig> {
@@ -1351,12 +1340,54 @@ impl IcebergCatalogBackend for RestIcebergCatalogBackend {
 
 #[cfg(test)]
 mod rest_tests {
-    use iceberg::io::{StorageConfig, StorageFactory};
+    use iceberg::io::{S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_SESSION_TOKEN, StorageConfig, StorageFactory};
 
     use super::*;
 
+    fn upstream_iceberg_error() -> iceberg::Error {
+        iceberg::Error::new(iceberg::ErrorKind::Unexpected, "upstream catalog failure")
+    }
+
     fn no_env(_name: &str) -> Option<String> {
         None
+    }
+
+    #[test]
+    fn catalog_backend_error_preserves_glue_contract() {
+        let error =
+            catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", "glue", upstream_iceberg_error());
+
+        assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
+        assert_eq!(error.operation(), CATALOG_BACKEND_OP);
+        assert_eq!(error.message(), "failed to connect to AWS Glue Iceberg catalog");
+        assert_eq!(error.fact_value("catalog_type"), Some("glue"));
+        assert_eq!(error.facts().iter().count(), 1);
+        assert!(error.source_error().is_some());
+    }
+
+    #[test]
+    fn catalog_backend_error_preserves_rest_contract() {
+        let error =
+            catalog_backend_error("failed to connect to Iceberg REST catalog", "rest", upstream_iceberg_error());
+
+        assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
+        assert_eq!(error.operation(), CATALOG_BACKEND_OP);
+        assert_eq!(error.message(), "failed to connect to Iceberg REST catalog");
+        assert_eq!(error.fact_value("catalog_type"), Some("rest"));
+        assert_eq!(error.facts().iter().count(), 1);
+        assert!(error.source_error().is_some());
+    }
+
+    #[test]
+    fn catalog_backend_error_allows_namespace_and_table_facts() {
+        let error =
+            catalog_backend_error("failed to load table from Iceberg REST catalog", "rest", upstream_iceberg_error())
+                .with_fact("namespace", "tpch_sf1")
+                .with_fact("table", "lineitem");
+
+        assert_eq!(error.fact_value("catalog_type"), Some("rest"));
+        assert_eq!(error.fact_value("namespace"), Some("tpch_sf1"));
+        assert_eq!(error.fact_value("table"), Some("lineitem"));
     }
 
     #[test]
@@ -1430,6 +1461,56 @@ mod rest_tests {
         let props = rest_catalog_props(&config, no_env);
         assert_eq!(props.get(S3_DISABLE_CONFIG_LOAD).map(String::as_str), Some("true"));
         assert_eq!(props.get(S3_DISABLE_EC2_METADATA).map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn rest_props_ignore_ambient_aws_credentials() {
+        let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
+        let env = |name: &str| match name {
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("aws-access-must-not-be-used".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("aws-secret-must-not-be-used".to_string()),
+            crate::table_format::iceberg::AWS_SESSION_TOKEN_ENV => Some("aws-token-must-not-be-used".to_string()),
+            _ => None,
+        };
+
+        let props = rest_catalog_props(&config, env);
+
+        assert!(!props.contains_key(S3_ACCESS_KEY_ID));
+        assert!(!props.contains_key(S3_SECRET_ACCESS_KEY));
+        assert!(!props.contains_key(S3_SESSION_TOKEN));
+        assert_eq!(props.get(S3_DISABLE_CONFIG_LOAD).map(String::as_str), Some("true"));
+        assert_eq!(props.get(S3_DISABLE_EC2_METADATA).map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn rest_props_default_chain_opt_in_omits_default_deny_flags() {
+        let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
+        let env = |name: &str| match name {
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV => {
+                Some(crate::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN.to_string())
+            },
+            _ => None,
+        };
+
+        let props = rest_catalog_props(&config, env);
+
+        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
+        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
+    }
+
+    #[test]
+    fn rest_props_preserve_s3_session_token_without_static_pair() {
+        let config = RestIcebergCatalogConfig::new("lake", "http://localhost:8181", "s3://lakehouse/warehouse");
+        let env = |name: &str| match name {
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rest-token-value".to_string()),
+            _ => None,
+        };
+
+        let props = rest_catalog_props(&config, env);
+
+        assert!(!props.contains_key(S3_ACCESS_KEY_ID));
+        assert!(!props.contains_key(S3_SECRET_ACCESS_KEY));
+        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("rest-token-value"));
     }
 
     #[test]
@@ -1638,6 +1719,62 @@ mod rest_tests {
         assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("rustfs-token"));
         assert_eq!(props.get(S3_DISABLE_CONFIG_LOAD).map(String::as_str), Some("true"));
         assert_eq!(props.get(S3_DISABLE_EC2_METADATA).map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn glue_props_accept_ambient_aws_credentials_without_s3_endpoint() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-west-2");
+        let env = |name: &str| match name {
+            crate::table_format::iceberg::AWS_ACCESS_KEY_ID_ENV => Some("AKIA_GLUE".to_string()),
+            crate::table_format::iceberg::AWS_SECRET_ACCESS_KEY_ENV => Some("glue-secret".to_string()),
+            crate::table_format::iceberg::AWS_SECURITY_TOKEN_ENV => Some("glue-legacy-token".to_string()),
+            _ => None,
+        };
+
+        let props = glue_catalog_props(&config, env);
+
+        assert_eq!(props.get(AWS_ACCESS_KEY_ID).map(String::as_str), Some("AKIA_GLUE"));
+        assert_eq!(props.get(AWS_SECRET_ACCESS_KEY).map(String::as_str), Some("glue-secret"));
+        assert_eq!(props.get(AWS_SESSION_TOKEN).map(String::as_str), Some("glue-legacy-token"));
+        assert!(!props.contains_key(S3_ACCESS_KEY_ID));
+        assert!(!props.contains_key(S3_SECRET_ACCESS_KEY));
+        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
+        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
+    }
+
+    #[test]
+    fn glue_props_default_chain_opt_in_skips_endpoint_default_deny_without_static_s3_credentials() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+            .with_s3_endpoint("http://localhost:9000");
+        let env = |name: &str| match name {
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV => {
+                Some(crate::table_format::iceberg::NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN.to_string())
+            },
+            _ => None,
+        };
+
+        let props = glue_catalog_props(&config, env);
+
+        assert_eq!(props.get(S3_ENDPOINT).map(String::as_str), Some("http://localhost:9000"));
+        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
+        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
+    }
+
+    #[test]
+    fn glue_props_preserve_explicit_s3_session_token_without_static_pair() {
+        let config = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1");
+        let env = |name: &str| match name {
+            crate::table_format::iceberg::NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV => Some("rustfs-token".to_string()),
+            _ => None,
+        };
+
+        let props = glue_catalog_props(&config, env);
+
+        assert!(!props.contains_key(S3_ACCESS_KEY_ID));
+        assert!(!props.contains_key(S3_SECRET_ACCESS_KEY));
+        assert_eq!(props.get(S3_SESSION_TOKEN).map(String::as_str), Some("rustfs-token"));
+        assert!(!props.contains_key(S3_DISABLE_CONFIG_LOAD));
+        assert!(!props.contains_key(S3_DISABLE_EC2_METADATA));
     }
 
     #[test]

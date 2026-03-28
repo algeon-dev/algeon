@@ -59,6 +59,7 @@ pub use join::{
 };
 pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
 pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;
+pub(in crate::exec::bounded) use reservation::reconcile_work_reservation_to_output;
 pub(in crate::exec) use reservation::{ActiveReservation, CommittedPartial, ReservationTracker, ResidentGpuFrame};
 pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPolicy;
 use strict::try_execute_strict_bounded_pipeline;

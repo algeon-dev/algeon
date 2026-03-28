@@ -26,7 +26,7 @@ pub(super) use table_format::{
 
 use super::{
     LoweredNativeInput, RequiredFields, executable_schema_and_bindings,
-    expr::{alias_if_needed, lower_physical_expr},
+    expr::{alias_if_needed, lower_physical_expr, lower_physical_expr_with_bindings},
     projection_outputs,
 };
 use crate::{
@@ -64,6 +64,11 @@ pub(super) fn combine_scan_limits(left: Option<usize>, right: Option<usize>) -> 
         (Some(limit), None) | (None, Some(limit)) => Some(limit),
         (None, None) => None,
     }
+}
+
+pub(super) enum SourceUnprojectedFilterOutput {
+    PreserveScanOutput,
+    ProjectRequiredOutput,
 }
 
 pub(super) fn project_scan_output_columns(
@@ -188,6 +193,73 @@ pub(super) fn add_source_filter_projection(
         .collect::<Result<Vec<_>, FallbackReason>>()?;
     let node = builder.add_projection(filtered_node, projection_outputs(expressions, &schema)?);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
+}
+
+pub(super) fn lower_source_filter_and_projection(
+    builder: &mut NativeQueryPlanBuilder,
+    scan_output: LoweredNativeInput,
+    filter: &datafusion::physical_plan::filter::FilterExec,
+    reader_pushdown_covers_filter: bool,
+    required_output_fields: &RequiredFields,
+    unprojected_output: SourceUnprojectedFilterOutput,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    if reader_pushdown_covers_filter {
+        if let Some(projection) = filter.projection() {
+            return add_source_filter_projection(
+                builder,
+                scan_output.node,
+                &scan_output,
+                filter.schema(),
+                projection,
+                required_output_fields,
+            );
+        }
+        return unprojected_source_filter_output(builder, scan_output, required_output_fields, unprojected_output);
+    }
+
+    let filtered_node = builder.add_filter(
+        scan_output.node,
+        lower_physical_expr_with_bindings(filter.predicate(), &filter.input().schema(), Some(&scan_output.bindings))?,
+        Arc::clone(&scan_output.schema),
+    );
+    if let Some(projection) = filter.projection() {
+        add_source_filter_projection(
+            builder,
+            filtered_node,
+            &scan_output,
+            filter.schema(),
+            projection,
+            required_output_fields,
+        )
+    } else if matches!(unprojected_output, SourceUnprojectedFilterOutput::ProjectRequiredOutput) {
+        project_scan_output_columns(
+            builder,
+            filtered_node,
+            scan_output.schema,
+            scan_output.bindings,
+            required_output_fields,
+        )
+    } else {
+        Ok(LoweredNativeInput::with_bindings(filtered_node, scan_output.schema, scan_output.bindings))
+    }
+}
+
+fn unprojected_source_filter_output(
+    builder: &mut NativeQueryPlanBuilder,
+    scan_output: LoweredNativeInput,
+    required_output_fields: &RequiredFields,
+    unprojected_output: SourceUnprojectedFilterOutput,
+) -> Result<LoweredNativeInput, FallbackReason> {
+    match unprojected_output {
+        SourceUnprojectedFilterOutput::PreserveScanOutput => Ok(scan_output),
+        SourceUnprojectedFilterOutput::ProjectRequiredOutput => project_scan_output_columns(
+            builder,
+            scan_output.node,
+            scan_output.schema,
+            scan_output.bindings,
+            required_output_fields,
+        ),
+    }
 }
 
 /// Scan projection expression retained because downstream native nodes need it.

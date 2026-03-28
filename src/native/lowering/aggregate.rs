@@ -40,25 +40,11 @@ pub(super) fn validate_joined_aggregate_scalar_expressions(
     root: &NormalizedNativeAggregateRoot<'_>,
 ) -> Result<(), FallbackReason> {
     if let Some(projection) = root.pre_aggregate_projection {
-        for projection_expr in projection.expr() {
-            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
-        }
+        validate_projection_scalar_expressions(projection)?;
     }
-    for aggregate_expr in root.aggregate.aggr_expr() {
-        for expr in aggregate_expr.expressions() {
-            validate_physical_expr(&expr, &root.aggregate.input().schema())?;
-        }
-    }
-    for filter in root.aggregate.filter_expr().iter().flatten() {
-        validate_physical_expr(filter, &root.aggregate.input().schema())?;
-    }
-    for (group_expr, _alias) in root.aggregate.group_expr().expr() {
-        validate_physical_expr(group_expr, &root.aggregate.input().schema())?;
-    }
+    validate_aggregate_scalar_expressions(root.aggregate)?;
     if let Some(projection) = root.post_aggregate_projection {
-        for projection_expr in projection.expr() {
-            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
-        }
+        validate_projection_scalar_expressions(projection)?;
     }
     Ok(())
 }
@@ -134,6 +120,13 @@ fn validate_aggregate_scalar_expressions(aggregate: &AggregateExec) -> Result<()
     }
     for (group_expr, _alias) in aggregate.group_expr().expr() {
         validate_physical_expr(group_expr, &aggregate.input().schema())?;
+    }
+    Ok(())
+}
+
+fn validate_projection_scalar_expressions(projection: &ProjectionExec) -> Result<(), FallbackReason> {
+    for projection_expr in projection.expr() {
+        validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
     }
     Ok(())
 }
@@ -215,25 +208,11 @@ pub(super) fn validate_required_scalar_expressions(
         validate_physical_expr(filter.predicate(), &filter.input().schema())?;
     }
     if let Some(projection) = inputs.pre_aggregate_projection {
-        for projection_expr in projection.expr() {
-            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
-        }
+        validate_projection_scalar_expressions(projection)?;
     }
-    for aggregate_expr in inputs.aggregate.aggr_expr() {
-        for expr in aggregate_expr.expressions() {
-            validate_physical_expr(&expr, &inputs.aggregate.input().schema())?;
-        }
-    }
-    for filter in inputs.aggregate.filter_expr().iter().flatten() {
-        validate_physical_expr(filter, &inputs.aggregate.input().schema())?;
-    }
-    for (group_expr, _alias) in inputs.aggregate.group_expr().expr() {
-        validate_physical_expr(group_expr, &inputs.aggregate.input().schema())?;
-    }
+    validate_aggregate_scalar_expressions(inputs.aggregate)?;
     if let Some(projection) = inputs.post_aggregate_projection {
-        for projection_expr in projection.expr() {
-            validate_physical_expr(&projection_expr.expr, &projection.input().schema())?;
-        }
+        validate_projection_scalar_expressions(projection)?;
     }
     Ok(())
 }

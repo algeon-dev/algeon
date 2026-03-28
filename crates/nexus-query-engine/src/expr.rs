@@ -17,6 +17,13 @@ pub use self::{
     literal::LiteralValue,
 };
 
+pub(crate) fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
+    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
+        return None;
+    };
+    Some((*months, *days, *nanoseconds))
+}
+
 /// Scalar expression IR used by native query-plan nodes.
 ///
 /// `Expr` describes logical expression structure independently of DataFusion's

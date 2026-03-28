@@ -1,3 +1,5 @@
+use crate::datatypes::arrow_fixed_width_byte_size;
+
 #[derive(Debug, Clone, Copy)]
 struct SharedScalarFilteredMaterializationEstimate {
     input_rows: u64,
@@ -109,7 +111,7 @@ fn shared_aggregate_value_width_and_nullability(
             .find_map(|columns| columns.get(column.name()))
             .map(|column| {
                 (
-                    shared_fixed_width_dtype_size(column.field.data_type())
+                    arrow_fixed_width_byte_size(column.field.data_type())
                         .unwrap_or(policy.unknown_value_width_bytes()),
                     column.field.is_nullable(),
                 )
@@ -138,24 +140,6 @@ fn shared_literal_width(value: &crate::expr::LiteralValue) -> u64 {
         crate::expr::LiteralValue::Null(_)
         | crate::expr::LiteralValue::Utf8(_)
         | crate::expr::LiteralValue::LargeUtf8(_) => 16,
-    }
-}
-
-fn shared_fixed_width_dtype_size(data_type: &DataType) -> Option<u64> {
-    match data_type {
-        DataType::Boolean | DataType::Int8 | DataType::UInt8 => Some(1),
-        DataType::Int16 | DataType::UInt16 => Some(2),
-        DataType::Int32 | DataType::UInt32 | DataType::Float32 | DataType::Date32 | DataType::Time32(_) => Some(4),
-        DataType::Int64
-        | DataType::UInt64
-        | DataType::Float64
-        | DataType::Date64
-        | DataType::Time64(_)
-        | DataType::Timestamp(_, _)
-        | DataType::Duration(_) => Some(8),
-        DataType::Decimal128(_, _) => Some(16),
-        DataType::Decimal256(_, _) => Some(32),
-        _ => None,
     }
 }
 

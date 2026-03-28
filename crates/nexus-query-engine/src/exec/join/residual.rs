@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use cudf::ops::ast::{AstExpression, AstOperator};
 
 use super::*;
+use crate::expr::{ColumnQualifier, interval_month_day_nano};
 
 #[derive(Debug, Clone)]
 struct ResidualColumnLayout {
@@ -84,23 +85,38 @@ pub(in crate::exec) fn residual_input_columns(node: &JoinNode) -> Result<JoinRes
 }
 
 fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &mut BTreeSet<String>) -> Result<()> {
+    let mut collect = |input, name: &str| match input {
+        0 => {
+            left.insert(name.to_string());
+        },
+        1 => {
+            right.insert(name.to_string());
+        },
+        _ => unreachable!("join residual walker only yields binary input columns"),
+    };
+    walk_join_residual_columns(
+        expr,
+        "nexus_query_engine.join.residual_columns",
+        "native join residual predicates require input-qualified column references",
+        &mut collect,
+    )
+}
+
+pub(in crate::exec) fn walk_join_residual_columns(
+    expr: &Expr,
+    operation: &'static str,
+    bad_qualifier_message: &'static str,
+    on_input: &mut impl FnMut(usize, &str),
+) -> Result<()> {
     match expr {
         Expr::Column(column) => match column.qualifier() {
-            Some(crate::expr::ColumnQualifier::Input { index: 0 }) => {
-                left.insert(column.name().to_string());
+            Some(ColumnQualifier::Input { index }) if matches!(*index, 0 | 1) => {
+                on_input(*index, column.name());
                 Ok(())
             },
-            Some(crate::expr::ColumnQualifier::Input { index: 1 }) => {
-                right.insert(column.name().to_string());
-                Ok(())
-            },
-            qualifier => Err(QueryError::new(
-                QueryErrorCode::UnsupportedExpression,
-                "nexus_query_engine.join.residual_columns",
-                "native join residual predicates require input-qualified column references",
-            )
-            .with_fact("column", column.name())
-            .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
+            qualifier => Err(QueryError::new(QueryErrorCode::UnsupportedExpression, operation, bad_qualifier_message)
+                .with_fact("column", column.name())
+                .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
         },
         Expr::Literal(_) => Ok(()),
         Expr::Not(inner)
@@ -111,34 +127,36 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
         | Expr::Abs(inner)
         | Expr::Sqrt { expr: inner, .. }
         | Expr::Round { expr: inner, .. }
-        | Expr::Alias { expr: inner, .. } => collect_join_expr_columns(inner, left, right),
+        | Expr::Alias { expr: inner, .. } => {
+            walk_join_residual_columns(inner, operation, bad_qualifier_message, on_input)
+        },
         Expr::Binary { left: lhs, right: rhs, .. } => {
-            collect_join_expr_columns(lhs, left, right)?;
-            collect_join_expr_columns(rhs, left, right)
+            walk_join_residual_columns(lhs, operation, bad_qualifier_message, on_input)?;
+            walk_join_residual_columns(rhs, operation, bad_qualifier_message, on_input)
         },
         Expr::IsDistinctFrom { left: lhs, right: rhs } | Expr::IsNotDistinctFrom { left: lhs, right: rhs } => {
-            collect_join_expr_columns(lhs, left, right)?;
-            collect_join_expr_columns(rhs, left, right)
+            walk_join_residual_columns(lhs, operation, bad_qualifier_message, on_input)?;
+            walk_join_residual_columns(rhs, operation, bad_qualifier_message, on_input)
         },
         Expr::InList { expr, list, .. } => {
-            collect_join_expr_columns(expr, left, right)?;
+            walk_join_residual_columns(expr, operation, bad_qualifier_message, on_input)?;
             for item in list {
-                collect_join_expr_columns(item, left, right)?;
+                walk_join_residual_columns(item, operation, bad_qualifier_message, on_input)?;
             }
             Ok(())
         },
         Expr::Concat(exprs) => {
             for expr in exprs {
-                collect_join_expr_columns(expr, left, right)?;
+                walk_join_residual_columns(expr, operation, bad_qualifier_message, on_input)?;
             }
             Ok(())
         },
         Expr::Case { branches, else_expr } => {
             for branch in branches {
-                collect_join_expr_columns(&branch.when, left, right)?;
-                collect_join_expr_columns(&branch.then, left, right)?;
+                walk_join_residual_columns(&branch.when, operation, bad_qualifier_message, on_input)?;
+                walk_join_residual_columns(&branch.then, operation, bad_qualifier_message, on_input)?;
             }
-            collect_join_expr_columns(else_expr, left, right)
+            walk_join_residual_columns(else_expr, operation, bad_qualifier_message, on_input)
         },
         Expr::Like { .. }
         | Expr::Substring { .. }
@@ -149,7 +167,7 @@ fn collect_join_expr_columns(expr: &Expr, left: &mut BTreeSet<String>, right: &m
         | Expr::Extract { .. }
         | Expr::DateTrunc { .. } => Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
-            "nexus_query_engine.join.residual_columns",
+            operation,
             "native join residual predicates do not yet support this expression family",
         )
         .with_fact("expression", expr)),
@@ -565,13 +583,6 @@ fn fixed_day_interval_raw(months: i32, days: i32, nanoseconds: i64) -> Result<i3
     })
 }
 
-fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
-    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
-        return None;
-    };
-    Some((*months, *days, *nanoseconds))
-}
-
 fn expr_contains_interval_literal(expr: &Expr) -> bool {
     match expr {
         Expr::Literal(LiteralValue::IntervalMonthDayNano { .. }) => true,
@@ -695,4 +706,47 @@ fn lower_join_ast_literal(context: &ExecutionContext, value: &LiteralValue) -> R
     AstExpression::literal(scalar).map_err(|error| {
         QueryError::from_cudf("nexus_query_engine.join.lower_residual", "failed to build cudf AST literal", error)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_residual_column_walker_collects_binary_input_columns() {
+        let expr = Expr::binary(
+            Expr::is_not_null(Expr::input_column(0, "l_orderkey", "l_orderkey")),
+            BinaryOp::And,
+            Expr::binary(
+                Expr::input_column(0, "l_quantity", "l_quantity"),
+                BinaryOp::Gt,
+                Expr::input_column(1, "p_size", "p_size"),
+            ),
+        );
+        let mut columns = Vec::new();
+
+        walk_join_residual_columns(&expr, "test.join_residual_columns", "bad qualifier", &mut |input, name| {
+            columns.push((input, name.to_string()));
+        })
+        .expect("walker should accept binary input-qualified columns");
+
+        assert_eq!(
+            columns,
+            vec![(0, "l_orderkey".to_string()), (0, "l_quantity".to_string()), (1, "p_size".to_string()),]
+        );
+    }
+
+    #[test]
+    fn join_residual_column_walker_rejects_non_binary_input_qualifier() {
+        let expr = Expr::input_column(2, "bad_key", "bad_key");
+        let error =
+            walk_join_residual_columns(&expr, "test.join_residual_columns", "bad qualifier", &mut |_input, _name| {})
+                .expect_err("walker should reject input qualifiers outside the binary join inputs");
+
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedExpression);
+        assert_eq!(error.operation(), "test.join_residual_columns");
+        assert_eq!(error.message(), "bad qualifier");
+        assert_eq!(error.fact_value("column"), Some("bad_key"));
+        assert_eq!(error.fact_value("qualifier"), Some("input2"));
+    }
 }

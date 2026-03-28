@@ -1,5 +1,6 @@
 use arrow::datatypes::DataType;
 use datafusion::parquet::schema::types::SchemaDescriptor;
+use nexus_query_engine::parquet_stats::leaf_column_statistics;
 
 use super::*;
 
@@ -295,28 +296,6 @@ fn row_group_may_satisfy_atom(
             Some(statistics.null_count_opt()? < row_count)
         },
     }
-}
-
-fn leaf_column_statistics<'a>(
-    row_group: &'a parquet::file::metadata::RowGroupMetaData,
-    schema: &SchemaDescriptor,
-    root_column_index: usize,
-) -> Option<&'a Statistics> {
-    let leaf_column_index = single_leaf_primitive_root_column_index(schema, root_column_index)?;
-    row_group.columns().get(leaf_column_index)?.statistics()
-}
-
-fn single_leaf_primitive_root_column_index(schema: &SchemaDescriptor, root_index: usize) -> Option<usize> {
-    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
-        return None;
-    }
-    let mut leaf_indices =
-        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
-    let leaf_index = leaf_indices.next()?;
-    if leaf_indices.next().is_some() {
-        return None;
-    }
-    Some(leaf_index)
 }
 
 fn row_group_may_satisfy_in_list(statistics: &Statistics, literals: &[PruningLiteral]) -> Option<bool> {

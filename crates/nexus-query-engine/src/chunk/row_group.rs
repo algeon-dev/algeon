@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 
 use parquet::file::metadata::ParquetMetaData;
 
-use crate::source::{LocalParquetFile, LocalParquetSource};
+use crate::{
+    parquet_stats::{ColumnByteKind, row_group_column_bytes},
+    source::{LocalParquetFile, LocalParquetSource},
+};
 
 // Per-row-group sizing evidence merged from source facts and optional footer reads.
 #[derive(Debug, Clone)]
@@ -181,26 +184,4 @@ pub(super) fn source_row_group_metadata(
     } else {
         None
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ColumnByteKind {
-    Compressed,
-    Uncompressed,
-}
-
-fn row_group_column_bytes(
-    row_group: &parquet::file::metadata::RowGroupMetaData,
-    column_indexes: &BTreeSet<usize>,
-    kind: ColumnByteKind,
-) -> Option<u64> {
-    column_indexes.iter().try_fold(0u64, |total, column_index| {
-        let column = row_group.columns().get(*column_index)?;
-        let bytes = match kind {
-            ColumnByteKind::Compressed => column.compressed_size(),
-            ColumnByteKind::Uncompressed => column.uncompressed_size(),
-        };
-        let bytes = u64::try_from(bytes).ok()?;
-        total.checked_add(bytes)
-    })
 }

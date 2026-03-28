@@ -353,7 +353,9 @@ fn replace_lowered_root_or_keep_plan(
             rewritten: false,
         });
     }
-    let candidate = single_rewritten_candidate(&lowering.report)
+    let candidate = lowering
+        .report
+        .single_rewritten_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
@@ -1020,15 +1022,6 @@ fn native_execution_rejection_report_for_candidate(
     rejection_reason: FallbackReason,
 ) -> PlanningReport {
     PlanningReport::from_outcomes([CandidateOutcome::Rejected { candidate, reason: rejection_reason }])
-}
-
-fn single_rewritten_candidate(report: &PlanningReport) -> Option<&GpuCandidate> {
-    let mut rewritten = report.outcomes().iter().filter_map(|outcome| match outcome {
-        CandidateOutcome::Rewritten { candidate } => Some(candidate),
-        CandidateOutcome::Rejected { .. } => None,
-    });
-    let candidate = rewritten.next()?;
-    rewritten.next().is_none().then_some(candidate)
 }
 
 fn native_candidate_error(message: &'static str) -> DataFusionError {

@@ -321,50 +321,6 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
-pub(in crate::exec::bounded::aggregate) fn final_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
-    AggregateSpec::new(
-        Vec::new(),
-        spec.aggr_exprs
-            .iter()
-            .enumerate()
-            .flat_map(|(index, expr)| match expr.function {
-                AggregateFunction::Count => vec![AggregateExpr::new(
-                    AggregateFunction::Sum,
-                    Expr::column(expr.alias.clone()),
-                    expr.alias.clone(),
-                )],
-                AggregateFunction::NUnique => vec![AggregateExpr::new(
-                    AggregateFunction::Sum,
-                    Expr::column(expr.alias.clone()),
-                    expr.alias.clone(),
-                )],
-                AggregateFunction::Avg => {
-                    let state = AvgStateAliases::for_aggregate_index(index);
-                    vec![
-                        AggregateExpr::new(AggregateFunction::Sum, state.sum_expr(), state.sum().to_string()),
-                        AggregateExpr::new(AggregateFunction::Sum, state.count_expr(), state.count().to_string()),
-                    ]
-                },
-                AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
-                    let valid_count_alias = global_valid_count_state_alias(expr.alias.as_str());
-                    vec![
-                        AggregateExpr::new(expr.function, Expr::column(expr.alias.clone()), expr.alias.clone()),
-                        AggregateExpr::new(
-                            AggregateFunction::Sum,
-                            Expr::column(valid_count_alias.clone()),
-                            valid_count_alias,
-                        ),
-                    ]
-                },
-                AggregateFunction::StddevSamp
-                | AggregateFunction::StddevPop
-                | AggregateFunction::VarSamp
-                | AggregateFunction::VarPop => vec![expr.clone()],
-            })
-            .collect(),
-    )
-}
-
 pub(in crate::exec::bounded::aggregate) fn aggregate_spec_has_global_final_state(spec: &AggregateSpec) -> bool {
     aggregate_spec_has_avg(spec)
         || spec.group_exprs.is_empty()

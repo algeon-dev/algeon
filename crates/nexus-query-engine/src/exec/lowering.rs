@@ -9,7 +9,7 @@ use cudf::ops::{
 
 use super::{lowering_policy::ExpressionLoweringPolicy, *};
 use crate::{
-    expr::{CaseWhen, DatePart},
+    expr::{CaseWhen, DatePart, interval_month_day_nano},
     plan::ProjectionOutput,
 };
 
@@ -366,13 +366,6 @@ fn date32_integral_cast_comparison_operands<'a>(
 
 fn lower_datetime_interval_offset(expr: &Expr, months: i32, days: i32, nanoseconds: i64) -> Result<cudf::Expr> {
     Ok(lower_expr(expr)?.dt().offset(months, days, nanoseconds))
-}
-
-fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
-    let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
-        return None;
-    };
-    Some((*months, *days, *nanoseconds))
 }
 
 fn negate_interval(months: i32, days: i32, nanoseconds: i64) -> Result<(i32, i32, i64)> {

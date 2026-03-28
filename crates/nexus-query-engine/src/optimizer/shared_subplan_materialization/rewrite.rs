@@ -140,6 +140,22 @@ struct ScalarFilteredAggregateOutput {
     aggregate_expr: AggregateExpr,
 }
 
+fn widened_source_fingerprints(family: &[AggregateMaterializationSignature]) -> BTreeSet<String> {
+    let mut predicates_by_source = BTreeMap::<String, BTreeSet<String>>::new();
+    for signature in family {
+        for source in &signature.source_predicates {
+            predicates_by_source
+                .entry(source.abstract_fingerprint.clone())
+                .or_default()
+                .insert(source.predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string));
+        }
+    }
+    predicates_by_source
+        .into_iter()
+        .filter_map(|(fingerprint, predicates)| (predicates.len() > 1).then_some(fingerprint))
+        .collect()
+}
+
 fn shared_aggregate_family_rewrite_plan(
     plan: &QueryPlan,
     family: &[AggregateMaterializationSignature],
@@ -158,19 +174,7 @@ fn shared_aggregate_family_rewrite_plan(
     if !family.iter().all(|signature| reachable.contains(&signature.aggregate_node_id)) {
         return Err(SharedSubplanMaterializationRejectedReason::NotReachableFromSink);
     }
-    let mut predicates_by_source = BTreeMap::<String, BTreeSet<String>>::new();
-    for signature in family {
-        for source in &signature.source_predicates {
-            predicates_by_source
-                .entry(source.abstract_fingerprint.clone())
-                .or_default()
-                .insert(source.predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string));
-        }
-    }
-    let widened_source_fingerprints = predicates_by_source
-        .into_iter()
-        .filter_map(|(fingerprint, predicates)| (predicates.len() > 1).then_some(fingerprint))
-        .collect::<BTreeSet<_>>();
+    let widened_source_fingerprints = widened_source_fingerprints(family);
     if widened_source_fingerprints.is_empty() {
         return Ok(SharedAggregateFamilyRewrite {
             family_key: representative.family_key.clone(),
@@ -317,7 +321,6 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
         return Err(SharedSubplanMaterializationRejectedReason::PredicateColumnPropagationUnsupported);
     }
 
-    let mut predicates_by_source = BTreeMap::<String, BTreeSet<String>>::new();
     for signature in family {
         let node = plan
             .node(signature.aggregate_node_id)
@@ -356,18 +359,9 @@ fn shared_scalar_filtered_aggregate_rewrite_plan(
                 },
             }
         }
-        for source in &signature.source_predicates {
-            predicates_by_source
-                .entry(source.abstract_fingerprint.clone())
-                .or_default()
-                .insert(source.predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string));
-        }
     }
 
-    let widened_source_fingerprints = predicates_by_source
-        .into_iter()
-        .filter_map(|(fingerprint, predicates)| (predicates.len() > 1).then_some(fingerprint))
-        .collect::<BTreeSet<_>>();
+    let widened_source_fingerprints = widened_source_fingerprints(family);
     if widened_source_fingerprints.is_empty() {
         return Err(SharedSubplanMaterializationRejectedReason::UnsupportedScalarAggregateShape);
     }

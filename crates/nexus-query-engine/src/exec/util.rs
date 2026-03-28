@@ -1,4 +1,5 @@
 use super::*;
+pub(super) use crate::util::comma_separated_usize;
 
 pub(super) fn execution_overrides(context: &ExecutionContext) -> ExecutionOverrides<'_> {
     ExecutionOverrides::new().with_stream(context.stream()).with_memory_resource(context.memory_resource())
@@ -58,15 +59,4 @@ pub(super) fn invalid_node_reference(id: NodeId, message: &'static str) -> Query
 pub(super) fn unsupported_bounded_shape(message: impl Into<String>, reason: &'static str) -> QueryError {
     QueryError::new(QueryErrorCode::UnsupportedPlanShape, "nexus_query_engine.bounded.plan", message)
         .with_fact("reason", reason)
-}
-
-pub(super) fn comma_separated_usize(values: &[usize]) -> String {
-    let mut output = String::new();
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            output.push(',');
-        }
-        output.push_str(&value.to_string());
-    }
-    output
 }

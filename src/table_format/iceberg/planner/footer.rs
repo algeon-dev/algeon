@@ -1,3 +1,5 @@
+use nexus_query_engine::parquet_stats::row_group_null_counts_by_root_column;
+
 use super::*;
 
 pub(super) fn scan_plan_needs_field_id_footer_schema(plan: &TableFormatScanPlan) -> bool {
@@ -81,36 +83,5 @@ pub(super) async fn remote_iceberg_parquet_footer(
 }
 
 pub(super) fn parquet_footer_row_group_null_counts(metadata: &ParquetMetaData) -> BTreeMap<usize, Vec<Option<u64>>> {
-    let schema = metadata.file_metadata().schema_descr();
-    let root_field_count = schema.root_schema().get_fields().len();
-    (0..root_field_count)
-        .filter_map(|root_index| {
-            let leaf_index = single_leaf_primitive_root_column_index(schema, root_index)?;
-            let counts = metadata
-                .row_groups()
-                .iter()
-                .map(|row_group| {
-                    row_group
-                        .columns()
-                        .get(leaf_index)
-                        .and_then(|column| column.statistics())
-                        .and_then(|statistics| statistics.null_count_opt())
-                })
-                .collect::<Vec<_>>();
-            Some((root_index, counts))
-        })
-        .collect()
-}
-
-pub(super) fn single_leaf_primitive_root_column_index(
-    schema: &parquet::schema::types::SchemaDescriptor,
-    root_index: usize,
-) -> Option<usize> {
-    if !schema.root_schema().get_fields().get(root_index)?.is_primitive() {
-        return None;
-    }
-    let mut leaf_indices =
-        (0..schema.num_columns()).filter(|leaf_index| schema.get_column_root_idx(*leaf_index) == root_index);
-    let leaf_index = leaf_indices.next()?;
-    leaf_indices.next().is_none().then_some(leaf_index)
+    row_group_null_counts_by_root_column(metadata)
 }

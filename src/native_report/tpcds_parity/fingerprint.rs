@@ -1,3 +1,5 @@
+use nexus_query_engine::harness::StableFnv1a64;
+
 use super::*;
 
 pub(super) fn fingerprint_schema_only(schema: &Schema) -> String {
@@ -59,15 +61,7 @@ fn comparison_data_type_key(data_type: &DataType) -> String {
 }
 
 pub(super) fn hash_metadata(hasher: &mut StableFnv1a64, metadata: &HashMap<String, String>) {
-    hasher.update_field(&metadata.len().to_string());
-    let mut keys = metadata.keys().collect::<Vec<_>>();
-    keys.sort();
-    for key in keys {
-        hasher.update_field(key);
-        if let Some(value) = metadata.get(key) {
-            hasher.update_field(value);
-        }
-    }
+    hasher.update_metadata(metadata);
 }
 
 pub(super) fn hash_field(hasher: &mut StableFnv1a64, field: &CanonicalField) {
@@ -128,32 +122,5 @@ pub(super) fn hash_field(hasher: &mut StableFnv1a64, field: &CanonicalField) {
             hasher.update_field("unsupported");
             hasher.update_field(text);
         },
-    }
-}
-
-// Fixed FNV-1a implementation so fingerprints do not depend on std hasher choices.
-pub(super) struct StableFnv1a64 {
-    state: u64,
-}
-
-impl StableFnv1a64 {
-    fn new() -> Self {
-        Self { state: 0xcbf29ce484222325 }
-    }
-
-    fn update_field(&mut self, value: &str) {
-        self.update_bytes(value.as_bytes());
-        self.update_bytes(&[0xff]);
-    }
-
-    fn update_bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.state ^= u64::from(*byte);
-            self.state = self.state.wrapping_mul(0x100000001b3);
-        }
-    }
-
-    fn finish(&self) -> u64 {
-        self.state
     }
 }

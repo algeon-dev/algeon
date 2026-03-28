@@ -3,6 +3,7 @@ use std::{error::Error as StdError, fmt};
 use datafusion::common::{DataFusionError, SchemaError};
 use tonic::{Status, metadata::MetadataValue};
 
+use super::datafusion_error::find_adapter_error;
 use crate::{Error, ErrorCode, ErrorKind};
 
 /// Flight SQL response metadata key containing the stable adapter error code.
@@ -180,16 +181,6 @@ fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'stat
     let message = client_datafusion_error_message(&error);
     let datafusion_error = datafusion_error_variant(&error);
     Error::new(code, operation, message).with_fact("datafusion_error", datafusion_error).with_source(error)
-}
-
-fn find_adapter_error(error: &DataFusionError) -> Option<&Error> {
-    match error {
-        DataFusionError::External(source) => source.downcast_ref::<Error>(),
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => find_adapter_error(source),
-        DataFusionError::Collection(errors) => errors.iter().find_map(find_adapter_error),
-        DataFusionError::Shared(source) => find_adapter_error(source),
-        _ => None,
-    }
 }
 
 fn client_datafusion_error_message(error: &DataFusionError) -> String {

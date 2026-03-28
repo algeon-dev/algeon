@@ -225,8 +225,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
         JoinSide::Right => &build.right_keys,
     };
     let overrides = execution_overrides(context);
-    if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
-        let (probe, indices, gather_map_reservation, gather_map_bytes) =
+    let (probe, indices, gather_map_reservation, gather_map_bytes) =
+        if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
             execute_bounded_root_hash_join_single_pass_inner_probe_indices(
                 node_id,
                 node,
@@ -236,125 +236,19 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
                 reservations,
                 metrics,
                 &overrides,
-            )?;
-        let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
-            context,
-            node_id,
-            node,
-            &build,
-            &probe,
-            &indices,
-            reservations,
-            metrics,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                drop(indices);
-                reservations.release(gather_map_reservation, metrics);
-                release_bounded_join_side_frame(probe, reservations, metrics);
-                return Err(error);
-            },
+            )?
+        } else {
+            execute_bounded_root_hash_join_multi_pass_probe_indices(
+                node_id,
+                node,
+                &build,
+                probe,
+                probe_keys,
+                reservations,
+                metrics,
+                &overrides,
+            )?
         };
-        return Ok(BoundedRootHashJoinProbeState {
-            build,
-            probe,
-            indices,
-            gather_map_reservation,
-            gather_map_bytes,
-            output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
-            minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
-        });
-    }
-
-    let output_size_result = match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    };
-    let output_size = match output_size_result {
-        Ok(output_size) => output_size,
-        Err(error) => {
-            release_bounded_join_side_frame(probe, reservations, metrics);
-            return Err(join_index_error(error, node));
-        },
-    };
-    let gather_map_reservation_bytes = build
-        .hash_join
-        .hash_join()
-        .probe_gather_map_reservation_size_bytes(output_size)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.gather_map_reservation",
-                "failed to size bounded native reusable hash join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", build.build_side)
-        })?;
-    let gather_map_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_gather_map",
-            gather_map_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_bounded_join_side_frame(probe, reservations, metrics);
-            return Err(error);
-        },
-    };
-    let indices_result = match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::Left => build.hash_join.hash_join().left_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::Full => build.hash_join.hash_join().full_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    };
-    let indices = match indices_result {
-        Ok(indices) => indices,
-        Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
-            release_bounded_join_side_frame(probe, reservations, metrics);
-            return Err(join_index_error(error, node));
-        },
-    };
-    let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            drop(indices);
-            reservations.release(gather_map_reservation, metrics);
-            release_bounded_join_side_frame(probe, reservations, metrics);
-            return Err(QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.gather_map_bytes",
-                "failed to observe bounded native join gather-map memory",
-                error,
-            ));
-        },
-    };
     let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
         context,
         node_id,
@@ -473,6 +367,129 @@ fn execute_bounded_root_hash_join_single_pass_inner_probe_indices(
     Ok((probe, indices, gather_map_reservation, gather_map_bytes))
 }
 
+fn execute_bounded_root_hash_join_multi_pass_probe_indices(
+    node_id: NodeId,
+    node: &JoinNode,
+    build: &BoundedRootHashJoinBuildState,
+    probe: BoundedJoinSideFrame,
+    probe_keys: &[String],
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<(BoundedJoinSideFrame, cudf::DataFrameHashJoinPairIndices, ActiveReservation, u64)> {
+    let output_size = match root_hash_join_multi_pass_probe_size(node, build, &probe, probe_keys, overrides) {
+        Ok(output_size) => output_size,
+        Err(error) => {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let gather_map_reservation_bytes = match build
+        .hash_join
+        .hash_join()
+        .probe_gather_map_reservation_size_bytes(output_size)
+        .map(|bytes| bytes as u64)
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.gather_map_reservation",
+                "failed to size bounded native reusable hash join gather maps",
+                error,
+            )
+            .with_fact("join_type", node.spec.join_type)
+            .with_fact("build_side", build.build_side));
+        },
+    };
+    let gather_map_reservation = match reservations.try_reserve(
+        bounded_join_request(
+            ReservationKind::GatherMap,
+            "join_gather_map",
+            gather_map_reservation_bytes,
+            reservations.budget(),
+            node_id,
+        ),
+        metrics,
+    ) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(error);
+        },
+    };
+    let indices =
+        match root_hash_join_multi_pass_probe_with_output_size(node, build, &probe, probe_keys, output_size, overrides)
+        {
+            Ok(indices) => indices,
+            Err(error) => {
+                reservations.release(gather_map_reservation, metrics);
+                release_bounded_join_side_frame(probe, reservations, metrics);
+                return Err(error);
+            },
+        };
+    let gather_map_bytes = match indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(indices);
+            reservations.release(gather_map_reservation, metrics);
+            release_bounded_join_side_frame(probe, reservations, metrics);
+            return Err(QueryError::from_cudf(
+                "nexus_query_engine.bounded.join.gather_map_bytes",
+                "failed to observe bounded native join gather-map memory",
+                error,
+            ));
+        },
+    };
+    Ok((probe, indices, gather_map_reservation, gather_map_bytes))
+}
+
+fn root_hash_join_multi_pass_probe_size(
+    node: &JoinNode,
+    build: &BoundedRootHashJoinBuildState,
+    probe: &BoundedJoinSideFrame,
+    probe_keys: &[String],
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<usize> {
+    match node.spec.join_type {
+        JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, overrides),
+        JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, overrides),
+        JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, overrides),
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
+    }
+    .map_err(|error| join_index_error(error, node))
+}
+
+fn root_hash_join_multi_pass_probe_with_output_size(
+    node: &JoinNode,
+    build: &BoundedRootHashJoinBuildState,
+    probe: &BoundedJoinSideFrame,
+    probe_keys: &[String],
+    output_size: usize,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<cudf::DataFrameHashJoinPairIndices> {
+    match node.spec.join_type {
+        JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
+            &probe.frame,
+            probe_keys,
+            output_size,
+            overrides,
+        ),
+        JoinType::Left => {
+            build.hash_join.hash_join().left_probe_with_output_size_in(&probe.frame, probe_keys, output_size, overrides)
+        },
+        JoinType::Full => {
+            build.hash_join.hash_join().full_probe_with_output_size_in(&probe.frame, probe_keys, output_size, overrides)
+        },
+        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
+            unreachable!("validated above")
+        },
+    }
+    .map_err(|error| join_index_error(error, node))
+}
+
 fn reusable_hash_join_single_pass_inner_probe_supported(
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
@@ -578,8 +595,8 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
         JoinSide::Right => &build.right_keys,
     };
     let overrides = execution_overrides(context);
-    if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
-        let (probe, indices, gather_map_reservation, gather_map_bytes) =
+    let (probe, indices, gather_map_reservation, gather_map_bytes) =
+        if reusable_hash_join_single_pass_inner_probe_supported(node, &build) {
             execute_bounded_root_hash_join_single_pass_inner_probe_indices(
                 node_id,
                 node,
@@ -589,100 +606,19 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_reside
                 reservations,
                 metrics,
                 &overrides,
-            )?;
-        let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
-            context,
-            node_id,
-            node,
-            &build,
-            &probe,
-            &indices,
-            reservations,
-            metrics,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                drop(indices);
-                reservations.release(gather_map_reservation, metrics);
-                release_bounded_join_side_frame(probe, reservations, metrics);
-                return Err(error);
-            },
+            )?
+        } else {
+            execute_bounded_root_hash_join_multi_pass_probe_indices(
+                node_id,
+                node,
+                &build,
+                probe,
+                probe_keys,
+                reservations,
+                metrics,
+                &overrides,
+            )?
         };
-        return Ok(BoundedRootHashJoinProbeState {
-            build,
-            probe,
-            indices,
-            gather_map_reservation,
-            gather_map_bytes,
-            output_reservation_bytes: output_reservation_bounds.output_reservation_bytes,
-            minimum_output_reservation_bytes: output_reservation_bounds.minimum_output_reservation_bytes,
-        });
-    }
-
-    let output_size = match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let gather_map_reservation_bytes = build
-        .hash_join
-        .hash_join()
-        .probe_gather_map_reservation_size_bytes(output_size)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.gather_map_reservation",
-                "failed to size bounded native reusable hash join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", build.build_side)
-        })?;
-    let gather_map_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_gather_map",
-            gather_map_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    )?;
-    let indices = match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::Left => build.hash_join.hash_join().left_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::Full => build.hash_join.hash_join().full_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.gather_map_bytes",
-            "failed to observe bounded native join gather-map memory",
-            error,
-        )
-    })?;
     let output_reservation_bounds = match root_hash_join_output_reservation_bounds(
         context,
         node_id,
@@ -768,70 +704,17 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_chunk_strea
         );
     }
 
-    let output_size = match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::Left => build.hash_join.hash_join().left_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::Full => build.hash_join.hash_join().full_probe_size_in(&probe.frame, probe_keys, &overrides),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let gather_map_reservation_bytes = build
-        .hash_join
-        .hash_join()
-        .probe_gather_map_reservation_size_bytes(output_size)
-        .map(|bytes| bytes as u64)
-        .map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.gather_map_reservation",
-                "failed to size bounded native reusable hash join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-            .with_fact("build_side", build.build_side)
-        })?;
-    let gather_map_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_gather_map",
-            gather_map_reservation_bytes,
-            reservations.budget(),
+    let (probe, indices, gather_map_reservation, gather_map_bytes) =
+        execute_bounded_root_hash_join_multi_pass_probe_indices(
             node_id,
-        ),
-        metrics,
-    )?;
-    let indices = match node.spec.join_type {
-        JoinType::Inner => build.hash_join.hash_join().inner_probe_with_output_size_in(
-            &probe.frame,
+            node,
+            build,
+            probe,
             probe_keys,
-            output_size,
+            reservations,
+            metrics,
             &overrides,
-        ),
-        JoinType::Left => build.hash_join.hash_join().left_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::Full => build.hash_join.hash_join().full_probe_with_output_size_in(
-            &probe.frame,
-            probe_keys,
-            output_size,
-            &overrides,
-        ),
-        JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark | JoinType::Cross => {
-            unreachable!("validated above")
-        },
-    }
-    .map_err(|error| join_index_error(error, node))?;
-    let gather_map_bytes = indices.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.gather_map_bytes",
-            "failed to observe bounded native join gather-map memory",
-            error,
-        )
-    })?;
+        )?;
 
     materialize_bounded_root_hash_join_probe_stream(
         context,

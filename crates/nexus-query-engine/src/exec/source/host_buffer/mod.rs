@@ -42,10 +42,7 @@ use lakehouse_cache::{
 #[cfg(test)]
 use lakehouse_cache_policy::LakehouseCachePolicy;
 pub(super) use metrics::HostBufferFetchRuntimeMetrics;
-use metrics::{
-    parquet_chunk_path_fact, parquet_chunk_stable_id_fact, parquet_file_path_fact, parquet_file_stable_id_fact,
-    record_host_buffer_chunk_read_metrics, record_host_buffer_file_read_metrics,
-};
+use metrics::{record_host_buffer_chunk_read_metrics, record_host_buffer_file_read_metrics};
 pub(super) use object_store_fetch::ScheduledHostParquetFetch;
 use object_store_fetch::{
     HostParquetBuffer, start_host_parquet_buffer_fetch, start_host_parquet_buffer_pipeline_fetch,
@@ -60,6 +57,11 @@ use ranged_parquet::{
     attach_fetch_facts as attach_ranged_fetch_facts, attach_file_fetch_facts as attach_ranged_fetch_file_facts,
     chunk_request as ranged_parquet_chunk_request, file_request as ranged_parquet_file_request,
     start_host_parquet_buffer_ranged_fetch,
+};
+
+use crate::exec::source::{
+    local_parquet_file_row_group_metadata_count, parquet_chunk_path_fact, parquet_chunk_stable_id_fact,
+    parquet_file_path_fact, parquet_file_stable_id_fact,
 };
 
 pub(super) fn read_object_store_parquet_file(
@@ -404,17 +406,6 @@ pub(super) struct UnboundedObjectStoreParquetChunkRead {
     pub(super) output: cudf::frame::dataframe::ParquetSourceChunkReadOutput,
     pub(super) observed_row_group_count: Option<u64>,
     pub(super) host_buffer_fetch: HostBufferFetchRuntimeMetrics,
-}
-
-fn represented_file_row_group_count(file: &LocalParquetFile) -> Option<usize> {
-    file.row_group_bytes
-        .as_ref()
-        .or(file.projected_row_group_uncompressed_bytes.as_ref())
-        .or(file.projected_row_group_compressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_uncompressed_bytes.as_ref())
-        .or(file.pure_filter_row_group_compressed_bytes.as_ref())
-        .or(file.row_group_rows.as_ref())
-        .map(Vec::len)
 }
 
 fn finish_with_full_fetch_fallback(

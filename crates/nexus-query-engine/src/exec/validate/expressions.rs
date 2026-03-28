@@ -5,9 +5,9 @@ use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
 
 use super::{
     types::{
-        is_decimal_type, require_arithmetic_type, require_boolean, require_comparable_types, require_compatible_types,
-        require_date_or_timestamp, require_integral_type, require_scalar_operator_value, require_string,
-        require_timestamp_second, temporal_duration_binary_output_type,
+        is_decimal_type, is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types,
+        require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
+        require_string, require_timestamp_second, temporal_duration_binary_output_type,
     },
     *,
 };
@@ -35,22 +35,7 @@ pub(super) fn validate_expr(
             require_scalar_operator_value(&data_type, "IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
-        Expr::Cast { expr, target_type } => {
-            let source_type =
-                validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
-            if !is_supported_arrow_cast(&source_type, target_type)
-                && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
-            {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedType,
-                    "nexus_query_engine.plan.validate_expr",
-                    "native cast source and target types are not supported",
-                )
-                .with_fact("source_type", format!("{source_type:?}"))
-                .with_fact("target_type", format!("{target_type:?}")));
-            }
-            Ok(target_type.clone())
-        },
+        Expr::Cast { expr, target_type } => validate_cast_expr(expr, target_type, input_schema, available_columns),
         Expr::TryCast { expr, target_type } => {
             validate_try_cast_expr(expr, target_type, input_schema, available_columns)
         },
@@ -169,7 +154,7 @@ fn validate_try_cast_expr(
     available_columns: &BTreeSet<String>,
 ) -> Result<ArrowDataType> {
     let source_type = validate_expr(input, input_schema, available_columns)?;
-    if !is_string_arrow_type(&source_type) || !is_integer_arrow_type(target_type) {
+    if !is_string_arrow_type(&source_type) || !is_integral_type(target_type) {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "nexus_query_engine.plan.validate_expr",
@@ -185,18 +170,25 @@ fn is_string_arrow_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View)
 }
 
-fn is_integer_arrow_type(data_type: &ArrowDataType) -> bool {
-    matches!(
-        data_type,
-        ArrowDataType::Int8
-            | ArrowDataType::Int16
-            | ArrowDataType::Int32
-            | ArrowDataType::Int64
-            | ArrowDataType::UInt8
-            | ArrowDataType::UInt16
-            | ArrowDataType::UInt32
-            | ArrowDataType::UInt64
-    )
+fn validate_cast_expr(
+    expr: &Expr,
+    target_type: &ArrowDataType,
+    input_schema: &SchemaRef,
+    available_columns: &BTreeSet<String>,
+) -> Result<ArrowDataType> {
+    let source_type = validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
+    if !is_supported_arrow_cast(&source_type, target_type)
+        && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.plan.validate_expr",
+            "native cast source and target types are not supported",
+        )
+        .with_fact("source_type", format!("{source_type:?}"))
+        .with_fact("target_type", format!("{target_type:?}")));
+    }
+    Ok(target_type.clone())
 }
 
 fn validate_timestamp_second_integer_cast_expr(
@@ -232,22 +224,7 @@ fn validate_expr_with_expected_type(
     available_columns: &BTreeSet<String>,
 ) -> Result<ArrowDataType> {
     match expr {
-        Expr::Cast { expr, target_type } => {
-            let source_type =
-                validate_expr_with_expected_type(expr, Some(target_type), input_schema, available_columns)?;
-            if !is_supported_arrow_cast(&source_type, target_type)
-                && !bounded_nonnegative_integral_cast_is_supported(expr, &source_type, target_type)
-            {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedType,
-                    "nexus_query_engine.plan.validate_expr",
-                    "native cast source and target types are not supported",
-                )
-                .with_fact("source_type", format!("{source_type:?}"))
-                .with_fact("target_type", format!("{target_type:?}")));
-            }
-            Ok(target_type.clone())
-        },
+        Expr::Cast { expr, target_type } => validate_cast_expr(expr, target_type, input_schema, available_columns),
         Expr::TryCast { expr, target_type } => {
             validate_try_cast_expr(expr, target_type, input_schema, available_columns)
         },
@@ -703,20 +680,6 @@ fn target_integral_max(data_type: &ArrowDataType) -> Option<u128> {
         ArrowDataType::UInt64 => Some(u128::from(u64::MAX)),
         _ => None,
     }
-}
-
-fn is_integral_type(data_type: &ArrowDataType) -> bool {
-    matches!(
-        data_type,
-        ArrowDataType::Int8
-            | ArrowDataType::Int16
-            | ArrowDataType::Int32
-            | ArrowDataType::Int64
-            | ArrowDataType::UInt8
-            | ArrowDataType::UInt16
-            | ArrowDataType::UInt32
-            | ArrowDataType::UInt64
-    )
 }
 
 fn validate_case_expr(

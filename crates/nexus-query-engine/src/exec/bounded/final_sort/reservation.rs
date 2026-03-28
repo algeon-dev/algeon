@@ -27,16 +27,7 @@ pub(super) fn finalize_final_sort_output_reservation(
     metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
-        RuntimeResourceFacts {
-            memory_boundary: "final_sort_output",
-            stage: "final_sort",
-            node_id,
-            attempt,
-            max_attempts,
-            resume_boundary: "final_sort",
-            metrics,
-        }
-        .attach_to(error)
+        final_sort_runtime_facts("final_sort_output", node_id, attempt, max_attempts, metrics, error)
     })?;
 
     if output_bytes > reservation.bytes() {

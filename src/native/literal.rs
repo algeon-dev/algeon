@@ -1,5 +1,10 @@
+use std::sync::Arc;
+
 use arrow::datatypes::{DataType, IntervalMonthDayNanoType, TimeUnit};
-use datafusion::common::ScalarValue;
+use datafusion::{
+    common::ScalarValue,
+    physical_expr::{PhysicalExpr, expressions::Literal},
+};
 use nexus_query_engine::{LiteralValue as NativeLiteralValue, is_supported_arrow_type};
 
 use crate::policy::FallbackReason;
@@ -129,6 +134,51 @@ pub(super) fn parse_yyyy_mm_dd_date32(value: &str) -> Option<i32> {
         return None;
     }
     Some(days_from_civil(year, month, day))
+}
+
+pub(crate) fn literal_string(expr: &Arc<dyn PhysicalExpr>) -> Result<String, FallbackReason> {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    match literal.value() {
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value)) => {
+            Ok(value.clone())
+        },
+        _ => Err(FallbackReason::UnsupportedExpression),
+    }
+}
+
+pub(crate) fn literal_i32(expr: &Arc<dyn PhysicalExpr>) -> Result<i32, FallbackReason> {
+    let Some(literal) = expr.downcast_ref::<Literal>() else {
+        return Err(FallbackReason::UnsupportedExpression);
+    };
+    match literal.value() {
+        ScalarValue::Int8(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::Int16(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::Int32(Some(value)) => Ok(*value),
+        ScalarValue::Int64(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+        },
+        ScalarValue::UInt8(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::UInt16(Some(value)) => Ok(i32::from(*value)),
+        ScalarValue::UInt32(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+        },
+        ScalarValue::UInt64(Some(value)) => {
+            i32::try_from(*value).map_err(|_error| FallbackReason::UnsupportedExpression)
+        },
+        _ => Err(FallbackReason::UnsupportedExpression),
+    }
+}
+
+pub(crate) fn substring_stop_position(start: i32, length: i32) -> Option<i32> {
+    let zero_based_start = start.checked_sub(1)?;
+    zero_based_start.checked_add(length)
+}
+
+pub(crate) fn is_interval_literal_expr(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.downcast_ref::<Literal>()
+        .is_some_and(|literal| matches!(literal.value(), ScalarValue::IntervalMonthDayNano(Some(_))))
 }
 
 fn parse_digits_i32(bytes: &[u8]) -> Option<i32> {

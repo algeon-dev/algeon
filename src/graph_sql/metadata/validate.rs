@@ -11,8 +11,8 @@ use serde_json::{Map, Value};
 use super::{
     super::{
         CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsSourceVertex, CugraphSqlConfig,
-        CugraphTableReference, CugraphVertexIdDomain, parse_cugraph_algorithm_spec, plan_error, stable_result_schema,
-        vertex_id_domain_for_call,
+        CugraphTableReference, CugraphVertexIdDomain, datafusion_table_reference, parse_cugraph_algorithm_spec,
+        stable_result_schema, vertex_id_domain_for_call,
     },
     ERROR_ALGORITHM_DISABLED, ERROR_COLUMN_NOT_FOUND, ERROR_INVALID_ARGUMENT, ERROR_INVALID_CALL_JSON, ERROR_OK,
     ERROR_TABLE_NOT_FOUND, ERROR_UNKNOWN_ALGORITHM, ERROR_UNSUPPORTED_OPTION, ERROR_UNSUPPORTED_VERTEX_DTYPE,
@@ -527,15 +527,6 @@ async fn resolve_table_provider(
         .ok_or_else(|| format!("No table named '{}' for cuGraph edge source", table_ref))
 }
 
-fn datafusion_table_reference(table: &CugraphTableReference) -> TableReference {
-    match table.parts() {
-        [table] => TableReference::bare(table.as_str()),
-        [schema, table] => TableReference::partial(schema.as_str(), table.as_str()),
-        [catalog, schema, table] => TableReference::full(catalog.as_str(), schema.as_str(), table.as_str()),
-        _ => unreachable!("CugraphTableReference::parse validates one to three identifier parts"),
-    }
-}
-
 fn parse_error_code(message: &str) -> &'static str {
     if message.contains("unknown option") || message.contains("requires vertex_radius side input") {
         ERROR_UNSUPPORTED_OPTION
@@ -548,19 +539,6 @@ fn parse_error_code(message: &str) -> &'static str {
 
 fn vertex_domain_error_code(message: &str) -> &'static str {
     if message.contains("unsupported dtype") { ERROR_UNSUPPORTED_VERTEX_DTYPE } else { ERROR_VERTEX_DTYPE_MISMATCH }
-}
-
-pub(super) fn literal_string_arg(args: &[Expr], index: usize, name: &str) -> Result<String> {
-    match args.get(index) {
-        Some(Expr::Literal(value, _)) => match value {
-            ScalarValue::Utf8(Some(value))
-            | ScalarValue::LargeUtf8(Some(value))
-            | ScalarValue::Utf8View(Some(value)) => Ok(value.clone()),
-            _ => Err(plan_error(format!("{name} must be a non-null string literal"))),
-        },
-        Some(_) => Err(plan_error(format!("{name} must be a literal"))),
-        None => Err(plan_error(format!("missing {name} argument"))),
-    }
 }
 
 fn json_string(value: &Value, key: &str) -> std::result::Result<String, (&'static str, String)> {

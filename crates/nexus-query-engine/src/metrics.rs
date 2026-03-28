@@ -10,6 +10,7 @@ use cudf::ExecutionBudgetReport;
 
 use crate::{
     dynamic_filter::{DynamicFilter, DynamicFilterConsumerReductionStage, DynamicFilterRoute},
+    harness::max_option,
     runtime::{ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryReservationRequest, MemorySpaceId, ReservationKind},
 };
 
@@ -797,8 +798,8 @@ impl QueryMetrics {
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
         let observed_peak_bytes = report.allocator_high_water_bytes().map(|bytes| bytes as u64);
         let retained_bytes = report.retained_bytes().map(|bytes| bytes as u64);
-        self.max_task_observed_peak_bytes = max_optional(self.max_task_observed_peak_bytes, observed_peak_bytes);
-        self.max_task_retained_bytes = max_optional(self.max_task_retained_bytes, retained_bytes);
+        self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, observed_peak_bytes);
+        self.max_task_retained_bytes = max_option(self.max_task_retained_bytes, retained_bytes);
         if let Some(compiled_task_id) = self.current_compiled_task_id.clone() {
             self.record_task_budget_observation(&compiled_task_id, observed_peak_bytes, retained_bytes);
         }
@@ -950,15 +951,15 @@ impl QueryMetrics {
             ..Default::default()
         });
         row.operator_kind = operator_kind.clone();
-        row.max_observed_peak_bytes = max_optional(row.max_observed_peak_bytes, observed_peak_bytes);
-        row.max_retained_bytes = max_optional(row.max_retained_bytes, retained_bytes);
+        row.max_observed_peak_bytes = max_option(row.max_observed_peak_bytes, observed_peak_bytes);
+        row.max_retained_bytes = max_option(row.max_retained_bytes, retained_bytes);
 
         let operator = self
             .task_operator_metrics
             .entry(operator_kind.clone())
             .or_insert_with(|| TaskOperatorMetrics { operator_kind, ..Default::default() });
-        operator.max_observed_peak_bytes = max_optional(operator.max_observed_peak_bytes, observed_peak_bytes);
-        operator.max_retained_bytes = max_optional(operator.max_retained_bytes, retained_bytes);
+        operator.max_observed_peak_bytes = max_option(operator.max_observed_peak_bytes, observed_peak_bytes);
+        operator.max_retained_bytes = max_option(operator.max_retained_bytes, retained_bytes);
     }
 
     /// Records that a source chunk was planned.
@@ -1218,11 +1219,10 @@ impl QueryMetrics {
         self.source_read_runtime_rows.extend(other.source_read_runtime_rows);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
-        self.peak_device_memory_bytes = max_optional(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
+        self.peak_device_memory_bytes = max_option(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
         self.resident_dataframe_peak_bytes =
-            max_optional(self.resident_dataframe_peak_bytes, other.resident_dataframe_peak_bytes);
-        self.allocator_high_water_bytes =
-            max_optional(self.allocator_high_water_bytes, other.allocator_high_water_bytes);
+            max_option(self.resident_dataframe_peak_bytes, other.resident_dataframe_peak_bytes);
+        self.allocator_high_water_bytes = max_option(self.allocator_high_water_bytes, other.allocator_high_water_bytes);
         self.reservation_requested_bytes =
             self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
         self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
@@ -1230,8 +1230,8 @@ impl QueryMetrics {
         self.reservation_denied_count = self.reservation_denied_count.saturating_add(other.reservation_denied_count);
         self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(other.max_task_reservation_bytes);
         self.max_task_observed_peak_bytes =
-            max_optional(self.max_task_observed_peak_bytes, other.max_task_observed_peak_bytes);
-        self.max_task_retained_bytes = max_optional(self.max_task_retained_bytes, other.max_task_retained_bytes);
+            max_option(self.max_task_observed_peak_bytes, other.max_task_observed_peak_bytes);
+        self.max_task_retained_bytes = max_option(self.max_task_retained_bytes, other.max_task_retained_bytes);
         self.task_kind_by_compiled_task_id.extend(other.task_kind_by_compiled_task_id);
         for (operator_kind, metrics) in other.task_operator_metrics {
             self.task_operator_metrics
@@ -1908,14 +1908,6 @@ impl Default for SourceReadParquetEvidenceMetrics {
     }
 }
 
-fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
 fn optional_str(value: Option<&str>) -> &str {
     value.unwrap_or("none")
 }
@@ -2013,8 +2005,8 @@ impl TaskOperatorMetrics {
         self.reservation_released_bytes =
             self.reservation_released_bytes.saturating_add(other.reservation_released_bytes);
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
-        self.max_observed_peak_bytes = max_optional(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
-        self.max_retained_bytes = max_optional(self.max_retained_bytes, other.max_retained_bytes);
+        self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
+        self.max_retained_bytes = max_option(self.max_retained_bytes, other.max_retained_bytes);
         self.live_reserved_bytes = self.live_reserved_bytes.saturating_add(other.live_reserved_bytes);
     }
 }
@@ -2077,8 +2069,8 @@ impl TaskRuntimeMetrics {
         self.reservation_released_bytes =
             self.reservation_released_bytes.saturating_add(other.reservation_released_bytes);
         self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
-        self.max_observed_peak_bytes = max_optional(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
-        self.max_retained_bytes = max_optional(self.max_retained_bytes, other.max_retained_bytes);
+        self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
+        self.max_retained_bytes = max_option(self.max_retained_bytes, other.max_retained_bytes);
         self.live_reserved_bytes = self.live_reserved_bytes.saturating_add(other.live_reserved_bytes);
     }
 }

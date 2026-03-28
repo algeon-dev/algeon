@@ -402,6 +402,22 @@ pub(in crate::exec) struct ResidentGpuFrame {
 
 pub(in crate::exec) type CommittedPartial = ResidentGpuFrame;
 
+pub(in crate::exec::bounded) fn reconcile_work_reservation_to_output(
+    reservations: &mut ReservationTracker,
+    work_reservation: &mut ActiveReservation,
+    output_bytes: u64,
+    output_request: &MemoryReservationRequest,
+    metrics: &mut QueryMetrics,
+) -> Result<()> {
+    if output_bytes > work_reservation.bytes() {
+        let delta = output_bytes.saturating_sub(work_reservation.bytes());
+        reservations.try_grow(work_reservation, output_request.clone().with_requested_bytes(delta), metrics)?;
+    } else {
+        reservations.shrink_to_observed_with_request(work_reservation, output_bytes, output_request.clone(), metrics);
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(in crate::exec) struct ReservationTracker {
     memory_space: MemorySpaceId,
@@ -1005,5 +1021,106 @@ impl ReservationTracker {
         .with_fact("operation", operation)
         .with_fact("reservation_memory_space", reservation.memory_space())
         .with_fact("tracker_memory_space", self.memory_space))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_request(
+        kind: ReservationKind,
+        boundary: &'static str,
+        bytes: u64,
+        budget: u64,
+    ) -> MemoryReservationRequest {
+        MemoryReservationRequest::new(kind, bytes, budget).with_memory_boundary(boundary).with_stage("test")
+    }
+
+    #[test]
+    fn reconcile_work_reservation_to_output_grows_with_output_request_context() -> Result<()> {
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let mut work = reservations.try_reserve_work(
+            test_request(ReservationKind::OperatorOutput, "operator_work", 40, reservations.budget()),
+            &mut metrics,
+        )?;
+        let output_request =
+            test_request(ReservationKind::OperatorOutput, "operator_output", 60, reservations.budget());
+
+        reconcile_work_reservation_to_output(&mut reservations, &mut work, 60, &output_request, &mut metrics)?;
+
+        assert_eq!(work.bytes(), 60);
+        assert_eq!(reservations.reserved_bytes(), 60);
+        let actions = metrics.reservation_events.iter().map(|event| event.action).collect::<Vec<_>>();
+        assert_eq!(actions, [MemoryReservationEventAction::Reserve, MemoryReservationEventAction::Grow]);
+        let boundaries =
+            metrics.reservation_events.iter().map(|event| event.memory_boundary.as_str()).collect::<Vec<_>>();
+        assert_eq!(boundaries, ["operator_work", "operator_output"]);
+
+        let output = reservations.transfer(work, output_request, &mut metrics);
+        reservations.release(output, &mut metrics);
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_work_reservation_to_output_shrinks_with_output_request_context() -> Result<()> {
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let mut work = reservations.try_reserve_work(
+            test_request(ReservationKind::OperatorOutput, "operator_work", 60, reservations.budget()),
+            &mut metrics,
+        )?;
+        let output_request =
+            test_request(ReservationKind::OperatorOutput, "operator_output", 40, reservations.budget());
+
+        reconcile_work_reservation_to_output(&mut reservations, &mut work, 40, &output_request, &mut metrics)?;
+
+        assert_eq!(work.bytes(), 40);
+        assert_eq!(reservations.reserved_bytes(), 40);
+        let actions = metrics.reservation_events.iter().map(|event| event.action).collect::<Vec<_>>();
+        assert_eq!(actions, [MemoryReservationEventAction::Reserve, MemoryReservationEventAction::Shrink]);
+        let deltas = metrics.reservation_events.iter().map(|event| event.charged_delta_bytes).collect::<Vec<_>>();
+        assert_eq!(deltas, [60, -20]);
+        let boundaries =
+            metrics.reservation_events.iter().map(|event| event.memory_boundary.as_str()).collect::<Vec<_>>();
+        assert_eq!(boundaries, ["operator_work", "operator_output"]);
+
+        let output = reservations.transfer(work, output_request, &mut metrics);
+        reservations.release(output, &mut metrics);
+        Ok(())
+    }
+
+    #[test]
+    fn reconcile_work_reservation_to_output_denial_leaves_release_to_caller() -> Result<()> {
+        let mut metrics = QueryMetrics::default();
+        let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 50);
+        let mut work = reservations.try_reserve_work(
+            test_request(ReservationKind::OperatorOutput, "operator_work", 40, reservations.budget()),
+            &mut metrics,
+        )?;
+        let output_request =
+            test_request(ReservationKind::OperatorOutput, "operator_output", 60, reservations.budget());
+
+        let error =
+            reconcile_work_reservation_to_output(&mut reservations, &mut work, 60, &output_request, &mut metrics)
+                .expect_err("grow beyond budget should be denied");
+
+        assert_eq!(error.fact_value("memory_boundary"), Some("operator_output"));
+        assert_eq!(error.fact_value("requested_bytes"), Some("20"));
+        assert_eq!(error.fact_value("granted_bytes"), Some("10"));
+        assert_eq!(work.bytes(), 40);
+        assert_eq!(reservations.reserved_bytes(), 40);
+        let denied = metrics
+            .reservation_events
+            .iter()
+            .find(|event| event.outcome == MemoryReservationEventOutcome::Denied)
+            .expect("grow denial should be recorded");
+        assert_eq!(denied.action, MemoryReservationEventAction::Grow);
+        assert_eq!(denied.memory_boundary, "operator_output");
+
+        reservations.release(work, &mut metrics);
+        assert_eq!(reservations.reserved_bytes(), 0);
+        Ok(())
     }
 }

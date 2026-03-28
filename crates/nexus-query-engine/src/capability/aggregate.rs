@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use arrow::datatypes::{DataType, Schema};
 
 use crate::{
+    datatypes::is_arrow_fixed_width,
     error::{QueryError, QueryErrorCode, Result as QueryResult},
     expr::{AggregateFunction, AggregateSpec, Expr},
     plan::{NodeId, PlanNode, QueryPlan},
@@ -771,29 +772,7 @@ fn aggregate_encoded_key_string_dtype(data_type: &DataType) -> bool {
 }
 
 fn aggregate_encoded_key_companion_dtype(data_type: &DataType) -> bool {
-    matches!(
-        data_type,
-        DataType::Boolean
-            | DataType::Int8
-            | DataType::Int16
-            | DataType::Int32
-            | DataType::Int64
-            | DataType::UInt8
-            | DataType::UInt16
-            | DataType::UInt32
-            | DataType::UInt64
-            | DataType::Float16
-            | DataType::Float32
-            | DataType::Float64
-            | DataType::Date32
-            | DataType::Date64
-            | DataType::Time32(_)
-            | DataType::Time64(_)
-            | DataType::Timestamp(_, _)
-            | DataType::Duration(_)
-            | DataType::Decimal128(_, _)
-            | DataType::Decimal256(_, _)
-    )
+    is_arrow_fixed_width(data_type) || matches!(data_type, DataType::Float16)
 }
 
 #[cfg(test)]

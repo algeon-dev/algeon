@@ -81,7 +81,7 @@ pub(super) fn apply_source_chunk_scan_limit(
             "failed to apply native source chunk scan limit",
             error,
         )
-        .with_fact("path", chunk_path_fact(chunk))
+        .with_fact("path", parquet_chunk_path_fact(chunk))
         .with_fact("chunk_index", chunk.chunk_index)
         .with_fact("file_index", chunk.file_index)
         .with_fact("input_rows", row_count)

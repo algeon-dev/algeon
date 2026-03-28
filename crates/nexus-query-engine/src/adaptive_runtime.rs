@@ -13,6 +13,7 @@ use arrow::datatypes::DataType;
 
 use crate::{
     expr::{AggregateFunction, BinaryOp, Expr, LiteralValue},
+    harness::max_option,
     metrics::{MemoryReservationEventAction, MemoryReservationEventOutcome, QueryMetrics, TaskRuntimeMetrics},
     pipeline::{CompiledPipeline, PipelineTask},
     plan::{PlanNode, QueryPlan, ResultSink},
@@ -179,11 +180,7 @@ impl AdaptiveMemoryHistorySummary {
     fn record(&mut self, observation: &AdaptiveMemoryObservation) {
         self.observation_count = self.observation_count.saturating_add(1);
         self.max_resident_dataframe_peak_bytes =
-            match (self.max_resident_dataframe_peak_bytes, observation.resident_dataframe_peak_bytes) {
-                (Some(left), Some(right)) => Some(left.max(right)),
-                (Some(value), None) | (None, Some(value)) => Some(value),
-                (None, None) => None,
-            };
+            max_option(self.max_resident_dataframe_peak_bytes, observation.resident_dataframe_peak_bytes);
         self.max_reservation_granted_bytes =
             self.max_reservation_granted_bytes.max(observation.reservation_granted_bytes);
         self.max_source_chunks_committed = self.max_source_chunks_committed.max(observation.source_chunks_committed);
@@ -214,8 +211,8 @@ impl AdaptiveTaskMemoryHistorySummary {
             self.max_reservation_requested_bytes.max(observation.reservation_requested_bytes);
         self.max_reservation_granted_bytes =
             self.max_reservation_granted_bytes.max(observation.reservation_granted_bytes);
-        self.max_observed_peak_bytes = max_optional(self.max_observed_peak_bytes, observation.observed_peak_bytes);
-        self.max_retained_bytes = max_optional(self.max_retained_bytes, observation.retained_bytes);
+        self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, observation.observed_peak_bytes);
+        self.max_retained_bytes = max_option(self.max_retained_bytes, observation.retained_bytes);
         self.max_reservation_released_bytes =
             self.max_reservation_released_bytes.max(observation.reservation_released_bytes);
     }
@@ -225,7 +222,7 @@ impl AdaptiveTaskMemoryHistorySummary {
     /// Returns `None` when history is absent, zero, or no tighter than the
     /// conservative bound. The recommendation is capped by `conservative_bytes`.
     pub fn recommended_reservation_bytes(&self, conservative_bytes: u64) -> Option<u64> {
-        let observed_bytes = max_optional(self.max_observed_peak_bytes, self.max_retained_bytes)?;
+        let observed_bytes = max_option(self.max_observed_peak_bytes, self.max_retained_bytes)?;
         if observed_bytes == 0 || observed_bytes >= conservative_bytes {
             return None;
         }
@@ -347,14 +344,6 @@ impl AdaptiveMemoryHistory {
                 );
             }
         }
-    }
-}
-
-fn max_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(left.max(right)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
     }
 }
 

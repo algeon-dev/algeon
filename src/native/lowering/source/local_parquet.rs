@@ -13,11 +13,11 @@ use nexus_query_engine::{
 };
 
 use super::{
-    add_source_filter_projection, combine_scan_limits, lower_required_file_source_projection_exprs,
-    project_scan_output_columns, reader_predicate_proves_local_parquet_at_most_one_row, required_scan_projection,
-    required_scan_projection_needs_native_projection, required_scan_projection_requires_native_projection,
-    required_scan_projection_schema, required_source_scan_output_indices, source_bindings_for_schema,
-    source_reader_pushdown_predicate,
+    SourceUnprojectedFilterOutput, combine_scan_limits, lower_required_file_source_projection_exprs,
+    lower_source_filter_and_projection, reader_predicate_proves_local_parquet_at_most_one_row,
+    required_scan_projection, required_scan_projection_needs_native_projection,
+    required_scan_projection_requires_native_projection, required_scan_projection_schema,
+    required_source_scan_output_indices, source_bindings_for_schema, source_reader_pushdown_predicate,
 };
 use crate::{
     native::{
@@ -180,56 +180,16 @@ pub(super) fn lower_local_parquet_source_input(
     let scan_output_bindings = source_bindings_for_schema(&scan_output_schema, source_exec.schema());
     let scan_output = LoweredNativeInput::with_bindings(scan_output_node, scan_output_schema, scan_output_bindings);
     if let Some(filter) = filter {
-        if reader_pushdown_covers_filter {
-            if let Some(projection) = filter.projection() {
-                let projected = add_source_filter_projection(
-                    builder,
-                    scan_output.node,
-                    &scan_output,
-                    filter.schema(),
-                    projection,
-                    required_output_fields,
-                )?;
-                return Ok(projected);
-            }
-            return project_scan_output_columns(
-                builder,
-                scan_output.node,
-                scan_output.schema,
-                scan_output.bindings,
-                required_output_fields,
-            );
-        }
-        let filtered_node = builder.add_filter(
-            scan_output.node,
-            lower_physical_expr_with_bindings(
-                filter.predicate(),
-                &filter.input().schema(),
-                Some(&scan_output.bindings),
-            )?,
-            Arc::clone(&scan_output.schema),
-        );
-        if let Some(projection) = filter.projection() {
-            let projected = add_source_filter_projection(
-                builder,
-                filtered_node,
-                &scan_output,
-                filter.schema(),
-                projection,
-                required_output_fields,
-            )?;
-            Ok(projected)
-        } else {
-            project_scan_output_columns(
-                builder,
-                filtered_node,
-                scan_output.schema,
-                scan_output.bindings,
-                required_output_fields,
-            )
-        }
+        lower_source_filter_and_projection(
+            builder,
+            scan_output,
+            filter,
+            reader_pushdown_covers_filter,
+            required_output_fields,
+            SourceUnprojectedFilterOutput::ProjectRequiredOutput,
+        )
     } else {
-        project_scan_output_columns(
+        super::project_scan_output_columns(
             builder,
             scan_output.node,
             scan_output.schema,

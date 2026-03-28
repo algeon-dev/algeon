@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use arrow::datatypes::{Schema, SchemaRef};
 
-use super::{outer_join_null_rejection_policy::OuterJoinNullRejectionPolicy, rewrite};
+use super::{
+    outer_join_null_rejection_policy::OuterJoinNullRejectionPolicy, rewrite, simple_projection_column,
+    unique_join_output_for_name,
+};
 use crate::{
     expr::{ColumnRef, Expr},
     plan::{
@@ -541,20 +544,6 @@ fn unique_projection_expr_for_output<'a>(
     matches.next().is_none().then_some(&first.expr)
 }
 
-fn simple_projection_column(expr: &Expr) -> Option<&ColumnRef> {
-    match expr {
-        Expr::Column(column) => Some(column),
-        Expr::Alias { expr, .. } => simple_projection_column(expr),
-        _ => None,
-    }
-}
-
-fn unique_join_output_for_name<'a>(join: &'a JoinNode, output_name: &str) -> Option<&'a crate::plan::JoinOutputColumn> {
-    let mut matches = join.spec.output_projection.iter().filter(|output| output.output_name == output_name);
-    let first = matches.next()?;
-    matches.next().is_none().then_some(first)
-}
-
 fn expr_references_any_column_name(expr: &Expr, column_names: &[&str]) -> bool {
     match expr {
         Expr::Column(column) => column_names.contains(&column.name()) || column_names.contains(&column.display_name()),
@@ -635,14 +624,7 @@ fn null_introducing_input_is_large(plan: &QueryPlan, outer_join_id: NodeId) -> b
 }
 
 fn consumer_counts(plan: &QueryPlan) -> Vec<usize> {
-    let mut counts = vec![0; plan.nodes().len()];
-    for node in plan.nodes() {
-        for input in node.input_ids() {
-            if let Some(count) = counts.get_mut(input.index()) {
-                *count += 1;
-            }
-        }
-    }
+    let mut counts = rewrite::parent_counts(plan);
     if let Some(count) = counts.get_mut(plan.sink().input().index()) {
         *count += 1;
     }
@@ -653,5 +635,27 @@ const fn join_side_index(side: JoinSide) -> usize {
     match side {
         JoinSide::Left => 0,
         JoinSide::Right => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::Schema;
+
+    use super::consumer_counts;
+    use crate::{LiteralBatchSource, QueryPlanBuilder, SourceNode};
+
+    #[test]
+    fn consumer_counts_includes_result_sink_input() {
+        let schema = Arc::new(Schema::empty());
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
+        let plan = builder.finish_with_host_sink(source);
+
+        let counts = consumer_counts(&plan);
+
+        assert_eq!(counts.get(source.index()).copied(), Some(1));
     }
 }
