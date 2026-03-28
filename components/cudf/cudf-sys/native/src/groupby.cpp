@@ -1,4 +1,5 @@
 #include "groupby.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/aggregation.hpp>
@@ -145,6 +146,24 @@ cudf_status_t cudf_groupby_aggregate(
     cudf_table_handle* out_keys,
     cudf_column_handle** out_values,
     int32_t* out_total_columns) {
+  return cudf_groupby_aggregate_ex(keys, values, aggregations, agg_counts,
+                                   num_requests, num_aggregations,
+                                   keys_null_policy, out_keys, out_values,
+                                   out_total_columns, nullptr);
+}
+
+cudf_status_t cudf_groupby_aggregate_ex(
+    cudf_table_view_handle keys,
+    const cudf_column_view_handle* values,
+    const cudf_aggregation_handle* aggregations,
+    const int32_t* agg_counts,
+    int32_t num_requests,
+    int32_t num_aggregations,
+    cudf_null_policy_t keys_null_policy,
+    cudf_table_handle* out_keys,
+    cudf_column_handle** out_values,
+    int32_t* out_total_columns,
+    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out_keys, "out_keys is null");
   *out_keys = nullptr;
   CUDF_RUST_NULL_CHECK(out_values, "out_values is null");
@@ -173,6 +192,12 @@ cudf_status_t cudf_groupby_aggregate(
     return status;
   }
   CUDF_RUST_TRY {
+    auto exec = cudf_exec_context{cudf::get_default_stream(),
+                                   cudf::get_current_device_resource_ref(),
+                                   nullptr};
+    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* keys_view = static_cast<cudf::table_view*>(keys);
 
     cudf::groupby::groupby gb(*keys_view, null_policy);
@@ -212,7 +237,7 @@ cudf_status_t cudf_groupby_aggregate(
       requests.push_back(std::move(req));
     }
 
-    auto [result_keys, result_values] = gb.aggregate(requests);
+    auto [result_keys, result_values] = gb.aggregate(requests, exec.stream, exec.mr);
 
     // Flatten result columns into a single array.
     int32_t total = 0;

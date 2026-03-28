@@ -87,6 +87,7 @@ pub type cudf_column_view_handle = *mut c_void;
 pub type cudf_table_handle = *mut c_void;
 pub type cudf_table_view_handle = *mut c_void;
 pub type cudf_scalar_handle = *mut c_void;
+pub type cudf_device_buffer_handle = *mut c_void;
 pub type cudf_stream_handle = *mut c_void;
 pub type cudf_memory_resource_handle = *mut c_void;
 
@@ -396,6 +397,56 @@ extern "C" {
         total_chars_bytes: *mut i32,
     ) -> cudf_status_t;
 
+    // -- DeviceBuffer (owned GPU memory) -------------------------------------
+
+    /// Allocate a device buffer of `size` bytes using the current per-device
+    /// RMM memory resource. Contents are uninitialized.
+    pub fn cudf_device_buffer_create(size: usize, out: *mut cudf_device_buffer_handle) -> cudf_status_t;
+
+    /// Release a device buffer. Safe to call with null (no-op).
+    /// Must NOT be called if the buffer was previously adopted by a column.
+    pub fn cudf_device_buffer_destroy(handle: cudf_device_buffer_handle);
+
+    /// Get the device pointer from a buffer handle.
+    pub fn cudf_device_buffer_data(handle: cudf_device_buffer_handle, out: *mut *mut c_void) -> cudf_status_t;
+
+    /// Get the size in bytes of a buffer.
+    pub fn cudf_device_buffer_size(handle: cudf_device_buffer_handle, out: *mut usize) -> cudf_status_t;
+
+    /// Copy host data into the device buffer. Synchronizes the default stream
+    /// before return.
+    pub fn cudf_device_buffer_copy_from_host(
+        handle: cudf_device_buffer_handle,
+        host_data: *const c_void,
+        size: usize,
+    ) -> cudf_status_t;
+
+    /// Create a column by adopting (moving) an existing device buffer.
+    /// Zero-copy: no device-to-device memcpy occurs.
+    ///
+    /// On success, the buffer handle is consumed and must NOT be destroyed.
+    /// On failure, the buffer handle remains valid.
+    pub fn cudf_column_adopt_device_buffer(
+        type_id: cudf_type_id_t,
+        buffer: cudf_device_buffer_handle,
+        row_count: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    /// Create a nullable column by adopting data and null-mask buffers.
+    /// Zero-copy: no device-to-device memcpy occurs.
+    ///
+    /// On success, both buffer handles are consumed and must NOT be destroyed.
+    /// On failure, both remain valid.
+    pub fn cudf_column_adopt_device_buffer_nullable(
+        type_id: cudf_type_id_t,
+        data_buffer: cudf_device_buffer_handle,
+        null_mask_buffer: cudf_device_buffer_handle,
+        null_count: i32,
+        row_count: i32,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     // -- Table (owning) ------------------------------------------------------
 
     /// Create a table from owning column handles.
@@ -542,6 +593,16 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_io_read_parquet_ex(
+        filepath: *const c_char,
+        columns: *const *const c_char,
+        num_columns: i32,
+        skip_rows: i64,
+        num_rows: i64,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_io_read_parquet_with_metadata(
         filepath: *const c_char,
         columns: *const *const c_char,
@@ -551,6 +612,18 @@ extern "C" {
         out_table: *mut cudf_table_handle,
         out_names: *mut *mut *mut c_char,
         out_num_names: *mut i32,
+    ) -> cudf_status_t;
+
+    pub fn cudf_io_read_parquet_with_metadata_ex(
+        filepath: *const c_char,
+        columns: *const *const c_char,
+        num_columns: i32,
+        skip_rows: i64,
+        num_rows: i64,
+        out_table: *mut cudf_table_handle,
+        out_names: *mut *mut *mut c_char,
+        out_num_names: *mut i32,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     /// Free a heap-allocated array of host column names returned by this shim.
@@ -564,6 +637,17 @@ extern "C" {
         filepath: *const c_char,
         column_names: *const *const c_char,
         num_columns: i32,
+    ) -> cudf_status_t;
+
+    /// Write Parquet with explicit execution context.
+    /// NOTE: libcudf's write_parquet only accepts stream, not mr.
+    /// The mr field in options is ignored for writes.
+    pub fn cudf_io_write_parquet_ex(
+        table: cudf_table_view_handle,
+        filepath: *const c_char,
+        column_names: *const *const c_char,
+        num_columns: i32,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     // -- I/O: CSV ------------------------------------------------------------
@@ -594,12 +678,30 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_sort_ex(
+        input: cudf_table_view_handle,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_keys: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_stable_sort(
         input: cudf_table_view_handle,
         column_order: *const i32,
         null_precedence: *const i32,
         num_keys: i32,
         out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_stable_sort_ex(
+        input: cudf_table_view_handle,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_keys: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     pub fn cudf_sort_by_key(
@@ -611,6 +713,16 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_sort_by_key_ex(
+        values: cudf_table_view_handle,
+        keys: cudf_table_view_handle,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_key_columns: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_stable_sort_by_key(
         values: cudf_table_view_handle,
         keys: cudf_table_view_handle,
@@ -620,12 +732,31 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_stable_sort_by_key_ex(
+        values: cudf_table_view_handle,
+        keys: cudf_table_view_handle,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_key_columns: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_sorted_order(
         input: cudf_table_view_handle,
         column_order: *const i32,
         null_precedence: *const i32,
         num_keys: i32,
         out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_sorted_order_ex(
+        input: cudf_table_view_handle,
+        column_order: *const i32,
+        null_precedence: *const i32,
+        num_keys: i32,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     pub fn cudf_is_sorted(
@@ -672,6 +803,21 @@ extern "C" {
         out_keys: *mut cudf_table_handle,
         out_values: *mut *mut cudf_column_handle,
         out_total_columns: *mut i32,
+    ) -> cudf_status_t;
+
+    /// Groupby aggregate with explicit execution context.
+    pub fn cudf_groupby_aggregate_ex(
+        keys: cudf_table_view_handle,
+        values: *const cudf_column_view_handle,
+        aggregations: *const *mut c_void,
+        agg_counts: *const i32,
+        num_requests: i32,
+        num_aggregations: i32,
+        keys_null_policy: i32,
+        out_keys: *mut cudf_table_handle,
+        out_values: *mut *mut cudf_column_handle,
+        out_total_columns: *mut i32,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     /// Free a heap-allocated array of owning column handles returned by this
@@ -843,6 +989,17 @@ extern "C" {
         out_right: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_inner_join_ex(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        left_payload: cudf_table_view_handle,
+        right_payload: cudf_table_view_handle,
+        null_equality: i32,
+        out_left: *mut cudf_table_handle,
+        out_right: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_left_join(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -853,6 +1010,17 @@ extern "C" {
         out_right: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_left_join_ex(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        left_payload: cudf_table_view_handle,
+        right_payload: cudf_table_view_handle,
+        null_equality: i32,
+        out_left: *mut cudf_table_handle,
+        out_right: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_full_join(
         left_keys: cudf_table_view_handle,
         right_keys: cudf_table_view_handle,
@@ -861,6 +1029,17 @@ extern "C" {
         null_equality: i32,
         out_left: *mut cudf_table_handle,
         out_right: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_full_join_ex(
+        left_keys: cudf_table_view_handle,
+        right_keys: cudf_table_view_handle,
+        left_payload: cudf_table_view_handle,
+        right_payload: cudf_table_view_handle,
+        null_equality: i32,
+        out_left: *mut cudf_table_handle,
+        out_right: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     // -- Replace -------------------------------------------------------------
@@ -913,4 +1092,43 @@ extern "C" {
         nan_equality: i32,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
+
+    // -- Test observation hooks -----------------------------------------------
+    //
+    // These functions are defined in `native/src/execution_context.cpp` and
+    // allow integration tests to verify that explicit CUDA streams and memory
+    // resources are correctly propagated through `_ex` FFI entry points.
+    //
+    // They are always compiled into `libcudf_rust` (no `#ifdef` guard) but are
+    // intended only for test use.  They are unconditionally declared here so
+    // that downstream crates (e.g. `cudf-rs` integration tests) can import
+    // them from `cudf_sys` instead of re-declaring them locally.
+
+    /// Reset the observation state so the next `_ex` call's context is visible.
+    pub fn cudf_test_exec_reset_observation();
+
+    /// Return the raw `uintptr_t` value of the last stream passed to an `_ex`
+    /// shim.
+    pub fn cudf_test_exec_last_stream_value(out: *mut usize) -> cudf_status_t;
+
+    /// Return the raw `uintptr_t` value of the last stream that was
+    /// synchronized by an `_ex` shim (host-materializing ops).
+    pub fn cudf_test_exec_last_sync_stream_value(out: *mut usize) -> cudf_status_t;
+
+    /// Return the raw pointer of the last memory resource passed to an `_ex`
+    /// shim.
+    pub fn cudf_test_exec_last_mr_raw(out: *mut *mut c_void) -> cudf_status_t;
+
+    /// Return the raw `uintptr_t` value of the process-global default stream.
+    pub fn cudf_test_default_stream_value(out: *mut usize) -> cudf_status_t;
+
+    /// Convert a `cudf_stream_handle` to its raw `uintptr_t` value.
+    pub fn cudf_test_stream_handle_value(
+        handle: cudf_stream_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    /// Return the raw pointer of the process-global current device memory
+    /// resource.
+    pub fn cudf_test_current_device_resource_raw(out: *mut *mut c_void) -> cudf_status_t;
 }

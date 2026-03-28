@@ -2,6 +2,7 @@
 #define CUDF_RUST_GROUPBY_H
 
 #include "error.h"
+#include "execution_context.h"
 #include "table.h"
 #include "column.h"
 #include <stdint.h>
@@ -81,6 +82,20 @@ cudf_status_t cudf_groupby_aggregate(
     cudf_table_handle* out_keys,
     cudf_column_handle** out_values,
     int32_t* out_total_columns);
+
+/// Groupby aggregate with explicit execution context.
+cudf_status_t cudf_groupby_aggregate_ex(
+    cudf_table_view_handle keys,
+    const cudf_column_view_handle* values,
+    const cudf_aggregation_handle* aggregations,
+    const int32_t* agg_counts,
+    int32_t num_requests,
+    int32_t num_aggregations,
+    cudf_null_policy_t keys_null_policy,
+    cudf_table_handle* out_keys,
+    cudf_column_handle** out_values,
+    int32_t* out_total_columns,
+    const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }
