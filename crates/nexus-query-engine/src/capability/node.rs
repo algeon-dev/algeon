@@ -480,6 +480,20 @@ fn graph_algorithm_node_executable_decision(
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,
 ) -> CapabilityDecision {
+    if let Some(required) = graph.spec.algorithm.definition().required_graph_directedness()
+        && graph.spec.graph_options.directed != required
+    {
+        return CapabilityDecision::rejected(
+            "unsupported_graph_algorithm_node_capability",
+            [
+                ("node_id", node_id.to_string()),
+                ("reason", "unsupported_graph_directedness".to_string()),
+                ("algorithm", graph.spec.algorithm.as_str().to_string()),
+                ("directed", graph.spec.graph_options.directed.to_string()),
+                ("required_directed", required.to_string()),
+            ],
+        );
+    }
     let Some(input) = plan.node(graph.input) else {
         return CapabilityDecision::rejected(
             "unsupported_graph_algorithm_node_capability",

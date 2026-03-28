@@ -338,6 +338,16 @@ impl GraphOperationDefinition {
         }
     }
 
+    /// Required graph directedness, when the cuGraph operation only accepts
+    /// one graph property.
+    pub const fn required_graph_directedness(&self) -> Option<bool> {
+        match self.algorithm {
+            GraphAlgorithm::WeaklyConnectedComponents => Some(false),
+            GraphAlgorithm::StronglyConnectedComponents => Some(true),
+            _ => None,
+        }
+    }
+
     /// Stable SQL-facing result schema for this algorithm.
     pub fn output_schema(&self) -> SchemaRef {
         stable_graph_result_schema(self.algorithm)
