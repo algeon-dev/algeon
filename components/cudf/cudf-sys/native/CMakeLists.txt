@@ -79,6 +79,7 @@ add_library(
   src/error.cpp
   src/types.cpp
   src/column.cpp
+  src/device_buffer.cpp
   src/table.cpp
   src/scalar.cpp
   src/stream.cpp
