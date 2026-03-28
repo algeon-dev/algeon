@@ -94,6 +94,49 @@ impl TryFrom<cugraph_data_type_id_t> for DataType {
     }
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Trait mapping Rust element types to their exact [`DataType`] equivalent.
+///
+/// This trait is sealed — it cannot be implemented outside this crate. Only the
+/// standard numeric types that have a direct cuGraph representation are supported.
+///
+/// Use this trait as a bound on generic functions that need to convert between
+/// typed Rust data and cuGraph's type-erased arrays, ensuring that the Rust type
+/// and `DataType` are always in agreement.
+pub trait CugraphElement: Copy + sealed::Sealed {
+    /// The cuGraph data type that this Rust type maps to.
+    fn data_type() -> DataType;
+}
+
+macro_rules! impl_cugraph_element {
+    ($($rust_ty:ty => $variant:ident),+ $(,)?) => {
+        $(
+            impl sealed::Sealed for $rust_ty {}
+            impl CugraphElement for $rust_ty {
+                fn data_type() -> DataType {
+                    DataType::$variant
+                }
+            }
+        )+
+    };
+}
+
+impl_cugraph_element! {
+    i8  => Int8,
+    i16 => Int16,
+    i32 => Int32,
+    i64 => Int64,
+    u8  => Uint8,
+    u16 => Uint16,
+    u32 => Uint32,
+    u64 => Uint64,
+    f32 => Float32,
+    f64 => Float64,
+}
+
 /// Properties that describe a graph's structure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct GraphProperties {
@@ -189,5 +232,34 @@ mod tests {
         let c_props: cugraph_graph_properties_t = props.into();
         assert_eq!(c_props.is_symmetric, bool_t::TRUE);
         assert_eq!(c_props.is_multigraph, bool_t::FALSE);
+    }
+
+    #[test]
+    fn test_cugraph_element_data_type_mapping() {
+        assert_eq!(i8::data_type(), DataType::Int8);
+        assert_eq!(i16::data_type(), DataType::Int16);
+        assert_eq!(i32::data_type(), DataType::Int32);
+        assert_eq!(i64::data_type(), DataType::Int64);
+        assert_eq!(u8::data_type(), DataType::Uint8);
+        assert_eq!(u16::data_type(), DataType::Uint16);
+        assert_eq!(u32::data_type(), DataType::Uint32);
+        assert_eq!(u64::data_type(), DataType::Uint64);
+        assert_eq!(f32::data_type(), DataType::Float32);
+        assert_eq!(f64::data_type(), DataType::Float64);
+    }
+
+    #[test]
+    fn test_cugraph_element_size_matches_data_type() {
+        // Verify that size_of::<T>() matches T::data_type().size_of() for all impls.
+        assert_eq!(std::mem::size_of::<i8>(), i8::data_type().size_of());
+        assert_eq!(std::mem::size_of::<i16>(), i16::data_type().size_of());
+        assert_eq!(std::mem::size_of::<i32>(), i32::data_type().size_of());
+        assert_eq!(std::mem::size_of::<i64>(), i64::data_type().size_of());
+        assert_eq!(std::mem::size_of::<u8>(), u8::data_type().size_of());
+        assert_eq!(std::mem::size_of::<u16>(), u16::data_type().size_of());
+        assert_eq!(std::mem::size_of::<u32>(), u32::data_type().size_of());
+        assert_eq!(std::mem::size_of::<u64>(), u64::data_type().size_of());
+        assert_eq!(std::mem::size_of::<f32>(), f32::data_type().size_of());
+        assert_eq!(std::mem::size_of::<f64>(), f64::data_type().size_of());
     }
 }

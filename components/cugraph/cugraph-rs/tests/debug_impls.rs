@@ -12,7 +12,8 @@ fn all_public_types_implement_debug() {
     assert_debug::<cugraph::array::HostArrayView<'_>>();
     assert_debug::<cugraph::graph::Graph>();
     assert_debug::<cugraph::random::RngState>();
-    assert_debug::<cugraph::centrality::CentralityResult>();
+    assert_debug::<cugraph::centrality::PageRankResult>();
+    assert_debug::<cugraph::centrality::BetweennessCentralityResult>();
     assert_debug::<cugraph::traversal::BfsResult>();
     assert_debug::<cugraph::structure::DegreesResult>();
     assert_debug::<cugraph::layout::LayoutResult>();

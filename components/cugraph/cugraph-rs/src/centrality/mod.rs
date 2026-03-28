@@ -5,5 +5,5 @@ pub mod pagerank;
 mod result;
 
 pub use betweenness::{BetweennessCentralityParams, betweenness_centrality};
-pub use pagerank::{PageRankParams, PageRankResult, pagerank};
-pub use result::CentralityResult;
+pub use pagerank::{PageRankParams, pagerank};
+pub use result::{BetweennessCentralityResult, PageRankResult};
