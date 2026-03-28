@@ -3,6 +3,7 @@
 
 #include "error.h"
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,6 +31,33 @@ cudf_status_t cudf_memory_resource_create_pool(size_t initial_pool_size,
 
 /// Destroy a memory resource handle.
 void cudf_memory_resource_destroy(cudf_memory_resource_handle handle);
+
+/// Create a statistics-wrapped memory resource for allocator-sensitive tests.
+///
+/// Test-only hook. The returned handle owns an RMM statistics adaptor and can
+/// be inspected with `cudf_test_memory_resource_allocation_count`.
+cudf_status_t cudf_test_memory_resource_create_stats(
+    cudf_memory_resource_handle* out);
+
+/// Read the cumulative allocation count from a statistics memory resource.
+///
+/// Test-only hook. Fails if `handle` does not refer to a statistics-enabled
+/// memory resource created by `cudf_test_memory_resource_create_stats`.
+cudf_status_t cudf_test_memory_resource_allocation_count(
+    cudf_memory_resource_handle handle, int64_t* out);
+
+/// Install the memory resource owned by `handle` as the process-global current
+/// device resource.
+///
+/// Test-only hook for allocator-sensitive integration tests.
+cudf_status_t cudf_test_memory_resource_set_current(
+    cudf_memory_resource_handle handle);
+
+/// Install `raw_mr` as the process-global current device resource.
+///
+/// Test-only hook intended for restoring a previously observed resource from
+/// `cudf_test_current_device_resource_raw`.
+cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr);
 
 #ifdef __cplusplus
 }

@@ -185,7 +185,7 @@ cudf_status_t cudf_scan(cudf_column_view_handle input,
   CUDF_RUST_NULL_CHECK(input, "input is null");
   CUDF_RUST_NULL_CHECK(agg, "agg is null");
   cudf::scan_type cudf_scan_type;
-  auto status = to_scan_type(scan_type, &cudf_scan_type);
+  cudf_status_t status = to_scan_type(scan_type, &cudf_scan_type);
   if (status != CUDF_SUCCESS) {
     return status;
   }

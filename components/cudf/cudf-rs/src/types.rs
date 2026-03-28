@@ -71,14 +71,46 @@ pub enum TypeId {
 }
 
 impl TypeId {
-    /// Convert from the raw FFI type_id enum.
-    pub(crate) fn from_raw(raw: cudf_sys::cudf_type_id_t) -> Self {
-        // The Rust enum and C enum have identical layouts.
-        unsafe { std::mem::transmute(raw as i32) }
+    /// Convert from the raw FFI type_id enum, returning an error for unknown values.
+    pub(crate) fn from_raw(raw: cudf_sys::cudf_type_id_t) -> Result<Self> {
+        use cudf_sys::cudf_type_id_t::*;
+        match raw {
+            CUDF_TYPE_EMPTY => Ok(TypeId::Empty),
+            CUDF_TYPE_INT8 => Ok(TypeId::Int8),
+            CUDF_TYPE_INT16 => Ok(TypeId::Int16),
+            CUDF_TYPE_INT32 => Ok(TypeId::Int32),
+            CUDF_TYPE_INT64 => Ok(TypeId::Int64),
+            CUDF_TYPE_UINT8 => Ok(TypeId::UInt8),
+            CUDF_TYPE_UINT16 => Ok(TypeId::UInt16),
+            CUDF_TYPE_UINT32 => Ok(TypeId::UInt32),
+            CUDF_TYPE_UINT64 => Ok(TypeId::UInt64),
+            CUDF_TYPE_FLOAT32 => Ok(TypeId::Float32),
+            CUDF_TYPE_FLOAT64 => Ok(TypeId::Float64),
+            CUDF_TYPE_BOOL8 => Ok(TypeId::Bool8),
+            CUDF_TYPE_TIMESTAMP_DAYS => Ok(TypeId::TimestampDays),
+            CUDF_TYPE_TIMESTAMP_SECONDS => Ok(TypeId::TimestampSeconds),
+            CUDF_TYPE_TIMESTAMP_MILLISECONDS => Ok(TypeId::TimestampMilliseconds),
+            CUDF_TYPE_TIMESTAMP_MICROSECONDS => Ok(TypeId::TimestampMicroseconds),
+            CUDF_TYPE_TIMESTAMP_NANOSECONDS => Ok(TypeId::TimestampNanoseconds),
+            CUDF_TYPE_DURATION_DAYS => Ok(TypeId::DurationDays),
+            CUDF_TYPE_DURATION_SECONDS => Ok(TypeId::DurationSeconds),
+            CUDF_TYPE_DURATION_MILLISECONDS => Ok(TypeId::DurationMilliseconds),
+            CUDF_TYPE_DURATION_MICROSECONDS => Ok(TypeId::DurationMicroseconds),
+            CUDF_TYPE_DURATION_NANOSECONDS => Ok(TypeId::DurationNanoseconds),
+            CUDF_TYPE_DICTIONARY32 => Ok(TypeId::Dictionary32),
+            CUDF_TYPE_STRING => Ok(TypeId::String),
+            CUDF_TYPE_LIST => Ok(TypeId::List),
+            CUDF_TYPE_DECIMAL32 => Ok(TypeId::Decimal32),
+            CUDF_TYPE_DECIMAL64 => Ok(TypeId::Decimal64),
+            CUDF_TYPE_DECIMAL128 => Ok(TypeId::Decimal128),
+            CUDF_TYPE_STRUCT => Ok(TypeId::Struct),
+        }
     }
 
     /// Convert to the raw FFI type_id enum.
     pub(crate) fn to_raw(self) -> cudf_sys::cudf_type_id_t {
+        // SAFETY: TypeId and cudf_type_id_t are both #[repr(i32)] with identical
+        // discriminant values (verified by from_raw match coverage).
         unsafe { std::mem::transmute(self) }
     }
 
@@ -86,6 +118,7 @@ impl TypeId {
     /// variable-width types (String, List, Struct).
     pub fn size_in_bytes(self) -> Result<Option<i32>> {
         let mut out: i32 = 0;
+        // SAFETY: self.to_raw() produces a valid cudf_type_id_t value.
         error::check_status_in(unsafe { cudf_sys::cudf_type_size(self.to_raw(), &mut out) }, "type_id::size_in_bytes")?;
         if out == 0 { Ok(None) } else { Ok(Some(out)) }
     }
@@ -203,6 +236,17 @@ impl DataType {
     pub fn scale(&self) -> i32 {
         self.scale
     }
+
+    pub(crate) fn from_raw_parts(raw_id: cudf_sys::cudf_type_id_t, scale: i32) -> Result<Self> {
+        let id = TypeId::from_raw(raw_id)?;
+        Ok(if id.is_decimal() { Self::fixed_point(id, scale) } else { Self::new(id) })
+    }
+}
+
+impl From<TypeId> for DataType {
+    fn from(id: TypeId) -> Self {
+        DataType::new(id)
+    }
 }
 
 /// Trait for Rust types that map to a cudf `TypeId`.
@@ -247,6 +291,24 @@ impl CudfType for bool {
     const TYPE_ID: TypeId = TypeId::Bool8;
 }
 
+/// Null handling policy for operations like groupby keys and scan.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullPolicy {
+    Exclude = 0,
+    Include = 1,
+}
+
+/// Whether null elements should be considered equal in joins and stream compaction.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NullEquality {
+    /// Null keys are considered equal (null == null is true).
+    Equal = 0,
+    /// Null keys are considered unequal (null == null is false).
+    Unequal = 1,
+}
+
 /// Helper to create a bitmask from an iterator of validity flags.
 ///
 /// cudf uses LSB-first bitmask packing (bit 0 of byte 0 = element 0).
@@ -273,12 +335,14 @@ impl DataType {
         let mut handle = ptr::null_mut();
         if self.id.is_decimal() {
             error::check_status_in_with(
+                // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create_fixed_point(self.id.to_raw(), self.scale, &mut handle) },
                 operation,
                 [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],
             )?;
         } else {
             error::check_status_in_with(
+                // SAFETY: handle is initialized to null and set by the C shim on success.
                 unsafe { cudf_sys::cudf_data_type_create(self.id.to_raw(), &mut handle) },
                 operation,
                 [("type_id", format!("{:?}", self.id).to_lowercase()), ("scale", self.scale.to_string())],

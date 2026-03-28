@@ -1,5 +1,4 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
-//! Tests that verify the crate root re-exports the façade types correctly.
+//! Tests that verify the crate root re-exports the high-level types correctly.
 //!
 //! These tests mirror the crate-level doc example to ensure it compiles and
 //! works as documented. All tests require a GPU.
@@ -28,7 +27,7 @@ fn test_crate_root_reexports_dataframe() {
 }
 
 #[test]
-fn test_doc_example_facade_workflow() {
+fn test_doc_example_high_level_workflow() {
     // This mirrors the planned crate-level doc example: construct a DataFrame
     // from Series, retrieve a Series back, and inspect metadata.
     use cudf::{DataFrame, Series};
@@ -59,7 +58,7 @@ fn test_lowlevel_types_still_reexported() {
 }
 
 // ---------------------------------------------------------------------------
-// Crate root re-exports: façade types from C1, C2, C3
+// Crate root re-exports
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -97,7 +96,7 @@ fn test_groupby_types_reexported() {
 }
 
 #[test]
-fn test_facade_workflow_sort_values() {
+fn test_high_level_workflow_sort_values() {
     // End-to-end: construct DataFrame, sort_values using crate-root imports.
     use cudf::{DataFrame, Series, SortOptions};
 
@@ -105,12 +104,12 @@ fn test_facade_workflow_sort_values() {
     let df = DataFrame::from_columns([("id", ids)]).unwrap();
 
     let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
-    let data: Vec<i32> = sorted.column("id").unwrap().to_vec::<i32>().unwrap();
+    let data: Vec<i32> = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
     assert_eq!(data, vec![1, 2, 3]);
 }
 
 #[test]
-fn test_facade_workflow_merge() {
+fn test_high_level_workflow_merge() {
     // End-to-end: construct two DataFrames, merge using crate-root imports.
     use cudf::{DataFrame, JoinType, MergeOptions, Series};
 
@@ -131,7 +130,7 @@ fn test_facade_workflow_merge() {
 }
 
 #[test]
-fn test_facade_workflow_groupby() {
+fn test_high_level_workflow_groupby() {
     // End-to-end: construct DataFrame, groupby+agg using crate-root imports.
     use cudf::{Agg, AggSpec, DataFrame, GroupByOptions, Series};
 
@@ -147,8 +146,8 @@ fn test_facade_workflow_groupby() {
 }
 
 #[test]
-fn test_all_facade_types_in_single_import() {
-    // Verify all façade types can be imported in one `use` statement.
+fn test_all_high_level_types_in_single_import() {
+    // Verify all high-level types can be imported in one `use` statement.
     use cudf::{Agg, AggSpec, DataFrame, GroupBy, GroupByOptions, JoinType, MergeOptions, Series, SortOptions};
 
     // Merely asserting that this compiles is the test. Use each type to

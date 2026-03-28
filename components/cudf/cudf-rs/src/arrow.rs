@@ -10,18 +10,12 @@
 //!
 //! ```no_run
 //! use cudf::{
-//!     arrow::dataframe_from_record_batch, column::Column,
-//!     dataframe::DataFrame,
+//!     Series, arrow::dataframe_from_record_batch, dataframe::DataFrame,
 //! };
 //!
-//! let df = DataFrame::new(
-//!     vec!["id".into(), "score".into()],
-//!     vec![
-//!         Column::from_slice(&[1i32, 2, 3]).unwrap(),
-//!         Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap(),
-//!     ],
-//! )
-//! .unwrap();
+//! let ids = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
+//! let scores = Series::new::<f64>("score", &[10.0, 20.0, 30.0]).unwrap();
+//! let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
 //!
 //! // GPU → Arrow RecordBatch (host-copy)
 //! let batch = df.to_record_batch().unwrap();
@@ -67,7 +61,7 @@ impl DataFrame {
         let columns: Vec<(String, Arc<dyn Array>, bool)> = names
             .iter()
             .map(|&name| {
-                let cv = self.column_view(name)?;
+                let cv = self.series_view(name)?;
                 let type_id = cv.data_type()?.id();
                 let nullable = cv.nullable()?;
                 let arr = column_view_to_arrow(&cv, type_id)?;

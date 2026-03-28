@@ -285,6 +285,9 @@ pub(crate) fn check_status(status: cudf_sys::cudf_status_t) -> Result<()> {
         _ => ErrorKind::Unknown,
     };
 
+    // SAFETY: cudf_last_error_message returns either null or a pointer to a
+    // thread-local static C string that remains valid until the next FFI call.
+    // CStr::from_ptr requires a valid null-terminated string.
     let message = unsafe {
         let ptr = cudf_sys::cudf_last_error_message();
         if ptr.is_null() {

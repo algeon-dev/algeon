@@ -66,6 +66,11 @@ void cudf_column_view_destroy(cudf_column_view_handle handle);
 cudf_status_t cudf_column_view_type(cudf_column_view_handle handle,
                                     cudf_type_id_t* out);
 
+/// Get the full logical type of a column_view, including decimal scale.
+cudf_status_t cudf_column_view_data_type(cudf_column_view_handle handle,
+                                         cudf_type_id_t* out_type_id,
+                                         int32_t* out_scale);
+
 /// Get the number of elements in a column_view.
 cudf_status_t cudf_column_view_size(cudf_column_view_handle handle,
                                     int32_t* out);

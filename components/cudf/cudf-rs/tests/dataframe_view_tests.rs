@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Integration tests for `DataFrameView` — a named borrow of all DataFrame columns.
 //!
 //! All tests require a GPU.
@@ -36,7 +35,7 @@ fn view_column_by_name() {
     let df = sample_df();
     let view = df.view();
 
-    let sv = view.column("b").expect("column 'b' should exist");
+    let sv = view.get("b").unwrap().expect("column 'b' should exist");
     assert_eq!(sv.name(), Some("b"));
     let vals: Vec<f64> = sv.to_vec().unwrap();
     assert_eq!(vals, vec![10.0, 20.0, 30.0]);
@@ -50,7 +49,7 @@ fn view_column_by_name() {
 fn view_column_miss() {
     let df = sample_df();
     let view = df.view();
-    assert!(view.column("z").is_none());
+    assert!(view.get("z").unwrap().is_none());
 }
 
 // ---------------------------------------------------------------------------
@@ -79,7 +78,7 @@ fn view_iter() {
 }
 
 // ---------------------------------------------------------------------------
-// view_zero_copy — device pointers match df.column() pointers
+// view_zero_copy — device pointers match df.series_view() pointers
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -88,8 +87,8 @@ fn view_zero_copy() {
     let view = df.view();
 
     for name in ["a", "b", "c"] {
-        let ptr_from_df = df.column(name).unwrap().device_data_ptr().unwrap();
-        let ptr_from_view = view.column(name).unwrap().device_data_ptr().unwrap();
+        let ptr_from_df = df.series_view(name).unwrap().device_data_ptr().unwrap();
+        let ptr_from_view = view.get(name).unwrap().unwrap().device_data_ptr().unwrap();
         assert_eq!(ptr_from_df, ptr_from_view, "device pointers should match for column '{}'", name);
     }
 }

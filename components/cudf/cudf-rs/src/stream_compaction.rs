@@ -21,15 +21,7 @@ pub enum DuplicateKeepOption {
     KeepNone = 3,
 }
 
-/// Whether null elements should be considered equal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(i32)]
-pub enum NullEquality {
-    /// Nulls compare equal to other nulls.
-    Equal = 0,
-    /// Nulls compare unequal (each null is distinct).
-    Unequal = 1,
-}
+pub use crate::types::NullEquality;
 
 /// Whether NaN elements should be considered equal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,14 +59,17 @@ pub fn drop_nulls(input: &TableView<'_>, keys: &[i32], keep_threshold: i32) -> R
 
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid (NonNull). keys slice is valid for num_keys elements.
         unsafe { cudf_sys::cudf_drop_nulls(input.raw_handle(), keys.as_ptr(), num_keys, keep_threshold, &mut out) },
         "stream_compaction::drop_nulls",
         [("num_keys", num_keys.to_string()), ("keep_threshold", keep_threshold.to_string())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Table::from_raw(out) })
 }
 
 /// Create a new table with distinct rows based on key columns.
+///
 ///
 /// This is the GPU equivalent of `drop_duplicates(subset=[...])`.
 /// The order of rows in the output is **not** specified.
@@ -116,6 +111,7 @@ pub fn distinct(
 
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid (NonNull). keys slice is valid for num_keys elements.
         unsafe {
             cudf_sys::cudf_distinct(
                 input.raw_handle(),
@@ -135,5 +131,6 @@ pub fn distinct(
             ("nan_equality", format!("{:?}", nan_equality).to_lowercase()),
         ],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Table::from_raw(out) })
 }

@@ -3,6 +3,7 @@ name = "cudf"
 description = "Safe Rust bindings to libcudf — GPU-accelerated DataFrames"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
@@ -16,5 +17,6 @@ indexmap = "2"
 arrow = ["dep:arrow"]
 
 [dev-dependencies]
+static_assertions = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

@@ -223,15 +223,19 @@ pub fn binary_operation_vv(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vv")?;
     let mut out = ptr::null_mut();
+    // SAFETY: lhs and rhs handles are valid (NonNull). dtype_handle was
+    // returned by a successful to_raw_handle_for call.
     let status = unsafe {
         cudf_sys::cudf_binary_operation_vv(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
     };
+    // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
         status,
         "binary::binary_operation_vv",
         [("operator", format!("{:?}", op).to_lowercase())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -247,15 +251,19 @@ pub fn binary_operation_vs(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_vs")?;
     let mut out = ptr::null_mut();
+    // SAFETY: lhs (ColumnView) and rhs (Scalar) handles are valid (NonNull).
+    // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = unsafe {
         cudf_sys::cudf_binary_operation_vs(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
     };
+    // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
         status,
         "binary::binary_operation_vs",
         [("operator", format!("{:?}", op).to_lowercase())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -271,14 +279,18 @@ pub fn binary_operation_sv(
 ) -> Result<Column> {
     let dtype_handle = output_type.to_raw_handle_for("binary::binary_operation_sv")?;
     let mut out = ptr::null_mut();
+    // SAFETY: lhs (Scalar) and rhs (ColumnView) handles are valid (NonNull).
+    // dtype_handle was returned by a successful to_raw_handle_for call.
     let status = unsafe {
         cudf_sys::cudf_binary_operation_sv(lhs.raw_handle(), rhs.raw_handle(), op as i32, dtype_handle, &mut out)
     };
+    // SAFETY: dtype_handle is a valid handle that must be destroyed.
     unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
     error::check_status_in_with(
         status,
         "binary::binary_operation_sv",
         [("operator", format!("{:?}", op).to_lowercase())],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Column::from_raw(out) })
 }

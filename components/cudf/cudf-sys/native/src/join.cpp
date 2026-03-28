@@ -41,7 +41,7 @@ std::unique_ptr<cudf::table> gather_table(
     rmm::cuda_stream_view stream,
     rmm::device_async_resource_ref mr) {
   // Wrap the device_uvector as a column_view for gather.
-  auto map_view = cudf::column_view(
+  cudf::column_view map_view(
       cudf::data_type{cudf::type_id::INT32}, static_cast<cudf::size_type>(map->size()),
       map->data(), nullptr, 0);
 
@@ -95,15 +95,15 @@ cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
   CUDF_RUST_NULL_CHECK(left_payload, "left_payload is null");
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
   cudf::null_equality null_eq;
-  auto status = to_null_equality(null_equality, &null_eq);
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
   if (status != CUDF_SUCCESS) {
     return status;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* lk = static_cast<cudf::table_view*>(left_keys);
@@ -159,15 +159,15 @@ cudf_status_t cudf_left_join_ex(cudf_table_view_handle left_keys,
   CUDF_RUST_NULL_CHECK(left_payload, "left_payload is null");
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
   cudf::null_equality null_eq;
-  auto status = to_null_equality(null_equality, &null_eq);
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
   if (status != CUDF_SUCCESS) {
     return status;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* lk = static_cast<cudf::table_view*>(left_keys);
@@ -223,15 +223,15 @@ cudf_status_t cudf_full_join_ex(cudf_table_view_handle left_keys,
   CUDF_RUST_NULL_CHECK(left_payload, "left_payload is null");
   CUDF_RUST_NULL_CHECK(right_payload, "right_payload is null");
   cudf::null_equality null_eq;
-  auto status = to_null_equality(null_equality, &null_eq);
+  cudf_status_t status = to_null_equality(null_equality, &null_eq);
   if (status != CUDF_SUCCESS) {
     return status;
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* lk = static_cast<cudf::table_view*>(left_keys);

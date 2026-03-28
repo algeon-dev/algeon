@@ -1,7 +1,7 @@
 //! A named, `Arc`-shared GPU column — the primary user-facing column type.
 //!
-//! `Series` wraps an `Arc<Column>` with an optional name. It is the façade
-//! counterpart to the low-level [`Column`] / [`ColumnView`] types.
+//! `Series` wraps an `Arc<Column>` with an optional name. It is the
+//! high-level counterpart to the low-level [`Column`] / [`ColumnView`] types.
 //!
 //! Clone is cheap: it bumps the `Arc` reference count — no GPU data is copied.
 
@@ -16,7 +16,7 @@ use crate::{
     series_view::SeriesView,
     sorting::SortOptions,
     stream_compaction::{self, DuplicateKeepOption, NanEquality, NullEquality},
-    types::{CudfType, DataType, TypeId},
+    types::{CudfType, DataType},
     unary,
 };
 
@@ -128,7 +128,7 @@ impl Series {
     pub fn from_column_arc(column: Arc<Column>) -> Result<Self> {
         let (cached_len, cached_null_count) = {
             let cv = column.view()?;
-            (cv.len()? as usize, cv.null_count()? as usize)
+            (cv.len()?, cv.null_count()? as usize)
         };
         Ok(Self { name: None, column, cached_len, cached_null_count })
     }
@@ -137,7 +137,7 @@ impl Series {
     fn from_column_with_cache(column: Column) -> Result<Self> {
         let (cached_len, cached_null_count) = {
             let cv = column.view()?;
-            (cv.len()? as usize, cv.null_count()? as usize)
+            (cv.len()?, cv.null_count()? as usize)
         };
         Ok(Self { name: None, column: Arc::new(column), cached_len, cached_null_count })
     }
@@ -181,14 +181,29 @@ impl Series {
 
     // -- Access --------------------------------------------------------------
 
-    /// Returns a reference to the underlying `Column`.
-    pub fn column(&self) -> &Column {
+    /// Advanced: drop to the core `Column` type.
+    ///
+    /// Returns a reference to the underlying `Column`. Use this when you need
+    /// to call low-level column operations that are not exposed on `Series`.
+    pub fn as_column(&self) -> &Column {
         &self.column
     }
 
-    /// Returns the shared `Arc<Column>`.
-    pub fn column_arc(&self) -> &Arc<Column> {
+    /// Returns a reference to the shared `Arc<Column>`.
+    ///
+    /// Crate-internal: used by `DataFrame` to clone the Arc into its column map.
+    /// External callers should use [`into_inner`](Self::into_inner) to take
+    /// ownership of the `Arc<Column>`.
+    pub(crate) fn column_arc(&self) -> &Arc<Column> {
         &self.column
+    }
+
+    /// Consume this Series and return the underlying `Arc<Column>`.
+    ///
+    /// This is the idiomatic way to unwrap a Series when you no longer need
+    /// the name or Series wrapper.
+    pub fn into_inner(self) -> Arc<Column> {
+        self.column
     }
 
     /// Creates a borrowed [`SeriesView`] carrying this series' name.
@@ -202,6 +217,11 @@ impl Series {
 
     /// Creates a borrowed `ColumnView` for passing to low-level operations
     /// that require an unnamed view.
+    ///
+    /// # Advanced
+    ///
+    /// Prefer [`view()`](Self::view) for most uses; this method is only needed
+    /// when you need a bare `ColumnView` without the name wrapper.
     pub fn column_view(&self) -> Result<ColumnView<'_>> {
         self.column.view()
     }
@@ -219,7 +239,7 @@ impl Series {
         self.column.view()?.to_optional_strings()
     }
 
-    // -- Scalar comparison ops (B2a) -----------------------------------------
+    // -- Scalar comparison ops -----------------------------------------
 
     /// Element-wise `self > scalar`. Returns an unnamed `BOOL8` Series.
     pub fn gt_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
@@ -286,16 +306,7 @@ impl Series {
         Self::from_column(col)
     }
 
-    /// Deprecated: use [`eq_scalar_str`](Self::eq_scalar_str) instead.
-    #[deprecated(
-        since = "0.1.0",
-        note = "renamed to `eq_scalar_str` for consistency with the full `_str` comparison set"
-    )]
-    pub fn eq_scalar_string(&self, rhs: &str) -> Result<Series> {
-        self.eq_scalar_str(rhs)
-    }
-
-    // -- Extended scalar comparison ops (B2b) --------------------------------
+    // -- Extended scalar comparison ops --------------------------------
 
     /// Element-wise `self != scalar`. Returns an unnamed `BOOL8` Series.
     pub fn ne_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
@@ -318,7 +329,7 @@ impl Series {
         Self::from_column(col)
     }
 
-    // -- Column-vs-column comparison ops (B2b) -------------------------------
+    // -- Column-vs-column comparison ops -------------------------------
 
     /// Element-wise `self == rhs`. Returns an unnamed `BOOL8` Series.
     pub fn eq(&self, rhs: &Series) -> Result<Series> {
@@ -356,7 +367,7 @@ impl Series {
         Self::from_column(col)
     }
 
-    // -- Arithmetic ops (B2b) ------------------------------------------------
+    // -- Arithmetic ops ------------------------------------------------
 
     /// Element-wise `self + rhs`. Output type inferred. Returns an unnamed Series.
     pub fn add(&self, rhs: &Series) -> Result<Series> {
@@ -382,7 +393,7 @@ impl Series {
         Self::from_column(col)
     }
 
-    // -- Scalar arithmetic ops (B2b) -----------------------------------------
+    // -- Scalar arithmetic ops -----------------------------------------
 
     /// Element-wise `self + scalar`. Returns an unnamed Series.
     pub fn add_scalar<T: CudfType>(&self, rhs: T) -> Result<Series> {
@@ -412,9 +423,9 @@ impl Series {
         Self::from_column(col)
     }
 
-    // -- Convenience methods (D2) --------------------------------------------
+    // -- Convenience methods --------------------------------------------
 
-    // -- Private name-inheritance helper (GAP 1.4) ----------------------------
+    // -- Private name-inheritance helper ----------------------------
 
     /// Wrap a result `Column` as a `Series`, inheriting `self`'s name.
     fn with_inherited_name(&self, col: Column) -> Result<Self> {
@@ -423,7 +434,7 @@ impl Series {
         Ok(s)
     }
 
-    // -- Convenience methods (D2) — unary ops inherit name (GAP 1.4) ---------
+    // -- Convenience methods — unary ops inherit name ---------
 
     /// Return a BOOL8 mask: `true` where elements are null.
     ///
@@ -447,13 +458,16 @@ impl Series {
 
     /// Cast this series to the given type. Inherits the source Series' name.
     ///
+    /// Accepts either a [`DataType`] (canonical, supports decimal scale) or a
+    /// [`crate::TypeId`] (convenience shorthand, scale defaults to 0).
+    ///
     /// Equivalent to cuDF Python's `Series.astype()`.
     ///
     /// # Cost
     /// GPU-allocating: a new column is produced with the target dtype.
-    pub fn astype(&self, target: TypeId) -> Result<Series> {
+    pub fn astype(&self, target: impl Into<DataType>) -> Result<Series> {
+        let dt: DataType = target.into();
         let cv = self.column.view()?;
-        let dt = DataType::new(target);
         let col = unary::cast(&cv, &dt)?;
         self.with_inherited_name(col)
     }
@@ -572,7 +586,7 @@ impl Series {
 }
 
 // ===========================================================================
-// Operator overloads: Add, Sub, Mul, Div (GAP 1.3)
+// Operator overloads: Add, Sub, Mul, Div
 // ===========================================================================
 
 /// Implement `std::ops::{Add, Sub, Mul, Div}` for all value/ref combinations.

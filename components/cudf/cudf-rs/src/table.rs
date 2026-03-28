@@ -1,4 +1,7 @@
 //! GPU table types: owned `Table` and borrowed `TableView`.
+//!
+//! **Advanced/Core.** Most users should use [`DataFrame`](crate::DataFrame) /
+//! [`DataFrameView`](crate::DataFrameView).
 
 use std::{
     marker::PhantomData,
@@ -19,6 +22,10 @@ pub struct Table {
     handle: NonNull<c_void>,
 }
 
+// SAFETY: Table owns a GPU table via an opaque C++ handle. The handle is not
+// thread-local. Send is safe because ownership transfer between threads is
+// supported by the CUDA runtime. Sync is safe because all methods that observe
+// state (view(), num_columns()) create independent FFI view handles.
 unsafe impl Send for Table {}
 unsafe impl Sync for Table {}
 
@@ -35,6 +42,7 @@ impl Table {
         let mut handles: Vec<*mut c_void> = columns.into_iter().map(|c| c.into_raw()).collect();
 
         let mut table_handle = ptr::null_mut();
+        // SAFETY: handles contains valid column pointers from into_raw(). num_columns matches.
         let status = unsafe { cudf_sys::cudf_table_create(handles.as_mut_ptr(), num_columns, &mut table_handle) };
         // If creation failed, we've already released ownership of the columns
         // into the handles vec. The C shim nulls them out on success, but on
@@ -42,6 +50,8 @@ impl Table {
         if status != cudf_sys::CUDF_SUCCESS {
             for &h in &handles {
                 if !h.is_null() {
+                    // SAFETY: Each handle was valid from into_raw(). On failure
+                    // the C shim did not consume them, so we must clean up.
                     unsafe { cudf_sys::cudf_column_destroy(h) };
                 }
             }
@@ -54,6 +64,7 @@ impl Table {
     /// Deep-copy this table.
     pub fn copy(&self) -> Result<Self> {
         let mut handle = ptr::null_mut();
+        // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(unsafe { cudf_sys::cudf_table_copy(self.handle.as_ptr(), &mut handle) }, "table::copy")?;
         Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
     }
@@ -61,6 +72,7 @@ impl Table {
     /// Create an immutable view of this table.
     pub fn view(&self) -> Result<TableView<'_>> {
         let mut view_handle = ptr::null_mut();
+        // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view(self.handle.as_ptr(), &mut view_handle) },
             "table::view",
@@ -93,11 +105,13 @@ impl Table {
         let mut out_columns: *mut *mut c_void = ptr::null_mut();
         let mut out_count: i32 = 0;
 
+        // SAFETY: raw_handle is valid (we just read it from self before forget).
         let status = unsafe { cudf_sys::cudf_table_release_columns(raw_handle, &mut out_columns, &mut out_count) };
 
         if status != cudf_sys::CUDF_SUCCESS {
             // On failure, the C shim did NOT consume the table.
             // We must destroy it ourselves to avoid a leak.
+            // SAFETY: raw_handle is still valid because the C shim did not consume it.
             unsafe { cudf_sys::cudf_table_destroy(raw_handle) };
             error::check_status_in(status, "table::into_columns")?;
             unreachable!();
@@ -108,11 +122,16 @@ impl Table {
         }
 
         let count = out_count as usize;
+        // SAFETY: out_columns and count are returned by a successful FFI call.
+        // The pointer is valid for count elements.
         let col_ptrs = unsafe { std::slice::from_raw_parts(out_columns, count) };
 
+        // SAFETY: Each pointer was returned by the successful FFI call and
+        // represents an owned column handle being transferred to Column RAII.
         let columns: Vec<Column> = col_ptrs.iter().map(|&ptr| unsafe { Column::from_raw(ptr) }).collect();
 
         // Free the array (not the columns — they are now owned by Column).
+        // SAFETY: out_columns was allocated by the C shim for the column pointer array.
         unsafe { cudf_sys::cudf_free_column_array(out_columns) };
 
         Ok(columns)
@@ -121,6 +140,8 @@ impl Table {
 
 impl Drop for Table {
     fn drop(&mut self) {
+        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
+        // exactly once, so the handle is destroyed exactly once.
         unsafe {
             cudf_sys::cudf_table_destroy(self.handle.as_ptr());
         }
@@ -137,6 +158,7 @@ impl<'a> TableView<'a> {
     /// Returns the number of columns.
     pub fn num_columns(&self) -> Result<i32> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_num_columns(self.handle.as_ptr(), &mut out) },
             "table_view::num_columns",
@@ -147,6 +169,7 @@ impl<'a> TableView<'a> {
     /// Returns the number of rows.
     pub fn num_rows(&self) -> Result<i32> {
         let mut out: i32 = 0;
+        // SAFETY: self.handle is valid (NonNull from construction).
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_num_rows(self.handle.as_ptr(), &mut out) },
             "table_view::num_rows",
@@ -163,11 +186,64 @@ impl<'a> TableView<'a> {
         }
 
         let mut col_handle = ptr::null_mut();
+        // SAFETY: self.handle is valid. index >= 0 is checked above.
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_column(self.handle.as_ptr(), index, &mut col_handle) },
             "table_view::column",
         )?;
+        // SAFETY: col_handle was returned by a successful FFI call.
         Ok(unsafe { ColumnView::from_raw(col_handle) })
+    }
+
+    /// Build a projected table view by selecting a subset of columns.
+    ///
+    /// The returned view borrows the same underlying device columns as `self`.
+    ///
+    /// # Cost
+    ///
+    /// Zero-copy with respect to device data: this allocates only a new
+    /// table-view handle over the selected columns.
+    pub fn select_columns(&self, indices: &[usize]) -> Result<Self> {
+        let num_columns = usize::try_from(self.num_columns()?).map_err(|_| {
+            Error::new(ErrorKind::InvalidOperation, "number of table columns must be >= 0")
+                .with_operation("table_view::select_columns")
+        })?;
+
+        let indices_i32: Vec<i32> = indices
+            .iter()
+            .map(|&index| {
+                if index >= num_columns {
+                    Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        format!("table column index {} out of bounds for {} columns", index, num_columns),
+                    )
+                    .with_operation("table_view::select_columns")
+                    .with_context("column_index", index.to_string())
+                    .with_context("num_columns", num_columns.to_string()))
+                } else {
+                    i32::try_from(index).map_err(|_| {
+                        Error::new(ErrorKind::InvalidOperation, "table column index exceeds i32::MAX")
+                            .with_operation("table_view::select_columns")
+                            .with_context("column_index", index.to_string())
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        let mut out = ptr::null_mut();
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_table_view_select_columns(
+                    self.handle.as_ptr(),
+                    indices_i32.as_ptr(),
+                    indices_i32.len() as i32,
+                    &mut out,
+                )
+            },
+            "table_view::select_columns",
+        )?;
+
+        Ok(TableView { handle: NonNull::new(out).expect("null handle on success"), _lifetime: PhantomData })
     }
 
     /// Construct a `TableView` from a slice of `ColumnView`s.
@@ -184,6 +260,7 @@ impl<'a> TableView<'a> {
         let mut handles: Vec<*mut c_void> = views.iter().map(|v| v.raw_handle()).collect();
 
         let mut out = ptr::null_mut();
+        // SAFETY: handles are valid column view pointers from raw_handle(). num_columns matches.
         error::check_status_in(
             unsafe { cudf_sys::cudf_table_view_from_column_views(handles.as_mut_ptr(), num_columns, &mut out) },
             "table_view::from_column_views",
@@ -200,6 +277,8 @@ impl<'a> TableView<'a> {
 
 impl<'a> Drop for TableView<'a> {
     fn drop(&mut self) {
+        // SAFETY: self.handle is valid (NonNull from construction). Drop runs
+        // exactly once, so the handle is destroyed exactly once.
         unsafe {
             cudf_sys::cudf_table_view_destroy(self.handle.as_ptr());
         }

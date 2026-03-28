@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame I/O integration.
 
 use cudf::{column::Column, dataframe::DataFrame, io::parquet::ParquetReaderOptions};
@@ -14,7 +13,7 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     let c2 = Column::from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
     let table = cudf::table::Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
-    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).column_names(&["id", "value"]);
+    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).column_names(&["id", "value"]).unwrap();
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read back via DataFrame.
@@ -24,10 +23,10 @@ fn test_read_parquet_returns_dataframe_with_schema() {
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["id", "value"]);
 
-    let col = df.column("id").unwrap();
+    let col = df.series_view("id").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 
-    let col = df.column("value").unwrap();
+    let col = df.series_view("value").unwrap();
     assert_eq!(col.to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
@@ -40,18 +39,18 @@ fn test_read_parquet_with_options() {
     let c2 = Column::from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = cudf::table::Table::from_columns(vec![c1, c2]).unwrap();
     let view = table.view().unwrap();
-    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).column_names(&["a", "b"]);
+    let write_opts = cudf::io::parquet::ParquetWriterOptions::new(&path).column_names(&["a", "b"]).unwrap();
     cudf::io::parquet::write_parquet(&view, &write_opts).unwrap();
 
     // Read with column selection and row limit.
-    let opts = ParquetReaderOptions::new(&path).columns(&["b"]).num_rows(3);
+    let opts = ParquetReaderOptions::new(&path).columns(&["b"]).unwrap().num_rows(3);
     let df = DataFrame::read_parquet_with_options(opts).unwrap();
 
     assert_eq!(df.num_columns(), 1);
     assert_eq!(df.num_rows(), 3);
     assert_eq!(df.column_names(), vec!["b"]);
 
-    let col = df.column("b").unwrap();
+    let col = df.series_view("b").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
@@ -71,10 +70,10 @@ fn test_write_parquet_preserves_schema() {
     assert_eq!(df2.column_names(), vec!["x", "y"]);
     assert_eq!(df2.num_rows(), 2);
 
-    let col = df2.column("x").unwrap();
+    let col = df2.series_view("x").unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![100, 200]);
 
-    let col = df2.column("y").unwrap();
+    let col = df2.series_view("y").unwrap();
     assert_eq!(col.to_vec::<f64>().unwrap(), vec![1.5, 2.5]);
 }
 
@@ -97,7 +96,7 @@ fn test_roundtrip_create_write_read() {
     assert_eq!(df2.num_columns(), 3);
     assert_eq!(df2.num_rows(), 3);
 
-    assert_eq!(df2.column("alpha").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
-    assert_eq!(df2.column("beta").unwrap().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
-    assert_eq!(df2.column("gamma").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
+    assert_eq!(df2.series_view("alpha").unwrap().to_vec::<i64>().unwrap(), vec![10, 20, 30]);
+    assert_eq!(df2.series_view("beta").unwrap().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0]);
+    assert_eq!(df2.series_view("gamma").unwrap().to_vec::<i32>().unwrap(), vec![7, 8, 9]);
 }

@@ -59,7 +59,7 @@ cudf_status_t cudf_io_write_csv(cudf_table_view_handle table,
             .include_header(include_header != 0);
 
     if (column_names != nullptr && num_columns > 0) {
-      auto status =
+      cudf_status_t status =
           validate_c_string_array(column_names, num_columns, "column_names");
       if (status != CUDF_SUCCESS) {
         return status;

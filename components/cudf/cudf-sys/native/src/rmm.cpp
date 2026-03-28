@@ -6,6 +6,7 @@
 
 #include <rmm/mr/cuda_memory_resource.hpp>
 #include <rmm/mr/device_memory_resource.hpp>
+#include <rmm/mr/per_device_resource.hpp>
 #include <rmm/mr/pool_memory_resource.hpp>
 #include <rmm/mr/statistics_resource_adaptor.hpp>
 #include <rmm/resource_ref.hpp>
@@ -112,6 +113,27 @@ cudf_status_t cudf_test_memory_resource_allocation_count(
       return CUDF_ERROR_INVALID_OPERATION;
     }
     *out = owner->stats->get_allocations_counter().total;
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_memory_resource_set_current(
+    cudf_memory_resource_handle handle) {
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* owner = static_cast<memory_resource_owner*>(handle);
+    rmm::mr::set_current_device_resource(owner->mr.get());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr) {
+  CUDF_RUST_NULL_CHECK(raw_mr, "raw_mr is null");
+  CUDF_RUST_TRY {
+    rmm::mr::set_current_device_resource(
+        static_cast<rmm::mr::device_memory_resource*>(raw_mr));
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

@@ -33,6 +33,11 @@ void cudf_scalar_destroy(cudf_scalar_handle handle);
 /// Get the type_id of a scalar.
 cudf_status_t cudf_scalar_type(cudf_scalar_handle handle, cudf_type_id_t* out);
 
+/// Get the full logical type of a scalar, including decimal scale.
+cudf_status_t cudf_scalar_data_type(cudf_scalar_handle handle,
+                                    cudf_type_id_t* out_type_id,
+                                    int32_t* out_scale);
+
 /// Check if a scalar is valid (non-null).
 cudf_status_t cudf_scalar_is_valid(cudf_scalar_handle handle, int32_t* out);
 

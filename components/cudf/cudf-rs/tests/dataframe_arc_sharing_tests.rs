@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests verifying that Arc-based column sharing works correctly.
 //!
 //! These tests demonstrate that zero-copy operations (clone, select, rename,
@@ -22,7 +21,7 @@ fn sample_df() -> DataFrame {
 /// Two columns that share the same underlying GPU allocation will have
 /// the same device pointer.
 fn device_ptr(df: &DataFrame, name: &str) -> *const std::ffi::c_void {
-    df.column(name).unwrap().device_data_ptr().unwrap()
+    df.series_view(name).unwrap().device_data_ptr().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -46,14 +45,14 @@ fn test_clone_both_dfs_independently_readable() {
     let copied = df.clone();
 
     // Both DataFrames should be independently readable.
-    assert_eq!(df.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(copied.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(copied.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 
-    assert_eq!(df.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
-    assert_eq!(copied.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(copied.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 
-    assert_eq!(df.column("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
-    assert_eq!(copied.column("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(df.series_view("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(copied.series_view("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
 #[test]
@@ -87,13 +86,13 @@ fn test_select_original_still_usable() {
 
     // Original DataFrame still has all columns and correct data.
     assert_eq!(df.num_columns(), 3);
-    assert_eq!(df.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(df.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
-    assert_eq!(df.column("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+    assert_eq!(df.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series_view("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
 
     // Selected DataFrame has only the chosen column.
     assert_eq!(selected.num_columns(), 1);
-    assert_eq!(selected.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(selected.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 #[test]
@@ -133,8 +132,8 @@ fn test_rename_original_unchanged() {
     assert_eq!(renamed.column_names(), &["id", "points", "flag"]);
 
     // Data is the same.
-    assert_eq!(df.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
-    assert_eq!(renamed.column("points").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(renamed.series_view("points").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 #[test]
@@ -189,10 +188,10 @@ fn test_with_column_replaced_column_has_correct_data() {
     let new_score = Column::from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
     let result = df.with_column("score", new_score).unwrap();
 
-    assert_eq!(result.column("score").unwrap().to_vec::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
+    assert_eq!(result.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 
     // Original is unaffected.
-    assert_eq!(df.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+    assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
 #[test]
@@ -243,9 +242,9 @@ fn test_many_clones_readable_after_original_dropped() {
 
     // All copies should still be readable (Arc refcount keeps Column alive).
     for c in &copies {
-        assert_eq!(c.column("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-        assert_eq!(c.column("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
-        assert_eq!(c.column("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
+        assert_eq!(c.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+        assert_eq!(c.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
+        assert_eq!(c.series_view("flag").unwrap().to_vec::<bool>().unwrap(), vec![true, false, true]);
     }
 }
 

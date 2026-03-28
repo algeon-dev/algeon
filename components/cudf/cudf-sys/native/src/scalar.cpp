@@ -122,6 +122,24 @@ cudf_status_t cudf_scalar_type(cudf_scalar_handle handle,
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_scalar_data_type(cudf_scalar_handle handle,
+                                    cudf_type_id_t* out_type_id,
+                                    int32_t* out_scale) {
+  CUDF_RUST_NULL_CHECK(out_type_id, "out_type_id is null");
+  CUDF_RUST_NULL_CHECK(out_scale, "out_scale is null");
+  *out_type_id = CUDF_TYPE_EMPTY;
+  *out_scale = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* s = static_cast<cudf::scalar*>(handle);
+    auto dtype = s->type();
+    *out_type_id = static_cast<cudf_type_id_t>(dtype.id());
+    *out_scale = dtype.scale();
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_scalar_is_valid(cudf_scalar_handle handle, int32_t* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = 0;

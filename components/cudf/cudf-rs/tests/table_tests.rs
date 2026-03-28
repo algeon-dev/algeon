@@ -132,3 +132,29 @@ fn test_table_view_from_column_views_empty() {
     let table_view = TableView::from_column_views(&[]).unwrap();
     assert_eq!(table_view.num_columns().unwrap(), 0);
 }
+
+#[test]
+fn test_table_view_select_columns() {
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let c2 = Column::from_slice(&[10i32, 20, 30]).unwrap();
+    let c3 = Column::from_slice(&[100i32, 200, 300]).unwrap();
+    let table = Table::from_columns(vec![c1, c2, c3]).unwrap();
+    let view = table.view().unwrap();
+
+    let projected = view.select_columns(&[2, 0]).unwrap();
+    assert_eq!(projected.num_columns().unwrap(), 2);
+    assert_eq!(projected.num_rows().unwrap(), 3);
+    assert_eq!(projected.column(0).unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300]);
+    assert_eq!(projected.column(1).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+}
+
+#[test]
+fn test_table_view_select_columns_rejects_out_of_bounds_index() {
+    let c1 = Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+    let view = table.view().unwrap();
+
+    let err = view.select_columns(&[1]).err().expect("expected out-of-bounds error");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert_eq!(err.operation(), "table_view::select_columns");
+}

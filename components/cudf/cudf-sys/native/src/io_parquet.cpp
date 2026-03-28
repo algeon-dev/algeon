@@ -51,17 +51,17 @@ cudf_status_t cudf_io_read_parquet_ex(const char* filepath,
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(exec_options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
     if (columns != nullptr && num_columns > 0) {
-      auto status = validate_c_string_array(columns, num_columns, "columns");
+      cudf_status_t status = validate_c_string_array(columns, num_columns, "columns");
       if (status != CUDF_SUCCESS) {
         return status;
       }
@@ -112,10 +112,10 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
     CUDF_RUST_NULL_CHECK(column_names, "column_names is null");
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(exec_options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::table_view*>(table);
@@ -125,7 +125,7 @@ cudf_status_t cudf_io_write_parquet_ex(cudf_table_view_handle table,
         cudf::io::parquet_writer_options::builder(sink, *view);
 
     if (column_names != nullptr && num_columns > 0) {
-      auto status =
+      cudf_status_t status =
           validate_c_string_array(column_names, num_columns, "column_names");
       if (status != CUDF_SUCCESS) {
         return status;
@@ -193,17 +193,17 @@ cudf_status_t cudf_io_read_parquet_with_metadata_ex(
     CUDF_RUST_NULL_CHECK(columns, "columns is null");
   }
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                   cudf::get_current_device_resource_ref(),
-                                   nullptr};
-    auto const exec_status = cudf_resolve_exec_options(exec_options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(exec_options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto source = cudf::io::source_info(std::string(filepath));
     auto builder = cudf::io::parquet_reader_options::builder(source);
 
     if (columns != nullptr && num_columns > 0) {
-      auto status = validate_c_string_array(columns, num_columns, "columns");
+      cudf_status_t status = validate_c_string_array(columns, num_columns, "columns");
       if (status != CUDF_SUCCESS) {
         return status;
       }

@@ -1,5 +1,9 @@
 //! GPU-accelerated sorting operations.
 //!
+//! **Advanced/Core.** Most users should prefer
+//! [`DataFrame::sort_values`](crate::DataFrame::sort_values) with
+//! [`SortOptions`](crate::SortOptions).
+//!
 //! # Example
 //!
 //! ```no_run
@@ -107,6 +111,7 @@ pub fn sort(
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe { cudf_sys::cudf_sort(input.raw_handle(), co, np, num_keys, &mut out) },
         "sorting::sort",
         [
@@ -115,6 +120,7 @@ pub fn sort(
             ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
+    // SAFETY: out was returned by a successful FFI call, transferring ownership.
     Ok(unsafe { Table::from_raw(out) })
 }
 
@@ -129,6 +135,7 @@ pub fn stable_sort(
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe { cudf_sys::cudf_stable_sort(input.raw_handle(), co, np, num_keys, &mut out) },
         "sorting::stable_sort",
         [
@@ -137,6 +144,7 @@ pub fn stable_sort(
             ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
+    // SAFETY: out was returned by a successful FFI call.
     Ok(unsafe { Table::from_raw(out) })
 }
 
@@ -152,6 +160,7 @@ pub fn sort_by_key(
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: values/keys handles are valid. co/np are either null or valid slices.
         unsafe {
             cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
         },
@@ -162,6 +171,7 @@ pub fn sort_by_key(
             ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
+    // SAFETY: out was returned by a successful FFI call.
     Ok(unsafe { Table::from_raw(out) })
 }
 
@@ -179,6 +189,7 @@ pub fn stable_sort_by_key(
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: values/keys handles are valid. co/np are either null or valid slices.
         unsafe {
             cudf_sys::cudf_stable_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
         },
@@ -189,6 +200,7 @@ pub fn stable_sort_by_key(
             ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
+    // SAFETY: out was returned by a successful FFI call.
     Ok(unsafe { Table::from_raw(out) })
 }
 
@@ -205,6 +217,7 @@ pub fn sorted_order(
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out = ptr::null_mut();
     error::check_status_in_with(
+        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe { cudf_sys::cudf_sorted_order(input.raw_handle(), co, np, num_keys, &mut out) },
         "sorting::sorted_order",
         [
@@ -213,6 +226,7 @@ pub fn sorted_order(
             ("null_precedence_provided", null_precedence.is_some().to_string()),
         ],
     )?;
+    // SAFETY: out was returned by a successful FFI call.
     Ok(unsafe { Column::from_raw(out) })
 }
 
@@ -227,6 +241,7 @@ pub fn is_sorted(
     let (co, np) = sort_params(column_order, null_precedence);
     let mut out: i32 = 0;
     error::check_status_in_with(
+        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
         unsafe { cudf_sys::cudf_is_sorted(input.raw_handle(), co, np, num_keys, &mut out) },
         "sorting::is_sorted",
         [
@@ -239,7 +254,7 @@ pub fn is_sorted(
 }
 
 // ---------------------------------------------------------------------------
-// SortOptions — cuDF-style façade for sort configuration
+// SortOptions — cuDF-style high-level sort configuration
 // ---------------------------------------------------------------------------
 
 /// High-level sort configuration for [`DataFrame::sort_values`](crate::DataFrame::sort_values).
@@ -346,7 +361,7 @@ impl SortOptions {
 
     fn resolve_null_orders(&self, num_keys: usize) -> Result<Option<Vec<NullOrder>>> {
         if self.nulls_first.is_empty() {
-            // Expand the facade default explicitly so behavior stays stable
+            // Expand the high-level default explicitly so behavior stays stable
             // even if cuDF's implicit default changes across versions.
             Ok(Some(vec![NullOrder::After; num_keys]))
         } else if self.nulls_first.len() == num_keys {

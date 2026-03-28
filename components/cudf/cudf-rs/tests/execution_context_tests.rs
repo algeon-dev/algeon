@@ -9,19 +9,17 @@
 //! 1. **Type properties** — `ExecutionContext` is Copy, default has null handles.
 //! 2. **Existing `_ex` FFI** — `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
-//! 3. **Future `_with_context` facade** — `sort_values_with_context`, `merge_with_context`,
-//!    `groupby().agg_with_context()` etc. (will fail until EC-SHIM + EC-FACADE land).
+//! 3. **Future `_with_context` high-level API** — `sort_values_with_context`, `merge_with_context`,
+//!    `groupby().agg_with_context()` etc. (will fail until EC-SHIM + EC-HIGHLEVEL land).
 //! 4. **Default-context fallback** — existing APIs still use the default stream.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
 
-use std::ffi::c_void;
-use std::ptr;
+use std::{ffi::c_void, ptr};
 
 use cudf_sys::{
-    cudf_test_current_device_resource_raw, cudf_test_default_stream_value,
-    cudf_test_exec_last_mr_raw, cudf_test_exec_last_stream_value,
-    cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
+    cudf_test_current_device_resource_raw, cudf_test_default_stream_value, cudf_test_exec_last_mr_raw,
+    cudf_test_exec_last_stream_value, cudf_test_exec_last_sync_stream_value, cudf_test_exec_reset_observation,
     cudf_test_stream_handle_value,
 };
 
@@ -98,8 +96,8 @@ fn create_i32_column_raw(data: &[i32]) -> cudf_sys::cudf_column_handle {
             cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
             data.as_ptr() as *const c_void,
             data.len() as i32,
-            ptr::null(),       // no validity mask
-            0,                 // null_count = 0
+            ptr::null(), // no validity mask
+            0,           // null_count = 0
             &mut handle,
         )
     };
@@ -191,17 +189,17 @@ fn execution_context_is_copy() {
 /// ExecutionContext should eventually be Send + Sync (required for
 /// spawn_blocking). Currently it is NOT because cudf_exec_options_t
 /// contains raw pointers. This test documents the contract that
-/// EC-FACADE must satisfy — either by adding unsafe Send+Sync impls
+/// The EC-HIGHLEVEL milestone must satisfy this by either adding unsafe Send+Sync impls
 /// or by wrapping the pointers.
 ///
-/// Once EC-FACADE adds Send+Sync, replace this test body with:
+/// Once EC-HIGHLEVEL adds Send+Sync, replace this test body with:
 ///   fn assert_send_sync<T: Send + Sync>() {}
 ///   assert_send_sync::<cudf_sys::ExecutionContext<'_>>();
 #[test]
 fn execution_context_send_sync_status_documented() {
     // cudf_exec_options_t contains *mut c_void, so ExecutionContext is
     // currently !Send + !Sync. This test documents the status quo.
-    // When EC-FACADE adds `unsafe impl Send/Sync`, update this test
+    // When EC-HIGHLEVEL adds `unsafe impl Send/Sync`, update this test
     // to assert the positive trait bounds.
     //
     // For now, we just verify the type is Copy (which it is).
@@ -249,17 +247,12 @@ fn column_copy_ex_uses_explicit_stream() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle)
-    };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_copy_ex failed");
     assert!(!out_handle.is_null());
 
     let observed = obs_last_stream();
-    assert_eq!(
-        observed, explicit_stream,
-        "observation hook should record the explicit stream, not the default"
-    );
+    assert_eq!(observed, explicit_stream, "observation hook should record the explicit stream, not the default");
 
     stream.synchronize().expect("stream sync failed");
     unsafe {
@@ -285,20 +278,12 @@ fn column_to_host_ex_uses_explicit_stream() {
     let mut host_buf = [0i32; 3];
     let buf_size = std::mem::size_of_val(&host_buf);
     let status = unsafe {
-        cudf_sys::cudf_column_view_to_host_ex(
-            view,
-            host_buf.as_mut_ptr() as *mut c_void,
-            buf_size,
-            ctx.as_raw(),
-        )
+        cudf_sys::cudf_column_view_to_host_ex(view, host_buf.as_mut_ptr() as *mut c_void, buf_size, ctx.as_raw())
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_column_view_to_host_ex failed");
 
     let observed = obs_last_stream();
-    assert_eq!(
-        observed, explicit_stream,
-        "observation hook should record the explicit stream for to_host_ex"
-    );
+    assert_eq!(observed, explicit_stream, "observation hook should record the explicit stream for to_host_ex");
 
     assert_eq!(host_buf, data, "host data should match original");
 
@@ -337,10 +322,7 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     assert!(!out_handle.is_null());
 
     let observed = obs_last_stream();
-    assert_eq!(
-        observed, explicit_stream,
-        "observation hook should record the explicit stream for from_device_data_ex"
-    );
+    assert_eq!(observed, explicit_stream, "observation hook should record the explicit stream for from_device_data_ex");
 
     // The _ex variant does NOT synchronize — the caller must keep src alive
     // until the stream completes.
@@ -377,17 +359,12 @@ fn column_copy_ex_null_options_uses_default_stream() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, ptr::null(), &mut out_handle)
-    };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ptr::null(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out_handle.is_null());
 
     let observed = obs_last_stream();
-    assert_eq!(
-        observed, default_stream,
-        "null options should resolve to the default stream"
-    );
+    assert_eq!(observed, default_stream, "null options should resolve to the default stream");
 
     unsafe {
         cudf_sys::cudf_column_destroy(out_handle);
@@ -408,9 +385,7 @@ fn column_copy_ex_default_context_uses_defaults() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle)
-    };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     assert_eq!(obs_last_stream(), default_stream);
@@ -432,9 +407,7 @@ fn column_copy_ex_explicit_mr_is_observed() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle)
-    };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let observed_mr = obs_last_mr();
@@ -447,10 +420,10 @@ fn column_copy_ex_explicit_mr_is_observed() {
 }
 
 // ===========================================================================
-// Category 3: Future _with_context facade operations
+// Category 3: Future _with_context high-level API operations
 //
 // These tests document the EXPECTED behavior for cudf-rs safe API methods
-// that will accept ExecutionContext once EC-SHIM and EC-FACADE are complete.
+// that will accept ExecutionContext once EC-SHIM and EC-HIGHLEVEL are complete.
 //
 // They are #[ignore] because the _with_context methods do not exist yet.
 // Each test describes the contract that the implementation must satisfy.
@@ -460,10 +433,10 @@ fn column_copy_ex_explicit_mr_is_observed() {
 /// explicit non-default stream. The observation hook must record the
 /// explicit stream, not the default.
 ///
-/// Will fail until EC-SHIM adds `cudf_sort_ex` and EC-FACADE adds
+/// Will fail until EC-SHIM adds `cudf_sort_ex` and EC-HIGHLEVEL adds
 /// `DataFrame::sort_values_with_context`.
 #[test]
-#[ignore = "requires sort_values_with_context (EC-FACADE)"]
+#[ignore = "requires sort_values_with_context (EC-HIGHLEVEL)"]
 fn sort_with_context_uses_explicit_stream() {
     // Setup
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
@@ -495,10 +468,10 @@ fn sort_with_context_uses_explicit_stream() {
 /// Contract: `DataFrame::merge_with_context` routes join work through
 /// an explicit non-default stream.
 ///
-/// Will fail until EC-SHIM adds `cudf_inner_join_ex` etc. and EC-FACADE
+/// Will fail until EC-SHIM adds `cudf_inner_join_ex` etc. and EC-HIGHLEVEL
 /// adds `DataFrame::merge_with_context`.
 #[test]
-#[ignore = "requires merge_with_context (EC-FACADE)"]
+#[ignore = "requires merge_with_context (EC-HIGHLEVEL)"]
 fn join_with_context_uses_explicit_stream() {
     let left_ids = cudf::Series::new::<i32>("id", &[1, 2, 3]).unwrap();
     let left_vals = cudf::Series::new::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
@@ -535,10 +508,10 @@ fn join_with_context_uses_explicit_stream() {
 /// Contract: `GroupBy::agg_with_context` routes groupby aggregation through
 /// an explicit non-default stream.
 ///
-/// Will fail until EC-SHIM adds `cudf_groupby_aggregate_ex` and EC-FACADE
+/// Will fail until EC-SHIM adds `cudf_groupby_aggregate_ex` and EC-HIGHLEVEL
 /// adds `GroupBy::agg_with_context`.
 #[test]
-#[ignore = "requires agg_with_context (EC-FACADE)"]
+#[ignore = "requires agg_with_context (EC-HIGHLEVEL)"]
 fn groupby_with_context_uses_explicit_stream() {
     let keys = cudf::Series::new::<i32>("key", &[1, 1, 2, 2, 3]).unwrap();
     let vals = cudf::Series::new::<f64>("val", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
@@ -571,10 +544,10 @@ fn groupby_with_context_uses_explicit_stream() {
 /// Contract: `DataFrame::read_parquet` with builder-carried context routes
 /// I/O through an explicit non-default stream.
 ///
-/// Will fail until EC-SHIM adds `cudf_io_read_parquet_ex` and EC-FACADE
+/// Will fail until EC-SHIM adds `cudf_io_read_parquet_ex` and EC-HIGHLEVEL
 /// adds `ParquetReaderOptions::with_context`.
 #[test]
-#[ignore = "requires ParquetReaderOptions::with_context (EC-FACADE)"]
+#[ignore = "requires ParquetReaderOptions::with_context (EC-HIGHLEVEL)"]
 fn read_parquet_with_context_uses_explicit_stream() {
     let stream = cudf_sys::Stream::new().expect("failed to create stream");
     let explicit_stream = obs_stream_handle_value(stream.as_raw());
@@ -599,7 +572,7 @@ fn read_parquet_with_context_uses_explicit_stream() {
 /// Contract: `DataFrame::write_parquet` with builder-carried context routes
 /// I/O through an explicit non-default stream.
 #[test]
-#[ignore = "requires ParquetWriterOptions::with_context (EC-FACADE)"]
+#[ignore = "requires ParquetWriterOptions::with_context (EC-HIGHLEVEL)"]
 fn write_parquet_with_context_uses_explicit_stream() {
     let stream = cudf_sys::Stream::new().expect("failed to create stream");
     let explicit_stream = obs_stream_handle_value(stream.as_raw());
@@ -643,10 +616,7 @@ fn column_copy_default_uses_default_stream() {
     // Column::copy() uses cudf_column_copy which internally calls
     // cudf_column_copy_ex with null options, resolving to default stream.
     let observed = obs_last_stream();
-    assert_eq!(
-        observed, default_stream,
-        "Column::copy() should use the default stream"
-    );
+    assert_eq!(observed, default_stream, "Column::copy() should use the default stream");
 }
 
 /// Existing `DataFrame::sort_values` (no context) should produce correct
@@ -676,9 +646,7 @@ fn merge_default_produces_correct_results() {
     let right_scores = cudf::Series::new::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
     let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
 
-    let joined = left
-        .merge(&right, cudf::MergeOptions::new().how_inner().on(["id"]))
-        .unwrap();
+    let joined = left.merge(&right, cudf::MergeOptions::new().how_inner().on(["id"])).unwrap();
 
     assert_eq!(joined.num_rows(), 2, "inner join on [2,3] should yield 2 rows");
 }
@@ -691,10 +659,7 @@ fn groupby_agg_default_produces_correct_results() {
     let vals = cudf::Series::new::<i64>("val", &[10, 20, 30, 40]).unwrap();
     let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
 
-    let result = df
-        .groupby(["key"])
-        .agg(&[cudf::AggSpec::new("val", cudf::Agg::Sum)])
-        .unwrap();
+    let result = df.groupby(["key"]).agg(&[cudf::AggSpec::new("val", cudf::Agg::Sum)]).unwrap();
 
     assert_eq!(result.num_rows(), 2, "groupby on 2 unique keys should yield 2 rows");
 }
@@ -723,19 +688,14 @@ fn column_copy_ex_pool_mr_is_observed() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle)
-    };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     let observed_mr = obs_last_mr();
     assert!(!observed_mr.is_null(), "observed mr should be non-null after _ex call");
 
     // The pool MR's raw pointer should differ from the process-global default.
-    assert_ne!(
-        observed_mr, default_mr,
-        "pool MR should differ from the process-global default MR"
-    );
+    assert_ne!(observed_mr, default_mr, "pool MR should differ from the process-global default MR");
 
     unsafe {
         cudf_sys::cudf_column_destroy(out_handle);
@@ -749,21 +709,16 @@ fn column_copy_ex_stream_and_mr_combined() {
     let col = create_i32_column_raw(&[7, 8, 9]);
 
     let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let pool_mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0)
-        .expect("failed to create pool MR");
+    let pool_mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
 
-    let ctx = cudf_sys::ExecutionContext::new()
-        .with_stream(&stream)
-        .with_memory_resource(&pool_mr);
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&pool_mr);
 
     let explicit_stream = obs_stream_handle_value(stream.as_raw());
     let default_mr = obs_current_device_resource();
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle)
-    };
+    let status = unsafe { cudf_sys::cudf_column_copy_ex(col, ctx.as_raw(), &mut out_handle) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
 
     assert_eq!(obs_last_stream(), explicit_stream, "stream mismatch");
@@ -781,7 +736,7 @@ fn column_copy_ex_stream_and_mr_combined() {
 /// Future contract: `sort_values_with_context` with explicit memory resource
 /// should produce output allocated from that resource.
 #[test]
-#[ignore = "requires sort_values_with_context + allocator propagation (EC-FACADE)"]
+#[ignore = "requires sort_values_with_context + allocator propagation (EC-HIGHLEVEL)"]
 fn sort_with_context_uses_explicit_mr() {
     // TODO: uncomment when ExecutionContext with_memory_resource is available
     // at the cudf-rs layer.
@@ -816,7 +771,7 @@ fn sort_with_context_uses_explicit_mr() {
 #[test]
 fn cuda_stream_is_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<cudf::CudaStream>();
+    assert_send_sync::<cudf::stream::CudaStream>();
 }
 
 /// DeviceMemoryResource is Send + Sync (required for Arc sharing).
@@ -829,9 +784,16 @@ fn device_memory_resource_is_send_sync() {
 /// CudaStream can be created and synchronized.
 #[test]
 fn cuda_stream_create_and_sync() {
-    let stream = cudf::CudaStream::new().unwrap();
+    let stream = cudf::stream::CudaStream::new().unwrap();
     stream.synchronize().unwrap();
     assert!(stream.is_ready().unwrap());
+}
+
+/// CudaStream is accessible via the `cudf::stream` module path (not re-exported at crate root).
+#[test]
+fn cuda_stream_accessible_via_module_path() {
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    stream.synchronize().unwrap();
 }
 
 /// DeviceMemoryResource can be created (cuda variant).

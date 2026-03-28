@@ -1,4 +1,3 @@
-#![allow(deprecated)] // Tests exercise deprecated DataFrame::column()
 //! Tests for DataFrame Display and Debug formatting.
 
 use cudf::{column::Column, dataframe::DataFrame};
@@ -8,23 +7,23 @@ use cudf::{column::Column, dataframe::DataFrame};
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_display_produces_readable_output() {
+fn test_display_reports_schema_metadata_without_values() {
     let df = DataFrame::new(
         vec!["id".to_string(), "score".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10.5f64, 20.0, 30.5]).unwrap()],
+        vec![
+            Column::from_slice(&[101i32, 202, 303]).unwrap(),
+            Column::from_slice(&[11.125f64, 22.25, 33.375]).unwrap(),
+        ],
     )
     .unwrap();
 
     let output = format!("{}", df);
 
-    // Must contain column names.
+    assert!(output.contains("DataFrame"), "output should identify a DataFrame: {}", output);
+    assert!(output.contains("2 columns"), "output should contain column count: {}", output);
+    assert!(output.contains("3 rows"), "output should contain row count: {}", output);
     assert!(output.contains("id"), "output should contain column name 'id': {}", output);
     assert!(output.contains("score"), "output should contain column name 'score': {}", output);
-
-    // Must contain row count info.
-    assert!(output.contains("3"), "output should indicate 3 rows: {}", output);
-
-    // Must contain type info.
     assert!(
         output.contains("Int32") || output.contains("int32") || output.contains("INT32"),
         "output should contain Int32 type: {}",
@@ -35,22 +34,15 @@ fn test_display_produces_readable_output() {
         "output should contain Float64 type: {}",
         output
     );
-
-    // Must contain data values from first rows.
-    assert!(output.contains("1"), "output should contain value 1: {}", output);
-    assert!(output.contains("10.5"), "output should contain value 10.5: {}", output);
+    assert!(!output.contains("101"), "output should not materialize integer values: {}", output);
+    assert!(!output.contains("11.125"), "output should not materialize float values: {}", output);
 }
 
 #[test]
 fn test_display_empty_dataframe() {
     let df = DataFrame::new(vec![], vec![]).unwrap();
     let output = format!("{}", df);
-    // Should not panic and should indicate emptiness.
-    assert!(
-        output.contains("0 column") || output.contains("empty") || output.contains("0 row"),
-        "output should indicate empty DataFrame: {}",
-        output
-    );
+    assert_eq!(output, "DataFrame [0 columns x 0 rows]");
 }
 
 #[test]
@@ -62,17 +54,20 @@ fn test_display_zero_rows() {
     .unwrap();
 
     let output = format!("{}", df);
+    assert!(output.contains("DataFrame"), "output should identify a DataFrame: {}", output);
+    assert!(output.contains("2 columns"), "output should contain column count: {}", output);
+    assert!(output.contains("0 rows"), "output should contain zero row count: {}", output);
     assert!(output.contains("a"), "output should contain column name 'a': {}", output);
     assert!(output.contains("b"), "output should contain column name 'b': {}", output);
-    assert!(output.contains("0"), "output should contain 0 rows: {}", output);
+    assert!(output.contains("Int32") || output.contains("int32"), "output should contain Int32: {}", output);
+    assert!(output.contains("Float64") || output.contains("float64"), "output should contain Float64: {}", output);
 }
 
 #[test]
-fn test_display_shows_limited_rows() {
-    // Create a DataFrame with more than the typical display limit.
+fn test_display_large_dataframe_still_omits_values() {
     let n = 30;
-    let ids: Vec<i32> = (0..n).collect();
-    let vals: Vec<f64> = (0..n).map(|i| i as f64 * 1.1).collect();
+    let ids: Vec<i32> = (1000..1000 + n).collect();
+    let vals: Vec<f64> = (0..n).map(|i| 5000.0 + i as f64 * 1.25).collect();
     let df = DataFrame::new(
         vec!["id".to_string(), "val".to_string()],
         vec![Column::from_slice(&ids).unwrap(), Column::from_slice(&vals).unwrap()],
@@ -81,11 +76,9 @@ fn test_display_shows_limited_rows() {
 
     let output = format!("{}", df);
 
-    // Should show row count.
-    assert!(output.contains("30"), "output should mention 30 rows: {}", output);
-
-    // Should contain the first row's data.
-    assert!(output.contains("0"), "output should contain first row value: {}", output);
+    assert!(output.contains("30 rows"), "output should mention 30 rows: {}", output);
+    assert!(!output.contains("1000"), "output should not contain row values: {}", output);
+    assert!(!output.contains("5000"), "output should not contain row values: {}", output);
 }
 
 #[test]
@@ -97,13 +90,8 @@ fn test_display_nullable_column() {
     .unwrap();
 
     let output = format!("{}", df);
-
-    // Null values should be displayed somehow (e.g., "null", "NULL", "—", etc.)
-    assert!(
-        output.contains("null") || output.contains("NULL") || output.contains("N/A") || output.contains("—"),
-        "output should indicate null value: {}",
-        output
-    );
+    assert!(output.contains("nullable"), "output should indicate nullable metadata: {}", output);
+    assert!(output.contains("nulls=1"), "output should indicate null count metadata: {}", output);
 }
 
 #[test]
@@ -112,11 +100,26 @@ fn test_display_bool_column() {
 
     let output = format!("{}", df);
     assert!(output.contains("flag"), "output should contain column name: {}", output);
+    assert!(output.contains("Bool8") || output.contains("bool8"), "output should contain Bool8 type: {}", output);
+    assert!(!output.contains("true"), "output should not contain boolean values: {}", output);
+    assert!(!output.contains("false"), "output should not contain boolean values: {}", output);
+}
+
+#[test]
+fn test_display_string_column_reports_dtype_without_materializing_values() {
+    let df =
+        DataFrame::new(vec!["city".to_string()], vec![Column::from_strings(&["Tokyo", "Paris", "Taipei"]).unwrap()])
+            .unwrap();
+
+    let output = format!("{}", df);
+    assert!(output.contains("city"), "output should contain column name: {}", output);
     assert!(
-        output.contains("true") || output.contains("True") || output.contains("TRUE"),
-        "output should contain boolean value: {}",
+        output.contains("String") || output.contains("STRING") || output.contains("string"),
+        "output should contain String type: {}",
         output
     );
+    assert!(!output.contains("Tokyo"), "output should not contain string values: {}", output);
+    assert!(!output.contains("Paris"), "output should not contain string values: {}", output);
 }
 
 // ---------------------------------------------------------------------------

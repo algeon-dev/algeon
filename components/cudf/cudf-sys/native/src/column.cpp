@@ -43,11 +43,11 @@ static cudf_status_t create_column_from_device_data_impl(
     CUDF_RUST_NULL_CHECK(device_data, "device_data is null");
   }
   CUDF_RUST_TRY {
-    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                  cudf::get_current_device_resource_ref(),
-                                  nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf::data_type dtype(to_cudf_type_id(type_id));
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     if (size == 0) {
@@ -84,7 +84,7 @@ cudf_status_t cudf_column_create_empty(cudf_type_id_t type_id,
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_TRY {
-    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
+    cudf::data_type dtype(to_cudf_type_id(type_id));
     auto col = cudf::make_empty_column(dtype);
     *out = static_cast<cudf_column_handle>(col.release());
     return CUDF_SUCCESS;
@@ -114,7 +114,7 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
     CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0");
   }
   CUDF_RUST_TRY {
-    auto dtype = cudf::data_type(to_cudf_type_id(type_id));
+    cudf::data_type dtype(to_cudf_type_id(type_id));
     auto stream = cudf::get_default_stream();
     auto mr = cudf::get_current_device_resource_ref();
 
@@ -158,10 +158,10 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                  cudf::get_current_device_resource_ref(),
-                                  nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* col = static_cast<cudf::column*>(src);
@@ -218,6 +218,24 @@ cudf_status_t cudf_column_view_type(cudf_column_view_handle handle,
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(handle);
     *out = static_cast<cudf_type_id_t>(view->type().id());
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_column_view_data_type(cudf_column_view_handle handle,
+                                         cudf_type_id_t* out_type_id,
+                                         int32_t* out_scale) {
+  CUDF_RUST_NULL_CHECK(out_type_id, "out_type_id is null");
+  CUDF_RUST_NULL_CHECK(out_scale, "out_scale is null");
+  *out_type_id = CUDF_TYPE_EMPTY;
+  *out_scale = 0;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_TRY {
+    auto* view = static_cast<cudf::column_view*>(handle);
+    auto dtype = view->type();
+    *out_type_id = static_cast<cudf_type_id_t>(dtype.id());
+    *out_scale = dtype.scale();
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -330,10 +348,10 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(host_buf, "host_buf is null");
   CUDF_RUST_TRY {
-    auto exec = cudf_exec_context{cudf::get_default_stream(),
-                                  cudf::get_current_device_resource_ref(),
-                                  nullptr};
-    auto const exec_status = cudf_resolve_exec_options(options, &exec);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     auto* view = static_cast<cudf::column_view*>(handle);

@@ -1,4 +1,4 @@
-//! Integration tests for `Series` convenience methods (Task D2).
+//! Integration tests for `Series` convenience methods.
 //!
 //! Methods under test: `astype`, `fillna`, `fillna_with_series`, `isin`,
 //! `unique`, `nunique`, `factorize`, `sort_values`, `is_null`, `is_not_null`.
