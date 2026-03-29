@@ -44,7 +44,12 @@ pub use boundary::{
 pub use bounded_join::{
     BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
 };
-pub use gpu::{CudfInventory, DeviceFacts, GpuInventory, device_budget_bytes_from_facts};
+pub use gpu::{
+    CudfInventory, DeviceContext, DeviceFacts, DeviceRegistry, DeviceRegistryConfig, GpuComms, GpuInventory,
+    GrantRequest, LeastLoadedPlacement, MemoryGovernor, MemoryGovernorGrantRow, MemoryGovernorReport, MemoryGrant,
+    PinnedDevicePlacement, Placement, PlacementPolicy, PlacementRequest, Priority, QueryQos, SingleDeviceComms,
+    device_budget_bytes_from_facts,
+};
 pub use io_capability::{
     DEFAULT_GDS_LOCAL_MOUNT_ROOT, DeploymentIoCapability, GdsAvailabilityStatus, GdsDriverProbeStatus,
     KVIKIO_COMPAT_MODE_ENV, KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
@@ -318,6 +323,8 @@ pub struct ExecutionContext {
     /// retry/fan-in decisions. Source chunk byte and row-group settings are
     /// planning thresholds where row-group metadata permits exact splitting.
     memory_control_policy: MemoryControlPolicy,
+    /// Optional soft per-query memory grant backing bounded execution.
+    memory_grant: Option<MemoryGrant>,
     /// Execution boundary contract used by source reads, build/probe reuse, and
     /// result materialization.
     boundary_policy: ExecutionBoundaryPolicy,
@@ -404,6 +411,7 @@ struct ExecutionContextParts {
     runtime: Arc<cudf::Runtime>,
     memory_policy: MemoryResourcePolicy,
     memory_control_policy: MemoryControlPolicy,
+    memory_grant: Option<MemoryGrant>,
     boundary_policy: ExecutionBoundaryPolicy,
     source_scheduler_policy: SourceSchedulerPolicy,
     source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -459,6 +467,7 @@ impl ExecutionContext {
             runtime,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
+            memory_grant: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -495,6 +504,7 @@ impl ExecutionContext {
             runtime: parts.runtime,
             memory_policy: parts.memory_policy,
             memory_control_policy: parts.memory_control_policy,
+            memory_grant: parts.memory_grant,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -567,6 +577,7 @@ impl ExecutionContext {
             runtime: stream_lease.shared_runtime(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
+            memory_grant: self.memory_grant.clone(),
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -647,7 +658,38 @@ impl ExecutionContext {
 
     /// Returns the engine-level memory control policy.
     pub fn memory_control_policy(&self) -> MemoryControlPolicy {
-        self.memory_control_policy
+        match (self.memory_control_policy, self.memory_grant.as_ref()) {
+            (
+                MemoryControlPolicy::Bounded {
+                    max_source_chunk_bytes,
+                    max_row_groups_per_chunk,
+                    max_retry_attempts,
+                    min_retry_chunk_row_groups,
+                    ..
+                },
+                Some(grant),
+            ) => MemoryControlPolicy::Bounded {
+                device_budget_bytes: grant.budget_bytes(),
+                max_source_chunk_bytes,
+                max_row_groups_per_chunk,
+                max_retry_attempts,
+                min_retry_chunk_row_groups,
+            },
+            (policy, _) => policy,
+        }
+    }
+
+    /// Returns the soft governor grant carried by this context, when present.
+    pub fn memory_grant(&self) -> Option<&MemoryGrant> {
+        self.memory_grant.as_ref()
+    }
+
+    /// Returns the effective bounded device budget used by reservation tracking.
+    pub fn bounded_device_budget_bytes(&self) -> Option<u64> {
+        match self.memory_control_policy() {
+            MemoryControlPolicy::Unbounded => None,
+            MemoryControlPolicy::Bounded { device_budget_bytes, .. } => Some(device_budget_bytes),
+        }
     }
 
     /// Returns the execution boundary policy.
@@ -998,6 +1040,8 @@ pub struct ExecutionContextBuilder {
     memory_policy: MemoryResourcePolicy,
     /// Engine-level bounded/unbounded memory contract.
     memory_control_policy: MemoryControlPolicy,
+    /// Optional soft governor grant backing bounded execution.
+    memory_grant: Option<MemoryGrant>,
     /// Source/build/probe/result boundary contract.
     boundary_policy: ExecutionBoundaryPolicy,
     /// Source read scheduling contract.
@@ -1091,6 +1135,12 @@ impl ExecutionContextBuilder {
     /// Sets the engine-level memory control contract.
     pub fn with_memory_control_policy(mut self, memory_control_policy: MemoryControlPolicy) -> Self {
         self.memory_control_policy = memory_control_policy;
+        self
+    }
+
+    /// Attaches a soft governor grant to bounded execution contexts built here.
+    pub fn with_memory_grant(mut self, memory_grant: MemoryGrant) -> Self {
+        self.memory_grant = Some(memory_grant);
         self
     }
 
@@ -1307,6 +1357,7 @@ impl ExecutionContextBuilder {
                 runtime,
                 memory_policy: MemoryResourcePolicy::ExternalRuntime,
                 memory_control_policy: self.memory_control_policy,
+                memory_grant: self.memory_grant.clone(),
                 boundary_policy: self.boundary_policy,
                 source_scheduler_policy: self.source_scheduler_policy,
                 source_chunk_planning_mode: self.source_chunk_planning_mode,
@@ -1372,6 +1423,7 @@ impl ExecutionContextBuilder {
             runtime: Arc::new(runtime),
             memory_policy,
             memory_control_policy: self.memory_control_policy,
+            memory_grant: self.memory_grant,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,

@@ -174,8 +174,16 @@ fn server_config_accepts_single_gpu_device_ordinal() {
 }
 
 #[test]
-fn server_config_rejects_phase2_multi_gpu_device_subset() {
+fn server_config_accepts_multi_gpu_device_subset() {
     let env = BTreeMap::from([(NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.gpu_devices, vec![0, 1]);
+}
+
+#[test]
+fn server_config_rejects_duplicate_gpu_device_subset() {
+    let env = BTreeMap::from([(NEXUS_SERVER_GPU_DEVICES_ENV, "0,0".to_string())]);
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_GPU_DEVICES_ENV));

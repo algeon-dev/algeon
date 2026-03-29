@@ -35,7 +35,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         gpu_inputs: &'a GpuResidentInputMap,
         metrics: &'a mut QueryMetrics,
     ) -> Result<Self> {
-        let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = context.memory_control_policy() else {
+        let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
             return Err(invalid("compiled bounded task execution requires bounded memory control")
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };

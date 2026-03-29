@@ -472,7 +472,10 @@ impl DatafusionCudfFlightSqlService {
         loop {
             self.expire_stale_tickets(Instant::now());
             match self.admission.try_acquire() {
-                Ok(Some(permit)) => return Ok(permit),
+                Ok(Some(permit)) => {
+                    Self::log_query_service_admission(query_id, &permit);
+                    return Ok(permit);
+                },
                 Ok(None) => {},
                 Err(error) => {
                     let status = if self.shutdown_token.is_cancelled() {
@@ -491,7 +494,7 @@ impl DatafusionCudfFlightSqlService {
                 let sleep_for = sleep_for.min(ADMISSION_SWEEP_POLL_INTERVAL);
                 tokio::select! {
                     result = &mut acquire => {
-                        return result
+                        let permit = result
                             .map_err(|error| {
                                 let status = if self.shutdown_token.is_cancelled() {
                                     server_shutdown_status(query_id)
@@ -499,7 +502,9 @@ impl DatafusionCudfFlightSqlService {
                                     server_error_to_status(error)
                                 };
                                 status_with_query_id(status, query_id)
-                            });
+                            })?;
+                        Self::log_query_service_admission(query_id, &permit);
+                        return Ok(permit);
                     },
                     _ = tokio::time::sleep(sleep_for) => {
                         self.expire_stale_tickets(Instant::now());
@@ -510,6 +515,17 @@ impl DatafusionCudfFlightSqlService {
                     },
                 }
             }
+        }
+    }
+
+    fn log_query_service_admission(query_id: &str, permit: &QueryAdmissionPermit) {
+        if let Some(handle) = permit.query_service_handle() {
+            tracing::info!(
+                query_id,
+                query_service_query_id = handle.query_id(),
+                query_service_budget_bytes = handle.device_budget_bytes(),
+                "admitted Flight SQL statement through query service"
+            );
         }
     }
 

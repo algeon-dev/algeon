@@ -8,6 +8,7 @@ use crate::error::{QueryError, Result};
 /// public contract so future multi-device placement can extend the model without
 /// overloading raw runtime state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DevicePlacement {
     /// All work for the context runs on one CUDA device ordinal.
     SingleDevice {
@@ -22,6 +23,7 @@ pub enum DevicePlacement {
 /// The display form is a stable metric value and must not inherit debug output
 /// from runtime placement types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum MemorySpaceId {
     /// CUDA device memory for one runtime device ordinal.
     Device {
