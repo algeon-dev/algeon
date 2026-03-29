@@ -1,3 +1,4 @@
+#include "execution_context_internal.hpp"
 #include "copying.h"
 #include "shim_common.h"
 
@@ -14,6 +15,14 @@ cudf_status_t cudf_gather(cudf_table_view_handle input,
                           cudf_column_view_handle gather_map,
                           cudf_out_of_bounds_policy_t bounds_policy,
                           cudf_table_handle* out) {
+  return cudf_gather_ex(input, gather_map, bounds_policy, out, nullptr);
+}
+
+cudf_status_t cudf_gather_ex(cudf_table_view_handle input,
+                             cudf_column_view_handle gather_map,
+                             cudf_out_of_bounds_policy_t bounds_policy,
+                             cudf_table_handle* out,
+                             cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -35,10 +44,15 @@ cudf_status_t cudf_gather(cudf_table_view_handle input,
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::table_view*>(input);
     auto* map_view = static_cast<cudf::column_view*>(gather_map);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           rmm::mr::get_current_device_resource()};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
 
-    auto result = cudf::gather(*view, *map_view, policy, stream, mr);
+    auto result = cudf::gather(*view, *map_view, policy, exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(result.release());
     return CUDF_SUCCESS;
   }

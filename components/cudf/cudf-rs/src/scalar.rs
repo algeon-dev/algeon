@@ -126,6 +126,17 @@ impl Scalar {
         self.domain.debug_id()
     }
 
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+        self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
+        self.domain = ExecutionDomain::debug_explicit(identity)?;
+        Ok(self)
+    }
+
     /// Returns the data type of this scalar.
     pub fn data_type(&self) -> Result<DataType> {
         let mut raw_id = cudf_sys::cudf_type_id_t::CUDF_TYPE_EMPTY;
@@ -140,6 +151,7 @@ impl Scalar {
 
     /// Returns `true` if this scalar holds a valid (non-null) value.
     pub fn is_valid(&self) -> Result<bool> {
+        self.domain.synchronize_for_host_visibility("scalar::is_valid")?;
         let mut out: i32 = 0;
         // SAFETY: self.handle is valid (NonNull invariant from construction).
         error::check_status_in(
@@ -160,6 +172,7 @@ impl Scalar {
                 .with_context("actual_type_id", format!("{:?}", dt.id()).to_lowercase())
                 .with_context("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase()));
         }
+        self.domain.synchronize_for_host_visibility("scalar::value")?;
         // SAFETY: All CudfType implementors have valid all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };
         // SAFETY: self.handle is valid. Type was checked to match T::TYPE_ID above.
@@ -175,6 +188,7 @@ impl Scalar {
     ///
     /// Returns an error if the scalar is not a string type.
     pub fn string_value(&self) -> Result<String> {
+        self.domain.synchronize_for_host_visibility("scalar::string_value")?;
         let mut ptr: *mut c_char = ptr::null_mut();
         let mut len: i32 = 0;
         // SAFETY: self.handle is valid (NonNull invariant from construction).

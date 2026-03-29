@@ -44,6 +44,19 @@ impl Column {
         Self { handle: NonNull::new(handle).expect("null column handle"), domain }
     }
 
+    pub(crate) fn copy_into_domain(&self, domain: Arc<ExecutionDomain>, operation: &'static str) -> Result<Self> {
+        let mut handle = ptr::null_mut();
+        let exec_options = domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe { cudf_sys::cudf_column_copy_ex(self.handle.as_ptr(), options, &mut handle) },
+                None => unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
+            },
+            operation,
+        )?;
+        Ok(Self::from_handle_with_domain(handle, domain))
+    }
+
     /// Create an empty column of the given type.
     pub fn empty(type_id: TypeId) -> Result<Self> {
         let mut handle = ptr::null_mut();
@@ -120,13 +133,7 @@ impl Column {
 
     /// Deep-copy this column.
     pub fn copy(&self) -> Result<Self> {
-        let mut handle = ptr::null_mut();
-        // SAFETY: self.handle is valid (NonNull invariant from construction).
-        error::check_status_in(
-            unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
-            "column::copy",
-        )?;
-        Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
+        self.copy_into_domain(Arc::clone(&self.domain), "column::copy")
     }
 
     /// Create an immutable view of this column.
@@ -1607,14 +1614,18 @@ impl ColumnView<'_> {
 pub(crate) fn copy_view_to_owned(cv: &ColumnView<'_>) -> Result<Column> {
     let len = cv.len()?;
     if len == 0 {
-        return Column::empty(cv.data_type()?.id());
+        return Column::empty(cv.data_type()?.id()).map(|col| col.with_execution_domain(Arc::clone(&cv.domain)));
     }
     let mut handle = ptr::null_mut();
+    let exec_options = cv.domain.explicit_exec_options_raw();
     error::check_status_in(
-        unsafe { cudf_sys::cudf_column_copy_from_view(cv.raw_handle(), &mut handle) },
+        match exec_options.as_ref() {
+            Some(options) => unsafe { cudf_sys::cudf_column_copy_from_view_ex(cv.raw_handle(), options, &mut handle) },
+            None => unsafe { cudf_sys::cudf_column_copy_from_view(cv.raw_handle(), &mut handle) },
+        },
         "column::copy_view_to_owned",
     )?;
-    Ok(unsafe { Column::from_raw(handle) })
+    Ok(unsafe { Column::from_raw_with_domain(handle, Arc::clone(&cv.domain)) })
 }
 
 impl<'a> Drop for ColumnView<'a> {

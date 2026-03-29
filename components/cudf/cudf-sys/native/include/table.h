@@ -3,6 +3,7 @@
 
 #include "column.h"
 #include "error.h"
+#include "execution_context.h"
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -28,6 +29,15 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns, int32_t num_columns
 
 /// Deep-copy a table.
 cudf_status_t cudf_table_copy(cudf_table_handle src, cudf_table_handle* out);
+
+/// Deep-copy a table with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+/// When `options->mr` is non-NULL, it must outlive the returned table.
+cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
+                                 const cudf_exec_options_t* options,
+                                 cudf_table_handle* out);
 
 /// Destroy an owning table handle.
 void cudf_table_destroy(cudf_table_handle handle);

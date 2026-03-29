@@ -174,14 +174,24 @@ cudf_status_t cudf_column_copy_ex(cudf_column_handle src,
 
 cudf_status_t cudf_column_copy_from_view(cudf_column_view_handle src,
                                          cudf_column_handle* out) {
+  return cudf_column_copy_from_view_ex(src, nullptr, out);
+}
+
+cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
+                                            cudf_exec_options_t const* options,
+                                            cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
     auto const& view = *static_cast<cudf::column_view const*>(src);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto copy = std::make_unique<cudf::column>(view, stream, mr);
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
+    auto copy = std::make_unique<cudf::column>(view, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(copy.release());
     return CUDF_SUCCESS;
   }

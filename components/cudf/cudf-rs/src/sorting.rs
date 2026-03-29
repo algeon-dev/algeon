@@ -97,6 +97,101 @@ fn sort_params(column_order: Option<&[Order]>, null_precedence: Option<&[NullOrd
     (co, np)
 }
 
+fn sort_table_impl(
+    input: &TableView<'_>,
+    column_order: Option<&[Order]>,
+    null_precedence: Option<&[NullOrder]>,
+    stable: bool,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    let num_keys = input.num_columns()?;
+    validate_sort_params(operation, num_keys, column_order, null_precedence)?;
+    let (co, np) = sort_params(column_order, null_precedence);
+    let mut out = ptr::null_mut();
+    let status = match (stable, exec_options) {
+        (false, None) => unsafe { cudf_sys::cudf_sort(input.raw_handle(), co, np, num_keys, &mut out) },
+        (true, None) => unsafe { cudf_sys::cudf_stable_sort(input.raw_handle(), co, np, num_keys, &mut out) },
+        (false, Some(options)) => unsafe {
+            cudf_sys::cudf_sort_ex(input.raw_handle(), co, np, num_keys, &mut out, options)
+        },
+        (true, Some(options)) => unsafe {
+            cudf_sys::cudf_stable_sort_ex(input.raw_handle(), co, np, num_keys, &mut out, options)
+        },
+    };
+
+    error::check_status_in_with(
+        status,
+        operation,
+        [
+            ("num_keys", num_keys.to_string()),
+            ("column_order_provided", column_order.is_some().to_string()),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(unsafe { Table::from_raw(out) })
+}
+
+fn sort_by_key_impl(
+    values: &TableView<'_>,
+    keys: &TableView<'_>,
+    column_order: Option<&[Order]>,
+    null_precedence: Option<&[NullOrder]>,
+    stable: bool,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+    operation: &'static str,
+) -> Result<Table> {
+    let num_key_columns = keys.num_columns()?;
+    validate_sort_params(operation, num_key_columns, column_order, null_precedence)?;
+    let (co, np) = sort_params(column_order, null_precedence);
+    let mut out = ptr::null_mut();
+    let status = match (stable, exec_options) {
+        (false, None) => unsafe {
+            cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
+        },
+        (true, None) => unsafe {
+            cudf_sys::cudf_stable_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
+        },
+        (false, Some(options)) => unsafe {
+            cudf_sys::cudf_sort_by_key_ex(
+                values.raw_handle(),
+                keys.raw_handle(),
+                co,
+                np,
+                num_key_columns,
+                &mut out,
+                options,
+            )
+        },
+        (true, Some(options)) => unsafe {
+            cudf_sys::cudf_stable_sort_by_key_ex(
+                values.raw_handle(),
+                keys.raw_handle(),
+                co,
+                np,
+                num_key_columns,
+                &mut out,
+                options,
+            )
+        },
+    };
+
+    error::check_status_in_with(
+        status,
+        operation,
+        [
+            ("num_key_columns", num_key_columns.to_string()),
+            ("column_order_provided", column_order.is_some().to_string()),
+            ("null_precedence_provided", null_precedence.is_some().to_string()),
+            ("execution_context_provided", exec_options.is_some().to_string()),
+        ],
+    )?;
+
+    Ok(unsafe { Table::from_raw(out) })
+}
+
 /// Sort the rows of a table by all its columns.
 ///
 /// If `column_order` or `null_precedence` are `None`, cuDF defaults are
@@ -106,22 +201,7 @@ pub fn sort(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let num_keys = input.num_columns()?;
-    validate_sort_params("sorting::sort", num_keys, column_order, null_precedence)?;
-    let (co, np) = sort_params(column_order, null_precedence);
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe { cudf_sys::cudf_sort(input.raw_handle(), co, np, num_keys, &mut out) },
-        "sorting::sort",
-        [
-            ("num_keys", num_keys.to_string()),
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-        ],
-    )?;
-    // SAFETY: out was returned by a successful FFI call, transferring ownership.
-    Ok(unsafe { Table::from_raw(out) })
+    sort_table_impl(input, column_order, null_precedence, false, None, "sorting::sort")
 }
 
 /// Stable sort (preserves relative order of equal elements).
@@ -130,22 +210,7 @@ pub fn stable_sort(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let num_keys = input.num_columns()?;
-    validate_sort_params("sorting::stable_sort", num_keys, column_order, null_precedence)?;
-    let (co, np) = sort_params(column_order, null_precedence);
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: input handle is valid. co/np are either null or valid slices of num_keys elements.
-        unsafe { cudf_sys::cudf_stable_sort(input.raw_handle(), co, np, num_keys, &mut out) },
-        "sorting::stable_sort",
-        [
-            ("num_keys", num_keys.to_string()),
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-        ],
-    )?;
-    // SAFETY: out was returned by a successful FFI call.
-    Ok(unsafe { Table::from_raw(out) })
+    sort_table_impl(input, column_order, null_precedence, true, None, "sorting::stable_sort")
 }
 
 /// Sort the `values` table by a separate `keys` table.
@@ -155,24 +220,7 @@ pub fn sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let num_key_columns = keys.num_columns()?;
-    validate_sort_params("sorting::sort_by_key", num_key_columns, column_order, null_precedence)?;
-    let (co, np) = sort_params(column_order, null_precedence);
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: values/keys handles are valid. co/np are either null or valid slices.
-        unsafe {
-            cudf_sys::cudf_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
-        },
-        "sorting::sort_by_key",
-        [
-            ("num_key_columns", num_key_columns.to_string()),
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-        ],
-    )?;
-    // SAFETY: out was returned by a successful FFI call.
-    Ok(unsafe { Table::from_raw(out) })
+    sort_by_key_impl(values, keys, column_order, null_precedence, false, None, "sorting::sort_by_key")
 }
 
 /// Stable sort the `values` table by a separate `keys` table.
@@ -184,24 +232,30 @@ pub fn stable_sort_by_key(
     column_order: Option<&[Order]>,
     null_precedence: Option<&[NullOrder]>,
 ) -> Result<Table> {
-    let num_key_columns = keys.num_columns()?;
-    validate_sort_params("sorting::stable_sort_by_key", num_key_columns, column_order, null_precedence)?;
-    let (co, np) = sort_params(column_order, null_precedence);
-    let mut out = ptr::null_mut();
-    error::check_status_in_with(
-        // SAFETY: values/keys handles are valid. co/np are either null or valid slices.
-        unsafe {
-            cudf_sys::cudf_stable_sort_by_key(values.raw_handle(), keys.raw_handle(), co, np, num_key_columns, &mut out)
-        },
-        "sorting::stable_sort_by_key",
-        [
-            ("num_key_columns", num_key_columns.to_string()),
-            ("column_order_provided", column_order.is_some().to_string()),
-            ("null_precedence_provided", null_precedence.is_some().to_string()),
-        ],
-    )?;
-    // SAFETY: out was returned by a successful FFI call.
-    Ok(unsafe { Table::from_raw(out) })
+    sort_by_key_impl(values, keys, column_order, null_precedence, true, None, "sorting::stable_sort_by_key")
+}
+
+pub(crate) fn sort_with_exec_options(
+    input: &TableView<'_>,
+    column_order: Option<&[Order]>,
+    null_precedence: Option<&[NullOrder]>,
+    stable: bool,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Table> {
+    sort_table_impl(input, column_order, null_precedence, stable, Some(exec_options), operation)
+}
+
+pub(crate) fn sort_by_key_with_exec_options(
+    values: &TableView<'_>,
+    keys: &TableView<'_>,
+    column_order: Option<&[Order]>,
+    null_precedence: Option<&[NullOrder]>,
+    stable: bool,
+    exec_options: &cudf_sys::cudf_exec_options_t,
+    operation: &'static str,
+) -> Result<Table> {
+    sort_by_key_impl(values, keys, column_order, null_precedence, stable, Some(exec_options), operation)
 }
 
 /// Return the row indices that would sort the table.

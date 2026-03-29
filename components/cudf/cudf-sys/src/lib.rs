@@ -316,6 +316,12 @@ extern "C" {
 
     pub fn cudf_column_copy_from_view(src: cudf_column_view_handle, out: *mut cudf_column_handle) -> cudf_status_t;
 
+    pub fn cudf_column_copy_from_view_ex(
+        src: cudf_column_view_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_column_destroy(handle: cudf_column_handle);
 
     // -- ColumnView (non-owning) --------------------------------------------
@@ -493,6 +499,12 @@ extern "C" {
     ) -> cudf_status_t;
 
     pub fn cudf_table_copy(src: cudf_table_handle, out: *mut cudf_table_handle) -> cudf_status_t;
+
+    pub fn cudf_table_copy_ex(
+        src: cudf_table_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
 
     pub fn cudf_table_destroy(handle: cudf_table_handle);
 
@@ -818,6 +830,13 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_apply_boolean_mask_ex(
+        input: cudf_table_view_handle,
+        mask: cudf_column_view_handle,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     // -- GroupBy --------------------------------------------------------------
 
     pub fn cudf_aggregation_create(kind: i32, out: *mut *mut c_void) -> cudf_status_t;
@@ -1128,6 +1147,14 @@ extern "C" {
         gather_map: cudf_column_view_handle,
         bounds_policy: i32,
         out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_gather_ex(
+        input: cudf_table_view_handle,
+        gather_map: cudf_column_view_handle,
+        bounds_policy: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     // -- Stream Compaction ---------------------------------------------------

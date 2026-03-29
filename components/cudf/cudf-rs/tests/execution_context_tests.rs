@@ -9,8 +9,9 @@
 //! 1. **Type properties** — `ExecutionContext` is Copy, default has null handles.
 //! 2. **Existing `_ex` FFI** — `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
-//! 3. **Future `_with_context` high-level API** — `sort_values_with_context`, `merge_with_context`,
-//!    `groupby().agg_with_context()` etc. (will fail until EC-SHIM + EC-HIGHLEVEL land).
+//! 3. **High-level execution-context contract** — hidden Phase 1 safe-layer
+//!    hooks route explicit-lineage operations through `_ex` entry points and
+//!    reject ambient-default promotion from borrowed overrides.
 //! 4. **Default-context fallback** — existing APIs still use the default stream.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
@@ -124,6 +125,24 @@ fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
     handle
 }
 
+/// Create a bool column and return its raw cudf_column_handle.
+fn create_bool_column_raw(data: &[bool]) -> cudf_sys::cudf_column_handle {
+    let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_column_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_BOOL8,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            ptr::null(),
+            0,
+            &mut handle,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create bool column");
+    assert!(!handle.is_null());
+    handle
+}
+
 /// Create a nullable i32 column and return its raw cudf_column_handle.
 fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::cudf_column_handle {
     let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
@@ -169,6 +188,27 @@ fn column_view_raw(col: cudf_sys::cudf_column_handle) -> cudf_sys::cudf_column_v
     view
 }
 
+/// Get a table view handle from a table handle. Caller must destroy the view.
+fn table_view_raw(table: cudf_sys::cudf_table_handle) -> cudf_sys::cudf_table_view_handle {
+    let mut view: cudf_sys::cudf_table_view_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_view(table, &mut view) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create table view");
+    assert!(!view.is_null());
+    view
+}
+
+/// Get a column view handle from a table view by index. Caller must destroy the view.
+fn table_view_column_raw(
+    table: cudf_sys::cudf_table_view_handle,
+    index: i32,
+) -> cudf_sys::cudf_column_view_handle {
+    let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_view_column(table, index, &mut view) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create table column view");
+    assert!(!view.is_null());
+    view
+}
+
 /// Read device data pointer from a column view.
 fn column_view_device_ptr(view: cudf_sys::cudf_column_view_handle) -> *const c_void {
     let mut ptr: *const c_void = ptr::null();
@@ -190,6 +230,35 @@ fn read_i32_column_raw(col: cudf_sys::cudf_column_handle, len: usize) -> Vec<i32
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read i32 column to host");
     unsafe { cudf_sys::cudf_column_view_destroy(view) };
     host
+}
+
+fn read_first_i32_table_column_raw(table: cudf_sys::cudf_table_handle, len: usize) -> Vec<i32> {
+    let table_view = table_view_raw(table);
+    let column_view = table_view_column_raw(table_view, 0);
+    let mut host = vec![0i32; len];
+    let status = unsafe {
+        cudf_sys::cudf_column_view_to_host(
+            column_view,
+            host.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(host.as_slice()),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read first table column to host");
+    unsafe {
+        cudf_sys::cudf_column_view_destroy(column_view);
+        cudf_sys::cudf_table_view_destroy(table_view);
+    }
+    host
+}
+
+fn create_single_column_table_raw(data: &[i32]) -> cudf_sys::cudf_table_handle {
+    let col = create_i32_column_raw(data);
+    let mut columns = [col];
+    let mut table: cudf_sys::cudf_table_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_create(columns.as_mut_ptr(), columns.len() as i32, &mut table) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create table");
+    assert!(!table.is_null());
+    table
 }
 
 fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series {
@@ -428,9 +497,8 @@ fn replace_nulls_scalar_ex_uses_explicit_stream() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_replace_nulls_scalar_ex(input_view, replacement, &mut out_handle, ctx.as_raw())
-    };
+    let status =
+        unsafe { cudf_sys::cudf_replace_nulls_scalar_ex(input_view, replacement, &mut out_handle, ctx.as_raw()) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_scalar_ex failed");
     assert!(!out_handle.is_null());
 
@@ -460,9 +528,8 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
 
     obs_reset();
     let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let status = unsafe {
-        cudf_sys::cudf_replace_nulls_column_ex(input_view, replacement_view, &mut out_handle, ctx.as_raw())
-    };
+    let status =
+        unsafe { cudf_sys::cudf_replace_nulls_column_ex(input_view, replacement_view, &mut out_handle, ctx.as_raw()) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_column_ex failed");
     assert!(!out_handle.is_null());
 
@@ -477,6 +544,74 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
         cudf_sys::cudf_column_destroy(replacement);
         cudf_sys::cudf_column_view_destroy(input_view);
         cudf_sys::cudf_column_destroy(input);
+    };
+}
+
+#[test]
+fn gather_ex_uses_explicit_stream_and_mr() {
+    let table = create_single_column_table_raw(&[10, 20, 30]);
+    let table_view = table_view_raw(table);
+    let gather_map = create_i32_column_raw(&[2, 0]);
+    let gather_map_view = column_view_raw(gather_map);
+
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let default_mr = obs_current_device_resource();
+
+    obs_reset();
+    let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_gather_ex(table_view, gather_map_view, 0, &mut out_table, ctx.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_gather_ex failed");
+    assert!(!out_table.is_null());
+
+    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+    assert_ne!(obs_last_mr(), default_mr, "observation hook should record the explicit memory resource");
+
+    stream.synchronize().expect("stream sync failed");
+    assert_eq!(read_first_i32_table_column_raw(out_table, 2), vec![30, 10]);
+
+    unsafe {
+        cudf_sys::cudf_table_destroy(out_table);
+        cudf_sys::cudf_column_view_destroy(gather_map_view);
+        cudf_sys::cudf_column_destroy(gather_map);
+        cudf_sys::cudf_table_view_destroy(table_view);
+        cudf_sys::cudf_table_destroy(table);
+    };
+}
+
+#[test]
+fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
+    let table = create_single_column_table_raw(&[10, 20, 30]);
+    let table_view = table_view_raw(table);
+    let mask = create_bool_column_raw(&[true, false, true]);
+    let mask_view = column_view_raw(mask);
+
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let mr = cudf_sys::MemoryResource::new_pool(16 * 1024 * 1024, 0).expect("failed to create pool MR");
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let default_mr = obs_current_device_resource();
+
+    obs_reset();
+    let mut out_table: cudf_sys::cudf_table_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(table_view, mask_view, &mut out_table, ctx.as_raw()) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_apply_boolean_mask_ex failed");
+    assert!(!out_table.is_null());
+
+    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+    assert_ne!(obs_last_mr(), default_mr, "observation hook should record the explicit memory resource");
+
+    stream.synchronize().expect("stream sync failed");
+    assert_eq!(read_first_i32_table_column_raw(out_table, 2), vec![10, 30]);
+
+    unsafe {
+        cudf_sys::cudf_table_destroy(out_table);
+        cudf_sys::cudf_column_view_destroy(mask_view);
+        cudf_sys::cudf_column_destroy(mask);
+        cudf_sys::cudf_table_view_destroy(table_view);
+        cudf_sys::cudf_table_destroy(table);
     };
 }
 
@@ -550,180 +685,254 @@ fn column_copy_ex_explicit_mr_is_observed() {
     };
 }
 
+#[test]
+fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
+    let col = create_i32_column_raw(&[5, 10, 15]);
+    let view = column_view_raw(col);
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create mr");
+    let default_mr = obs_current_device_resource();
+    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+
+    obs_reset();
+    let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_column_copy_from_view_ex(view, ctx.as_raw(), &mut out_handle) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out_handle.is_null());
+
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_ne!(obs_last_mr(), std::ptr::null_mut());
+    assert_ne!(obs_last_mr(), default_mr);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out_handle);
+        cudf_sys::cudf_column_view_destroy(view);
+        cudf_sys::cudf_column_destroy(col);
+    };
+}
+
+#[test]
+fn table_copy_ex_uses_explicit_stream_and_mr() {
+    let table = create_single_column_table_raw(&[5, 10, 15]);
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let mr = cudf_sys::MemoryResource::new_cuda().expect("failed to create mr");
+    let default_mr = obs_current_device_resource();
+    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream).with_memory_resource(&mr);
+
+    obs_reset();
+    let mut out_handle: cudf_sys::cudf_table_handle = ptr::null_mut();
+    let status = unsafe { cudf_sys::cudf_table_copy_ex(table, ctx.as_raw(), &mut out_handle) };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert!(!out_handle.is_null());
+
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_ne!(obs_last_mr(), std::ptr::null_mut());
+    assert_ne!(obs_last_mr(), default_mr);
+
+    unsafe {
+        cudf_sys::cudf_table_destroy(out_handle);
+        cudf_sys::cudf_table_destroy(table);
+    };
+}
+
 // ===========================================================================
-// Category 3: Future _with_context high-level API operations
+// Category 3: High-level execution-context contract
 //
-// These tests document the EXPECTED behavior for cudf-rs safe API methods
-// that will accept ExecutionContext once EC-SHIM and EC-HIGHLEVEL are complete.
-//
-// They are #[ignore] because the _with_context methods do not exist yet.
-// Each test describes the contract that the implementation must satisfy.
+// These tests exercise hidden Phase 1 hooks that keep the execution-context
+// contract private while still validating it at the safe API boundary.
 // ===========================================================================
 
-/// Contract: `DataFrame::sort_values_with_context` routes work through an
-/// explicit non-default stream. The observation hook must record the
-/// explicit stream, not the default.
-///
-/// Will fail until EC-SHIM adds `cudf_sort_ex` and EC-HIGHLEVEL adds
-/// `DataFrame::sort_values_with_context`.
 #[test]
-#[ignore = "requires sort_values_with_context (EC-HIGHLEVEL)"]
-fn sort_with_context_uses_explicit_stream() {
-    // Setup
+fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 501))]).unwrap();
+
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+
+    obs_reset();
+    let sorted = df.__debug_sort_values_with_execution_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
+
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_eq!(sorted.__debug_execution_domain_id(), 501);
+    assert_eq!(sorted.__debug_execution_domain_stream_value(), explicit_stream);
+
+    obs_reset();
+    let vals: Vec<i32> = sorted.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(vals, vec![1, 2, 3]);
+    assert_eq!(obs_last_sync_stream(), explicit_stream);
+}
+
+#[test]
+fn sort_with_execution_context_rejects_ambient_default_promotion() {
     let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
-    obs_reset();
+    let err = df.__debug_sort_values_with_execution_context(["id"], cudf::SortOptions::default(), &ctx).unwrap_err();
 
-    // TODO: uncomment when sort_values_with_context exists
-    // let ctx = cudf::ExecutionContext::with_stream(&stream_wrapper);
-    // let sorted = df.sort_values_with_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
-    // stream.synchronize().unwrap();
-
-    // let observed = obs_last_stream();
-    // assert_eq!(observed, explicit_stream,
-    //     "sort_values_with_context should route through explicit stream");
-
-    // Verify correctness
-    // let col = sorted.series("id").unwrap();
-    // let vals: Vec<i32> = col.column_view().unwrap().to_vec().unwrap();
-    // assert_eq!(vals, vec![1, 2, 3]);
-
-    let _ = (df, explicit_stream);
-    panic!("sort_values_with_context not yet implemented");
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
+    assert!(err.context().iter().any(|(key, value)| *key == "operation_domain" && value == "ambient_default"));
+    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
 }
 
-/// Contract: `DataFrame::merge_with_context` routes join work through
-/// an explicit non-default stream.
-///
-/// Will fail until EC-SHIM adds `cudf_inner_join_ex` etc. and EC-HIGHLEVEL
-/// adds `DataFrame::merge_with_context`.
 #[test]
-#[ignore = "requires merge_with_context (EC-HIGHLEVEL)"]
-fn join_with_context_uses_explicit_stream() {
-    let left_ids = cudf::Series::new::<i32>("id", &[1, 2, 3]).unwrap();
-    let left_vals = cudf::Series::new::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
-    let left = cudf::DataFrame::from_series([("id", left_ids), ("val", left_vals)]).unwrap();
+fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource() {
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 502))]).unwrap();
 
-    let right_ids = cudf::Series::new::<i32>("id", &[2, 3, 4]).unwrap();
-    let right_scores = cudf::Series::new::<f64>("score", &[200.0, 300.0, 400.0]).unwrap();
-    let right = cudf::DataFrame::from_series([("id", right_ids), ("score", right_scores)]).unwrap();
-
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let mr = cudf::memory::DeviceMemoryResource::pool(16 * 1024 * 1024, 0).unwrap();
+    let explicit_mr = mr.__debug_raw_handle_value();
+    let ctx = cudf::__DebugExecutionContext::new().with_memory_resource(&mr);
+    let default_mr = obs_current_device_resource() as usize;
 
     obs_reset();
+    let sorted = df.__debug_sort_values_with_execution_context(["id"], cudf::SortOptions::default(), &ctx).unwrap();
 
-    // TODO: uncomment when merge_with_context exists
-    // let ctx = cudf::ExecutionContext::with_stream(&stream_wrapper);
-    // let joined = left.merge_with_context(
-    //     &right,
-    //     cudf::MergeOptions::new().how_inner().on(["id"]),
-    //     &ctx,
-    // ).unwrap();
-    // stream.synchronize().unwrap();
-
-    // let observed = obs_last_stream();
-    // assert_eq!(observed, explicit_stream,
-    //     "merge_with_context should route through explicit stream");
-
-    // assert_eq!(joined.num_rows(), 2); // ids 2, 3
-
-    let _ = (left, right, explicit_stream);
-    panic!("merge_with_context not yet implemented");
+    assert_ne!(obs_last_mr() as usize, default_mr);
+    assert_eq!(sorted.__debug_execution_domain_id(), 502);
+    assert_eq!(sorted.__debug_execution_domain_mr_value(), explicit_mr);
 }
 
-/// Contract: `GroupBy::agg_with_context` routes groupby aggregation through
-/// an explicit non-default stream.
-///
-/// Will fail until EC-SHIM adds `cudf_groupby_aggregate_ex` and EC-HIGHLEVEL
-/// adds `GroupBy::agg_with_context`.
 #[test]
-#[ignore = "requires agg_with_context (EC-HIGHLEVEL)"]
-fn groupby_with_context_uses_explicit_stream() {
-    let keys = cudf::Series::new::<i32>("key", &[1, 1, 2, 2, 3]).unwrap();
-    let vals = cudf::Series::new::<f64>("val", &[10.0, 20.0, 30.0, 40.0, 50.0]).unwrap();
-    let df = cudf::DataFrame::from_series([("key", keys), ("val", vals)]).unwrap();
+fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
+    let left = cudf::DataFrame::from_series([
+        ("id", explicit_i32_series("id", &[1, 2, 3], 503)),
+        ("val", explicit_i64_series("val", &[10, 20, 30], 503)),
+    ])
+    .unwrap();
+    let right = cudf::DataFrame::from_series([
+        ("id", explicit_i32_series("id", &[2, 3, 4], 503)),
+        ("score", explicit_i64_series("score", &[200, 300, 400], 503)),
+    ])
+    .unwrap();
 
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
+    let joined = left
+        .__debug_merge_with_execution_context(&right, cudf::MergeOptions::new().how_inner().on(["id"]), &ctx)
+        .unwrap();
 
-    // TODO: uncomment when agg_with_context exists
-    // let ctx = cudf::ExecutionContext::with_stream(&stream_wrapper);
-    // let result = df.groupby(["key"])
-    //     .agg_with_context(
-    //         &[cudf::AggSpec::new("val", cudf::Agg::Sum)],
-    //         &ctx,
-    //     ).unwrap();
-    // stream.synchronize().unwrap();
-
-    // let observed = obs_last_stream();
-    // assert_eq!(observed, explicit_stream,
-    //     "agg_with_context should route through explicit stream");
-
-    // assert_eq!(result.num_rows(), 3); // 3 unique keys
-
-    let _ = (df, explicit_stream);
-    panic!("agg_with_context not yet implemented");
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_eq!(joined.num_rows(), 2);
+    assert_eq!(joined.__debug_execution_domain_id(), 503);
+    assert_eq!(joined.__debug_execution_domain_stream_value(), explicit_stream);
 }
 
-/// Contract: `DataFrame::read_parquet` with builder-carried context routes
-/// I/O through an explicit non-default stream.
-///
-/// Will fail until EC-SHIM adds `cudf_io_read_parquet_ex` and EC-HIGHLEVEL
-/// adds `ParquetReaderOptions::with_context`.
 #[test]
-#[ignore = "requires ParquetReaderOptions::with_context (EC-HIGHLEVEL)"]
-fn read_parquet_with_context_uses_explicit_stream() {
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
+    let df = cudf::DataFrame::from_series([
+        ("key", explicit_i32_series("key", &[1, 1, 2, 2], 504)),
+        ("val", explicit_i64_series("val", &[10, 20, 30, 40], 504)),
+    ])
+    .unwrap();
+
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
+    let result = df
+        .groupby(["key"])
+        .__debug_agg_with_execution_context(&[cudf::AggSpec::new("val", cudf::Agg::Sum)], &ctx)
+        .unwrap();
 
-    // TODO: uncomment when ParquetReaderOptions::with_context exists
-    // let ctx = cudf::ExecutionContext::with_stream(&stream_wrapper);
-    // let opts = cudf::io::parquet::ParquetReaderOptions::new("test.parquet")
-    //     .with_context(&ctx);
-    // let df = cudf::DataFrame::read_parquet_with_options(opts).unwrap();
-    // stream.synchronize().unwrap();
-
-    // let observed = obs_last_stream();
-    // assert_eq!(observed, explicit_stream,
-    //     "read_parquet with context should route through explicit stream");
-
-    let _ = explicit_stream;
-    panic!("ParquetReaderOptions::with_context not yet implemented");
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_eq!(result.num_rows(), 2);
+    assert_eq!(result.__debug_execution_domain_id(), 504);
+    assert_eq!(result.__debug_execution_domain_stream_value(), explicit_stream);
 }
 
-/// Contract: `DataFrame::write_parquet` with builder-carried context routes
-/// I/O through an explicit non-default stream.
 #[test]
-#[ignore = "requires ParquetWriterOptions::with_context (EC-HIGHLEVEL)"]
-fn write_parquet_with_context_uses_explicit_stream() {
-    let stream = cudf_sys::Stream::new().expect("failed to create stream");
-    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 505))]).unwrap();
+    let indices = explicit_i32_series("gather", &[2, 0], 505);
+
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
 
     obs_reset();
+    let gathered = df.__debug_gather_with_execution_context(&indices, &ctx).unwrap();
 
-    // TODO: uncomment when ParquetWriterOptions::with_context exists
-    // let ids = cudf::Series::new::<i32>("id", &[1, 2, 3]).unwrap();
-    // let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
-    // let ctx = cudf::ExecutionContext::with_stream(&stream_wrapper);
-    // let opts = cudf::io::parquet::ParquetWriterOptions::new("/tmp/test_ec.parquet")
-    //     .with_context(&ctx);
-    // df.write_parquet_with_options(opts).unwrap();
-    // stream.synchronize().unwrap();
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_eq!(gathered.__debug_execution_domain_id(), 505);
+    assert_eq!(gathered.__debug_execution_domain_stream_value(), explicit_stream);
 
-    // let observed = obs_last_stream();
-    // assert_eq!(observed, explicit_stream);
+    obs_reset();
+    let vals: Vec<i32> = gathered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(vals, vec![2, 3]);
+    assert_eq!(obs_last_sync_stream(), explicit_stream);
+}
 
-    let _ = explicit_stream;
-    panic!("ParquetWriterOptions::with_context not yet implemented");
+#[test]
+fn gather_with_execution_context_rejects_ambient_default_promotion() {
+    let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
+    let indices = cudf::Series::new::<i32>("gather", &[2, 0]).unwrap();
+
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+
+    let err = df.__debug_gather_with_execution_context(&indices, &ctx).unwrap_err();
+
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
+    assert!(err.context().iter().any(|(key, value)| *key == "operation_domain" && value == "ambient_default"));
+    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
+}
+
+#[test]
+fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
+    let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 506))]).unwrap();
+    let mask = cudf::Series::from_column(
+        cudf::Column::from_slice(&[true, false, true]).unwrap().__debug_rebind_execution_domain_explicit(506).unwrap(),
+    )
+    .unwrap()
+    .rename("mask");
+
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let explicit_stream = stream.__debug_raw_handle_value();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+
+    obs_reset();
+    let filtered = df.__debug_filter_with_execution_context(&mask, &ctx).unwrap();
+
+    assert_eq!(obs_last_stream(), explicit_stream);
+    assert_eq!(filtered.__debug_execution_domain_id(), 506);
+    assert_eq!(filtered.__debug_execution_domain_stream_value(), explicit_stream);
+
+    obs_reset();
+    let vals: Vec<i32> = filtered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    assert_eq!(vals, vec![3, 2]);
+    assert_eq!(obs_last_sync_stream(), explicit_stream);
+}
+
+#[test]
+fn filter_with_execution_context_rejects_ambient_default_promotion() {
+    let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+    let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
+    let mask = cudf::Series::new::<bool>("mask", &[true, false, true]).unwrap();
+
+    let stream = cudf::stream::CudaStream::new().unwrap();
+    let ctx = cudf::__DebugExecutionContext::new().with_stream(&stream);
+
+    let err = df.__debug_filter_with_execution_context(&mask, &ctx).unwrap_err();
+
+    assert_eq!(err.kind(), cudf::ErrorKind::InvalidOperation);
+    assert!(err.is_permanent());
+    assert_eq!(err.operation(), "execution_context::resolve_output_domain");
+    assert!(err.context().iter().any(|(key, value)| *key == "operation_domain" && value == "ambient_default"));
+    assert!(err.context().iter().any(|(key, value)| *key == "borrowed_override_stream" && value == "true"));
 }
 
 // ===========================================================================
@@ -862,33 +1071,6 @@ fn column_copy_ex_stream_and_mr_combined() {
         cudf_sys::cudf_column_destroy(out_handle);
         cudf_sys::cudf_column_destroy(col);
     };
-}
-
-/// Future contract: `sort_values_with_context` with explicit memory resource
-/// should produce output allocated from that resource.
-#[test]
-#[ignore = "requires sort_values_with_context + allocator propagation (EC-HIGHLEVEL)"]
-fn sort_with_context_uses_explicit_mr() {
-    // TODO: uncomment when ExecutionContext with_memory_resource is available
-    // at the cudf-rs layer.
-    //
-    // let mr = Arc::new(cudf::memory::DeviceMemoryResource::pool(256 * 1024 * 1024, 0).unwrap());
-    // let ctx = cudf::ExecutionContext::with_memory_resource(&mr);
-    //
-    // let ids = cudf::Series::new::<i32>("id", &[3, 1, 2]).unwrap();
-    // let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
-    //
-    // obs_reset();
-    // let sorted = df.sort_values_with_context(["id"], SortOptions::default(), &ctx).unwrap();
-    //
-    // let observed_mr = obs_last_mr();
-    // let default_mr = obs_current_device_resource();
-    // assert_ne!(observed_mr, default_mr, "should use explicit MR, not default");
-    //
-    // let col = sorted.series("id").unwrap();
-    // let vals: Vec<i32> = col.column_view().unwrap().to_vec().unwrap();
-    // assert_eq!(vals, vec![1, 2, 3]);
-    panic!("sort_values_with_context with MR not yet implemented");
 }
 
 // ===========================================================================

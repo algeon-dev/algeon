@@ -4,6 +4,7 @@
 #include "error.h"
 #include "table.h"
 #include "column.h"
+#include "execution_context.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +16,15 @@ extern "C" {
 cudf_status_t cudf_apply_boolean_mask(cudf_table_view_handle input,
                                       cudf_column_view_handle mask,
                                       cudf_table_handle* out);
+
+/// Apply a boolean mask with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_apply_boolean_mask_ex(cudf_table_view_handle input,
+                                         cudf_column_view_handle mask,
+                                         cudf_table_handle* out,
+                                         const cudf_exec_options_t* options);
 
 #ifdef __cplusplus
 }

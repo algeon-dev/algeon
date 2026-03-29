@@ -1,4 +1,5 @@
 #include "table.h"
+#include "execution_context_internal.hpp"
 #include "shim_common.h"
 
 #include <cudf/column/column.hpp>
@@ -103,14 +104,24 @@ cudf_status_t cudf_table_create(cudf_column_handle* columns,
 
 cudf_status_t cudf_table_copy(cudf_table_handle src,
                                cudf_table_handle* out) {
+  return cudf_table_copy_ex(src, nullptr, out);
+}
+
+cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
+                                 cudf_exec_options_t const* options,
+                                 cudf_table_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(src, "src is null");
   CUDF_RUST_TRY {
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
+
     auto* tbl = static_cast<cudf::table*>(src);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
-    auto copy = std::make_unique<cudf::table>(tbl->view(), stream, mr);
+    auto copy = std::make_unique<cudf::table>(tbl->view(), exec.stream, exec.mr);
     *out = static_cast<cudf_table_handle>(copy.release());
     return CUDF_SUCCESS;
   }

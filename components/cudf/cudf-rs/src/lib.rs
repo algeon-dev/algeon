@@ -61,6 +61,7 @@ pub mod dataframe;
 pub mod dataframe_view;
 pub mod dictionary;
 pub mod error;
+pub mod execution_context;
 pub(crate) mod execution_domain;
 pub mod expr;
 pub mod filter;
@@ -95,6 +96,8 @@ pub use dataframe::{
 pub use dataframe_view::DataFrameView;
 // — Types and error —
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
+#[doc(hidden)]
+pub use execution_context::__DebugExecutionContext;
 // — High-level operations —
 pub use expr::Expr;
 pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};

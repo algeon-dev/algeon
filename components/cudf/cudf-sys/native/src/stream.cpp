@@ -1,3 +1,4 @@
+#include "execution_context_internal.hpp"
 #include "stream.h"
 #include "handle_access.hpp"
 #include "shim_common.h"
@@ -38,7 +39,9 @@ void cudf_stream_destroy(cudf_stream_handle handle) {
 cudf_status_t cudf_stream_synchronize(cudf_stream_handle handle) {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_TRY {
-    cudf_stream_view_from_handle(handle).synchronize();
+    auto stream = cudf_stream_view_from_handle(handle);
+    stream.synchronize();
+    cudf_record_synchronized_stream(stream);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
