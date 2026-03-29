@@ -73,7 +73,7 @@ pub(super) struct StatementTicket {
     pub(super) native_cancellation: ExecutionCancellation,
     pub(super) started_at: Instant,
     pub(super) issued_at: Instant,
-    pub(super) _permit: OwnedSemaphorePermit,
+    pub(super) _permit: QueryAdmissionPermit,
 }
 
 pub(super) struct QueryExecutionGuard {
@@ -81,7 +81,7 @@ pub(super) struct QueryExecutionGuard {
     pub(super) cancellations: Arc<QueryCancellation>,
     pub(super) observability: Arc<QueryObservability>,
     pub(super) native_cancel_bridge: tokio::task::JoinHandle<()>,
-    pub(super) _permit: OwnedSemaphorePermit,
+    pub(super) _permit: QueryAdmissionPermit,
     pub(super) lifecycle: Arc<QueryLifecycle>,
 }
 

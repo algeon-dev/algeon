@@ -37,7 +37,7 @@ pub async fn build_session_context(config: &ServerConfig) -> super::error::Resul
 }
 
 #[cfg(feature = "cugraph")]
-fn cugraph_sql_config(
+pub(crate) fn cugraph_sql_config(
     config: &super::config::CugraphServerConfig,
     native_execution_config: crate::NativeCudfExecutionConfig,
 ) -> CugraphSqlConfig {

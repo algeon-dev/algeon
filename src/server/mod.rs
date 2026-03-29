@@ -39,7 +39,7 @@ pub use crate::{
 /// Start the Flight SQL server and serve until SIGINT/SIGTERM.
 ///
 /// Graceful shutdown sequence on signal:
-/// 1. Close the admission semaphore so pending and future statement admits
+/// 1. Close the admission gate so pending and future statement admits
 ///    fail fast instead of acquiring a permit during drain.
 /// 2. Cancel the server-wide shutdown [`tokio_util::sync::CancellationToken`].
 ///    Every per-statement token is a child of this token, so cancellation
@@ -56,13 +56,18 @@ pub async fn serve(config: ServerConfig) -> Result<()> {
     let ctx = Arc::new(session::build_session_context(&config).await?);
     let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
     log_auth_mode_snapshot(&config.auth.mode);
+    let admission = Arc::new(admission::QueryAdmission::from_server_config(&config)?);
     let service = flight::DatafusionCudfFlightSqlService::new(
         ctx,
         config.native_optimizer_config.clone(),
         config.session_profile,
-        config.max_in_flight,
+        admission,
         config.statement_ticket_ttl,
         auth_interceptor,
+        #[cfg(feature = "cugraph")]
+        config.cugraph.as_ref().map(|cugraph| {
+            session::cugraph_sql_config(cugraph, config.native_optimizer_config.native_execution_config().clone())
+        }),
     );
     let admission = Arc::clone(service.admission());
     let cancellations = Arc::clone(service.cancellations());
@@ -539,6 +544,8 @@ mod tests {
             bind_addr: "127.0.0.1:0".parse().expect("test bind address"),
             log_filter: "info".to_string(),
             max_in_flight: 1,
+            gpu_devices: vec![0],
+            device_budget_fraction: None,
             statement_ticket_ttl: std::time::Duration::from_secs(60),
             native_optimizer_config: CudfOptimizerConfig::default(),
             session_profile: profile,

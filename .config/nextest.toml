@@ -65,6 +65,7 @@ filter = '''
 | (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
 | (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
 | (package(datafusion-nexus) & binary(server_cugraph_tests))
+| (package(datafusion-nexus) & binary(server_tests))
 '''
 test-group = "gpu"
 
@@ -78,5 +79,6 @@ filter = '''
 | (package(datafusion-nexus) & binary(native_runtime_pruning_tests))
 | (package(datafusion-nexus) & binary(native_tpcds_parity_tests))
 | (package(datafusion-nexus) & binary(server_cugraph_tests))
+| (package(datafusion-nexus) & binary(server_tests))
 '''
 test-group = "gpu-parallel"

@@ -4,19 +4,23 @@
 use std::path::PathBuf;
 use std::{
     collections::{BTreeMap, BTreeSet},
+    sync::Arc,
     time::Duration,
 };
 
+use datafusion::common::config::ConfigOptions;
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::server::{
     NEXUS_SERVER_CUGRAPH_ALGORITHMS_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
     NEXUS_SERVER_CUGRAPH_DIRECTED_ENV, NEXUS_SERVER_CUGRAPH_RENUMBER_ENV,
 };
 use datafusion_nexus::{
-    DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
+    CudfOptimizerConfig, DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig,
+    NativeCudfExecutionConfig,
     server::{
         NEXUS_ICEBERG_GLUE_DATABASE_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
-        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
+        NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
+        NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, NEXUS_SERVER_MAX_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS,
         NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, NEXUS_SERVER_NATIVE_HOST_FETCH_ACQUIRE_TIMEOUT_SECS_ENV,
         NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV, NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
         NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
@@ -31,7 +35,8 @@ use datafusion_nexus::{TableFormatLakehouseCachePolicy, TableFormatParquetReadSt
 #[cfg(feature = "iceberg")]
 use nexus_query_engine::S3SourceStorageCredential;
 use nexus_query_engine::{
-    MemoryControlPolicy, NativePipelineExecutionMode, SourceChunkPlanningMode, StatisticalAggregateExecutionMode,
+    MemoryControlPolicy, NativePipelineExecutionMode, QueryService, QueryServiceConfig, QueryServiceTenantConfig,
+    SourceChunkPlanningMode, StatisticalAggregateExecutionMode,
 };
 
 #[test]
@@ -41,6 +46,8 @@ fn server_config_defaults_to_single_flight_sql_admission() {
 
     assert_eq!(config.bind_addr.to_string(), "0.0.0.0:50051");
     assert_eq!(config.max_in_flight, 1);
+    assert_eq!(config.gpu_devices, vec![0]);
+    assert_eq!(config.device_budget_fraction, None);
     assert_eq!(config.statement_ticket_ttl.as_secs(), 300);
     assert_eq!(config.log_filter, "info");
     assert!(
@@ -136,6 +143,99 @@ fn server_config_rejects_zero_admission_limit() {
     let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
 
     assert!(error.to_string().contains(NEXUS_SERVER_MAX_IN_FLIGHT_ENV));
+}
+
+#[test]
+fn server_config_accepts_preferred_concurrency_knob() {
+    let env = BTreeMap::from([(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.max_in_flight, 3);
+}
+
+#[test]
+fn server_config_rejects_conflicting_admission_aliases() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "3".to_string()),
+        (NEXUS_SERVER_MAX_IN_FLIGHT_ENV, "2".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV));
+    assert!(error.to_string().contains(NEXUS_SERVER_MAX_IN_FLIGHT_ENV));
+}
+
+#[test]
+fn server_config_accepts_single_gpu_device_ordinal() {
+    let env = BTreeMap::from([(NEXUS_SERVER_GPU_DEVICES_ENV, "0".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.gpu_devices, vec![0]);
+}
+
+#[test]
+fn server_config_rejects_phase2_multi_gpu_device_subset() {
+    let env = BTreeMap::from([(NEXUS_SERVER_GPU_DEVICES_ENV, "0,1".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_GPU_DEVICES_ENV));
+}
+
+#[test]
+fn server_config_rejects_invalid_device_budget_fraction() {
+    for value in ["0", "1.1", "nan"] {
+        let env = BTreeMap::from([(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, value.to_string())]);
+        let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+        assert!(error.to_string().contains(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV));
+    }
+}
+
+#[test]
+fn server_config_accepts_device_budget_fraction_for_auto_sized_budget() {
+    let env = BTreeMap::from([(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, "0.5".to_string())]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+
+    assert_eq!(config.device_budget_fraction, Some(0.5));
+    assert!(
+        config.native_optimizer_config.native_execution_config().memory_control_policy().is_bounded(),
+        "device budget fraction should keep the bounded auto-sized native profile"
+    );
+}
+
+#[test]
+fn server_config_rejects_device_budget_fraction_with_explicit_device_budget() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV, "0.8".to_string()),
+        (NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV, "1024".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
+        (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_DEVICE_BUDGET_FRACTION_ENV));
+}
+
+#[test]
+fn query_service_handle_ignores_stale_session_budget_extension() {
+    let service = QueryService::new(
+        QueryServiceConfig { max_concurrent_queries: 1, stream_pool_size: Some(3), ..QueryServiceConfig::default() },
+        vec![QueryServiceTenantConfig::new("tenant", 3 * 1024 * 1024)],
+    )
+    .unwrap();
+    let handle = Arc::new(service.try_admit_query("tenant").unwrap().expect("query should admit"));
+    let admitted_policy = handle.memory_control_policy();
+    let query_config = CudfOptimizerConfig::default().with_native_execution_config(
+        NativeCudfExecutionConfig::bounded_auto_sized().with_query_service_handle(handle),
+    );
+    let stale_server_config = CudfOptimizerConfig::default()
+        .with_native_execution_config(NativeCudfExecutionConfig::bounded(12 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1));
+    let mut options = ConfigOptions::default();
+    options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&stale_server_config));
+
+    let effective = query_config.with_datafusion_config_options(&options).unwrap();
+
+    assert_eq!(effective.native_execution_config().memory_control_policy(), admitted_policy);
 }
 
 #[test]
@@ -376,6 +476,18 @@ fn server_config_accepts_explicit_unbounded_native_profile() {
         config.native_optimizer_config.native_execution_config().memory_control_policy(),
         MemoryControlPolicy::Unbounded
     );
+}
+
+#[test]
+fn server_config_rejects_concurrent_unbounded_native_profile() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, "unbounded".to_string()),
+        (NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV, "2".to_string()),
+    ]);
+
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_MAX_CONCURRENT_QUERIES_ENV));
 }
 
 #[test]

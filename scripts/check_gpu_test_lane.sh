@@ -37,6 +37,7 @@ datafusion-nexus::native_exec_tests
 datafusion-nexus::native_runtime_pruning_tests
 datafusion-nexus::native_tpcds_parity_tests
 datafusion-nexus::server_cugraph_tests
+datafusion-nexus::server_tests
 "
 
 # CPU lane -- every other test binary, reviewed NOT to execute on the GPU:
@@ -57,7 +58,6 @@ datafusion-nexus::native_metrics_tests
 datafusion-nexus::policy_report_tests
 datafusion-nexus::public_facade_tests
 datafusion-nexus::server_iceberg_tests
-datafusion-nexus::server_tests
 datafusion-nexus::session_config_tests
 datafusion-nexus::table_format_scan_tests
 datafusion-nexus-bench::clickbench_workload_tests
