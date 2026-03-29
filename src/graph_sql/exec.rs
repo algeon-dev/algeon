@@ -34,9 +34,10 @@ use datafusion::{
 use futures::{TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
     BinaryOp, CaseWhen, ExecutionContext, Expr as NativeExpr, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
-    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams,
-    GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
-    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
+    GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
+    GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs,
+    GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
+    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
     GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params,
     GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams,
     GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
@@ -1821,24 +1822,10 @@ fn execute_cugraph_query_to_gpu_with_options(
 }
 
 fn graph_algorithm_execution_context(context: &ExecutionContext) -> Result<ExecutionContext> {
-    if context.is_query_service_admitted() && context.memory_control_policy().is_bounded() {
-        return Err(Error::new(
-            ErrorCode::UnsupportedOperator,
-            "datafusion_nexus.cugraph_sql.execute",
-            "cuGraph SQL graph algorithms require unbounded native memory policy under Flight SQL QueryService admission",
-        )
-        .with_fact("memory_control_policy", context.memory_control_policy())
-        .with_fact("query_service_admitted", true)
-        .with_fact("reason", "cugraph_bounded_query_service_unsupported")
-        .into());
-    }
-    // Graph algorithms are intentionally outside strict bounded admission until
-    // libcudf/cuGraph expose lower-level allocation contracts. Edge and
-    // predicate child plans still run under the session's configured native
-    // policy; only the graph-algorithm native IR fragment uses unbounded
-    // execution so it reaches the cuGraph executor instead of bounded generic
-    // admission.
-    Ok(context.for_unbounded_fragment())
+    // Graph algorithms remain outside strict bounded admission, but bounded
+    // service contexts now keep their memory policy so the graph memory tier
+    // can price/admit the fragment before entering cuGraph.
+    Ok(context.clone())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2094,6 +2081,23 @@ fn native_algorithm_params(
             max_iterations: params.max_iterations,
             normalize: params.normalize,
         }),
+        CugraphAlgorithmParams::BetweennessCentrality(params) => {
+            GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+                seeds: params.seeds.as_ref().map(|seeds| GraphBetweennessSeeds::I64(seeds.vertices.clone())),
+                k: params.k,
+                normalized: params.normalized,
+                include_endpoints: params.include_endpoints,
+                exact_vertex_threshold: params.exact_vertex_threshold,
+            })
+        },
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
+                seeds: params.seeds.as_ref().map(|seeds| GraphBetweennessSeeds::I64(seeds.vertices.clone())),
+                k: params.k,
+                normalized: params.normalized,
+                exact_vertex_threshold: params.exact_vertex_threshold,
+            })
+        },
         CugraphAlgorithmParams::Sssp(params) => {
             GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: params.source_vertex, cutoff: params.cutoff })
         },

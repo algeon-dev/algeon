@@ -18,8 +18,9 @@ use datafusion_nexus::{
     GpuFallbackPolicy, NativeAggregateStrategyMetricRow, NativeCudfExecutionConfig, NativeDataFusionExecutionMetrics,
     NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
     NativeDataFusionPostNativeExecutionPath, NativeDataFusionRuntimeOutcome, NativeDynamicFilterRuntimeMetricRow,
-    NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow, NativePipelineExecutionMode,
-    NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
+    NativePipelineExecutionMode, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
+    NativeTaskRuntimeMetricRow,
 };
 
 use crate::{

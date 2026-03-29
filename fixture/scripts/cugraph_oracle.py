@@ -335,6 +335,48 @@ def _hits(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _betweenness_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
+    seeds = params.get("seeds")
+    k = None if seeds is None else [int(vertex) for vertex in seeds]
+    normalized = bool(params.get("normalized", True))
+    include_endpoints = bool(params.get("include_endpoints", False))
+    df = cugraph_mod.betweenness_centrality(
+        graph,
+        k=k,
+        normalized=normalized,
+        endpoints=include_endpoints,
+    )
+    df = df.rename(columns={"betweenness_centrality": "value"})
+    df["vertex"] = df["vertex"].astype("int64")
+    df["value"] = df["value"].astype("float64")
+    df = df.sort_values("vertex").reset_index(drop=True)
+    return {
+        "vertex": [int(v) for v in df["vertex"].to_pandas().tolist()],
+        "value": [float(v) for v in df["value"].to_pandas().tolist()],
+    }
+
+
+def _edge_betweenness_centrality(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
+    seeds = params.get("seeds")
+    k = None if seeds is None else [int(vertex) for vertex in seeds]
+    normalized = bool(params.get("normalized", True))
+    df = cugraph_mod.edge_betweenness_centrality(
+        graph,
+        k=k,
+        normalized=normalized,
+    )
+    df = df.rename(columns={"src": "source", "dst": "destination", "betweenness_centrality": "score"})
+    df["source"] = df["source"].astype("int64")
+    df["destination"] = df["destination"].astype("int64")
+    df["score"] = df["score"].astype("float64")
+    df = df.sort_values(["source", "destination"]).reset_index(drop=True)
+    return {
+        "source": [int(v) for v in df["source"].to_pandas().tolist()],
+        "destination": [int(v) for v in df["destination"].to_pandas().tolist()],
+        "score": [float(v) for v in df["score"].to_pandas().tolist()],
+    }
+
+
 def _sssp(cugraph_mod, graph, params: Dict[str, Any]) -> Dict[str, Any]:
     """Run cuGraph SSSP from a single source vertex.
 
@@ -678,6 +720,18 @@ ALGORITHMS = {
         "layout": "transposed",
         "directed": True,
         "run": _hits,
+    },
+    "betweenness_centrality": {
+        "layout": "forward",
+        "directed": True,
+        "edge_attr": False,
+        "run": _betweenness_centrality,
+    },
+    "edge_betweenness_centrality": {
+        "layout": "forward",
+        "directed": True,
+        "edge_attr": False,
+        "run": _edge_betweenness_centrality,
     },
     # SSSP: Forward layout, directed graph, requires a source_vertex param.
     "sssp": {

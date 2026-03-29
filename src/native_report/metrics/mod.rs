@@ -22,8 +22,8 @@ pub use dynamic_filter::{
     NativeDynamicFilterMeasuredReductionStatus, NativeDynamicFilterPostDecodeReductionStage,
     NativeDynamicFilterRuntimeMetricRow, NativeDynamicFilterWorkAvoidanceStatus,
 };
-pub use graph::NativeGraphRuntimeMetricRow;
-use graph::graph_runtime_rows;
+pub use graph::{NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow};
+use graph::{graph_reservation_rows, graph_runtime_rows};
 use labels::max_optional_usize;
 pub use lakehouse_cache::NativeLakehouseCacheFillEventMetricRow;
 use lakehouse_cache::lakehouse_cache_fill_event_snapshot_rows;
@@ -86,6 +86,8 @@ pub struct NativeDataFusionExecutionMetrics {
     pub max_task_observed_peak_bytes: Option<usize>,
     /// Largest lower-level retained byte count, when reported.
     pub max_task_retained_bytes: Option<usize>,
+    /// Stable nested graph runtime metric rows.
+    pub graph_reservation_rows: Vec<NativeGraphReservationMetricRow>,
     /// Stable nested graph runtime metric rows.
     pub graph_runtime_rows: Vec<NativeGraphRuntimeMetricRow>,
     /// Stable nested task metrics aggregated by operator kind.
@@ -278,6 +280,7 @@ impl NativeDataFusionExecutionMetrics {
             max_task_reservation_bytes: metric_count(metrics, "max_task_reservation_bytes"),
             max_task_observed_peak_bytes: optional_observed_metric_count(metrics, "max_task_observed_peak_bytes"),
             max_task_retained_bytes: optional_observed_metric_count(metrics, "max_task_retained_bytes"),
+            graph_reservation_rows: graph_reservation_rows(metrics),
             graph_runtime_rows: graph_runtime_rows(metrics),
             task_operator_rows: task_operator_rows(metrics),
             task_runtime_rows: task_runtime_rows(metrics),
@@ -570,6 +573,17 @@ impl NativeDataFusionExecutionMetrics {
                 .then_with(|| left.algorithm.cmp(&right.algorithm))
                 .then_with(|| left.source_column.cmp(&right.source_column))
                 .then_with(|| left.destination_column.cmp(&right.destination_column))
+                .then_with(|| left.to_stable_kv_row().cmp(&right.to_stable_kv_row()))
+        });
+    }
+
+    /// Appends graph reservation rows and restores stable sort order.
+    pub fn merge_graph_reservation_rows(&mut self, rows: Vec<NativeGraphReservationMetricRow>) {
+        self.graph_reservation_rows.extend(rows);
+        self.graph_reservation_rows.sort_by(|left, right| {
+            left.node_id
+                .cmp(&right.node_id)
+                .then_with(|| left.algorithm.cmp(&right.algorithm))
                 .then_with(|| left.to_stable_kv_row().cmp(&right.to_stable_kv_row()))
         });
     }

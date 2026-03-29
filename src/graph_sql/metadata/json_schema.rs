@@ -1,5 +1,5 @@
 use arrow::datatypes::{DataType, SchemaRef};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
 use super::super::{
     CUGRAPH_VALIDATE_CALL_FUNCTION, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec,
@@ -211,6 +211,14 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "default": params.normalize
                 }
             })
+        },
+        CugraphAlgorithmParams::BetweennessCentrality(params) => betweenness_options_schema_json(
+            params.normalized,
+            Some(params.include_endpoints),
+            params.exact_vertex_threshold,
+        ),
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            betweenness_options_schema_json(params.normalized, None, params.exact_vertex_threshold)
         },
         CugraphAlgorithmParams::Sssp(params) => json!({
             "cutoff": {
@@ -451,6 +459,63 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
         | CugraphAlgorithmParams::TriangleCountAll(_)
         | CugraphAlgorithmParams::MinimumSpanningTree(_) => json!({}),
     }
+}
+
+fn betweenness_options_schema_json(
+    normalized: bool,
+    include_endpoints: Option<bool>,
+    exact_vertex_threshold: u64,
+) -> Value {
+    let mut object = Map::new();
+    object.insert(
+        "seeds".to_string(),
+        json!({
+            "scope": "algorithm",
+            "type": "List<Int64>|null",
+            "default": null,
+            "mutually_exclusive_with": "k",
+            "description": "Explicit seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set."
+        }),
+    );
+    object.insert(
+        "k".to_string(),
+        json!({
+            "scope": "algorithm",
+            "type": "UInt64|null",
+            "default": null,
+            "min": 1,
+            "mutually_exclusive_with": "seeds",
+            "description": "Deterministic approximate seed count. Execution uses the first k distinct graph vertices in stable order and refuses k larger than the actual vertex count."
+        }),
+    );
+    object.insert(
+        "normalized".to_string(),
+        json!({
+            "scope": "algorithm",
+            "type": "Boolean",
+            "default": normalized
+        }),
+    );
+    if let Some(include_endpoints) = include_endpoints {
+        object.insert(
+            "include_endpoints".to_string(),
+            json!({
+                "scope": "algorithm",
+                "type": "Boolean",
+                "default": include_endpoints
+            }),
+        );
+    }
+    object.insert(
+        "exact_vertex_threshold".to_string(),
+        json!({
+            "scope": "algorithm",
+            "type": "UInt64",
+            "default": exact_vertex_threshold,
+            "description": "Maximum actual graph vertex count allowed for exact betweenness without explicit seeds or k."
+        }),
+    );
+    Value::Object(object)
 }
 
 fn bfs_options_schema_json() -> Value {
@@ -730,6 +795,12 @@ fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
         CugraphAlgorithmParams::Hits(params) => {
             json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations, "normalize": params.normalize})
         },
+        CugraphAlgorithmParams::BetweennessCentrality(params) => {
+            json!({"seeds": null, "k": params.k, "normalized": params.normalized, "include_endpoints": params.include_endpoints, "exact_vertex_threshold": params.exact_vertex_threshold})
+        },
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            json!({"seeds": null, "k": params.k, "normalized": params.normalized, "exact_vertex_threshold": params.exact_vertex_threshold})
+        },
         CugraphAlgorithmParams::Sssp(params) => json!({"cutoff": params.cutoff}),
         CugraphAlgorithmParams::CoreNumber(params) => json!({"degree_type": params.degree_type.as_str()}),
         CugraphAlgorithmParams::KCore(params) => json!({"k": params.k, "degree_type": params.degree_type.as_str()}),
@@ -853,6 +924,12 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
         },
         CugraphAlgorithmParams::Hits(params) => {
             json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations, "normalize": params.normalize})
+        },
+        CugraphAlgorithmParams::BetweennessCentrality(params) => {
+            json!({"seeds": params.seeds.as_ref().map(|seeds| &seeds.vertices), "k": params.k, "normalized": params.normalized, "include_endpoints": params.include_endpoints, "exact_vertex_threshold": params.exact_vertex_threshold})
+        },
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            json!({"seeds": params.seeds.as_ref().map(|seeds| &seeds.vertices), "k": params.k, "normalized": params.normalized, "exact_vertex_threshold": params.exact_vertex_threshold})
         },
         CugraphAlgorithmParams::Sssp(params) => json!({"source_vertex": params.source_vertex, "cutoff": params.cutoff}),
         CugraphAlgorithmParams::CoreNumber(params) => json!({"degree_type": params.degree_type.as_str()}),

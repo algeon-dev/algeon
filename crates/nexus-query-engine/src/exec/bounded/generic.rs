@@ -185,6 +185,24 @@ fn execute_bounded_generic_node(
                 .collect::<Result<Vec<_>>>()?;
             execute_bounded_generic_union(context, id, inputs, reservations, metrics)
         },
+        PlanNode::EdgeNormalize(edge_normalize) => {
+            let input =
+                execute_bounded_generic_node(context, plan, edge_normalize.input, gpu_inputs, reservations, metrics)?;
+            execute_bounded_generic_unary(
+                context,
+                id,
+                "bounded_generic_edge_normalize",
+                "bounded_generic_edge_normalize_output",
+                input,
+                reservations,
+                metrics,
+                false,
+                |context, input, _token, metrics| execute_edge_normalize(context, id, edge_normalize, input, metrics),
+            )
+        },
+        PlanNode::GraphAlgorithm(graph) => {
+            execute_bounded_generic_graph_algorithm(context, plan, id, graph, gpu_inputs, reservations, metrics)
+        },
         PlanNode::Aggregate(aggregate) => {
             let input = match plan.node(aggregate.input).map(|node| &node.kind) {
                 Some(PlanNode::Aggregate(_)) => match BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input) {
@@ -217,9 +235,9 @@ fn execute_bounded_generic_node(
             reservations.release(input_reservation, metrics);
             result
         },
-        PlanNode::Join(_) | PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) => {
+        PlanNode::Join(_) => {
             Err(unsupported_bounded_shape(
-            "bounded generic execution supports only source, filter, projection, aggregate, window, sort, limit, and union nodes",
+            "bounded generic execution supports only source, filter, projection, aggregate, window, sort, limit, union, edge-normalize, and graph-algorithm nodes",
             "bounded_generic_plan_shape_unsupported",
         )
         .with_fact("node_id", id)
@@ -342,6 +360,180 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
     drop(first);
     release_reservations_reverse(reservations, input_reservations, metrics);
     Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn execute_bounded_generic_graph_algorithm(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    graph: &crate::plan::GraphAlgorithmNode,
+    gpu_inputs: &GpuResidentInputMap,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let input = execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?;
+    let ResidentGpuFrame { frame, reservation } = input;
+    let error =
+        match execute_graph_algorithm(context, node_id, graph, frame, std::collections::BTreeMap::new(), metrics) {
+            Ok(output) => {
+                drop(output);
+                QueryError::new(
+                    QueryErrorCode::UnsupportedOperator,
+                    "nexus_query_engine.bounded.graph_algorithm",
+                    "graph execution without cugraph feature unexpectedly succeeded",
+                )
+                .with_fact("node_id", node_id)
+            },
+            Err(error) => error,
+        };
+    reservations.release(reservation, metrics);
+    Err(error)
+}
+
+#[cfg(feature = "cugraph")]
+fn execute_bounded_generic_graph_algorithm(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    graph: &crate::plan::GraphAlgorithmNode,
+    gpu_inputs: &GpuResidentInputMap,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
+    let input = execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?;
+    let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = input;
+    let input_rows = input_frame.num_rows() as u64;
+    let input_columns = input_frame.num_columns() as u64;
+    let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, graph.input);
+
+    let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
+        weight: graph.spec.algorithm.consumes_weight(),
+        edge_id: graph.spec.edge_columns.edge_id.is_some(),
+    };
+    let filtered_input = match super::edge_null_filter::filter_null_edge_rows(
+        context,
+        node_id,
+        "graph_edge_null_filter",
+        input_frame.into_frame(),
+        &graph.spec.edge_columns,
+        null_filter_scope,
+        metrics,
+    ) {
+        Ok(frame) => GpuDataFrame::new(frame),
+        Err(error) => {
+            reservations.release(input_reservation, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let sanitized_input_rows = filtered_input.num_rows() as u64;
+    let null_edge_rows_dropped =
+        prior_null_edge_rows_dropped.saturating_add(input_rows.saturating_sub(sanitized_input_rows));
+
+    let report = graph_memory_reservation_report(
+        node_id,
+        &graph.spec,
+        filtered_input.frame(),
+        sanitized_input_rows,
+        Some(reservations.remaining_bytes()),
+        false,
+    )?;
+    let request =
+        MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, report.requested_bytes, reservations.budget())
+            .with_memory_boundary(crate::graph_memory::GRAPH_MEMORY_BOUNDARY)
+            .with_node_id(node_id)
+            .with_stage("graph_memory_admission");
+    metrics.record_graph_reservation(report.clone());
+    if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
+        let remaining = reservations.remaining_bytes();
+        metrics.record_reservation_denied_timeline_event(
+            &request,
+            crate::metrics::MemoryReservationEventAction::Reserve,
+            remaining,
+            reservations.reserved_bytes(),
+        );
+        drop(filtered_input);
+        reservations.release(input_reservation, metrics);
+        return Err(report.denied_error(&request, remaining).with_fact_if_absent("node_id", node_id));
+    }
+
+    let mut graph_reservation = match reservations.try_reserve_work(request, metrics) {
+        Ok(reservation) => reservation,
+        Err(error) => {
+            drop(filtered_input);
+            reservations.release(input_reservation, metrics);
+            return Err(
+                error.with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON)
+            );
+        },
+    };
+    let mut live_reservations = vec![input_reservation];
+    let mut side_inputs = std::collections::BTreeMap::new();
+
+    for input_id in graph.inputs.iter().skip(1) {
+        match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
+            Ok(frame) => {
+                live_reservations.push(frame.reservation);
+                side_inputs.insert(*input_id, frame.frame);
+            },
+            Err(error) => {
+                drop(filtered_input);
+                reservations.release(graph_reservation, metrics);
+                release_reservations_reverse(reservations, live_reservations, metrics);
+                return Err(error);
+            },
+        }
+    }
+
+    let output = match execute_graph_algorithm_sanitized(
+        context,
+        node_id,
+        graph,
+        filtered_input,
+        side_inputs,
+        Some(graph_reservation.bytes()),
+        input_rows,
+        input_columns,
+        null_edge_rows_dropped,
+        metrics,
+    ) {
+        Ok(output) => output,
+        Err(error) => {
+            reservations.release(graph_reservation, metrics);
+            release_reservations_reverse(reservations, live_reservations, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+
+    let output_bytes = match observe_device_memory_bytes(&output, metrics) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            drop(output);
+            reservations.release(graph_reservation, metrics);
+            release_reservations_reverse(reservations, live_reservations, metrics);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    release_reservations_reverse(reservations, live_reservations, metrics);
+    let output_request =
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+            .with_memory_boundary("bounded_generic_graph_algorithm_output")
+            .with_node_id(node_id)
+            .with_stage("bounded_generic_graph_algorithm")
+            .with_attempt(1, 1);
+    if let Err(error) = reconcile_work_reservation_to_output(
+        reservations,
+        &mut graph_reservation,
+        output_bytes,
+        &output_request,
+        metrics,
+    ) {
+        drop(output);
+        reservations.release(graph_reservation, metrics);
+        return Err(error);
+    }
+    let output_reservation = reservations.transfer(graph_reservation, output_request, metrics);
+    Ok(ResidentGpuFrame { frame: output, reservation: output_reservation })
 }
 
 pub(in crate::exec::bounded) fn release_resident_frames_reverse(

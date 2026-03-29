@@ -20,8 +20,10 @@ pub(super) fn execute_pagerank(
     let options = table_graph_options(spec);
     let pr_params = pagerank_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_pagerank",
@@ -38,6 +40,7 @@ pub(super) fn execute_pagerank(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -73,8 +76,10 @@ pub(super) fn execute_personalized_pagerank(
     let personalization_frame = personalization_frame.into_frame();
     let personalization = &params.personalization;
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_personalized_pagerank",
@@ -151,8 +156,10 @@ pub(super) fn execute_eigenvector_centrality(
     let options = table_graph_options(spec);
     let evc_params = eigenvector_centrality_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_eigenvector_centrality",
@@ -170,6 +177,7 @@ pub(super) fn execute_eigenvector_centrality(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -195,8 +203,10 @@ pub(super) fn execute_hits(
     let options = table_graph_options(spec);
     let h_params = hits_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_hits",
@@ -227,9 +237,183 @@ pub(super) fn execute_hits(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
+}
+
+pub(super) fn execute_betweenness_centrality(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    inputs: GraphAlgorithmExecutionInputs,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
+    let crate::plan::GraphAlgorithmParams::BetweennessCentrality(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.betweenness_centrality",
+            "BetweennessCentrality graph algorithm node carried non-BetweennessCentrality parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let options = table_graph_options(spec);
+    let bc_params = betweenness_centrality_params(params);
+
+    run_with_cugraph_graph::<cugraph::Forward, _>(
+        context,
+        inputs.graph_memory_limit_bytes,
+        spec,
+        edges,
+        options,
+        "datafusion_nexus_cugraph_betweenness_centrality",
+        |runtime, entered, graph| {
+            let result = match vertex_type {
+                cudf::TypeId::Int32 => match &params.seeds {
+                    Some(seeds) => {
+                        let seeds = betweenness_i32_seeds(seeds)?;
+                        graph.betweenness_centrality(entered, seeds.as_slice(), &bc_params)
+                    },
+                    None => graph.betweenness_centrality_all(entered, &bc_params),
+                },
+                cudf::TypeId::Int64 => match &params.seeds {
+                    Some(seeds) => {
+                        let seeds = betweenness_i64_seeds(seeds);
+                        graph.betweenness_centrality(entered, seeds.as_slice(), &bc_params)
+                    },
+                    None => graph.betweenness_centrality_all(entered, &bc_params),
+                },
+                dtype => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedType,
+                        "nexus_query_engine.graph_algorithm.betweenness_centrality",
+                        "betweenness centrality requires Int32 or Int64 graph vertices",
+                    )
+                    .with_fact("vertex_dtype", format!("{dtype:?}")));
+                },
+            }
+            .map_err(map_cugraph_error(
+                "nexus_query_engine.graph_algorithm.betweenness_centrality",
+                "cuGraph betweenness centrality failed",
+            ))?;
+            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                "nexus_query_engine.graph_algorithm.betweenness_centrality_result",
+                "failed to convert cuGraph betweenness centrality result to cudf DataFrame",
+            ))?;
+            let seed_count = params.seeds.as_ref().map(|seeds| seeds.len() as u64);
+            let algorithm_metadata = betweenness_algorithm_metadata(seed_count, params.normalized);
+            Ok(GraphAlgorithmExecutionResult {
+                frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+                algorithm_metadata,
+                budget_observations: Vec::new(),
+            })
+        },
+    )
+}
+
+pub(super) fn execute_edge_betweenness_centrality(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    inputs: GraphAlgorithmExecutionInputs,
+) -> Result<GraphAlgorithmExecutionResult> {
+    let input = inputs.edge_list;
+    let crate::plan::GraphAlgorithmParams::EdgeBetweennessCentrality(params) = &spec.params else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.edge_betweenness_centrality",
+            "EdgeBetweennessCentrality graph algorithm node carried non-EdgeBetweennessCentrality parameters",
+        )
+        .with_fact("algorithm", spec.algorithm.as_str()));
+    };
+
+    let input = input.into_frame();
+    let (edges, vertex_type) = project_edge_list(&input, spec)?;
+    let options = table_graph_options(spec);
+    let ebc_params = edge_betweenness_centrality_params(params);
+
+    run_with_cugraph_graph::<cugraph::Forward, _>(
+        context,
+        inputs.graph_memory_limit_bytes,
+        spec,
+        edges,
+        options,
+        "datafusion_nexus_cugraph_edge_betweenness_centrality",
+        |runtime, entered, graph| {
+            let result = match vertex_type {
+                cudf::TypeId::Int32 => match &params.seeds {
+                    Some(seeds) => {
+                        let seeds = betweenness_i32_seeds(seeds)?;
+                        graph.edge_betweenness_centrality(entered, seeds.as_slice(), &ebc_params)
+                    },
+                    None => graph.edge_betweenness_centrality_all(entered, &ebc_params),
+                },
+                cudf::TypeId::Int64 => match &params.seeds {
+                    Some(seeds) => {
+                        let seeds = betweenness_i64_seeds(seeds);
+                        graph.edge_betweenness_centrality(entered, seeds.as_slice(), &ebc_params)
+                    },
+                    None => graph.edge_betweenness_centrality_all(entered, &ebc_params),
+                },
+                dtype => {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedType,
+                        "nexus_query_engine.graph_algorithm.edge_betweenness_centrality",
+                        "edge betweenness centrality requires Int32 or Int64 graph vertices",
+                    )
+                    .with_fact("vertex_dtype", format!("{dtype:?}")));
+                },
+            }
+            .map_err(map_cugraph_error(
+                "nexus_query_engine.graph_algorithm.edge_betweenness_centrality",
+                "cuGraph edge betweenness centrality failed",
+            ))?;
+            let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                "nexus_query_engine.graph_algorithm.edge_betweenness_centrality_result",
+                "failed to convert cuGraph edge betweenness centrality result to cudf DataFrame",
+            ))?;
+            let seed_count = params.seeds.as_ref().map(|seeds| seeds.len() as u64);
+            let algorithm_metadata = betweenness_algorithm_metadata(seed_count, params.normalized);
+            Ok(GraphAlgorithmExecutionResult {
+                frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
+                algorithm_metadata,
+                budget_observations: Vec::new(),
+            })
+        },
+    )
+}
+
+fn betweenness_i32_seeds(seeds: &crate::plan::GraphBetweennessSeeds) -> Result<Vec<i32>> {
+    match seeds {
+        crate::plan::GraphBetweennessSeeds::I64(values) => values
+            .iter()
+            .map(|value| {
+                i32::try_from(*value).map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.graph_algorithm.betweenness_seeds",
+                        "betweenness seed vertex does not fit Int32 graph vertex dtype",
+                    )
+                    .with_fact("seed_vertex", *value)
+                })
+            })
+            .collect(),
+    }
+}
+
+fn betweenness_i64_seeds(seeds: &crate::plan::GraphBetweennessSeeds) -> Vec<i64> {
+    match seeds {
+        crate::plan::GraphBetweennessSeeds::I64(values) => values.clone(),
+    }
+}
+
+fn betweenness_algorithm_metadata(seed_count: Option<u64>, normalized: bool) -> String {
+    match seed_count {
+        Some(seed_count) => format!("approximate=true,seed_count={seed_count},normalized={normalized}"),
+        None => format!("approximate=false,seed_count=all,normalized={normalized}"),
+    }
 }
 
 pub(super) fn execute_katz_centrality(
@@ -252,8 +436,10 @@ pub(super) fn execute_katz_centrality(
     let options = table_graph_options(spec);
     let kc_params = katz_centrality_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_katz_centrality",
@@ -271,6 +457,7 @@ pub(super) fn execute_katz_centrality(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -311,6 +498,7 @@ where
     Ok(GraphAlgorithmExecutionResult {
         frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
         algorithm_metadata,
+        budget_observations: Vec::new(),
     })
 }
 

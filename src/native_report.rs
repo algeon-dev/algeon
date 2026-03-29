@@ -70,9 +70,9 @@ use diagnostics::{
 pub use metrics::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDynamicFilterMeasuredReductionStatus,
     NativeDynamicFilterPostDecodeReductionStage, NativeDynamicFilterRuntimeMetricRow,
-    NativeDynamicFilterWorkAvoidanceStatus, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
-    NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow,
-    NativeTaskRuntimeMetricRow,
+    NativeDynamicFilterWorkAvoidanceStatus, NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow,
+    NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
 pub use reports::{NativeDataFusionExecutionReport, NativeDataFusionPlanningReport, NativeFallbackPressureReport};
 pub use rows::{
@@ -117,6 +117,11 @@ pub use workload::{
 /// Format nested graph-runtime metric rows for TSV report cells.
 pub fn format_native_graph_runtime_metric_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
     tsv::format_graph_runtime_rows(rows)
+}
+
+/// Format nested graph-reservation metric rows for TSV report cells.
+pub fn format_native_graph_reservation_metric_rows(rows: &[NativeGraphReservationMetricRow]) -> String {
+    tsv::format_graph_reservation_rows(rows)
 }
 
 /// Format nested task-operator metric rows for TSV report cells.

@@ -17,22 +17,24 @@ use arrow::{
 };
 use cudf::DataFrame;
 use nexus_query_engine::{
-    AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
+    AdaptiveMemoryHistory, AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, BoundedJoinReservationContract,
     BuildMaterializationBoundary, ExecutionBoundaryPolicy, ExecutionContext, Expr, GpuDataFrame, GpuHashJoinBuildCache,
     GpuLocalParquetSourceCache, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GroupingSetsSpec, JoinKey,
     JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, LimitSpec, LiteralBatchSource, LiteralValue,
     LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationEventAction, MemorySpaceId,
-    MissingColumn, ParquetPositionDeleteFile, PartitionColumn, ProjectionOutput, QueryErrorCode, QueryMetrics,
-    QueryOutput, QueryPlanBuilder, ReservationKind, ResolvedParquetSource, SortExpr, SortSpec,
-    SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode, WindowFunction, WindowSpec,
-    ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs, materialize_gpu_result_to_host,
-    plan_local_parquet_source_chunks,
+    MissingColumn, NativePipelineExecutionMode, ParquetPositionDeleteFile, PartitionColumn, ProjectionOutput,
+    QueryErrorCode, QueryMetrics, QueryOutput, QueryPlanBuilder, ReservationKind, ResolvedParquetSource, SortExpr,
+    SortSpec, SourceChunkPlanningPolicy, SourceNode, SourceSchedulerPolicy, StddevSampExecutionMode, WindowFunction,
+    WindowSpec, ZERO_COLUMN_COUNT_COLUMN, execute_query_plan, execute_query_plan_with_gpu_inputs,
+    materialize_gpu_result_to_host, plan_local_parquet_source_chunks,
 };
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
-    GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphBfsPredicateInputs,
-    GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeColumnBindings, GraphEdgePredicateInput,
-    GraphPredicateInput, stable_graph_result_schema,
+    GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBetweennessSeeds,
+    GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput, GraphPredicateInput,
+    GraphReservationOutcome, force_next_graph_adaptive_chunk_attempt_resource_exhausted_for_test,
+    force_next_graph_adaptive_full_attempt_resource_exhausted_for_test, stable_graph_result_schema,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 

@@ -19,8 +19,10 @@ pub(super) fn execute_degrees_all(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_degrees_all",
@@ -36,6 +38,7 @@ pub(super) fn execute_degrees_all(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -60,8 +63,10 @@ pub(super) fn execute_in_degrees_all(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    run_with_cugraph_graph::<cugraph::Transposed, _, _>(
+    run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_in_degrees_all",
@@ -77,6 +82,7 @@ pub(super) fn execute_in_degrees_all(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -103,8 +109,10 @@ pub(super) fn execute_out_degrees_all(
 
     // out_degrees_all is layout-agnostic in cugraph-rs; build Forward for
     // consistency with other Any-layout algorithms in this adapter.
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_out_degrees_all",
@@ -120,6 +128,7 @@ pub(super) fn execute_out_degrees_all(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -144,8 +153,10 @@ pub(super) fn execute_weakly_connected_components(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_weakly_connected_components",
@@ -162,6 +173,7 @@ pub(super) fn execute_weakly_connected_components(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -186,8 +198,10 @@ pub(super) fn execute_strongly_connected_components(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_strongly_connected_components",
@@ -204,6 +218,7 @@ pub(super) fn execute_strongly_connected_components(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -228,8 +243,10 @@ pub(super) fn execute_triangle_count_all(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_triangle_count_all",
@@ -246,6 +263,7 @@ pub(super) fn execute_triangle_count_all(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -274,8 +292,10 @@ pub(super) fn execute_core_number(
         do_expensive_check: false,
     };
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_core_number",
@@ -291,6 +311,7 @@ pub(super) fn execute_core_number(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: format!("degree_type={}", params.degree_type.as_str()),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -316,8 +337,10 @@ pub(super) fn execute_k_core(
     let options = table_graph_options(spec);
     let kc_params = k_core_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_k_core",
@@ -340,6 +363,7 @@ pub(super) fn execute_k_core(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: format!("k={},degree_type={}", params.k, params.degree_type.as_str()),
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -364,8 +388,10 @@ pub(super) fn execute_minimum_spanning_tree(
     let (edges, _) = project_edge_list(&input, spec)?;
     let options = table_graph_options(spec);
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_minimum_spanning_tree",
@@ -390,6 +416,7 @@ pub(super) fn execute_minimum_spanning_tree(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata: String::new(),
+                budget_observations: Vec::new(),
             })
         },
     )

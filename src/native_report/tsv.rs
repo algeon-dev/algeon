@@ -219,6 +219,10 @@ pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) ->
     format_stable_nested_metric_rows(rows, NativeGraphRuntimeMetricRow::to_stable_kv_row)
 }
 
+pub(super) fn format_graph_reservation_rows(rows: &[NativeGraphReservationMetricRow]) -> String {
+    format_stable_nested_metric_rows(rows, NativeGraphReservationMetricRow::to_stable_kv_row)
+}
+
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
     format_stable_nested_metric_rows(rows, NativeTaskOperatorMetricRow::to_stable_kv_row)
 }

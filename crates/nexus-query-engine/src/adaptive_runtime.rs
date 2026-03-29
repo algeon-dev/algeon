@@ -16,7 +16,7 @@ use crate::{
     harness::max_option,
     metrics::{MemoryReservationEventAction, MemoryReservationEventOutcome, QueryMetrics, TaskRuntimeMetrics},
     pipeline::{CompiledPipeline, PipelineTask},
-    plan::{PlanNode, QueryPlan, ResultSink},
+    plan::{GraphAlgorithmParams, GraphAlgorithmSpec, PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
 };
 
@@ -87,6 +87,38 @@ impl AdaptiveTaskMemoryHistoryKey {
     }
 }
 
+/// Structural key used to store graph-tier adaptive memory observations.
+///
+/// Graph observations are deliberately separate from query-level and task-level
+/// adaptive history so cuGraph allocator floors cannot influence strict or
+/// non-graph adaptive admission.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AdaptiveGraphMemoryHistoryKey(String);
+
+impl AdaptiveGraphMemoryHistoryKey {
+    /// Build a graph-tier key from the native graph algorithm specification.
+    pub fn for_graph_algorithm(spec: &GraphAlgorithmSpec) -> Self {
+        Self(format!(
+            "algorithm={}:directed={}:renumber={}:policy={}:source={}:destination={}:weight={}:edge_id={}:output_schema={}:params={}",
+            spec.algorithm,
+            spec.graph_options.directed,
+            spec.graph_options.renumber,
+            spec.graph_options.policy,
+            spec.edge_columns.source,
+            spec.edge_columns.destination,
+            spec.edge_columns.weight.as_deref().unwrap_or("none"),
+            spec.edge_columns.edge_id.as_deref().unwrap_or("none"),
+            schema_signature(spec.output_schema.fields()),
+            graph_params_signature(&spec.params),
+        ))
+    }
+
+    /// Stable structural key text used for diagnostics and map lookup.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Reusable structural task shape used to build task memory-history keys.
 ///
 /// This lets runtime code precompute task shape without keeping references to
@@ -137,6 +169,15 @@ pub struct AdaptiveTaskMemoryObservation {
     pub retained_bytes: Option<u64>,
     /// Cumulative reservation-released bytes for this task.
     pub reservation_released_bytes: u64,
+}
+
+/// One graph-tier observation from a budget-tracked cuGraph execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdaptiveGraphMemoryObservation {
+    /// Maximum allocator high-water bytes observed by the graph memory resource.
+    pub allocator_high_water_bytes: u64,
+    /// Graph memory budget enforced for the observed execution.
+    pub budget_bytes: u64,
 }
 
 impl AdaptiveTaskMemoryObservation {
@@ -204,6 +245,26 @@ pub struct AdaptiveTaskMemoryHistorySummary {
     pub max_reservation_released_bytes: u64,
 }
 
+/// Aggregated adaptive memory evidence for one graph-tier structural key.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct AdaptiveGraphMemoryHistorySummary {
+    /// Number of graph observations folded into this summary.
+    pub observation_count: u64,
+    /// Maximum graph allocator high-water bytes seen for this graph shape.
+    pub max_allocator_high_water_bytes: u64,
+    /// Maximum graph budget bytes enforced for this graph shape.
+    pub max_budget_bytes: u64,
+}
+
+impl AdaptiveGraphMemoryHistorySummary {
+    fn record(&mut self, observation: &AdaptiveGraphMemoryObservation) {
+        self.observation_count = self.observation_count.saturating_add(1);
+        self.max_allocator_high_water_bytes =
+            self.max_allocator_high_water_bytes.max(observation.allocator_high_water_bytes);
+        self.max_budget_bytes = self.max_budget_bytes.max(observation.budget_bytes);
+    }
+}
+
 impl AdaptiveTaskMemoryHistorySummary {
     fn record(&mut self, observation: &AdaptiveTaskMemoryObservation) {
         self.observation_count = self.observation_count.saturating_add(1);
@@ -240,6 +301,7 @@ impl AdaptiveTaskMemoryHistorySummary {
 pub struct AdaptiveMemoryHistory {
     summaries: RwLock<BTreeMap<AdaptiveMemoryHistoryKey, AdaptiveMemoryHistorySummary>>,
     task_summaries: RwLock<BTreeMap<AdaptiveTaskMemoryHistoryKey, AdaptiveTaskMemoryHistorySummary>>,
+    graph_summaries: RwLock<BTreeMap<AdaptiveGraphMemoryHistoryKey, AdaptiveGraphMemoryHistorySummary>>,
 }
 
 impl AdaptiveMemoryHistory {
@@ -277,6 +339,26 @@ impl AdaptiveMemoryHistory {
     /// Look up the task-level summary for an exact structural key.
     pub fn lookup_task(&self, key: &AdaptiveTaskMemoryHistoryKey) -> Option<AdaptiveTaskMemoryHistorySummary> {
         self.task_summaries.read().expect("adaptive task memory history lock poisoned").get(key).cloned()
+    }
+
+    /// Merge one graph-tier observation into the summary for `key`.
+    pub fn record_graph_observation(
+        &self,
+        key: AdaptiveGraphMemoryHistoryKey,
+        observation: AdaptiveGraphMemoryObservation,
+    ) {
+        let mut summaries = self.graph_summaries.write().expect("adaptive graph memory history lock poisoned");
+        summaries.entry(key).or_default().record(&observation);
+    }
+
+    /// Look up the graph-tier summary for an exact structural key.
+    pub fn lookup_graph(&self, key: &AdaptiveGraphMemoryHistoryKey) -> Option<AdaptiveGraphMemoryHistorySummary> {
+        self.graph_summaries.read().expect("adaptive graph memory history lock poisoned").get(key).cloned()
+    }
+
+    /// Look up graph-tier history for a native graph algorithm spec.
+    pub fn lookup_graph_algorithm(&self, spec: &GraphAlgorithmSpec) -> Option<AdaptiveGraphMemoryHistorySummary> {
+        self.lookup_graph(&AdaptiveGraphMemoryHistoryKey::for_graph_algorithm(spec))
     }
 
     /// Recommend task reservation bytes using a precomputed structural shape.
@@ -349,6 +431,27 @@ impl AdaptiveMemoryHistory {
 
 fn add_adaptive_reservation_headroom(observed_bytes: u64) -> u64 {
     observed_bytes.saturating_add((observed_bytes / 8).max(1))
+}
+
+fn graph_params_signature(params: &GraphAlgorithmParams) -> String {
+    match params {
+        GraphAlgorithmParams::BetweennessCentrality(params) => format!(
+            "betweenness:seeds={}:k={}:normalized={}:include_endpoints={}:exact_vertex_threshold={}",
+            params.seeds.as_ref().map_or(0, |seeds| seeds.len()),
+            params.k.unwrap_or(0),
+            params.normalized,
+            params.include_endpoints,
+            params.exact_vertex_threshold
+        ),
+        GraphAlgorithmParams::EdgeBetweennessCentrality(params) => format!(
+            "edge_betweenness:seeds={}:k={}:normalized={}:exact_vertex_threshold={}",
+            params.seeds.as_ref().map_or(0, |seeds| seeds.len()),
+            params.k.unwrap_or(0),
+            params.normalized,
+            params.exact_vertex_threshold
+        ),
+        other => format!("{other:?}"),
+    }
 }
 
 fn sink_signature(sink: &ResultSink) -> &'static str {

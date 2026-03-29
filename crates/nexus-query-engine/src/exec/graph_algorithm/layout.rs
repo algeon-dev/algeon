@@ -21,8 +21,10 @@ pub(super) fn execute_force_atlas2(
     let fa2_params = force_atlas2_params(params)?;
     let seed = params.seed;
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_force_atlas2",
@@ -43,6 +45,7 @@ pub(super) fn execute_force_atlas2(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )

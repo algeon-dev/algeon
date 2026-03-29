@@ -30,6 +30,7 @@ pub(super) fn d5_test_scope_for_reservation_kind(reservation_kind: ReservationKi
         | ReservationKind::MixedSizeData
         | ReservationKind::SourceCacheRetained
         | ReservationKind::ChunkOperator
+        | ReservationKind::GraphAlgorithm
         | ReservationKind::PartialState
         | ReservationKind::FinalMerge => ReservationRequirementScope::Node,
         ReservationKind::SourceRead

@@ -20,8 +20,10 @@ pub(super) fn execute_louvain(
     let options = table_graph_options(spec);
     let lv_params = louvain_params(params)?;
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_louvain",
@@ -37,6 +39,7 @@ pub(super) fn execute_louvain(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -63,8 +66,10 @@ pub(super) fn execute_leiden(
     let leiden_p = leiden_params(params)?;
     let seed = params.seed;
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_leiden",
@@ -84,6 +89,7 @@ pub(super) fn execute_leiden(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -110,8 +116,10 @@ pub(super) fn execute_ecg(
     let ecg_p = ecg_params(params)?;
     let seed = params.seed;
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_ecg",
@@ -131,6 +139,7 @@ pub(super) fn execute_ecg(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -157,8 +166,10 @@ pub(super) fn execute_spectral_modularity_maximization(
     let spectral_p = spectral_clustering_params(params)?;
     let (n_clusters, seed) = (params.n_clusters, params.seed);
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_spectral_modularity_maximization",
@@ -181,6 +192,7 @@ pub(super) fn execute_spectral_modularity_maximization(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )
@@ -208,8 +220,10 @@ pub(super) fn execute_balanced_cut_clustering(
     let spectral_p = spectral_clustering_params(params)?;
     let (n_clusters, seed) = (params.n_clusters, params.seed);
 
-    run_with_cugraph_graph::<cugraph::Forward, _, _>(
+    run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
+        inputs.graph_memory_limit_bytes,
+        spec,
         edges,
         options,
         "datafusion_nexus_cugraph_balanced_cut_clustering",
@@ -231,6 +245,7 @@ pub(super) fn execute_balanced_cut_clustering(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
+                budget_observations: Vec::new(),
             })
         },
     )

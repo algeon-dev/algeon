@@ -218,6 +218,8 @@ pub enum ReservationKind {
     GatherMap,
     /// Materialized join output frame.
     JoinOutput,
+    /// Approximate graph-algorithm memory tier outside strict bounded admission.
+    GraphAlgorithm,
     /// Intermediate aggregate or join pipeline partial.
     PartialState,
     /// Final aggregate merge workspace or output.
@@ -246,6 +248,7 @@ impl ReservationKind {
             Self::MixedSizeData => "mixed_size_data",
             Self::GatherMap => "gather_map",
             Self::JoinOutput => "join_output",
+            Self::GraphAlgorithm => "graph_algorithm",
             Self::PartialState => "partial_state",
             Self::FinalMerge => "final_merge",
             Self::FinalSort => "final_sort",

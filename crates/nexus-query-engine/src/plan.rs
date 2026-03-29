@@ -32,16 +32,18 @@ pub use builder::QueryPlanBuilder;
 pub(crate) use estimates::{estimated_output_bytes, estimated_output_rows};
 pub use facts::{DataPlacement, PlanFacts, SchemaBehavior};
 pub use graph_algorithm::{
-    EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS,
-    GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY, GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT,
-    GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode, GraphAlgorithmParams, GraphAlgorithmSpec,
-    GraphAlgorithmStrictBoundedLowerLevelContract, GraphBfsParams, GraphBfsPredicateInputs, GraphConstructionOptions,
-    GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeColumnBindings,
-    GraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams,
-    GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement,
-    GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams,
-    GraphOutputSchemaKind, GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-    GraphPredicateInput, GraphSccParams, GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams,
+    DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD, EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS, GRAPH_ALGORITHM_STRICT_BOUNDED_MEMORY_BOUNDARY,
+    GRAPH_ALGORITHM_STRICT_BOUNDED_REQUIRED_CONTRACT, GRAPH_OPERATION_REGISTRY, GraphAlgorithm, GraphAlgorithmNode,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphAlgorithmStrictBoundedLowerLevelContract,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs,
+    GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
+    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEdgePredicateInput,
+    GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+    GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLayoutRequirement, GraphLeidenParams,
+    GraphLouvainParams, GraphMstParams, GraphOperationDefinition, GraphOutDegreesAllParams, GraphOutputSchemaKind,
+    GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, GraphPredicateInput,
+    GraphSccParams, GraphSourceVertexRequirement, GraphSpectralClusteringParams, GraphSsspParams,
     GraphTriangleCountAllParams, GraphWccParams, GraphWeightPolicy, graph_result_schema_for_params,
     stable_graph_result_schema,
 };

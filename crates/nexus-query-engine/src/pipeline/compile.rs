@@ -487,6 +487,7 @@ fn join_node_requirement_task(
         ReservationKind::OperatorOutput
         | ReservationKind::SourceCacheRetained
         | ReservationKind::ChunkOperator
+        | ReservationKind::GraphAlgorithm
         | ReservationKind::PartialState
         | ReservationKind::FinalMerge
         | ReservationKind::SourceRead
