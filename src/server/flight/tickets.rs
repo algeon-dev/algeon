@@ -79,6 +79,7 @@ pub(super) struct StatementTicket {
 pub(super) struct QueryExecutionGuard {
     pub(super) query_id: String,
     pub(super) cancellations: Arc<QueryCancellation>,
+    pub(super) observability: Arc<QueryObservability>,
     pub(super) native_cancel_bridge: tokio::task::JoinHandle<()>,
     pub(super) _permit: OwnedSemaphorePermit,
     pub(super) lifecycle: Arc<QueryLifecycle>,
@@ -88,6 +89,7 @@ impl Drop for QueryExecutionGuard {
     fn drop(&mut self) {
         self.native_cancel_bridge.abort();
         self.cancellations.remove(&self.query_id);
+        self.observability.seal(&self.query_id);
         self.lifecycle.finish_dropped();
     }
 }

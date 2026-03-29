@@ -21,7 +21,8 @@ use nexus_query_engine::{GpuResidentInputMap, QueryOutput, QueryPlan, execute_qu
 
 use super::{
     common::{
-        conservative_properties, gpu_resident_source_names, mark_native_runtime_error, native_query_runtime_error,
+        conservative_properties, gpu_resident_source_names, mark_native_runtime_error, native_plan_one_line,
+        native_query_runtime_error, write_native_plan_tree,
     },
     config::NativeCudfExecutionConfig,
     metrics::NativeCudfMetrics,
@@ -140,7 +141,7 @@ impl NativeCudfComposedExec {
 impl DisplayAs for NativeCudfComposedExec {
     fn fmt_as(&self, t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match t {
-            DisplayFormatType::Default | DisplayFormatType::Verbose => write!(
+            DisplayFormatType::Default => write!(
                 f,
                 "NativeCudfComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}",
                 self.plan.node_count(),
@@ -149,6 +150,17 @@ impl DisplayAs for NativeCudfComposedExec {
                 self.execution_config.memory_control_policy(),
                 self.execution_config.boundary_policy(),
                 self.plan.contains_edge_normalize(),
+            ),
+            DisplayFormatType::Verbose => write!(
+                f,
+                "NativeCudfComposedExec: native_nodes={}, gpu_input_count={}, sink=host_arrow, native_pipeline_execution_mode={}, memory_control_policy={}, boundary_policy={}, input_boundary=gpu_resident, output_boundary=device_to_host, edge_normalize_inserted={}, native_plan={}",
+                self.plan.node_count(),
+                self.gpu_inputs.len(),
+                self.execution_config.native_pipeline_execution_mode(),
+                self.execution_config.memory_control_policy(),
+                self.execution_config.boundary_policy(),
+                self.plan.contains_edge_normalize(),
+                native_plan_one_line(&self.plan),
             ),
             DisplayFormatType::TreeRender => {
                 writeln!(f, "native_nodes={}", self.plan.node_count())?;
@@ -163,7 +175,8 @@ impl DisplayAs for NativeCudfComposedExec {
                 writeln!(f, "boundary_policy={}", self.execution_config.boundary_policy())?;
                 writeln!(f, "input_boundary=gpu_resident")?;
                 writeln!(f, "output_boundary=device_to_host")?;
-                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())
+                writeln!(f, "edge_normalize_inserted={}", self.plan.contains_edge_normalize())?;
+                write_native_plan_tree(f, &self.plan)
             },
         }
     }
@@ -206,7 +219,8 @@ impl ExecutionPlan for NativeCudfComposedExec {
         let plan = self.plan.clone();
         let execution_config = self.execution_config.clone();
         let gpu_inputs = self.gpu_inputs.clone();
-        let metrics = NativeCudfMetrics::new(&self.metrics, partition);
+        let metrics =
+            NativeCudfMetrics::new_with_capture(&self.metrics, partition, self.execution_config.metrics_capture());
         let output = futures::stream::once(async move {
             // Build one native context for all producer fragments and the consumer so device-resident
             // handles are compatible across the composed execution.

@@ -11,20 +11,20 @@ pub(super) fn datafusion_error_to_flight_error(
     FlightError::from(status)
 }
 
-pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: StatementTicketKind) -> Result<(), Status> {
+pub(super) fn verify_flight_info_plan(plan: &LogicalPlan, ticket_kind: StatementTicketKind) -> crate::Result<()> {
     match ticket_kind {
         StatementTicketKind::Statement => verify_statement_query_plan(plan),
         StatementTicketKind::PreparedStatement => verify_prepared_query_plan(plan),
     }
 }
 
-pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> Result<(), Status> {
+pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> crate::Result<()> {
     match plan {
-        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
             "datafusion_nexus.server.flight.get_flight_info_statement.verify_plan",
             "Flight SQL statement query does not support DML or COPY statements",
-        ))),
+        )),
         LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
             statement,
             "datafusion_nexus.server.flight.get_flight_info_statement.verify_plan",
@@ -34,7 +34,7 @@ pub(super) fn verify_statement_query_plan(plan: &LogicalPlan) -> Result<(), Stat
     }
 }
 
-pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<(), Status> {
+pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> crate::Result<()> {
     match plan {
         // DDL carries no result set, but DataFusion executes it eagerly in
         // `execute_logical_plan` and yields an empty stream. The shared do_get
@@ -49,11 +49,11 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<(), Statu
         LogicalPlan::Ddl(ddl) => {
             verify_update_ddl(ddl, "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan")
         },
-        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
             "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
             "Flight SQL prepared DML and COPY statements are not supported",
-        ))),
+        )),
         LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
             statement,
             "datafusion_nexus.server.flight.get_flight_info_prepared_statement.verify_plan",
@@ -63,24 +63,24 @@ pub(super) fn verify_prepared_query_plan(plan: &LogicalPlan) -> Result<(), Statu
     }
 }
 
-pub(super) fn verify_update_plan(plan: &LogicalPlan) -> Result<(), Status> {
+pub(super) fn verify_update_plan(plan: &LogicalPlan) -> crate::Result<()> {
     match plan {
         LogicalPlan::Ddl(ddl) => verify_update_ddl(ddl, "datafusion_nexus.server.flight.do_put_update.verify_plan"),
-        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+        LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
             "datafusion_nexus.server.flight.do_put_update.verify_plan",
             "Flight SQL update DoPut does not yet support DML or COPY statements",
-        ))),
+        )),
         LogicalPlan::Statement(statement) => verify_sql_statement_namespace(
             statement,
             "datafusion_nexus.server.flight.do_put_update.verify_plan",
             "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL update DoPut",
         ),
-        _ => Err(adapter_error_status(Error::new(
+        _ => Err(Error::new(
             ErrorCode::InvalidRequest,
             "datafusion_nexus.server.flight.do_put_update.verify_plan",
             "Flight SQL update DoPut only supports DDL and session-update statements; use the statement query endpoint for SELECT",
-        ))),
+        )),
     }
 }
 
@@ -88,52 +88,48 @@ pub(super) fn verify_sql_statement_namespace(
     statement: &Statement,
     operation: &'static str,
     session_update_message: &'static str,
-) -> Result<(), Status> {
+) -> crate::Result<()> {
     match statement {
         Statement::SetVariable(_) | Statement::ResetVariable(_) => {
             if operation == "datafusion_nexus.server.flight.do_put_update.verify_plan" {
                 Ok(())
             } else {
-                Err(adapter_error_status(Error::new(ErrorCode::InvalidRequest, operation, session_update_message)))
+                Err(Error::new(ErrorCode::InvalidRequest, operation, session_update_message))
             }
         },
-        Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(adapter_error_status(Error::new(
-            ErrorCode::UnsupportedOperator,
-            operation,
-            "Flight SQL transactions are not supported",
-        ))),
-        Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => {
-            Err(adapter_error_status(Error::new(
-                ErrorCode::InvalidRequest,
-                operation,
-                "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL",
-            )))
+        Statement::TransactionStart(_) | Statement::TransactionEnd(_) => {
+            Err(Error::new(ErrorCode::UnsupportedOperator, operation, "Flight SQL transactions are not supported"))
         },
+        Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => Err(Error::new(
+            ErrorCode::InvalidRequest,
+            operation,
+            "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL",
+        )),
     }
 }
 
-pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> Result<(), Status> {
+pub(super) fn verify_update_ddl(ddl: &DdlStatement, operation: &'static str) -> crate::Result<()> {
     match ddl {
-        DdlStatement::CreateMemoryTable(_) | DdlStatement::CreateIndex(_) => Err(adapter_error_status(Error::new(
+        DdlStatement::CreateMemoryTable(_) | DdlStatement::CreateIndex(_) => Err(Error::new(
             ErrorCode::UnsupportedOperator,
             operation,
             "Flight SQL update DoPut does not yet support query-producing DDL such as CREATE TABLE AS SELECT",
-        ))),
+        )),
         _ => Ok(()),
     }
 }
 
-pub(super) fn reject_parameterized_plan(plan: &LogicalPlan, operation: &'static str) -> Result<(), Status> {
-    let parameter_names =
-        plan.get_parameter_names().map_err(|error| datafusion_error_to_status_for_operation(error, operation))?;
+pub(super) fn reject_parameterized_plan(plan: &LogicalPlan, operation: &'static str) -> Result<(), DataFusionError> {
+    let parameter_names = plan.get_parameter_names()?;
     if parameter_names.is_empty() {
         return Ok(());
     }
-    Err(adapter_error_status(Error::new(
+    Err(Error::new(
         ErrorCode::InvalidRequest,
         operation,
         "Flight SQL parameter binding is not supported; prepare statements without placeholders",
-    )))
+    )
+    .into())
 }
 
 pub(super) fn arrow_error_to_status(error: arrow::error::ArrowError) -> Status {
@@ -167,39 +163,34 @@ pub(super) fn adapter_error_status_with_query_id(error: Error, query_id: &str) -
     status_with_query_id(adapter_error_status(error), query_id)
 }
 
-pub(super) fn flight_sql_transactions_unsupported_status(query_id: &str) -> Status {
-    adapter_error_status_with_query_id(
-        Error::new(
-            ErrorCode::UnsupportedOperator,
-            "datafusion_nexus.server.flight.transaction",
-            "Flight SQL transactions are not supported",
-        ),
-        query_id,
+pub(super) fn flight_sql_transactions_unsupported_error() -> Error {
+    Error::new(
+        ErrorCode::UnsupportedOperator,
+        "datafusion_nexus.server.flight.transaction",
+        "Flight SQL transactions are not supported",
+    )
+}
+
+pub(super) fn server_shutdown_error() -> Error {
+    Error::new(
+        ErrorCode::Cancelled,
+        "datafusion_nexus.server.flight.shutdown",
+        "server shutting down; statement aborted",
     )
 }
 
 pub(super) fn server_shutdown_status(query_id: &str) -> Status {
-    adapter_error_status_with_query_id(
-        Error::new(
-            ErrorCode::Cancelled,
-            "datafusion_nexus.server.flight.shutdown",
-            "server shutting down; statement aborted",
-        ),
-        query_id,
-    )
+    adapter_error_status_with_query_id(server_shutdown_error(), query_id)
 }
 
 /// Disambiguate per-statement cancellation: if the parent shutdown token has
 /// been cancelled the whole server is going away; otherwise it was an
 /// `ActionCancelQuery` from the client.
-pub(super) fn cancellation_status(shutdown_token: &CancellationToken, query_id: &str) -> Status {
+pub(super) fn cancellation_error(shutdown_token: &CancellationToken) -> Error {
     if shutdown_token.is_cancelled() {
-        server_shutdown_status(query_id)
+        server_shutdown_error()
     } else {
-        adapter_error_status_with_query_id(
-            Error::new(ErrorCode::Cancelled, "datafusion_nexus.server.flight.cancel_query", "statement was cancelled"),
-            query_id,
-        )
+        Error::new(ErrorCode::Cancelled, "datafusion_nexus.server.flight.cancel_query", "statement was cancelled")
     }
 }
 

@@ -54,6 +54,20 @@ pub(super) fn comma_separated<'a>(values: impl IntoIterator<Item = &'a str>) -> 
     values.into_iter().collect::<Vec<_>>().join(",")
 }
 
+/// Renders the native IR as a single physical-plan display detail.
+pub(super) fn native_plan_one_line(plan: &QueryPlan) -> String {
+    plan.to_string().lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" | ")
+}
+
+/// Renders the native IR under a DataFusion tree-render detail.
+pub(super) fn write_native_plan_tree(f: &mut std::fmt::Formatter<'_>, plan: &QueryPlan) -> std::fmt::Result {
+    writeln!(f, "native_plan:")?;
+    for line in plan.to_string().lines() {
+        writeln!(f, "  {line}")?;
+    }
+    Ok(())
+}
+
 /// Maps a `QueryError` from native runtime execution into the adapter [`Error`]
 /// while tagging the stable diagnostic facts callers assert on.
 pub(super) fn native_query_runtime_error(

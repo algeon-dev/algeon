@@ -36,6 +36,7 @@ use datafusion::{
     error::DataFusionError,
     execution::SessionStateBuilder,
     logical_expr::{DdlStatement, LogicalPlan, Statement},
+    physical_plan::execute_stream as execute_physical_stream,
     prelude::SessionContext,
 };
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -52,10 +53,14 @@ use super::{
     cancel::QueryCancellation,
     config::ServerSessionProfile,
     diagnostics::{log_leaf_guard_rejection, log_native_planning_report},
-    error::{ServerError, datafusion_error_to_status_for_operation},
+    error::{ServerError, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
+    observability::{CapturedError, QueryObservability},
     table_format_operator_fast_fail::fast_fail_unsupported_table_format_operator_plan,
 };
-use crate::{CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode};
+use crate::{
+    CudfNativePhysicalOptimizerRule, CudfOptimizerConfig, CudfSessionStateBuilderExt, Error, ErrorCode,
+    native_exec::{NativeMetricsCapture, NativeMetricsCaptureSink},
+};
 
 mod metadata;
 mod rpc;
@@ -68,6 +73,7 @@ use tickets::*;
 
 const FLIGHT_SQL_CANCEL_RESULT_CANCELLING: i32 = 2;
 const FLIGHT_SQL_CANCEL_RESULT_NOT_CANCELLABLE: i32 = 3;
+const GET_QUERY_STATS_ACTION: &str = "GetQueryStats";
 const NO_UPDATED_RECORDS_COUNT: i64 = 0;
 const SQL_ANSI92_ENTRY_SQL_BIT_INDEX: i32 = 0;
 const QUERY_ID_METADATA_KEY: &str = "x-datafusion-nexus-query-id";
@@ -146,6 +152,7 @@ pub struct DatafusionCudfFlightSqlService {
     session_profile: ServerSessionProfile,
     admission: Arc<QueryAdmission>,
     cancellations: Arc<QueryCancellation>,
+    observability: Arc<QueryObservability>,
     tickets: Arc<DashMap<String, StatementTicket>>,
     /// Map of prepared-statement handle → [`PreparedStatementEntry`].
     /// Populated by `do_action_create_prepared_statement` and removed by
@@ -192,6 +199,7 @@ impl DatafusionCudfFlightSqlService {
             session_profile,
             admission: Arc::new(QueryAdmission::new(max_in_flight).expect("validated server admission limit")),
             cancellations: Arc::default(),
+            observability: Arc::default(),
             tickets: Arc::default(),
             prepared_statements: Arc::default(),
             statement_ticket_ttl,
@@ -327,9 +335,15 @@ impl DatafusionCudfFlightSqlService {
         &self.shutdown_token
     }
 
-    fn query_planning(&self, cancellation: ExecutionCancellation) -> QueryPlanning {
-        let execution_config =
-            self.native_optimizer_config.native_execution_config().clone().with_cancellation(cancellation);
+    fn query_planning(&self, query_id: &str, cancellation: ExecutionCancellation) -> QueryPlanning {
+        let observability: Arc<dyn NativeMetricsCaptureSink> = self.observability.clone();
+        let metrics_capture = NativeMetricsCapture::new(query_id.to_string(), observability);
+        let execution_config = self
+            .native_optimizer_config
+            .native_execution_config()
+            .clone()
+            .with_cancellation(cancellation)
+            .with_metrics_capture(metrics_capture);
         let optimizer_config = self.native_optimizer_config.clone().with_native_execution_config(execution_config);
         // Retain the native rule so we can read its `last_report` for the
         // Milestone 4 planning-report log after physical optimization runs.
@@ -338,6 +352,10 @@ impl DatafusionCudfFlightSqlService {
             .with_cudf_native_rule(Arc::clone(&native_rule))
             .build();
         QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule }
+    }
+
+    fn finish_adapter_error_status(&self, query_id: &str, stage: &'static str, error: Error) -> Status {
+        finish_adapter_error_status(self.observability.as_ref(), query_id, stage, error)
     }
 
     async fn statement_flight_info(
@@ -355,24 +373,39 @@ impl DatafusionCudfFlightSqlService {
         // shared with the optimizer rule, but `do_action_cancel_query` cannot
         // reach it until the ticket is registered.
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.query_planning(native_cancellation.clone());
+        let planning = self.query_planning(&query_id, native_cancellation.clone());
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
             result = query_state.create_logical_plan(&sql) => {
-                result.map_err(|error| datafusion_error_to_status_for_operation(
-                    error,
-                    ticket_kind.create_logical_plan_operation(),
-                ))?
+                result.map_err(|error| {
+                    self.observability.finish_failed(
+                        &query_id,
+                        "planning",
+                        datafusion_error_to_captured_error(&error, ticket_kind.create_logical_plan_operation()),
+                    );
+                    datafusion_error_to_status_for_operation(error, ticket_kind.create_logical_plan_operation())
+                })?
             },
             _ = self.shutdown_token.cancelled() => {
                 native_cancellation.cancel();
-                return Err(server_shutdown_status(&query_id));
+                let status = self.finish_adapter_error_status(&query_id, "planning", server_shutdown_error());
+                return Err(status);
             }
         };
-        verify_flight_info_plan(&logical_plan, ticket_kind)?;
-        reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation()).await?;
+        if let Err(error) = verify_flight_info_plan(&logical_plan, ticket_kind) {
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            return Err(status_with_query_id(adapter_error_status(error), &query_id));
+        }
+        if let Err(error) =
+            reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.create_logical_plan_operation())
+                .await
+        {
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            return Err(status_with_query_id(adapter_error_status(error), &query_id));
+        }
         if let Some(error) = fast_fail_unsupported_table_format_operator_plan(&logical_plan) {
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
             return Err(status_with_query_id(adapter_error_status(error), &query_id));
         }
         let schema = logical_plan.schema().as_arrow().clone();
@@ -462,6 +495,7 @@ impl DatafusionCudfFlightSqlService {
                 return true;
             }
             self.cancellations.remove(query_id);
+            self.observability.seal(query_id);
             tracing::warn!(
                 query_id = query_id.as_str(),
                 ticket_age_ms = age.as_millis(),
@@ -525,6 +559,8 @@ impl DatafusionCudfFlightSqlService {
                 "deduplicated repeated prepared DDL execution on the query channel; returning an empty result"
             );
             drop(permit);
+            self.observability.finish_success(&query_id);
+            self.observability.seal(&query_id);
             let stream = FlightDataEncoderBuilder::new()
                 .with_schema(Arc::new(Schema::empty()))
                 .build(futures::stream::empty::<Result<arrow::record_batch::RecordBatch, FlightError>>())
@@ -547,11 +583,12 @@ impl DatafusionCudfFlightSqlService {
         let guard = QueryExecutionGuard {
             query_id: query_id.clone(),
             cancellations: Arc::clone(&self.cancellations),
+            observability: Arc::clone(&self.observability),
             native_cancel_bridge,
             _permit: permit,
             lifecycle: Arc::clone(&lifecycle),
         };
-        let planning = self.query_planning(native_cancellation.clone());
+        let planning = self.query_planning(&query_id, native_cancellation.clone());
         let query_ctx = &planning.ctx;
         let query_state = query_ctx.state();
         let logical_plan = tokio::select! {
@@ -559,26 +596,36 @@ impl DatafusionCudfFlightSqlService {
                 Ok(plan) => plan,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    self.observability.finish_failed(
+                        &query_id,
+                        "planning",
+                        datafusion_error_to_captured_error(&error, ticket_kind.sql_operation()),
+                    );
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
                         &query_id,
                     );
                     lifecycle.finish_status("planning", &status);
+                    self.observability.seal(&query_id);
                     return Err(status);
                 },
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
-                let status = cancellation_status(&self.shutdown_token, &query_id);
+                let status =
+                    self.finish_adapter_error_status(&query_id, "planning", cancellation_error(&self.shutdown_token));
                 lifecycle.finish_status("planning", &status);
+                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
-        if let Err(status) =
+        if let Err(error) =
             reject_drop_object_type_mismatch(query_ctx, &logical_plan, ticket_kind.sql_operation()).await
         {
-            let status = status_with_query_id(status, &query_id);
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            let status = status_with_query_id(adapter_error_status(error), &query_id);
             lifecycle.finish_status("planning", &status);
+            self.observability.seal(&query_id);
             return Err(status);
         }
         let df = tokio::select! {
@@ -592,6 +639,11 @@ impl DatafusionCudfFlightSqlService {
                     // planning-time adapter error that does carry the
                     // leaf-guard facts gets the structured warn line.
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    self.observability.finish_failed(
+                        &query_id,
+                        "planning",
+                        datafusion_error_to_captured_error(&error, ticket_kind.sql_operation()),
+                    );
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, ticket_kind.sql_operation()),
                         &query_id,
@@ -602,7 +654,8 @@ impl DatafusionCudfFlightSqlService {
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
-                let status = cancellation_status(&self.shutdown_token, &query_id);
+                let status =
+                    self.finish_adapter_error_status(&query_id, "planning", cancellation_error(&self.shutdown_token));
                 lifecycle.finish_status("planning", &status);
                 return Err(status);
             },
@@ -617,22 +670,34 @@ impl DatafusionCudfFlightSqlService {
             entry.mark_executed();
         }
         if let Some(error) = fast_fail_unsupported_table_format_operator_plan(df.logical_plan()) {
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
             let status = status_with_query_id(adapter_error_status(error), &query_id);
             lifecycle.finish_status("planning", &status);
             return Err(status);
         }
         let schema = df.schema().as_arrow().clone();
-        // `execute_stream()` runs physical planning. Log the retained native
-        // report after that point; leaf-guard facts only surface on failure.
-        let stream = tokio::select! {
-            result = df.execute_stream() => match result {
-                Ok(stream) => {
-                    log_native_planning_report(&query_id, planning.native_rule.last_report().as_ref());
-                    stream
-                },
+        let task_ctx = Arc::new(df.task_ctx());
+        // Physical planning runs the retained native optimizer rule. Capture
+        // the post-optimizer plan and retained diagnostics before execution so
+        // query_stats can report both native rewrites and complete CPU fallback.
+        let plan = tokio::select! {
+            result = df.create_physical_plan() => match result {
+                Ok(plan) => plan,
                 Err(error) => {
-                    log_native_planning_report(&query_id, planning.native_rule.last_report().as_ref());
+                    let diagnostics = planning.native_rule.last_planning_diagnostics();
+                    log_native_planning_report(&query_id, diagnostics.as_ref().map(|diagnostics| &diagnostics.report));
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    self.observability.capture_planning_failure(
+                        &query_id,
+                        "physical_planning",
+                        "physical_planning_failed",
+                        error.to_string(),
+                    );
+                    self.observability.finish_failed(
+                        &query_id,
+                        "execute_stream",
+                        datafusion_error_to_captured_error(&error, ticket_kind.execute_stream_operation()),
+                    );
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, ticket_kind.execute_stream_operation()),
                         &query_id,
@@ -643,7 +708,31 @@ impl DatafusionCudfFlightSqlService {
             },
             _ = token.cancelled() => {
                 native_cancellation.cancel();
-                let status = cancellation_status(&self.shutdown_token, &query_id);
+                let status = self.finish_adapter_error_status(
+                    &query_id,
+                    "execute_stream",
+                    cancellation_error(&self.shutdown_token),
+                );
+                lifecycle.finish_status("execute_stream", &status);
+                return Err(status);
+            },
+        };
+        let diagnostics = planning.native_rule.last_planning_diagnostics();
+        log_native_planning_report(&query_id, diagnostics.as_ref().map(|diagnostics| &diagnostics.report));
+        self.observability.capture_planning(&query_id, diagnostics, Arc::clone(&plan));
+        let stream = match execute_physical_stream(Arc::clone(&plan), task_ctx) {
+            Ok(stream) => stream,
+            Err(error) => {
+                log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                self.observability.finish_failed(
+                    &query_id,
+                    "execute_stream",
+                    datafusion_error_to_captured_error(&error, ticket_kind.execute_stream_operation()),
+                );
+                let status = status_with_query_id(
+                    datafusion_error_to_status_for_operation(error, ticket_kind.execute_stream_operation()),
+                    &query_id,
+                );
                 lifecycle.finish_status("execute_stream", &status);
                 return Err(status);
             },
@@ -653,26 +742,47 @@ impl DatafusionCudfFlightSqlService {
         let query_id_for_tail = query_id.clone();
         let lifecycle_for_body = Arc::clone(&lifecycle);
         let query_id_for_body = query_id.clone();
+        let observability_for_body = Arc::clone(&self.observability);
+        let query_id_for_output = query_id.clone();
+        let observability_for_output = Arc::clone(&self.observability);
         let stream_operation = ticket_kind.stream_operation();
         // `take_until` ends cleanly on cancellation, so append a one-shot tail
         // that emits CANCELLED as the gRPC trailer when the token fired.
         let body = stream
+            .map_ok(move |batch| {
+                observability_for_output.record_output_batch(&query_id_for_output, &batch);
+                batch
+            })
             .map_err(move |error| {
+                observability_for_body.finish_failed(
+                    &query_id_for_body,
+                    "stream",
+                    datafusion_error_to_captured_error(&error, stream_operation),
+                );
                 datafusion_error_to_flight_error(error, &query_id_for_body, &lifecycle_for_body, stream_operation)
             })
             .take_until(token.cancelled_owned());
         let lifecycle_for_tail = Arc::clone(&lifecycle);
+        let observability_for_tail = Arc::clone(&self.observability);
         let tail = futures::stream::once(async move {
             cancel_token_for_tail.is_cancelled().then(|| {
-                let status = cancellation_status(&shutdown_token_for_tail, &query_id_for_tail);
+                let status = finish_adapter_error_status(
+                    observability_for_tail.as_ref(),
+                    &query_id_for_tail,
+                    "stream",
+                    cancellation_error(&shutdown_token_for_tail),
+                );
                 lifecycle_for_tail.finish_status("stream", &status);
                 Err(FlightError::from(status))
             })
         })
         .filter_map(|opt| async move { opt });
         let lifecycle_for_end = Arc::clone(&lifecycle);
+        let observability_for_end = Arc::clone(&self.observability);
+        let query_id_for_end = query_id.clone();
         let end = futures::stream::once(async move {
             lifecycle_for_end.finish_success("stream");
+            observability_for_end.finish_success(&query_id_for_end);
             None::<Result<arrow::record_batch::RecordBatch, FlightError>>
         })
         .filter_map(|opt| async move { opt });
@@ -682,9 +792,11 @@ impl DatafusionCudfFlightSqlService {
         });
         let lifecycle_for_encode = Arc::clone(&lifecycle);
         let query_id_for_encode = query_id.clone();
+        let observability_for_encode = Arc::clone(&self.observability);
         let stream =
             FlightDataEncoderBuilder::new().with_schema(Arc::new(schema)).build(stream).map_err(move |error| {
                 let status = status_with_query_id(Status::from(error), &query_id_for_encode);
+                observability_for_encode.finish_status(&query_id_for_encode, "flight_encode", &status);
                 lifecycle_for_encode.finish_status("flight_encode", &status);
                 status
             });
@@ -706,6 +818,8 @@ impl DatafusionCudfFlightSqlService {
             Ok(permit) => permit,
             Err(status) => {
                 log_statement_status(&query_id, "admission", queued_at, &status);
+                self.observability.finish_status(&query_id, "admission", &status);
+                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
@@ -717,33 +831,53 @@ impl DatafusionCudfFlightSqlService {
                 Ok(plan) => plan,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    self.observability.finish_failed(
+                        &query_id,
+                        "planning",
+                        datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
+                    );
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
                         &query_id,
                     );
                     lifecycle.finish_status("planning", &status);
+                    self.observability.seal(&query_id);
                     return Err(status);
                 },
             },
             _ = self.shutdown_token.cancelled() => {
-                let status = server_shutdown_status(&query_id);
+                let status = self.finish_adapter_error_status(&query_id, "planning", server_shutdown_error());
                 lifecycle.finish_status("planning", &status);
+                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
-        if let Err(status) = reject_parameterized_plan(&plan, statement_kind.sql_operation()) {
-            let status = status_with_query_id(status, &query_id);
+        if let Err(error) = reject_parameterized_plan(&plan, statement_kind.sql_operation()) {
+            self.observability.finish_failed(
+                &query_id,
+                "planning",
+                datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
+            );
+            let status = status_with_query_id(
+                datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
+                &query_id,
+            );
             lifecycle.finish_status("planning", &status);
+            self.observability.seal(&query_id);
             return Err(status);
         }
-        if let Err(status) = verify_update_plan(&plan) {
-            let status = status_with_query_id(status, &query_id);
+        if let Err(error) = verify_update_plan(&plan) {
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            let status = status_with_query_id(adapter_error_status(error), &query_id);
             lifecycle.finish_status("planning", &status);
+            self.observability.seal(&query_id);
             return Err(status);
         }
-        if let Err(status) = reject_drop_object_type_mismatch(&self.ctx, &plan, statement_kind.sql_operation()).await {
-            let status = status_with_query_id(status, &query_id);
+        if let Err(error) = reject_drop_object_type_mismatch(&self.ctx, &plan, statement_kind.sql_operation()).await {
+            self.observability.finish_failed(&query_id, "planning", CapturedError::from_adapter_error(&error));
+            let status = status_with_query_id(adapter_error_status(error), &query_id);
             lifecycle.finish_status("planning", &status);
+            self.observability.seal(&query_id);
             return Err(status);
         }
         let df = tokio::select! {
@@ -751,17 +885,24 @@ impl DatafusionCudfFlightSqlService {
                 Ok(df) => df,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    self.observability.finish_failed(
+                        &query_id,
+                        "planning",
+                        datafusion_error_to_captured_error(&error, statement_kind.sql_operation()),
+                    );
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.sql_operation()),
                         &query_id,
                     );
                     lifecycle.finish_status("planning", &status);
+                    self.observability.seal(&query_id);
                     return Err(status);
                 },
             },
             _ = self.shutdown_token.cancelled() => {
-                let status = server_shutdown_status(&query_id);
+                let status = self.finish_adapter_error_status(&query_id, "planning", server_shutdown_error());
                 lifecycle.finish_status("planning", &status);
+                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
@@ -771,26 +912,39 @@ impl DatafusionCudfFlightSqlService {
                 Ok(batches) => batches,
                 Err(error) => {
                     log_leaf_guard_rejection(&query_id, &error, self.session_profile);
+                    self.observability.finish_failed(
+                        &query_id,
+                        "collect",
+                        datafusion_error_to_captured_error(&error, statement_kind.collect_operation()),
+                    );
                     let status = status_with_query_id(
                         datafusion_error_to_status_for_operation(error, statement_kind.collect_operation()),
                         &query_id,
                     );
                     lifecycle.finish_status("collect", &status);
+                    self.observability.seal(&query_id);
                     return Err(status);
                 },
             },
             _ = self.shutdown_token.cancelled() => {
-                let status = server_shutdown_status(&query_id);
+                let status = self.finish_adapter_error_status(&query_id, "collect", server_shutdown_error());
                 lifecycle.finish_status("collect", &status);
+                self.observability.seal(&query_id);
                 return Err(status);
             },
         };
 
         lifecycle.finish_success("collect");
+        self.observability.finish_success(&query_id);
+        self.observability.seal(&query_id);
+        // Flight SQL update success responses carry only a record count, so
+        // there is no portable client-visible query_id. Failure captures are
+        // still retained because their Status metadata exposes the query_id.
+        self.observability.delete(&query_id);
         Ok(NO_UPDATED_RECORDS_COUNT)
     }
 
-    fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> Result<Schema, Status> {
+    fn dataset_schema_for_prepared_statement(&self, plan: &LogicalPlan) -> crate::Result<Schema> {
         match plan {
             LogicalPlan::Ddl(ddl) => {
                 verify_update_ddl(
@@ -799,25 +953,23 @@ impl DatafusionCudfFlightSqlService {
                 )?;
                 Ok(Schema::empty())
             },
-            LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(adapter_error_status(Error::new(
+            LogicalPlan::Dml(_) | LogicalPlan::Copy(_) => Err(Error::new(
                 ErrorCode::UnsupportedOperator,
                 "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
                 "Flight SQL prepared DML and COPY statements are not supported",
-            ))),
+            )),
             LogicalPlan::Statement(statement) => match statement {
                 Statement::SetVariable(_) | Statement::ResetVariable(_) => Ok(Schema::empty()),
-                Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(adapter_error_status(Error::new(
+                Statement::TransactionStart(_) | Statement::TransactionEnd(_) => Err(Error::new(
                     ErrorCode::UnsupportedOperator,
                     "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
                     "Flight SQL transactions are not supported",
-                ))),
-                Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => {
-                    Err(adapter_error_status(Error::new(
-                        ErrorCode::InvalidRequest,
-                        "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
-                        "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL prepared statements",
-                    )))
-                },
+                )),
+                Statement::Prepare(_) | Statement::Execute(_) | Statement::Deallocate(_) => Err(Error::new(
+                    ErrorCode::InvalidRequest,
+                    "datafusion_nexus.server.flight.do_action_create_prepared_statement.verify_plan",
+                    "SQL PREPARE, EXECUTE, and DEALLOCATE are not supported through Flight SQL prepared statements",
+                )),
             },
             _ => Ok(plan.schema().as_arrow().clone()),
         }
@@ -861,18 +1013,37 @@ impl DatafusionCudfFlightSqlService {
             std::str::from_utf8(&query_id_bytes).map_err(|error| Status::invalid_argument(error.to_string()))?;
         if let Some((_, ticket)) = self.tickets.remove(query_id) {
             ticket.native_cancellation.cancel();
+            let error = cancellation_error(&self.shutdown_token);
+            self.observability.finish_failed(query_id, "cancel_query", CapturedError::from_adapter_error(&error));
+            self.observability.seal(query_id);
             tracing::info!(query_id, outcome = "cancelled", stage = "ticket", "cancelled Flight SQL statement ticket");
             return Ok(true);
         }
-        Ok(self.cancellations.cancel(query_id))
+        let cancelled = self.cancellations.cancel(query_id);
+        if cancelled {
+            let error = cancellation_error(&self.shutdown_token);
+            self.observability.finish_failed(query_id, "cancel_query", CapturedError::from_adapter_error(&error));
+            self.observability.seal(query_id);
+        }
+        Ok(cancelled)
     }
+}
+
+fn finish_adapter_error_status(
+    observability: &QueryObservability,
+    query_id: &str,
+    stage: &'static str,
+    error: Error,
+) -> Status {
+    observability.finish_failed(query_id, stage, CapturedError::from_adapter_error(&error));
+    adapter_error_status_with_query_id(error, query_id)
 }
 
 async fn reject_drop_object_type_mismatch(
     ctx: &SessionContext,
     plan: &LogicalPlan,
     operation: &'static str,
-) -> Result<(), Status> {
+) -> crate::Result<()> {
     let (object_name, expected_table_type) = match plan {
         LogicalPlan::Ddl(DdlStatement::DropTable(drop_table)) => (&drop_table.name, TableType::Base),
         LogicalPlan::Ddl(DdlStatement::DropView(drop_view)) => (&drop_view.name, TableType::View),
@@ -893,18 +1064,16 @@ async fn reject_drop_object_type_mismatch(
     let actual_label = table_type_client_label(actual_table_type);
     let expected_label = table_type_client_label(expected_table_type);
     let suggested_drop = drop_statement_for_table_type(actual_table_type);
-    Err(adapter_error_status(
-        Error::new(
-            ErrorCode::InvalidRequest,
-            operation,
-            format!(
-                "Object '{object_name}' is a {actual_label}, not a {expected_label}; use {suggested_drop} to remove it"
-            ),
-        )
-        .with_fact("object_name", object_name)
-        .with_fact("requested_table_type", table_type_to_flight_sql(expected_table_type))
-        .with_fact("actual_table_type", table_type_to_flight_sql(actual_table_type)),
-    ))
+    Err(Error::new(
+        ErrorCode::InvalidRequest,
+        operation,
+        format!(
+            "Object '{object_name}' is a {actual_label}, not a {expected_label}; use {suggested_drop} to remove it"
+        ),
+    )
+    .with_fact("object_name", object_name)
+    .with_fact("requested_table_type", table_type_to_flight_sql(expected_table_type))
+    .with_fact("actual_table_type", table_type_to_flight_sql(actual_table_type)))
 }
 
 fn table_type_client_label(table_type: TableType) -> &'static str {

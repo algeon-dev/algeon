@@ -649,7 +649,12 @@ fn producerize_native_fragments(
             return Ok(None);
         }
         let input_name = state.next_input_name();
-        let producer = NativeCudfGpuProducerExec::try_new(input_name, native_plan).map_err(DataFusionError::from)?;
+        let producer = NativeCudfGpuProducerExec::try_new_with_metrics_capture(
+            input_name,
+            native_plan,
+            native_execution_config.metrics_capture(),
+        )
+        .map_err(DataFusionError::from)?;
         return Ok(Some(Arc::new(producer)));
     }
 

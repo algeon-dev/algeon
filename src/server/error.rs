@@ -3,7 +3,7 @@ use std::{error::Error as StdError, fmt};
 use datafusion::common::{DataFusionError, SchemaError};
 use tonic::{Status, metadata::MetadataValue};
 
-use super::datafusion_error::find_adapter_error;
+use super::{datafusion_error::find_adapter_error, observability::CapturedError};
 use crate::{Error, ErrorCode, ErrorKind};
 
 /// Flight SQL response metadata key containing the stable adapter error code.
@@ -82,6 +82,17 @@ pub fn datafusion_error_to_status_for_operation(error: DataFusionError, operatio
         return adapter_error_to_status(adapter_error);
     }
     adapter_error_to_status(&adapter_error_from_datafusion_error(error, operation))
+}
+
+pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operation: &'static str) -> CapturedError {
+    if let Some(adapter_error) = find_adapter_error(error) {
+        return CapturedError::from_adapter_error(adapter_error);
+    }
+    let code = classify_datafusion_error(error);
+    let message = client_datafusion_error_message(error);
+    let datafusion_error = datafusion_error_variant(error);
+    let adapter_error = Error::new(code, operation, message).with_fact("datafusion_error", datafusion_error);
+    CapturedError::from_adapter_error(&adapter_error)
 }
 
 fn adapter_error_to_status(error: &Error) -> Status {

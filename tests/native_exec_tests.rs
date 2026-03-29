@@ -59,6 +59,10 @@ fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     assert!(tree.contains("boundary_policy=source_read=direct_device_local_parquet"));
     assert!(tree.contains("output_boundary=device_to_host"));
     assert!(tree.contains("edge_normalize_inserted=false"));
+
+    let verbose = displayable(&exec).indent(true).to_string();
+    assert!(verbose.contains("native_plan=QueryPlan"), "{verbose}");
+    assert!(verbose.contains("LocalParquetSource"), "{verbose}");
 }
 
 #[test]

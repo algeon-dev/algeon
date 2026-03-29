@@ -18,6 +18,7 @@ use nexus_query_engine::{
     device_budget_bytes_from_facts,
 };
 
+use super::metrics::NativeMetricsCapture;
 use crate::error::Error;
 
 /// Adapter-side native execution configuration.
@@ -50,6 +51,7 @@ pub struct NativeCudfExecutionConfig {
     local_parquet_source_cache: Option<Arc<GpuLocalParquetSourceCache>>,
     source_storage_profiles: Vec<SourceStorageProfile>,
     query_service_handle: Option<Arc<QueryHandle>>,
+    metrics_capture: Option<NativeMetricsCapture>,
 }
 
 /// Native execution context plus any service leases that must outlive execution.
@@ -118,6 +120,7 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            metrics_capture: None,
         }
     }
 
@@ -195,6 +198,7 @@ impl NativeCudfExecutionConfig {
             local_parquet_source_cache: None,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
+            metrics_capture: None,
         }
     }
 
@@ -286,6 +290,17 @@ impl NativeCudfExecutionConfig {
     pub fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
         self.cancellation = cancellation;
         self
+    }
+
+    /// Attach a server-side query metrics capture sink.
+    #[cfg(feature = "server")]
+    pub(crate) fn with_metrics_capture(mut self, capture: NativeMetricsCapture) -> Self {
+        self.metrics_capture = Some(capture);
+        self
+    }
+
+    pub(crate) fn metrics_capture(&self) -> Option<NativeMetricsCapture> {
+        self.metrics_capture.clone()
     }
 
     /// Select strict bounded or adaptive native bounded-pipeline execution.
