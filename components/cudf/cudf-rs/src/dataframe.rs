@@ -31,7 +31,7 @@ use crate::{
     copying,
     dataframe_view::DataFrameView,
     error::{Error, ErrorKind, Result},
-    execution_context::__DebugExecutionContext,
+    execution_context::ExecutionContext,
     execution_domain::ExecutionDomain,
     filter, groupby,
     io::{
@@ -940,12 +940,12 @@ impl DataFrame {
         self.domain.debug_mr_value()
     }
 
-    #[doc(hidden)]
-    pub fn __debug_sort_values_with_execution_context<I, S>(
+    /// Sort using a borrowed per-operation execution override.
+    pub fn sort_values_with_context<I, S>(
         &self,
         by: I,
         options: SortOptions,
-        ctx: &__DebugExecutionContext<'_>,
+        ctx: &ExecutionContext<'_>,
     ) -> Result<Self>
     where
         I: IntoIterator<Item = S>,
@@ -957,7 +957,38 @@ impl DataFrame {
             options,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::sort_values_with_execution_context",
+            "dataframe::sort_values_with_context",
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_sort_values_with_execution_context<I, S>(
+        &self,
+        by: I,
+        options: SortOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.sort_values_with_context(by, options, ctx)
+    }
+
+    /// Merge using a borrowed per-operation execution override.
+    pub fn merge_with_context(
+        &self,
+        right: &DataFrame,
+        options: join::MergeOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.merge_impl(
+            right,
+            options,
+            output_domain.explicit_exec_options_raw(),
+            Some(output_domain),
+            "dataframe::merge_with_context",
         )
     }
 
@@ -966,24 +997,13 @@ impl DataFrame {
         &self,
         right: &DataFrame,
         options: join::MergeOptions,
-        ctx: &__DebugExecutionContext<'_>,
+        ctx: &ExecutionContext<'_>,
     ) -> Result<Self> {
-        let output_domain = ctx.resolve_output_domain(&self.domain)?;
-        self.merge_impl(
-            right,
-            options,
-            output_domain.explicit_exec_options_raw(),
-            Some(output_domain),
-            "dataframe::__debug_merge_with_execution_context",
-        )
+        self.merge_with_context(right, options, ctx)
     }
 
-    #[doc(hidden)]
-    pub fn __debug_gather_with_execution_context(
-        &self,
-        indices: &Series,
-        ctx: &__DebugExecutionContext<'_>,
-    ) -> Result<Self> {
+    /// Gather rows using a borrowed per-operation execution override.
+    pub fn gather_with_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         ExecutionDomain::compatible_domain(&self.domain, indices.as_column().execution_domain(), "dataframe::gather")?;
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let cv = indices.column_view()?;
@@ -991,16 +1011,17 @@ impl DataFrame {
             &cv,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::__debug_gather_with_execution_context",
+            "dataframe::gather_with_context",
         )
     }
 
     #[doc(hidden)]
-    pub fn __debug_filter_with_execution_context(
-        &self,
-        mask: &Series,
-        ctx: &__DebugExecutionContext<'_>,
-    ) -> Result<Self> {
+    pub fn __debug_gather_with_execution_context(&self, indices: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        self.gather_with_context(indices, ctx)
+    }
+
+    /// Filter rows using a borrowed per-operation execution override.
+    pub fn filter_with_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
         ExecutionDomain::compatible_domain(&self.domain, mask.as_column().execution_domain(), "dataframe::filter")?;
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
         let mask_view = self.validate_series_mask(mask)?;
@@ -1008,8 +1029,13 @@ impl DataFrame {
             &mask_view,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "dataframe::__debug_filter_with_execution_context",
+            "dataframe::filter_with_context",
         )
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_filter_with_execution_context(&self, mask: &Series, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        self.filter_with_context(mask, ctx)
     }
 
     // -- I/O -----------------------------------------------------------------
@@ -1077,11 +1103,28 @@ impl DataFrame {
     /// Write this `DataFrame` to a Parquet file, embedding column names in
     /// the file's schema metadata.
     pub fn write_parquet(&self, path: impl AsRef<Path>) -> Result<()> {
-        self.domain.synchronize_for_host_visibility("dataframe::write_parquet")?;
         let names: Vec<&str> = self.column_names();
         let opts = ParquetWriterOptions::new(path).column_names(&names)?;
+        self.write_parquet_with_options(opts)
+    }
+
+    /// Write this `DataFrame` to a Parquet file using caller-provided options.
+    pub fn write_parquet_with_options(&self, options: ParquetWriterOptions) -> Result<()> {
+        let names: Vec<&str> = self.column_names();
+        let options = options.ensure_column_names(&names)?;
+        let write_domain = if let Some(runtime) = options.runtime() {
+            ExecutionDomain::compatible_domain(
+                &self.domain,
+                runtime.execution_domain(),
+                "dataframe::write_parquet_with_options",
+            )?
+        } else {
+            Arc::clone(&self.domain)
+        };
         let tv = self.build_table_view()?;
-        parquet::write_parquet(tv.table(), &opts)
+        let exec_options = write_domain.explicit_exec_options_raw();
+        parquet::write_parquet_with_exec(tv.table(), &options, exec_options.as_ref())?;
+        write_domain.synchronize_for_host_visibility("dataframe::write_parquet_with_options")
     }
 
     // -- Row slicing ---------------------------------------------------------
@@ -2507,7 +2550,7 @@ impl DataFrame {
                 "dataframe::gather_range",
             )?
         }
-            .with_execution_domain(Arc::clone(&self.domain));
+        .with_execution_domain(Arc::clone(&self.domain));
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -2528,7 +2571,8 @@ impl DataFrame {
         for (name, col) in &self.columns {
             let cv = col.view()?;
             let type_id = cv.data_type()?.id();
-            new_columns.insert(name.clone(), Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(&domain))));
+            new_columns
+                .insert(name.clone(), Arc::new(Column::empty(type_id)?.with_execution_domain(Arc::clone(&domain))));
         }
         Ok(Self { columns: new_columns, row_count: 0, domain })
     }

@@ -32,6 +32,14 @@ cudf_status_t cudf_column_create_numeric(cudf_type_id_t type_id,
                                          int32_t null_count,
                                          cudf_column_handle* out);
 
+/// Create a numeric column from host data with explicit execution options.
+cudf_status_t cudf_column_create_numeric_ex(cudf_type_id_t type_id,
+                                            const void* data, int32_t size,
+                                            const uint8_t* null_mask,
+                                            int32_t null_count,
+                                            const cudf_exec_options_t* options,
+                                            cudf_column_handle* out);
+
 /// Deep-copy a column.
 cudf_status_t cudf_column_copy(cudf_column_handle src,
                                cudf_column_handle* out);

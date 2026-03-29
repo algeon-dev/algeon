@@ -43,13 +43,16 @@
 //!
 //! The core types give direct control over GPU memory layout and lifetimes.
 //! Most users should not need these.
+//! Use [`Runtime`] to seed an explicit execution domain, and
+//! [`ExecutionContext`] when you need a borrowed per-operation override.
 //!
 //! - [`Column`] — An owned GPU column (analogous to `cudf::column`).
 //! - [`ColumnView`] — A non-owning borrow of a column, tied by lifetime.
 //! - [`Table`] — An owned GPU table (collection of columns).
 //! - [`TableView`] — A non-owning borrow of a table.
 //! - [`Scalar`] — A single value on the GPU.
-//! - For CUDA stream management, see the [`stream`] module.
+//! - [`Runtime`] / [`ExecutionContext`] — explicit stream and allocator control.
+//! - For lower-level CUDA stream management, see the [`stream`] module.
 
 #[cfg(feature = "arrow")]
 pub mod arrow;
@@ -75,6 +78,7 @@ pub mod memory;
 pub mod ops;
 pub mod reduction;
 pub mod replace;
+pub mod runtime;
 pub mod scalar;
 pub mod search;
 pub mod series;
@@ -98,10 +102,12 @@ pub use dataframe_view::DataFrameView;
 pub use error::{Error, ErrorKind, ErrorStatus, Result};
 #[doc(hidden)]
 pub use execution_context::__DebugExecutionContext;
+pub use execution_context::ExecutionContext;
 // — High-level operations —
 pub use expr::Expr;
 pub use groupby::{Agg, AggSpec, GroupBy, GroupByOptions};
 pub use join::{JoinType, MergeOptions};
+pub use runtime::{Runtime, RuntimeBuilder};
 pub use scalar::Scalar;
 pub use series::{IntoSeries, Series};
 pub use series_view::SeriesView;

@@ -1,9 +1,10 @@
 //! CUDA stream wrapper.
 //!
-//! This is currently a standalone wrapper around an owned `rmm::cuda_stream`.
+//! This is an owned `rmm::cuda_stream` wrapper used by [`crate::Runtime`] and
+//! borrowed [`crate::ExecutionContext`] overrides.
 //! The low-level `_ex` FFI shims in `cudf-sys` accept explicit stream handles,
-//! but the high-level API (`DataFrame`, `Series`) does not yet expose
-//! stream control — operations still run on cuDF's default stream.
+//! and the high-level API can now route selected operations through retained
+//! explicit domains or per-operation borrowed overrides.
 
 use std::{
     ptr::{self, NonNull},
@@ -17,8 +18,9 @@ use crate::error::{self, Result};
 /// Wraps an `rmm::cuda_stream` via the C shim. The stream is destroyed when
 /// this value is dropped.
 ///
-/// Today this type lets callers manage or inspect standalone CUDA stream
-/// state, but it does not steer the stream used by other `cudf` operations.
+/// Use this with [`crate::Runtime::builder`] to seed an explicit retained
+/// execution domain, or with [`crate::ExecutionContext::with_stream`] to
+/// override one operation.
 #[derive(Clone)]
 pub struct CudaStream {
     handle: Arc<CudaStreamHandle>,

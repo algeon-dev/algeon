@@ -5,10 +5,12 @@ use std::{
     os::raw::c_char,
     path::{Path, PathBuf},
     ptr,
+    sync::Arc,
 };
 
 use crate::{
     error::{self, Error, ErrorKind, Result},
+    runtime::Runtime,
     table::{Table, TableView},
 };
 
@@ -18,6 +20,7 @@ pub struct ParquetReaderOptions {
     columns: Option<Vec<CString>>,
     skip_rows: i64,
     num_rows: i64,
+    runtime: Option<Runtime>,
 }
 
 impl ParquetReaderOptions {
@@ -28,6 +31,7 @@ impl ParquetReaderOptions {
             columns: None,
             skip_rows: 0,
             num_rows: -1, // -1 means read all
+            runtime: None,
         }
     }
 
@@ -61,6 +65,12 @@ impl ParquetReaderOptions {
         self.num_rows = n;
         self
     }
+
+    /// Seed explicit execution provenance from the given runtime.
+    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
+        self.runtime = Some(runtime.clone());
+        self
+    }
 }
 
 /// A table read from Parquet along with its column name metadata.
@@ -78,6 +88,8 @@ pub struct ParquetTableWithMetadata {
 /// Parquet files.
 pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<ParquetTableWithMetadata> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::read_parquet_with_metadata")?;
+    let output_domain = options.runtime.as_ref().map(|runtime| Arc::clone(runtime.execution_domain()));
+    let exec_options = output_domain.as_ref().and_then(|domain| domain.explicit_exec_options_raw());
 
     let mut table_handle = ptr::null_mut();
     let mut names_ptr: *mut *mut c_char = ptr::null_mut();
@@ -92,17 +104,32 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
     error::check_status_in_with(
         // SAFETY: filepath is a valid CString. col_ptrs is either null or a
         // valid pointer to num_cols CString pointers.
-        unsafe {
-            cudf_sys::cudf_io_read_parquet_with_metadata(
-                filepath.as_ptr(),
-                col_ptrs,
-                num_cols,
-                options.skip_rows,
-                options.num_rows,
-                &mut table_handle,
-                &mut names_ptr,
-                &mut num_names,
-            )
+        match exec_options.as_ref() {
+            Some(exec_options) => unsafe {
+                cudf_sys::cudf_io_read_parquet_with_metadata_ex(
+                    filepath.as_ptr(),
+                    col_ptrs,
+                    num_cols,
+                    options.skip_rows,
+                    options.num_rows,
+                    &mut table_handle,
+                    &mut names_ptr,
+                    &mut num_names,
+                    exec_options,
+                )
+            },
+            None => unsafe {
+                cudf_sys::cudf_io_read_parquet_with_metadata(
+                    filepath.as_ptr(),
+                    col_ptrs,
+                    num_cols,
+                    options.skip_rows,
+                    options.num_rows,
+                    &mut table_handle,
+                    &mut names_ptr,
+                    &mut num_names,
+                )
+            },
         },
         "io::parquet::read_parquet_with_metadata",
         [
@@ -114,7 +141,10 @@ pub fn read_parquet_with_metadata(options: ParquetReaderOptions) -> Result<Parqu
 
     // SAFETY: table_handle was returned by a successful FFI call, transferring ownership.
     // Wrap early so table is freed via RAII if collect_column_names() fails.
-    let table = unsafe { Table::from_raw(table_handle) };
+    let table = match output_domain {
+        Some(domain) => unsafe { Table::from_raw(table_handle).with_execution_domain(domain) },
+        None => unsafe { Table::from_raw(table_handle) },
+    };
 
     // Convert the C string array into Vec<String> and free the C memory.
     // SAFETY: names_ptr and num_names were returned by a successful FFI call.
@@ -177,12 +207,13 @@ unsafe fn collect_column_names(names_ptr: *mut *mut c_char, num_names: i32) -> R
 pub struct ParquetWriterOptions {
     filepath: PathBuf,
     column_names: Option<Vec<CString>>,
+    runtime: Option<Runtime>,
 }
 
 impl ParquetWriterOptions {
     /// Create options to write to the given file path.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), column_names: None }
+        Self { filepath: path.as_ref().to_path_buf(), column_names: None, runtime: None }
     }
 
     /// Set column names for the output file.
@@ -203,6 +234,23 @@ impl ParquetWriterOptions {
         );
         Ok(self)
     }
+
+    /// Route the write through the given runtime's stream.
+    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
+        self.runtime = Some(runtime.clone());
+        self
+    }
+
+    pub(crate) fn ensure_column_names(mut self, names: &[&str]) -> Result<Self> {
+        if self.column_names.is_none() {
+            self = self.column_names(names)?;
+        }
+        Ok(self)
+    }
+
+    pub(crate) fn runtime(&self) -> Option<&Runtime> {
+        self.runtime.as_ref()
+    }
 }
 
 /// Write a table to a Parquet file.
@@ -210,6 +258,16 @@ impl ParquetWriterOptions {
 /// Returns an error if `column_names` were set on the options and their count
 /// does not match the number of columns in the table.
 pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> Result<()> {
+    let exec_options =
+        options.runtime.as_ref().and_then(|runtime| runtime.execution_domain().explicit_exec_options_raw());
+    write_parquet_with_exec(table, options, exec_options.as_ref())
+}
+
+pub(crate) fn write_parquet_with_exec(
+    table: &TableView<'_>,
+    options: &ParquetWriterOptions,
+    exec_options: Option<&cudf_sys::cudf_exec_options_t>,
+) -> Result<()> {
     let filepath = super::path_to_cstring(&options.filepath, "io::parquet::write_parquet")?;
 
     // Validate column name count matches the table before the FFI call.
@@ -235,7 +293,20 @@ pub fn write_parquet(table: &TableView<'_>, options: &ParquetWriterOptions) -> R
     error::check_status_in_with(
         // SAFETY: table handle is valid (NonNull). filepath is a valid CString.
         // name_ptrs is either null or a valid pointer to num_cols CString pointers.
-        unsafe { cudf_sys::cudf_io_write_parquet(table.raw_handle(), filepath.as_ptr(), name_ptrs, num_cols) },
+        match exec_options {
+            Some(exec_options) => unsafe {
+                cudf_sys::cudf_io_write_parquet_ex(
+                    table.raw_handle(),
+                    filepath.as_ptr(),
+                    name_ptrs,
+                    num_cols,
+                    exec_options,
+                )
+            },
+            None => unsafe {
+                cudf_sys::cudf_io_write_parquet(table.raw_handle(), filepath.as_ptr(), name_ptrs, num_cols)
+            },
+        },
         "io::parquet::write_parquet",
         [("output_column_name_count", num_cols.to_string())],
     )

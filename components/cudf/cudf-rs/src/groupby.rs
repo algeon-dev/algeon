@@ -9,7 +9,7 @@ use std::{os::raw::c_void, ptr, sync::Arc};
 use crate::{
     column::{Column, ColumnView},
     error::{self, Error, ErrorKind, Result},
-    execution_context::__DebugExecutionContext,
+    execution_context::ExecutionContext,
     table::{Table, TableView},
 };
 
@@ -431,19 +431,28 @@ impl<'a> GroupBy<'a> {
         self.agg_impl(specs, None, output_domain, "groupby::GroupBy::agg")
     }
 
-    #[doc(hidden)]
-    pub fn __debug_agg_with_execution_context(
+    /// Execute the groupby with a borrowed per-operation execution override.
+    pub fn agg_with_context(
         self,
         specs: &[AggSpec],
-        ctx: &__DebugExecutionContext<'_>,
+        ctx: &ExecutionContext<'_>,
     ) -> Result<crate::dataframe::DataFrame> {
         let output_domain = ctx.resolve_output_domain(self.df.execution_domain())?;
         self.agg_impl(
             specs,
             output_domain.explicit_exec_options_raw(),
             output_domain,
-            "groupby::GroupBy::__debug_agg_with_execution_context",
+            "groupby::GroupBy::agg_with_context",
         )
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_agg_with_execution_context(
+        self,
+        specs: &[AggSpec],
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<crate::dataframe::DataFrame> {
+        self.agg_with_context(specs, ctx)
     }
 
     fn agg_impl(

@@ -1,18 +1,17 @@
-//! Hidden execution-context scaffolding for Phase 1 contract tests.
+//! Borrowed per-operation execution override.
 
 use std::sync::Arc;
 
 use crate::{error::Result, execution_domain::ExecutionDomain, memory::DeviceMemoryResource, stream::CudaStream};
 
-/// Hidden borrowed execution-context wrapper used by Phase 1 contract tests.
+/// Borrowed per-operation stream and/or allocator override.
 #[derive(Clone, Copy, Default)]
-#[doc(hidden)]
-pub struct __DebugExecutionContext<'a> {
+pub struct ExecutionContext<'a> {
     stream: Option<&'a CudaStream>,
     mr: Option<&'a DeviceMemoryResource>,
 }
 
-impl<'a> __DebugExecutionContext<'a> {
+impl<'a> ExecutionContext<'a> {
     /// Create an empty borrowed override.
     pub fn new() -> Self {
         Self::default()
@@ -39,3 +38,6 @@ impl<'a> __DebugExecutionContext<'a> {
         )
     }
 }
+
+#[doc(hidden)]
+pub type __DebugExecutionContext<'a> = ExecutionContext<'a>;
