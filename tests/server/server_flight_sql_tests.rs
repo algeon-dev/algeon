@@ -22,7 +22,7 @@ use arrow_flight::{
 use datafusion_nexus::server::{
     ServerConfig,
     error::{ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY},
-    serve,
+    serve_with_listener,
 };
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -34,11 +34,11 @@ const CANCEL_RESULT_CANCELLING: i32 = 2;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_client_can_run_select_one() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
@@ -55,11 +55,11 @@ async fn flight_sql_client_can_run_select_one() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_completed_statement_observability() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
@@ -86,11 +86,11 @@ async fn get_query_stats_returns_completed_statement_observability() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_structured_error_after_planning_failure() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute("select missing from (select 1 as one) as t".to_string(), None).await.unwrap_err();
@@ -115,11 +115,11 @@ async fn get_query_stats_returns_structured_error_after_planning_failure() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-stats-fallback-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -174,11 +174,11 @@ async fn get_query_stats_surfaces_complete_cpu_fallback_rejection() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_unknown_query_returns_not_found() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let action = arrow_flight::Action {
@@ -196,11 +196,11 @@ async fn get_query_stats_unknown_query_returns_not_found() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_transaction_structured_error() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client
@@ -222,11 +222,11 @@ async fn get_query_stats_returns_transaction_structured_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.execute("select 1 as one".to_string(), None).await.unwrap();
@@ -247,11 +247,11 @@ async fn get_query_stats_returns_cancelled_for_unconsumed_ticket() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn create_view_statement_executes_once_and_persists_across_statements() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let batches = execute_batches(
@@ -272,11 +272,11 @@ async fn create_view_statement_executes_once_and_persists_across_statements() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_table_on_view_reports_object_type_mismatch() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let _ = execute_batches(&mut client, "CREATE VIEW drop_view_probe AS SELECT 1 AS x").await;
@@ -318,11 +318,11 @@ async fn drop_table_on_view_reports_object_type_mismatch() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn drop_view_on_table_reports_object_type_mismatch() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let _ = execute_batches(&mut client, "CREATE TABLE drop_table_probe AS SELECT 1 AS x").await;
@@ -356,11 +356,11 @@ async fn drop_view_on_table_reports_object_type_mismatch() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_create_external_table_executes_and_persists() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-update-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -387,11 +387,11 @@ async fn statement_update_create_external_table_executes_and_persists() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_update_create_external_table_executes_and_persists() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-prepared-update-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -422,11 +422,11 @@ async fn prepared_statement_update_create_external_table_executes_and_persists()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-prepared-schema-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -452,11 +452,11 @@ async fn prepared_ddl_create_action_omits_dataset_schema_bytes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_create_action_handle_resolves_query_stats() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let prepared = create_prepared_raw(&mut client, "select 1 as one".to_string()).await;
@@ -478,11 +478,11 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
     // prepared statement and run it through `execute()` (the query channel),
     // never `execute_update()`. DDL must therefore execute on the prepared
     // query path the same way a non-prepared statement does.
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-prepared-query-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -524,11 +524,11 @@ async fn prepared_statement_query_create_external_table_executes_and_persists() 
 // DDL execution or a client-visible failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-dedup-mixed-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -567,11 +567,11 @@ async fn prepared_ddl_update_then_query_double_send_is_deduplicated() {
 // into a no-op instead of failing with "already exists".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-dedup-update-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -608,11 +608,11 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_update_channel() {
 // The second `do_get` returns an empty result rather than re-running the DDL.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_ddl_double_execute_is_deduplicated_on_query_channel() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-flight-sql-dedup-query-").tempdir().unwrap();
     let parquet_path = dir.path().join("edges.parquet");
@@ -651,11 +651,11 @@ async fn prepared_ddl_double_execute_is_deduplicated_on_query_channel() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_invalid_sql_uses_server_error_presentation() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute_update("selekt 1".to_string(), None).await.unwrap_err();
@@ -671,11 +671,11 @@ async fn statement_update_invalid_sql_uses_server_error_presentation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_rejects_transaction_id_with_structured_error() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let txn_id = prost::bytes::Bytes::from_static(b"fake-txn");
@@ -696,11 +696,11 @@ async fn statement_update_rejects_transaction_id_with_structured_error() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_rejects_select_without_side_effect_path() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute_update("SELECT 1 AS one".to_string(), None).await.unwrap_err();
@@ -717,11 +717,11 @@ async fn statement_update_rejects_select_without_side_effect_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_query_rejects_sql_prepare_namespace() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute("PREPARE local_stmt AS SELECT 1".to_string(), None).await.unwrap_err();
@@ -738,11 +738,11 @@ async fn statement_query_rejects_sql_prepare_namespace() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_planning_errors_include_query_id_metadata() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute("selekt 1".to_string(), None).await.unwrap_err();
@@ -762,11 +762,11 @@ async fn statement_planning_errors_include_query_id_metadata() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_table_errors_are_not_found_with_structured_code() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute("select * from does_not_exist".to_string(), None).await.unwrap_err();
@@ -787,11 +787,11 @@ async fn unknown_table_errors_are_not_found_with_structured_code() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn missing_column_errors_are_invalid_input_with_structured_code() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute("select missing from (select 1 as one) as t".to_string(), None).await.unwrap_err();
@@ -811,13 +811,13 @@ async fn missing_column_errors_are_invalid_input_with_structured_code() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unconsumed_statement_ticket_holds_admission_permit() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     config.max_in_flight = 1;
     config.statement_ticket_ttl = Duration::from_secs(30);
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut first_client = connect_with_retry(addr).await;
     let mut second_client = connect_with_retry(addr).await;
 
@@ -844,13 +844,13 @@ async fn unconsumed_statement_ticket_holds_admission_permit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn abandoned_statement_ticket_expires_and_releases_admission_permit() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     config.max_in_flight = 1;
     config.statement_ticket_ttl = Duration::from_millis(50);
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut first_client = connect_with_retry(addr).await;
     let mut second_client = connect_with_retry(addr).await;
 
@@ -883,11 +883,11 @@ async fn abandoned_statement_ticket_expires_and_releases_admission_permit() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_sql_info_advertises_core_server_capabilities() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let requested = vec![
@@ -955,11 +955,11 @@ async fn get_sql_info_advertises_core_server_capabilities() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_catalogs_lists_default_catalog() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.get_catalogs().await.unwrap();
@@ -973,11 +973,11 @@ async fn flight_sql_get_catalogs_lists_default_catalog() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_db_schemas_lists_default_schemas() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client
@@ -998,11 +998,11 @@ async fn flight_sql_get_db_schemas_lists_default_schemas() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     // Seed both a real base table and a view so we can assert that the
@@ -1044,11 +1044,11 @@ async fn flight_sql_get_tables_distinguishes_views_from_base_tables() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_tables_respects_table_types_filter() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let _ = execute_batches(&mut client, "CREATE TABLE table_types_filter_base AS SELECT 1 AS x").await;
@@ -1076,11 +1076,11 @@ async fn flight_sql_get_tables_respects_table_types_filter() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let _ = execute_batches(
@@ -1126,11 +1126,11 @@ async fn flight_sql_get_tables_with_include_schema_emits_arrow_schema() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_table_types_returns_table_and_view() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let flight_info = client.get_table_types().await.unwrap();
@@ -1144,11 +1144,11 @@ async fn flight_sql_get_table_types_returns_table_and_view() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_round_trip_executes_select() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let mut prepared = client.prepare("select 1 as one".to_string(), None).await.unwrap();
@@ -1169,11 +1169,11 @@ async fn prepared_statement_round_trip_executes_select() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_update_rejects_select_and_preserves_handle() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let mut prepared = client.prepare("select 1 as one".to_string(), None).await.unwrap();
@@ -1197,11 +1197,11 @@ async fn prepared_statement_update_rejects_select_and_preserves_handle() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn statement_update_rejects_sql_prepare_namespace() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.execute_update("PREPARE local_stmt AS SELECT 1".to_string(), None).await.unwrap_err();
@@ -1218,11 +1218,11 @@ async fn statement_update_rejects_sql_prepare_namespace() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_rejects_transaction_id() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let txn_id = prost::bytes::Bytes::from_static(b"fake-txn");
@@ -1237,11 +1237,11 @@ async fn prepared_statement_rejects_transaction_id() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_close_is_idempotent_via_raw_action() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     // Send a Close action for a handle that was never created. The server
@@ -1262,11 +1262,11 @@ async fn prepared_statement_close_is_idempotent_via_raw_action() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_invalid_sql_fails_at_create() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.prepare("selekt 1".to_string(), None).await.unwrap_err();
@@ -1288,11 +1288,11 @@ async fn prepared_statement_invalid_sql_fails_at_create() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_prepared_statement_query_stats_remains_resolvable() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let command =
@@ -1317,11 +1317,11 @@ async fn unknown_prepared_statement_query_stats_remains_resolvable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepared_statement_missing_column_uses_server_error_presentation() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let error = client.prepare("select missing from (select 1 as one) as t".to_string(), None).await.unwrap_err();
@@ -1338,11 +1338,11 @@ async fn prepared_statement_missing_column_uses_server_error_presentation() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_get_primary_keys_returns_empty_with_schema() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let cmd = CommandGetPrimaryKeys { catalog: None, db_schema: None, table: "any_table".to_string() };
@@ -1362,11 +1362,11 @@ async fn flight_sql_get_primary_keys_returns_empty_with_schema() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn flight_sql_foreign_keys_rpcs_return_empty_with_shared_schema() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let imported_info = client
@@ -1545,24 +1545,44 @@ fn collect_string_column(batches: &[arrow::record_batch::RecordBatch], column: &
     out
 }
 
-fn free_local_addr() -> std::net::SocketAddr {
+/// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
+/// multi-second `cuInit()` cost; doing it here (every test reserves an address
+/// before spawning a server) keeps that cost off each server's connect window,
+/// and the `OnceLock` collapses concurrent callers onto a single init.
+fn warm_cuda_once() {
+    static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    CUDA_WARM.get_or_init(|| {
+        // Best-effort: serve_with_listener re-runs (and surfaces) any error.
+        let _ = datafusion_nexus::server::init_cuda_device(0);
+    });
+}
+
+/// Reserve a loopback port and hand back the live listener so the caller can
+/// pass it straight to `serve_with_listener`. Keeping the socket bound closes
+/// the bind/serve gap where a parallel test could steal the port.
+fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
+    warm_cuda_once();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    let addr = listener.local_addr().unwrap();
+    (listener, addr)
 }
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
     let uri = format!("http://{addr}");
-    let mut last_error = None;
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut backoff = Duration::from_millis(10);
+    loop {
         match Endpoint::from_shared(uri.clone()).unwrap().connect().await {
             Ok(channel) => return FlightSqlServiceClient::new(channel),
             Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                if std::time::Instant::now() >= deadline {
+                    panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
     }
-    panic!("Flight SQL server did not accept connections at {addr}: {last_error:?}");
 }
 
 async fn execute_batches(

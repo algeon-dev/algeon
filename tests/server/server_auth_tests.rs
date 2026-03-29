@@ -3,18 +3,20 @@
 use std::{io::Write, net::TcpListener, time::Duration};
 
 use arrow_flight::{error::FlightError, sql::client::FlightSqlServiceClient};
-use datafusion_nexus::server::{AuthConfig, AuthMode, ServerConfig, StaticUserConfig, auth::hash_password, serve};
+use datafusion_nexus::server::{
+    AuthConfig, AuthMode, ServerConfig, StaticUserConfig, auth::hash_password, serve_with_listener,
+};
 use tonic::{Code, transport::Endpoint};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn auth_disabled_passes_handshake_and_query_through() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     // Default mode is Disabled — explicit for clarity.
     config.auth = AuthConfig { mode: AuthMode::Disabled };
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     // Handshake with disabled auth still succeeds (the client always
@@ -29,12 +31,12 @@ async fn auth_disabled_passes_handshake_and_query_through() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_bearer_happy_path() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     client.handshake("alice", "s3cret").await.expect("valid credentials must hand back a bearer token");
@@ -49,12 +51,12 @@ async fn basic_bearer_happy_path() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_handshake_rejects_wrong_password() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let err = client.handshake("alice", "wrong").await.expect_err("bad password must fail handshake");
@@ -73,12 +75,12 @@ async fn basic_handshake_rejects_wrong_password() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn basic_handshake_rejects_unknown_user() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let err = client.handshake("mallory", "s3cret").await.expect_err("unknown user must fail");
@@ -88,12 +90,12 @@ async fn basic_handshake_rejects_unknown_user() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_without_handshake_rejects_with_unauthenticated() {
-    let addr = free_local_addr();
+    let (listener, addr) = free_local_addr();
     let mut config = ServerConfig::from_env_get(|_| None).unwrap();
     config.bind_addr = addr;
     config.auth = basic_bearer_config("alice", "s3cret", 3600);
 
-    let server = tokio::spawn(async move { serve(config).await });
+    let server = tokio::spawn(async move { serve_with_listener(config, listener).await });
     let mut client = connect_with_retry(addr).await;
 
     let err = client.execute("select 1".to_string(), None).await.expect_err("query without token must fail");
@@ -183,22 +185,42 @@ fn basic_bearer_config(username: &str, password: &str, ttl_secs: u64) -> AuthCon
     }
 }
 
-fn free_local_addr() -> std::net::SocketAddr {
+/// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
+/// multi-second `cuInit()` cost; doing it here (every test reserves an address
+/// before spawning a server) keeps that cost off each server's connect window,
+/// and the `OnceLock` collapses concurrent callers onto a single init.
+fn warm_cuda_once() {
+    static CUDA_WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    CUDA_WARM.get_or_init(|| {
+        // Best-effort: serve_with_listener re-runs (and surfaces) any error.
+        let _ = datafusion_nexus::server::init_cuda_device(0);
+    });
+}
+
+/// Reserve a loopback port and hand back the live listener so the caller can
+/// pass it straight to `serve_with_listener`. Keeping the socket bound closes
+/// the bind/serve gap where a parallel test could steal the port.
+fn free_local_addr() -> (TcpListener, std::net::SocketAddr) {
+    warm_cuda_once();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap()
+    let addr = listener.local_addr().unwrap();
+    (listener, addr)
 }
 
 async fn connect_with_retry(addr: std::net::SocketAddr) -> FlightSqlServiceClient<tonic::transport::Channel> {
     let uri = format!("http://{addr}");
-    let mut last_error = None;
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut backoff = Duration::from_millis(10);
+    loop {
         match Endpoint::from_shared(uri.clone()).unwrap().connect().await {
             Ok(channel) => return FlightSqlServiceClient::new(channel),
             Err(error) => {
-                last_error = Some(error);
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                if std::time::Instant::now() >= deadline {
+                    panic!("Flight SQL server did not accept connections at {addr} within 15s: {error:?}");
+                }
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_millis(500));
             },
         }
     }
-    panic!("Flight SQL server did not accept connections at {addr}: {last_error:?}");
 }
