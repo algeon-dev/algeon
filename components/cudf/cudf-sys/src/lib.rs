@@ -430,6 +430,16 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_column_create_strings_ex(
+        strings: *const *const c_char,
+        lengths: *const i32,
+        num_strings: i32,
+        null_mask: *const u8,
+        null_count: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     /// Materialize string offsets, and optionally chars, into host buffers.
     ///
     /// This helper synchronizes cuDF's default stream before return whenever
@@ -724,6 +734,14 @@ extern "C" {
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_io_read_csv_ex(
+        filepath: *const c_char,
+        delimiter: c_char,
+        has_header: i32,
+        out: *mut cudf_table_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_io_write_csv(
         table: cudf_table_view_handle,
         filepath: *const c_char,
@@ -731,6 +749,16 @@ extern "C" {
         num_columns: i32,
         delimiter: c_char,
         include_header: i32,
+    ) -> cudf_status_t;
+
+    pub fn cudf_io_write_csv_ex(
+        table: cudf_table_view_handle,
+        filepath: *const c_char,
+        column_names: *const *const c_char,
+        num_columns: i32,
+        delimiter: c_char,
+        include_header: i32,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     // -- Sorting -------------------------------------------------------------
@@ -990,9 +1018,23 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_concatenate_columns_ex(
+        columns: *const cudf_column_view_handle,
+        num_columns: i32,
+        options: *const cudf_exec_options_t,
+        out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
     pub fn cudf_concatenate_tables(
         tables: *const cudf_table_view_handle,
         num_tables: i32,
+        out: *mut cudf_table_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_concatenate_tables_ex(
+        tables: *const cudf_table_view_handle,
+        num_tables: i32,
+        options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
 

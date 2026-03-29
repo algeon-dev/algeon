@@ -458,6 +458,18 @@ cudf_status_t cudf_column_create_strings(
     const uint8_t* null_mask,
     int32_t null_count,
     cudf_column_handle* out) {
+  return cudf_column_create_strings_ex(strings, lengths, num_strings, null_mask,
+                                       null_count, nullptr, out);
+}
+
+cudf_status_t cudf_column_create_strings_ex(
+    const char** strings,
+    const int32_t* lengths,
+    int32_t num_strings,
+    const uint8_t* null_mask,
+    int32_t null_count,
+    cudf_exec_options_t const* options,
+    cudf_column_handle* out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   if (num_strings < 0) {
@@ -476,8 +488,11 @@ cudf_status_t cudf_column_create_strings(
     CUDF_RUST_NULL_CHECK(null_mask, "null_mask is null when null_count > 0");
   }
   CUDF_RUST_TRY {
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
 
     if (num_strings == 0) {
       auto col = cudf::make_empty_column(cudf::data_type(cudf::type_id::STRING));
@@ -517,7 +532,7 @@ cudf_status_t cudf_column_create_strings(
 
     // Upload offsets to device
     size_t offsets_bytes = static_cast<size_t>(num_strings + 1) * sizeof(int32_t);
-    rmm::device_buffer dev_offsets(host_offsets.data(), offsets_bytes, stream, mr);
+    rmm::device_buffer dev_offsets(host_offsets.data(), offsets_bytes, exec.stream, exec.mr);
     auto offsets_col = std::make_unique<cudf::column>(
         cudf::data_type(cudf::type_id::INT32),
         static_cast<cudf::size_type>(num_strings + 1),
@@ -526,14 +541,14 @@ cudf_status_t cudf_column_create_strings(
 
     // Upload chars to device
     rmm::device_buffer dev_chars(host_chars.data(),
-                                 static_cast<size_t>(total_chars), stream, mr);
+                                 static_cast<size_t>(total_chars), exec.stream, exec.mr);
 
     // Build null mask on device if needed
     rmm::device_buffer dev_null_mask{};
     if (null_mask != nullptr && null_count > 0) {
       size_t mask_bytes =
           cudf::bitmask_allocation_size_bytes(static_cast<cudf::size_type>(num_strings));
-      dev_null_mask = rmm::device_buffer(null_mask, mask_bytes, stream, mr);
+      dev_null_mask = rmm::device_buffer(null_mask, mask_bytes, exec.stream, exec.mr);
     }
 
     auto col = cudf::make_strings_column(

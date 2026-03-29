@@ -1,17 +1,17 @@
 //! Integration tests for execution-context plumbing.
 //!
 //! These tests verify that non-default CUDA streams and memory resources are
-//! correctly propagated through the FFI shim layer and (eventually) through
-//! the cudf-rs safe API.
+//! correctly propagated through the FFI shim layer and through the current
+//! cudf-rs safe-API slices.
 //!
 //! # Test categories
 //!
 //! 1. **Type properties** — `ExecutionContext` is Copy, default has null handles.
 //! 2. **Existing `_ex` FFI** — `cudf_column_copy_ex`, `cudf_column_view_to_host_ex`,
 //!    `cudf_column_create_from_device_data_ex` use explicit streams (pass today).
-//! 3. **High-level execution-context contract** — hidden Phase 1 safe-layer
-//!    hooks route explicit-lineage operations through `_ex` entry points and
-//!    reject ambient-default promotion from borrowed overrides.
+//! 3. **High-level execution-context contract** — hidden safe-layer hooks
+//!    route explicit-lineage operations through `_ex` entry points and reject
+//!    ambient-default promotion from borrowed overrides.
 //! 4. **Default-context fallback** — existing APIs still use the default stream.
 //! 5. **Allocator context** — explicit memory resource is passed through.
 //! 6. **cudf-rs type contracts** — CudaStream, DeviceMemoryResource are Send+Sync.
@@ -198,10 +198,7 @@ fn table_view_raw(table: cudf_sys::cudf_table_handle) -> cudf_sys::cudf_table_vi
 }
 
 /// Get a column view handle from a table view by index. Caller must destroy the view.
-fn table_view_column_raw(
-    table: cudf_sys::cudf_table_view_handle,
-    index: i32,
-) -> cudf_sys::cudf_column_view_handle {
+fn table_view_column_raw(table: cudf_sys::cudf_table_view_handle, index: i32) -> cudf_sys::cudf_column_view_handle {
     let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_table_view_column(table, index, &mut view) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create table column view");
@@ -322,23 +319,17 @@ fn execution_context_is_copy() {
     assert_eq!(ctx.raw().flags, copy.raw().flags);
 }
 
-/// ExecutionContext should eventually be Send + Sync (required for
-/// spawn_blocking). Currently it is NOT because cudf_exec_options_t
-/// contains raw pointers. This test documents the contract that
-/// The EC-HIGHLEVEL milestone must satisfy this by either adding unsafe Send+Sync impls
-/// or by wrapping the pointers.
+/// The low-level `cudf_sys::ExecutionContext` remains a transient FFI builder,
+/// not the owned safe-layer override type.
 ///
-/// Once EC-HIGHLEVEL adds Send+Sync, replace this test body with:
-///   fn assert_send_sync<T: Send + Sync>() {}
-///   assert_send_sync::<cudf_sys::ExecutionContext<'_>>();
+/// It is therefore still documented here as `!Send + !Sync` because
+/// `cudf_exec_options_t` contains raw pointers. The public safe-layer
+/// `cudf::ExecutionContext` has its own `Send + Sync` contract coverage in the
+/// `runtime_v1_public_api_tests` suite.
 #[test]
 fn execution_context_send_sync_status_documented() {
-    // cudf_exec_options_t contains *mut c_void, so ExecutionContext is
-    // currently !Send + !Sync. This test documents the status quo.
-    // When EC-HIGHLEVEL adds `unsafe impl Send/Sync`, update this test
-    // to assert the positive trait bounds.
-    //
-    // For now, we just verify the type is Copy (which it is).
+    // cudf_exec_options_t contains *mut c_void, so the low-level FFI builder
+    // remains !Send + !Sync. This test documents that status quo.
     let ctx = cudf_sys::ExecutionContext::default();
     let _copy = ctx;
     let _also_ctx = ctx; // proves Copy
@@ -740,8 +731,8 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
 // ===========================================================================
 // Category 3: High-level execution-context contract
 //
-// These tests exercise hidden Phase 1 hooks that keep the execution-context
-// contract private while still validating it at the safe API boundary.
+// These tests exercise hidden safe-layer hooks that validate execution-context
+// routing below the current public `Runtime v1` surface.
 // ===========================================================================
 
 #[test]

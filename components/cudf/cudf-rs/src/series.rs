@@ -128,9 +128,30 @@ impl Series {
         Ok(s)
     }
 
+    /// Create a `Series` of UTF-8 strings from host data inside the given explicit runtime.
+    pub fn from_strings_with_runtime(runtime: &Runtime, name: impl Into<String>, data: &[&str]) -> Result<Self> {
+        let column = Column::from_strings_with_runtime(runtime, data)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
     /// Create a nullable `Series` of UTF-8 strings from host data and a validity mask.
     pub fn from_strings_nullable(name: impl Into<String>, data: &[&str], validity: &[bool]) -> Result<Self> {
         let column = Column::from_strings_nullable(data, validity)?;
+        let mut s = Self::from_column_with_cache(column)?;
+        s.name = Some(name.into());
+        Ok(s)
+    }
+
+    /// Create a nullable `Series` of UTF-8 strings inside the given explicit runtime.
+    pub fn from_strings_nullable_with_runtime(
+        runtime: &Runtime,
+        name: impl Into<String>,
+        data: &[&str],
+        validity: &[bool],
+    ) -> Result<Self> {
+        let column = Column::from_strings_nullable_with_runtime(runtime, data, validity)?;
         let mut s = Self::from_column_with_cache(column)?;
         s.name = Some(name.into());
         Ok(s)

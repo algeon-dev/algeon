@@ -15,6 +15,12 @@ pub struct Runtime {
     domain: Arc<ExecutionDomain>,
 }
 
+impl std::fmt::Debug for Runtime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Runtime").field("execution_domain", &self.__debug_execution_domain_id()).finish()
+    }
+}
+
 /// Builder for [`Runtime`].
 #[derive(Default)]
 pub struct RuntimeBuilder {
