@@ -279,6 +279,33 @@ async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() 
 }
 
 #[tokio::test]
+async fn cugraph_bfs_relation_source_string_domain_exposes_utf8_logical_schema() {
+    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let ctx = SessionContext::new_with_state(state);
+    register_string_bfs_edges(&ctx, "raw_edges");
+    register_string_vertex_memtable(&ctx, "bfs_sources", "vertex_id", &["a"]);
+
+    let df = ctx
+        .sql(
+            "SELECT * FROM cugraph_bfs('raw_edges', NULL, 'src', 'dst', NULL, \
+             '{\"source_vertices_table\":\"bfs_sources\",\
+                \"source_vertex_col\":\"vertex_id\",\
+                \"output_mode\":\"normalized\"}')",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        df.schema().inner().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
+        vec![
+            Field::new("vertex", DataType::Utf8, false),
+            Field::new("distance", DataType::Int64, true),
+            Field::new("predecessor", DataType::Utf8, true),
+            Field::new("reachable", DataType::Boolean, false),
+        ],
+    );
+}
+
+#[tokio::test]
 async fn cugraph_bfs_predicate_options_plan_as_exec_side_inputs() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))

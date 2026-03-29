@@ -19,7 +19,7 @@ fn cugraph_bfs_string_source_vertex_uses_logical_output_schema() {
     let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
         panic!("expected BFS params");
     };
-    assert_eq!(params.source_vertex, CugraphBfsSourceVertex::Utf8("alice".to_string()));
+    assert_eq!(params.source, CugraphBfsSource::scalar_utf8("alice"));
     assert_eq!(
         spec.output_schema.fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>(),
         vec![
@@ -29,6 +29,129 @@ fn cugraph_bfs_string_source_vertex_uses_logical_output_schema() {
             Field::new("reachable", DataType::Boolean, false),
         ],
     );
+}
+
+#[test]
+fn cugraph_bfs_source_lists_and_relation_sources_parse() {
+    let config = CugraphSqlConfig::default();
+    let numeric_sources = ScalarValue::List(ScalarValue::new_list(
+        &[ScalarValue::Int64(Some(1)), ScalarValue::Int64(Some(2))],
+        &DataType::Int64,
+        false,
+    ));
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(numeric_sources),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"output_mode":"normalized"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    assert_eq!(
+        params.source,
+        CugraphBfsSource::LiteralList(vec![CugraphBfsSourceVertex::Int64(1), CugraphBfsSourceVertex::Int64(2)])
+    );
+
+    let string_sources = ScalarValue::List(ScalarValue::new_list(
+        &[ScalarValue::Utf8(Some("alice".to_string())), ScalarValue::Utf8(Some("bob".to_string()))],
+        &DataType::Utf8,
+        false,
+    ));
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(string_sources),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"output_mode":"normalized"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    assert_eq!(
+        params.source,
+        CugraphBfsSource::LiteralList(vec![
+            CugraphBfsSourceVertex::Utf8("alice".to_string()),
+            CugraphBfsSourceVertex::Utf8("bob".to_string()),
+        ])
+    );
+
+    let spec = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"source_vertices_table":"bfs_sources","source_vertex_col":"vertex_id"}"#),
+        ],
+        &config,
+    )
+    .unwrap();
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        panic!("expected BFS params");
+    };
+    let CugraphBfsSource::Relation(input) = &params.source else {
+        panic!("expected relation-backed BFS source");
+    };
+    assert_eq!(input.table_name.to_string(), "bfs_sources");
+    assert_eq!(input.column, "vertex_id");
+}
+
+#[test]
+fn cugraph_bfs_invalid_source_lists_and_relation_combinations_reject() {
+    let config = CugraphSqlConfig::default();
+    let empty_sources = ScalarValue::List(ScalarValue::new_list(&[], &DataType::Int64, false));
+    let error = parse_cugraph_algorithm_spec(CugraphAlgorithm::Bfs, &[lit("graph_edges"), lit(empty_sources)], &config)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("must not be empty"), "{error}");
+
+    let error = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"output_mode":"normalized"}"#),
+        ],
+        &config,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("source_vertex_or_vertices may be NULL only"), "{error}");
+
+    let error = parse_cugraph_algorithm_spec(
+        CugraphAlgorithm::Bfs,
+        &[
+            lit("graph_edges"),
+            lit(1_i64),
+            lit("src"),
+            lit("dst"),
+            datafusion::logical_expr::lit(ScalarValue::Null),
+            lit(r#"{"source_vertices_table":"bfs_sources","source_vertex_col":"vertex_id"}"#),
+        ],
+        &config,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("cannot be combined"), "{error}");
 }
 
 #[test]
@@ -158,7 +281,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(
         spec.params,
         CugraphAlgorithmParams::Bfs(Box::new(datafusion_nexus::CugraphBfsParams {
-            source_vertex: CugraphBfsSourceVertex::Int64(42),
+            source: CugraphBfsSource::scalar_i64(42),
             depth_limit: Some(3),
             ..Default::default()
         }))
@@ -180,7 +303,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(
         spec.params,
         CugraphAlgorithmParams::Bfs(Box::new(datafusion_nexus::CugraphBfsParams {
-            source_vertex: CugraphBfsSourceVertex::Int64(42),
+            source: CugraphBfsSource::scalar_i64(42),
             depth_limit: None,
             ..Default::default()
         }))

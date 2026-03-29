@@ -429,10 +429,7 @@ pub enum CugraphAlgorithmParams {
 }
 
 impl CugraphAlgorithmParams {
-    pub(crate) fn from_native_defaults(
-        algorithm: CugraphAlgorithm,
-        source_vertex: Option<CugraphBfsSourceVertex>,
-    ) -> Self {
+    pub(crate) fn from_native_defaults(algorithm: CugraphAlgorithm, source: Option<CugraphBfsSource>) -> Self {
         match algorithm.native_algorithm().definition().default_params() {
             NativeGraphAlgorithmParams::PageRank(params) => Self::PageRank(CugraphPageRankParams {
                 alpha: params.alpha,
@@ -450,7 +447,7 @@ impl CugraphAlgorithmParams {
                 })
             },
             NativeGraphAlgorithmParams::Bfs(params) => Self::Bfs(Box::new(CugraphBfsParams {
-                source_vertex: source_vertex.unwrap_or(CugraphBfsSourceVertex::Int64(params.source_vertex)),
+                source: source.unwrap_or_else(|| CugraphBfsSource::scalar_i64(params.source_vertex)),
                 depth_limit: params.depth_limit,
                 predicates: CugraphBfsPredicateInputs::default(),
                 output: CugraphBfsOutputOptions::default(),
@@ -476,8 +473,8 @@ impl CugraphAlgorithmParams {
                 normalize: params.normalize,
             }),
             NativeGraphAlgorithmParams::Sssp(params) => Self::Sssp(CugraphSsspParams {
-                source_vertex: source_vertex
-                    .unwrap_or(CugraphBfsSourceVertex::Int64(params.source_vertex))
+                source_vertex: source
+                    .unwrap_or_else(|| CugraphBfsSource::scalar_i64(params.source_vertex))
                     .as_i64()
                     .expect("SSSP parser rejects non-numeric source_vertex"),
                 cutoff: params.cutoff,
@@ -609,8 +606,8 @@ impl Default for CugraphPageRankPersonalizationTable {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CugraphBfsParams {
-    /// Root vertex for the SQL BFS traversal.
-    pub source_vertex: CugraphBfsSourceVertex,
+    /// Source vertex selector for the SQL BFS traversal.
+    pub source: CugraphBfsSource,
     /// Optional non-negative BFS depth limit. `None` means unbounded depth.
     pub depth_limit: Option<i64>,
     /// Optional relation-backed predicate inputs.
@@ -619,7 +616,98 @@ pub struct CugraphBfsParams {
     pub output: CugraphBfsOutputOptions,
 }
 
-/// SQL-visible BFS source vertex.
+/// SQL-visible BFS source selector.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CugraphBfsSource {
+    /// Scalar source vertex. Numeric scalar sources preserve the legacy SQL
+    /// fast path; string scalar sources are mapped through the logical-id
+    /// codebook path.
+    Scalar(CugraphBfsSourceVertex),
+    /// Inline literal source list. This is lowered to a native source-vertices
+    /// side input.
+    LiteralList(Vec<CugraphBfsSourceVertex>),
+    /// Relation-backed source vertices.
+    Relation(CugraphGraphPredicateTable),
+}
+
+impl Default for CugraphBfsSource {
+    fn default() -> Self {
+        Self::scalar_i64(0)
+    }
+}
+
+impl CugraphBfsSource {
+    pub fn scalar_i64(value: i64) -> Self {
+        Self::Scalar(CugraphBfsSourceVertex::Int64(value))
+    }
+
+    pub fn scalar_utf8(value: impl Into<String>) -> Self {
+        Self::Scalar(CugraphBfsSourceVertex::Utf8(value.into()))
+    }
+
+    pub fn is_utf8(&self) -> bool {
+        match self {
+            Self::Scalar(CugraphBfsSourceVertex::Utf8(_)) => true,
+            Self::LiteralList(values) => matches!(values.first(), Some(CugraphBfsSourceVertex::Utf8(_))),
+            Self::Scalar(CugraphBfsSourceVertex::Int64(_)) | Self::Relation(_) => false,
+        }
+    }
+
+    pub fn is_literal_numeric_domain(&self) -> bool {
+        match self {
+            Self::Scalar(CugraphBfsSourceVertex::Int64(_)) => true,
+            Self::LiteralList(values) => matches!(values.first(), Some(CugraphBfsSourceVertex::Int64(_))),
+            Self::Scalar(CugraphBfsSourceVertex::Utf8(_)) | Self::Relation(_) => false,
+        }
+    }
+
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Scalar(source) => source.as_i64(),
+            Self::LiteralList(_) | Self::Relation(_) => None,
+        }
+    }
+
+    pub fn requires_source_vertices_input(&self) -> bool {
+        !matches!(self, Self::Scalar(CugraphBfsSourceVertex::Int64(_)))
+    }
+
+    pub fn planned_source_vertices_input(&self) -> bool {
+        match self {
+            Self::Relation(_) => true,
+            Self::LiteralList(values) => matches!(values.first(), Some(CugraphBfsSourceVertex::Int64(_))),
+            Self::Scalar(_) => false,
+        }
+    }
+
+    pub fn source_vertices_column(&self) -> &str {
+        match self {
+            Self::Relation(input) => input.column.as_str(),
+            Self::Scalar(_) | Self::LiteralList(_) => "__source_vertex",
+        }
+    }
+
+    pub fn relation(&self) -> Option<&CugraphGraphPredicateTable> {
+        match self {
+            Self::Relation(input) => Some(input),
+            Self::Scalar(_) | Self::LiteralList(_) => None,
+        }
+    }
+
+    pub fn literal_values(&self) -> Option<&[CugraphBfsSourceVertex]> {
+        match self {
+            Self::Scalar(value) => Some(std::slice::from_ref(value)),
+            Self::LiteralList(values) => Some(values.as_slice()),
+            Self::Relation(_) => None,
+        }
+    }
+
+    pub fn literal_count(&self) -> Option<usize> {
+        self.literal_values().map(<[_]>::len)
+    }
+}
+
+/// SQL-visible BFS source vertex literal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CugraphBfsSourceVertex {
     /// Numeric source vertex. This preserves the legacy SQL contract.
@@ -685,8 +773,11 @@ pub(crate) fn vertex_id_domain_for_call(
     src_type: &DataType,
     dst_type: &DataType,
 ) -> Result<CugraphVertexIdDomain> {
-    let is_bfs_string_source = algorithm == CugraphAlgorithm::Bfs
-        && matches!(params, CugraphAlgorithmParams::Bfs(params) if params.source_vertex.is_utf8());
+    let bfs_source = match (algorithm, params) {
+        (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => Some(&params.source),
+        _ => None,
+    };
+    let is_bfs_string_source = bfs_source.is_some_and(CugraphBfsSource::is_utf8);
     if is_bfs_string_source {
         if !is_string_vertex_dtype(src_type) {
             return Err(plan_error(format!(
@@ -701,10 +792,21 @@ pub(crate) fn vertex_id_domain_for_call(
         return Ok(CugraphVertexIdDomain::StringLogical);
     }
 
-    if algorithm == CugraphAlgorithm::Bfs && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type)) {
+    if algorithm == CugraphAlgorithm::Bfs
+        && bfs_source.is_some_and(CugraphBfsSource::is_literal_numeric_domain)
+        && (is_string_vertex_dtype(src_type) || is_string_vertex_dtype(dst_type))
+    {
         return Err(plan_error(format!(
             "cuGraph BFS numeric source_vertex requires Int32 or Int64 edge columns, found source={src_type:?}, destination={dst_type:?}"
         )));
+    }
+
+    if algorithm == CugraphAlgorithm::Bfs
+        && bfs_source.is_some_and(|source| matches!(source, CugraphBfsSource::Relation(_)))
+        && is_string_vertex_dtype(src_type)
+        && is_string_vertex_dtype(dst_type)
+    {
+        return Ok(CugraphVertexIdDomain::StringLogical);
     }
 
     if !is_numeric_vertex_dtype(src_type) {
@@ -1110,11 +1212,23 @@ pub fn stable_result_schema(algorithm: CugraphAlgorithm) -> SchemaRef {
 
 /// SQL output schema for one BFS call after applying output options.
 pub fn bfs_result_schema(params: &CugraphBfsParams) -> SchemaRef {
-    let vertex_type = if params.source_vertex.is_utf8() { DataType::Utf8 } else { DataType::Int64 };
+    let vertex_type = if params.source.is_utf8() { DataType::Utf8 } else { DataType::Int64 };
+    bfs_result_schema_with_vertex_type(params, vertex_type)
+}
+
+pub(crate) fn bfs_result_schema_for_vertex_domain(
+    params: &CugraphBfsParams,
+    domain: &CugraphVertexIdDomain,
+) -> SchemaRef {
+    let vertex_type = if domain.is_string_logical() { DataType::Utf8 } else { DataType::Int64 };
+    bfs_result_schema_with_vertex_type(params, vertex_type)
+}
+
+fn bfs_result_schema_with_vertex_type(params: &CugraphBfsParams, vertex_type: DataType) -> SchemaRef {
     let predecessor_type = vertex_type.clone();
     let mut fields = match params.output.mode {
-        CugraphBfsOutputMode::Raw if params.source_vertex.is_utf8() => vec![
-            Field::new("vertex", vertex_type, false),
+        CugraphBfsOutputMode::Raw if matches!(vertex_type, DataType::Utf8) => vec![
+            Field::new("vertex", vertex_type.clone(), false),
             Field::new("distance", DataType::Int64, false),
             Field::new("predecessor", predecessor_type, true),
         ],

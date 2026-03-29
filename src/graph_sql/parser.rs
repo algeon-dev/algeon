@@ -1,3 +1,4 @@
+use arrow::array::{Array, AsArray};
 use datafusion::{
     common::{Result, ScalarValue},
     logical_expr::Expr,
@@ -6,9 +7,10 @@ use serde_json::Value;
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
-    CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable,
-    CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSqlConfig,
-    CugraphTableReference, literal_string_arg, plan_error, result_schema_for_params,
+    CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy,
+    CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType,
+    CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, literal_string_arg, plan_error,
+    result_schema_for_params,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -24,10 +26,10 @@ pub fn parse_cugraph_algorithm_spec(
     let table_name = CugraphTableReference::parse(&literal_string_arg(args, 0, "table_name")?)?;
 
     let mut next = 1;
-    let source_vertex = if algorithm.requires_source_vertex() {
-        let value = literal_source_vertex_arg(args, next, algorithm)?;
+    let source = if algorithm.requires_source_vertex() {
+        let value = literal_source_arg(args, next, algorithm)?;
         next += 1;
-        Some(value)
+        value
     } else {
         None
     };
@@ -61,12 +63,15 @@ pub fn parse_cugraph_algorithm_spec(
     //   (non-comparable) results, so the adapter default aligns with the
     //   Python oracle to keep parity meaningful.
     graph_options = algorithm.effective_default_graph_options(&graph_options);
-    let mut params = default_params(algorithm, source_vertex);
+    let mut params = default_params(algorithm, source.clone());
     let has_options_json = args.len() > next;
+    let mut source_relation = None;
     if args.len() > next {
         let options_json = literal_string_arg(args, next, "options_json")?;
-        parse_options_json(algorithm, &options_json, &mut graph_options, &mut edge_id_col, &mut params)?;
+        source_relation =
+            parse_options_json(algorithm, &options_json, &mut graph_options, &mut edge_id_col, &mut params)?;
     }
+    apply_source_arg(algorithm, source, source_relation, &mut params)?;
     if algorithm == CugraphAlgorithm::PersonalizedPageRank && !has_options_json {
         return Err(plan_error(
             "cugraph_personalized_pagerank requires options: personalization_table, personalization_vertex_col, personalization_value_col",
@@ -112,21 +117,69 @@ fn validate_arity(algorithm: CugraphAlgorithm, len: usize) -> Result<()> {
 }
 
 fn expected_arity(algorithm: CugraphAlgorithm) -> &'static str {
-    if algorithm.requires_source_vertex() {
+    if algorithm == CugraphAlgorithm::Bfs {
+        "table_name, source_vertex_or_vertices [, src_col, dst_col, weight_col, options_json]"
+    } else if algorithm.requires_source_vertex() {
         "table_name, source_vertex [, src_col, dst_col, weight_col, options_json]"
     } else {
         "table_name [, src_col, dst_col, weight_col, options_json]"
     }
 }
 
-fn default_params(
+fn default_params(algorithm: CugraphAlgorithm, source: Option<CugraphBfsSource>) -> CugraphAlgorithmParams {
+    CugraphAlgorithmParams::from_native_defaults(algorithm, source)
+}
+
+fn apply_source_arg(
     algorithm: CugraphAlgorithm,
-    source_vertex: Option<CugraphBfsSourceVertex>,
-) -> CugraphAlgorithmParams {
-    if algorithm.requires_source_vertex() && source_vertex.is_none() {
-        panic!("source-vertex arity validation requires source_vertex");
+    source: Option<CugraphBfsSource>,
+    source_relation: Option<CugraphGraphPredicateTable>,
+    params: &mut CugraphAlgorithmParams,
+) -> Result<()> {
+    match algorithm {
+        CugraphAlgorithm::Bfs => {
+            let CugraphAlgorithmParams::Bfs(params) = params else {
+                return Err(plan_error("cugraph_bfs carried non-BFS parameters"));
+            };
+            match (source, source_relation) {
+                (Some(_), Some(_)) => Err(plan_error(
+                    "BFS source_vertex_or_vertices cannot be combined with source_vertices_table/source_vertex_col options",
+                )),
+                (Some(source), None) => {
+                    params.source = source;
+                    Ok(())
+                },
+                (None, Some(source_relation)) => {
+                    params.source = CugraphBfsSource::Relation(source_relation);
+                    Ok(())
+                },
+                (None, None) => Err(plan_error(
+                    "BFS source_vertex_or_vertices may be NULL only when source_vertices_table and source_vertex_col are provided",
+                )),
+            }
+        },
+        _ if algorithm.requires_source_vertex() => {
+            if source.is_none() {
+                return Err(plan_error(format!("{} requires source_vertex", algorithm.function_name())));
+            }
+            if source_relation.is_some() {
+                return Err(plan_error(format!(
+                    "{} does not accept source_vertices_table/source_vertex_col options",
+                    algorithm.function_name()
+                )));
+            }
+            Ok(())
+        },
+        _ => {
+            if source_relation.is_some() {
+                return Err(plan_error(format!(
+                    "{} does not accept source_vertices_table/source_vertex_col options",
+                    algorithm.function_name()
+                )));
+            }
+            Ok(())
+        },
     }
-    CugraphAlgorithmParams::from_native_defaults(algorithm, source_vertex)
 }
 
 fn validate_graph_directedness(algorithm: CugraphAlgorithm, graph_options: &CugraphGraphOptions) -> Result<()> {
@@ -156,7 +209,7 @@ fn parse_options_json(
     graph_options: &mut CugraphGraphOptions,
     edge_id_col: &mut Option<String>,
     params: &mut CugraphAlgorithmParams,
-) -> Result<()> {
+) -> Result<Option<CugraphGraphPredicateTable>> {
     let value = serde_json::from_str::<Value>(options_json)
         .map_err(|error| plan_error(format!("invalid cuGraph options JSON: {error}")))?;
     let object = value.as_object().ok_or_else(|| plan_error("cuGraph options JSON must be an object"))?;
@@ -684,14 +737,15 @@ fn parse_options_json(
         }
     }
 
+    let mut source_relation = None;
     if algorithm == CugraphAlgorithm::Bfs {
-        parse_bfs_predicate_options(object, edge_id_col, params)?;
+        source_relation = parse_bfs_predicate_options(object, edge_id_col, params)?;
     }
     if algorithm == CugraphAlgorithm::PersonalizedPageRank {
         validate_personalized_pagerank_options(object, params)?;
     }
 
-    Ok(())
+    Ok(source_relation)
 }
 
 fn is_pagerank_algorithm(algorithm: CugraphAlgorithm) -> bool {
@@ -733,6 +787,8 @@ fn is_bfs_predicate_option(key: &str) -> bool {
     matches!(
         key,
         "edge_id_col"
+            | "source_vertices_table"
+            | "source_vertex_col"
             | "include_vertices_table"
             | "include_vertex_col"
             | "exclude_vertices_table"
@@ -754,7 +810,7 @@ fn parse_bfs_predicate_options(
     object: &serde_json::Map<String, Value>,
     edge_id_col: &mut Option<String>,
     params: &mut CugraphAlgorithmParams,
-) -> Result<()> {
+) -> Result<Option<CugraphGraphPredicateTable>> {
     if let Some(value) = optional_json_string(object, "edge_id_col")? {
         *edge_id_col = Some(value);
     }
@@ -765,6 +821,8 @@ fn parse_bfs_predicate_options(
         .transpose()?
         .unwrap_or(false);
 
+    let source_vertices =
+        parse_vertex_predicate_option(object, "source_vertices_table", "source_vertex_col", "source_vertices")?;
     let include_vertices =
         parse_vertex_predicate_option(object, "include_vertices_table", "include_vertex_col", "include_vertices")?;
     let exclude_vertices =
@@ -797,7 +855,7 @@ fn parse_bfs_predicate_options(
         };
         params.output = CugraphBfsOutputOptions { mode: output_mode, return_target_info };
     }
-    Ok(())
+    Ok(source_vertices)
 }
 
 fn parse_bfs_output_mode(object: &serde_json::Map<String, Value>) -> Result<CugraphBfsOutputMode> {
@@ -914,37 +972,134 @@ fn literal_optional_string_arg(args: &[Expr], index: usize, name: &str) -> Resul
     }
 }
 
-fn literal_source_vertex_arg(
-    args: &[Expr],
-    index: usize,
-    algorithm: CugraphAlgorithm,
-) -> Result<CugraphBfsSourceVertex> {
+fn literal_source_arg(args: &[Expr], index: usize, algorithm: CugraphAlgorithm) -> Result<Option<CugraphBfsSource>> {
     match args.get(index) {
+        Some(Expr::Literal(ScalarValue::Null, _)) if algorithm == CugraphAlgorithm::Bfs => Ok(None),
         Some(Expr::Literal(value, _)) => match value {
-            ScalarValue::Int8(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(i64::from(*value))),
-            ScalarValue::Int16(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(i64::from(*value))),
-            ScalarValue::Int32(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(i64::from(*value))),
-            ScalarValue::Int64(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(*value)),
-            ScalarValue::UInt8(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(i64::from(*value))),
-            ScalarValue::UInt16(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(i64::from(*value))),
-            ScalarValue::UInt32(Some(value)) => Ok(CugraphBfsSourceVertex::Int64(i64::from(*value))),
-            ScalarValue::UInt64(Some(value)) => i64::try_from(*value)
-                .map(CugraphBfsSourceVertex::Int64)
-                .map_err(|_| plan_error("source_vertex exceeds i64::MAX")),
-            ScalarValue::Utf8(Some(value))
-            | ScalarValue::LargeUtf8(Some(value))
-            | ScalarValue::Utf8View(Some(value))
-                if algorithm == CugraphAlgorithm::Bfs =>
-            {
-                Ok(CugraphBfsSourceVertex::Utf8(value.clone()))
+            ScalarValue::List(values) if algorithm == CugraphAlgorithm::Bfs => {
+                Ok(Some(CugraphBfsSource::LiteralList(source_list_values(values.as_ref())?)))
             },
-            ScalarValue::Utf8(Some(_)) | ScalarValue::LargeUtf8(Some(_)) | ScalarValue::Utf8View(Some(_)) => {
-                Err(plan_error("source_vertex must be an integer literal for this cuGraph algorithm"))
+            ScalarValue::LargeList(values) if algorithm == CugraphAlgorithm::Bfs => {
+                Ok(Some(CugraphBfsSource::LiteralList(source_list_values(values.as_ref())?)))
             },
-            _ => Err(plan_error("source_vertex must be a non-null integer literal")),
+            ScalarValue::List(_) | ScalarValue::LargeList(_) => {
+                Err(plan_error("source_vertex_or_vertices list literal is supported only by cugraph_bfs"))
+            },
+            _ => literal_source_vertex_value(value, algorithm).map(|value| value.map(CugraphBfsSource::Scalar)),
+        },
+        Some(Expr::ScalarFunction(function))
+            if algorithm == CugraphAlgorithm::Bfs && function.name().eq_ignore_ascii_case("make_array") =>
+        {
+            Ok(Some(CugraphBfsSource::LiteralList(source_make_array_values(&function.args, algorithm)?)))
+        },
+        Some(_) if algorithm == CugraphAlgorithm::Bfs => {
+            Err(plan_error("source_vertex_or_vertices must be a literal or list literal"))
         },
         Some(_) => Err(plan_error("source_vertex must be a literal")),
+        None if algorithm == CugraphAlgorithm::Bfs => Err(plan_error("missing source_vertex_or_vertices argument")),
         None => Err(plan_error("missing source_vertex argument")),
+    }
+}
+
+fn source_make_array_values(args: &[Expr], algorithm: CugraphAlgorithm) -> Result<Vec<CugraphBfsSourceVertex>> {
+    if args.is_empty() {
+        return Err(plan_error("source_vertex_or_vertices list literal must not be empty"));
+    }
+    let mut values = Vec::with_capacity(args.len());
+    for arg in args {
+        let Expr::Literal(value, _) = arg else {
+            return Err(plan_error("source_vertex_or_vertices list literal elements must be literals"));
+        };
+        let Some(value) = literal_source_vertex_value(value, algorithm)? else {
+            return Err(plan_error("source_vertex_or_vertices list literal must not contain null elements"));
+        };
+        values.push(value);
+    }
+    validate_source_list_values(values)
+}
+
+fn source_list_values(array: &dyn Array) -> Result<Vec<CugraphBfsSourceVertex>> {
+    if array.len() != 1 {
+        return Err(plan_error("source_vertex_or_vertices list literal must be a single list value"));
+    }
+    if array.is_null(0) {
+        return Err(plan_error("source_vertex_or_vertices list literal must not be null"));
+    }
+    let values = match array.data_type() {
+        arrow::datatypes::DataType::List(_) => array.as_list::<i32>().value(0),
+        arrow::datatypes::DataType::LargeList(_) => array.as_list::<i64>().value(0),
+        other => {
+            return Err(plan_error(format!(
+                "source_vertex_or_vertices list literal has unsupported array type {other:?}"
+            )));
+        },
+    };
+    if values.is_empty() {
+        return Err(plan_error("source_vertex_or_vertices list literal must not be empty"));
+    }
+    let mut parsed = Vec::with_capacity(values.len());
+    for row in 0..values.len() {
+        if values.is_null(row) {
+            return Err(plan_error("source_vertex_or_vertices list literal must not contain null elements"));
+        }
+        let value = ScalarValue::try_from_array(values.as_ref(), row).map_err(|error| {
+            plan_error(format!("failed to read source_vertex_or_vertices list literal element {row}: {error}"))
+        })?;
+        let Some(value) = literal_source_vertex_value(&value, CugraphAlgorithm::Bfs)? else {
+            return Err(plan_error("source_vertex_or_vertices list literal must not contain null elements"));
+        };
+        parsed.push(value);
+    }
+    validate_source_list_values(parsed)
+}
+
+fn validate_source_list_values(values: Vec<CugraphBfsSourceVertex>) -> Result<Vec<CugraphBfsSourceVertex>> {
+    if values.is_empty() {
+        return Err(plan_error("source_vertex_or_vertices list literal must not be empty"));
+    }
+    let first_is_utf8 = values.first().is_some_and(CugraphBfsSourceVertex::is_utf8);
+    if values.iter().any(|value| value.is_utf8() != first_is_utf8) {
+        return Err(plan_error("source_vertex_or_vertices list literal must not mix integer and string elements"));
+    }
+    Ok(values)
+}
+
+fn literal_source_vertex_value(
+    value: &ScalarValue,
+    algorithm: CugraphAlgorithm,
+) -> Result<Option<CugraphBfsSourceVertex>> {
+    match value {
+        ScalarValue::Null => Ok(None),
+        ScalarValue::Int8(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
+        ScalarValue::Int16(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
+        ScalarValue::Int32(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
+        ScalarValue::Int64(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(*value))),
+        ScalarValue::UInt8(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
+        ScalarValue::UInt16(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
+        ScalarValue::UInt32(Some(value)) => Ok(Some(CugraphBfsSourceVertex::Int64(i64::from(*value)))),
+        ScalarValue::UInt64(Some(value)) => i64::try_from(*value)
+            .map(|value| Some(CugraphBfsSourceVertex::Int64(value)))
+            .map_err(|_| plan_error("source_vertex exceeds i64::MAX")),
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value))
+            if algorithm == CugraphAlgorithm::Bfs =>
+        {
+            Ok(Some(CugraphBfsSourceVertex::Utf8(value.clone())))
+        },
+        ScalarValue::Utf8(Some(_)) | ScalarValue::LargeUtf8(Some(_)) | ScalarValue::Utf8View(Some(_)) => {
+            Err(plan_error("source_vertex must be an integer literal for this cuGraph algorithm"))
+        },
+        ScalarValue::Int8(None)
+        | ScalarValue::Int16(None)
+        | ScalarValue::Int32(None)
+        | ScalarValue::Int64(None)
+        | ScalarValue::UInt8(None)
+        | ScalarValue::UInt16(None)
+        | ScalarValue::UInt32(None)
+        | ScalarValue::UInt64(None)
+        | ScalarValue::Utf8(None)
+        | ScalarValue::LargeUtf8(None)
+        | ScalarValue::Utf8View(None) => Ok(None),
+        _ => Err(plan_error("source_vertex must be a non-null integer literal")),
     }
 }
 

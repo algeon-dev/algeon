@@ -502,11 +502,11 @@ fn source_vertex_series(
     };
     let series =
         predicate_series(side_inputs, Some(input), "source_vertices", vertex_type)?.expect("input was Some above");
-    if series.len() != 1 {
+    if series.len() == 0 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.graph_algorithm.bfs_source",
-            "BFS source-vertex side input must contain exactly one row",
+            "BFS source-vertices side input must contain at least one row",
         )
         .with_fact("input", input.input)
         .with_fact("column", &input.column)
