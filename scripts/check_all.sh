@@ -49,6 +49,17 @@ case "${GPU_PARALLEL}" in
     ;;
 esac
 
+# Gate FIRST: classify every test binary into the GPU or CPU lane before running
+# any lane, so a new/unclassified GPU binary can never run in the unsynchronized
+# `not group(gpu)` lane (unflocked, unthrottled) before being caught. Abort on
+# failure -- the test lanes are only safe to run once classification holds.
+echo "==> scripts/check_gpu_test_lane.sh  (every test binary is GPU/CPU-lane classified)"
+if ! FEATURES="${FEATURES}" bash scripts/check_gpu_test_lane.sh; then
+  echo "ABORT: GPU/CPU test-lane classification failed; not running the test lanes." >&2
+  exit 1
+fi
+echo
+
 if [[ "${TEST_RUNNER}" == "nextest" ]] && cargo nextest --version >/dev/null 2>&1; then
   echo "==> cargo nextest run ${FEATURE_ARGS[*]} -E 'not group(gpu)' --no-fail-fast"
   cargo nextest run "${FEATURE_ARGS[@]}" -E 'not group(gpu)' --no-fail-fast || status=1
