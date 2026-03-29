@@ -1093,10 +1093,24 @@ extern "C" {
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
 
+    pub fn cudf_replace_nulls_scalar_ex(
+        input: cudf_column_view_handle,
+        replacement: cudf_scalar_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+
     pub fn cudf_replace_nulls_column(
         input: cudf_column_view_handle,
         replacement: cudf_column_view_handle,
         out: *mut cudf_column_handle,
+    ) -> cudf_status_t;
+
+    pub fn cudf_replace_nulls_column_ex(
+        input: cudf_column_view_handle,
+        replacement: cudf_column_view_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
 
     // -- Search --------------------------------------------------------------

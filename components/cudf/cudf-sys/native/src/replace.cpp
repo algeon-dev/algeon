@@ -1,3 +1,4 @@
+#include "execution_context_internal.hpp"
 #include "replace.h"
 #include "shim_common.h"
 
@@ -13,6 +14,14 @@ extern "C" {
 cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
                                         cudf_scalar_handle replacement,
                                         cudf_column_handle* out) {
+  return cudf_replace_nulls_scalar_ex(input, replacement, out, nullptr);
+}
+
+cudf_status_t cudf_replace_nulls_scalar_ex(
+    cudf_column_view_handle input,
+    cudf_scalar_handle replacement,
+    cudf_column_handle* out,
+    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -20,10 +29,15 @@ cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
   CUDF_RUST_TRY {
     auto* view = static_cast<cudf::column_view*>(input);
     auto* scalar = static_cast<cudf::scalar*>(replacement);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           rmm::mr::get_current_device_resource()};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
 
-    auto result = cudf::replace_nulls(*view, *scalar, stream, mr);
+    auto result = cudf::replace_nulls(*view, *scalar, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }
@@ -33,6 +47,14 @@ cudf_status_t cudf_replace_nulls_scalar(cudf_column_view_handle input,
 cudf_status_t cudf_replace_nulls_column(cudf_column_view_handle input,
                                         cudf_column_view_handle replacement,
                                         cudf_column_handle* out) {
+  return cudf_replace_nulls_column_ex(input, replacement, out, nullptr);
+}
+
+cudf_status_t cudf_replace_nulls_column_ex(
+    cudf_column_view_handle input,
+    cudf_column_view_handle replacement,
+    cudf_column_handle* out,
+    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(input, "input is null");
@@ -40,10 +62,15 @@ cudf_status_t cudf_replace_nulls_column(cudf_column_view_handle input,
   CUDF_RUST_TRY {
     auto* view_input = static_cast<cudf::column_view*>(input);
     auto* view_replacement = static_cast<cudf::column_view*>(replacement);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           rmm::mr::get_current_device_resource()};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) {
+      return exec_status;
+    }
 
-    auto result = cudf::replace_nulls(*view_input, *view_replacement, stream, mr);
+    auto result = cudf::replace_nulls(*view_input, *view_replacement, exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(result.release());
     return CUDF_SUCCESS;
   }

@@ -2042,7 +2042,14 @@ impl DataFrame {
         })?;
 
         let cv = col.view()?;
-        let new_col = replace::replace_nulls(&cv, value)?.with_execution_domain(Arc::clone(col.execution_domain()));
+        let exec_options = col.execution_domain().explicit_exec_options_raw();
+        let new_col = replace::replace_nulls_with_exec_options(
+            &cv,
+            value,
+            exec_options.as_ref(),
+            "dataframe::replace_nulls",
+        )?
+        .with_execution_domain(Arc::clone(col.execution_domain()));
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
@@ -2203,7 +2210,14 @@ impl DataFrame {
         )?;
         let cv = col.view()?;
         let fill_cv = fill_series.column_view()?;
-        let new_col = replace::replace_nulls_column(&cv, &fill_cv)?.with_execution_domain(output_domain);
+        let exec_options = output_domain.explicit_exec_options_raw();
+        let new_col = replace::replace_nulls_column_with_exec_options(
+            &cv,
+            &fill_cv,
+            exec_options.as_ref(),
+            "dataframe::fillna_with_series",
+        )?
+        .with_execution_domain(output_domain);
 
         let mut new_columns = self.columns.clone();
         new_columns.insert(column.to_string(), Arc::new(new_col));
@@ -2302,7 +2316,9 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
             .with_context("right_type_id", format!("{:?}", rdt.id()).to_lowercase()));
     }
 
-    replace::replace_nulls_column(&lcv, &rcv).map(|col| col.with_execution_domain(output_domain))
+    let exec_options = output_domain.explicit_exec_options_raw();
+    replace::replace_nulls_column_with_exec_options(&lcv, &rcv, exec_options.as_ref(), operation)
+        .map(|col| col.with_execution_domain(output_domain))
 }
 
 // ---------------------------------------------------------------------------

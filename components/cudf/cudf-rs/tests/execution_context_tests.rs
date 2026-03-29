@@ -124,6 +124,42 @@ fn create_i64_column_raw(data: &[i64]) -> cudf_sys::cudf_column_handle {
     handle
 }
 
+/// Create a nullable i32 column and return its raw cudf_column_handle.
+fn create_i32_nullable_column_raw(data: &[i32], validity_bits: u8) -> cudf_sys::cudf_column_handle {
+    let mut handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let mask = [validity_bits];
+    let null_count = data.len() as i32 - validity_bits.count_ones() as i32;
+    let status = unsafe {
+        cudf_sys::cudf_column_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            data.as_ptr() as *const c_void,
+            data.len() as i32,
+            mask.as_ptr(),
+            null_count,
+            &mut handle,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create nullable i32 column");
+    assert!(!handle.is_null());
+    handle
+}
+
+/// Create an i32 scalar and return its raw cudf_scalar_handle.
+fn create_i32_scalar_raw(value: i32) -> cudf_sys::cudf_scalar_handle {
+    let mut handle: cudf_sys::cudf_scalar_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_scalar_create_numeric(
+            cudf_sys::cudf_type_id_t::CUDF_TYPE_INT32,
+            &value as *const i32 as *const c_void,
+            1,
+            &mut handle,
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to create i32 scalar");
+    assert!(!handle.is_null());
+    handle
+}
+
 /// Get a view handle from a column handle. Caller must destroy the view.
 fn column_view_raw(col: cudf_sys::cudf_column_handle) -> cudf_sys::cudf_column_view_handle {
     let mut view: cudf_sys::cudf_column_view_handle = ptr::null_mut();
@@ -139,6 +175,37 @@ fn column_view_device_ptr(view: cudf_sys::cudf_column_view_handle) -> *const c_v
     let status = unsafe { cudf_sys::cudf_column_view_data_ptr(view, &mut ptr) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to get device data ptr");
     ptr
+}
+
+fn read_i32_column_raw(col: cudf_sys::cudf_column_handle, len: usize) -> Vec<i32> {
+    let view = column_view_raw(col);
+    let mut host = vec![0i32; len];
+    let status = unsafe {
+        cudf_sys::cudf_column_view_to_host(
+            view,
+            host.as_mut_ptr() as *mut c_void,
+            std::mem::size_of_val(host.as_slice()),
+        )
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "failed to read i32 column to host");
+    unsafe { cudf_sys::cudf_column_view_destroy(view) };
+    host
+}
+
+fn explicit_i32_series(name: &str, data: &[i32], identity: u64) -> cudf::Series {
+    cudf::Series::from_column(
+        cudf::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+    )
+    .unwrap()
+    .rename(name)
+}
+
+fn explicit_i64_series(name: &str, data: &[i64], identity: u64) -> cudf::Series {
+    cudf::Series::from_column(
+        cudf::Column::from_slice(data).unwrap().__debug_rebind_execution_domain_explicit(identity).unwrap(),
+    )
+    .unwrap()
+    .rename(name)
 }
 
 // ===========================================================================
@@ -346,6 +413,70 @@ fn column_from_device_data_ex_uses_explicit_stream() {
         cudf_sys::cudf_column_view_destroy(src_view);
         cudf_sys::cudf_column_destroy(out_handle);
         cudf_sys::cudf_column_destroy(src_col);
+    };
+}
+
+#[test]
+fn replace_nulls_scalar_ex_uses_explicit_stream() {
+    let input = create_i32_nullable_column_raw(&[1, 0, 3], 0b0000_0101);
+    let input_view = column_view_raw(input);
+    let replacement = create_i32_scalar_raw(99);
+
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+
+    obs_reset();
+    let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_replace_nulls_scalar_ex(input_view, replacement, &mut out_handle, ctx.as_raw())
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_scalar_ex failed");
+    assert!(!out_handle.is_null());
+
+    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+
+    stream.synchronize().expect("stream sync failed");
+    assert_eq!(read_i32_column_raw(out_handle, 3), vec![1, 99, 3]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out_handle);
+        cudf_sys::cudf_scalar_destroy(replacement);
+        cudf_sys::cudf_column_view_destroy(input_view);
+        cudf_sys::cudf_column_destroy(input);
+    };
+}
+
+#[test]
+fn replace_nulls_column_ex_uses_explicit_stream() {
+    let input = create_i32_nullable_column_raw(&[1, 0, 3], 0b0000_0101);
+    let input_view = column_view_raw(input);
+    let replacement = create_i32_column_raw(&[10, 20, 30]);
+    let replacement_view = column_view_raw(replacement);
+
+    let stream = cudf_sys::Stream::new().expect("failed to create stream");
+    let ctx = cudf_sys::ExecutionContext::new().with_stream(&stream);
+    let explicit_stream = obs_stream_handle_value(stream.as_raw());
+
+    obs_reset();
+    let mut out_handle: cudf_sys::cudf_column_handle = ptr::null_mut();
+    let status = unsafe {
+        cudf_sys::cudf_replace_nulls_column_ex(input_view, replacement_view, &mut out_handle, ctx.as_raw())
+    };
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS, "cudf_replace_nulls_column_ex failed");
+    assert!(!out_handle.is_null());
+
+    assert_eq!(obs_last_stream(), explicit_stream, "observation hook should record the explicit stream");
+
+    stream.synchronize().expect("stream sync failed");
+    assert_eq!(read_i32_column_raw(out_handle, 3), vec![1, 20, 3]);
+
+    unsafe {
+        cudf_sys::cudf_column_destroy(out_handle);
+        cudf_sys::cudf_column_view_destroy(replacement_view);
+        cudf_sys::cudf_column_destroy(replacement);
+        cudf_sys::cudf_column_view_destroy(input_view);
+        cudf_sys::cudf_column_destroy(input);
     };
 }
 
