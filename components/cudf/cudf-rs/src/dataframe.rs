@@ -39,6 +39,7 @@ use crate::{
         parquet::{self, ParquetReaderOptions, ParquetWriterOptions},
     },
     join, replace,
+    runtime::Runtime,
     scalar::Scalar,
     series::Series,
     series_view::SeriesView,
@@ -114,12 +115,19 @@ pub struct DataFrameCsvReaderOptions {
     delimiter: u8,
     has_header: bool,
     column_names: Option<Vec<String>>,
+    runtime: Option<Runtime>,
 }
 
 impl DataFrameCsvReaderOptions {
     /// Create options to read a CSV file into a `DataFrame`.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', has_header: true, column_names: None }
+        Self {
+            filepath: path.as_ref().to_path_buf(),
+            delimiter: b',',
+            has_header: true,
+            column_names: None,
+            runtime: None,
+        }
     }
 
     /// Set the field delimiter character (default: `,`).
@@ -143,8 +151,18 @@ impl DataFrameCsvReaderOptions {
         self
     }
 
+    /// Seed explicit execution provenance from the given runtime.
+    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
+        self.runtime = Some(runtime.clone());
+        self
+    }
+
     fn to_table_options(&self) -> CsvReaderOptions {
-        CsvReaderOptions::new(&self.filepath).delimiter(self.delimiter).has_header(self.has_header)
+        let mut options = CsvReaderOptions::new(&self.filepath).delimiter(self.delimiter).has_header(self.has_header);
+        if let Some(runtime) = self.runtime.as_ref() {
+            options = options.with_runtime(runtime);
+        }
+        options
     }
 
     fn resolve_column_names(&self, num_columns: usize) -> Result<Vec<String>> {
@@ -198,12 +216,13 @@ pub struct DataFrameCsvWriterOptions {
     filepath: PathBuf,
     delimiter: u8,
     include_header: bool,
+    runtime: Option<Runtime>,
 }
 
 impl DataFrameCsvWriterOptions {
     /// Create options to write a `DataFrame` to a CSV file.
     pub fn new(path: impl AsRef<Path>) -> Self {
-        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', include_header: true }
+        Self { filepath: path.as_ref().to_path_buf(), delimiter: b',', include_header: true, runtime: None }
     }
 
     /// Set the field delimiter character (default: `,`).
@@ -218,11 +237,21 @@ impl DataFrameCsvWriterOptions {
         self
     }
 
+    /// Route the write through the given runtime's stream.
+    pub fn with_runtime(mut self, runtime: &Runtime) -> Self {
+        self.runtime = Some(runtime.clone());
+        self
+    }
+
     fn to_table_options(&self, column_names: &[&str]) -> CsvWriterOptions {
-        CsvWriterOptions::new(&self.filepath)
+        let mut options = CsvWriterOptions::new(&self.filepath)
             .column_names(column_names)
             .delimiter(self.delimiter)
-            .include_header(self.include_header)
+            .include_header(self.include_header);
+        if let Some(runtime) = self.runtime.as_ref() {
+            options = options.with_runtime(runtime);
+        }
+        options
     }
 }
 
@@ -940,6 +969,65 @@ impl DataFrame {
         self.domain.debug_mr_value()
     }
 
+    fn synchronize_for_forced_output_domain(
+        &self,
+        other: &DataFrame,
+        output_domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<()> {
+        if !ExecutionDomain::same_identity(&self.domain, output_domain) {
+            self.domain.synchronize_for_host_visibility(operation)?;
+        }
+        if !ExecutionDomain::same_identity(&other.domain, output_domain) {
+            other.domain.synchronize_for_host_visibility(operation)?;
+        }
+        Ok(())
+    }
+
+    fn clone_or_copy_columns_into_domain(
+        &self,
+        output_domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+    ) -> Result<IndexMap<String, Arc<Column>>> {
+        if ExecutionDomain::same_identity(&self.domain, output_domain) {
+            return Ok(self.columns.clone());
+        }
+
+        self.domain
+            .synchronize_for_host_visibility(operation)
+            .map_err(|e| e.with_context("target_domain", output_domain.debug_label()))?;
+
+        let mut copied = IndexMap::with_capacity(self.columns.len());
+        for (name, column) in &self.columns {
+            let rebound = column.copy_into_domain(Arc::clone(output_domain), operation).map_err(|e| {
+                e.with_context("column_name", name.clone()).with_context("target_domain", output_domain.debug_label())
+            })?;
+            copied.insert(name.clone(), Arc::new(rebound));
+        }
+        Ok(copied)
+    }
+
+    fn clone_or_copy_series_into_domain(
+        series: &Series,
+        output_domain: &Arc<ExecutionDomain>,
+        operation: &'static str,
+        column_name: &str,
+    ) -> Result<Arc<Column>> {
+        if ExecutionDomain::same_identity(series.as_column().execution_domain(), output_domain) {
+            return Ok(Arc::clone(series.column_arc()));
+        }
+
+        series.as_column().execution_domain().synchronize_for_host_visibility(operation).map_err(|e| {
+            e.with_context("column_name", column_name.to_string())
+                .with_context("target_domain", output_domain.debug_label())
+        })?;
+
+        series.as_column().copy_into_domain(Arc::clone(output_domain), operation).map(Arc::new).map_err(|e| {
+            e.with_context("column_name", column_name.to_string())
+                .with_context("target_domain", output_domain.debug_label())
+        })
+    }
+
     /// Sort using a borrowed per-operation execution override.
     pub fn sort_values_with_context<I, S>(
         &self,
@@ -983,12 +1071,105 @@ impl DataFrame {
         ctx: &ExecutionContext<'_>,
     ) -> Result<Self> {
         let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.synchronize_for_forced_output_domain(right, &output_domain, "dataframe::merge_with_context")?;
         self.merge_impl(
             right,
             options,
             output_domain.explicit_exec_options_raw(),
             Some(output_domain),
             "dataframe::merge_with_context",
+        )
+    }
+
+    /// Merge using a target runtime to recover mixed input domains.
+    pub fn merge_with_runtime(
+        &self,
+        right: &DataFrame,
+        options: join::MergeOptions,
+        runtime: &Runtime,
+    ) -> Result<Self> {
+        let output_domain = Arc::clone(runtime.execution_domain());
+        self.synchronize_for_forced_output_domain(right, &output_domain, "dataframe::merge_with_runtime")?;
+        self.merge_impl(
+            right,
+            options,
+            output_domain.explicit_exec_options_raw(),
+            Some(output_domain),
+            "dataframe::merge_with_runtime",
+        )
+    }
+
+    /// Merge-split using a borrowed per-operation execution override.
+    pub fn merge_split_with_context(
+        &self,
+        right: &DataFrame,
+        options: join::MergeOptions,
+        ctx: &ExecutionContext<'_>,
+    ) -> Result<DataFrameJoinResult> {
+        let operation: &'static str = "dataframe::merge_split_with_context";
+        let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
+        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
+        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
+
+        if left_on_refs.len() != right_on_refs.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "left_on and right_on must have the same number of key columns",
+            )
+            .with_operation(operation)
+            .with_context("left_on_count", left_on_refs.len().to_string())
+            .with_context("right_on_count", right_on_refs.len().to_string()));
+        }
+
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        let exec_options = output_domain.explicit_exec_options_raw();
+        self.synchronize_for_forced_output_domain(right, &output_domain, operation)?;
+        self.join_split_on_impl_with_null_eq_and_context(
+            right,
+            &left_on_refs,
+            &right_on_refs,
+            options.join_type(),
+            options.null_eq(),
+            exec_options.as_ref(),
+            Some(output_domain),
+            operation,
+        )
+    }
+
+    /// Merge-split using a target runtime to recover mixed input domains.
+    pub fn merge_split_with_runtime(
+        &self,
+        right: &DataFrame,
+        options: join::MergeOptions,
+        runtime: &Runtime,
+    ) -> Result<DataFrameJoinResult> {
+        let operation: &'static str = "dataframe::merge_split_with_runtime";
+        let (left_on_strs, right_on_strs, _shared_keys) = resolve_merge_keys(&options, operation)?;
+        let left_on_refs: Vec<&str> = left_on_strs.iter().map(|s| s.as_str()).collect();
+        let right_on_refs: Vec<&str> = right_on_strs.iter().map(|s| s.as_str()).collect();
+
+        if left_on_refs.len() != right_on_refs.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidOperation,
+                "left_on and right_on must have the same number of key columns",
+            )
+            .with_operation(operation)
+            .with_context("left_on_count", left_on_refs.len().to_string())
+            .with_context("right_on_count", right_on_refs.len().to_string()));
+        }
+
+        let output_domain = Arc::clone(runtime.execution_domain());
+        let exec_options = output_domain.explicit_exec_options_raw();
+        self.synchronize_for_forced_output_domain(right, &output_domain, operation)?;
+        self.join_split_on_impl_with_null_eq_and_context(
+            right,
+            &left_on_refs,
+            &right_on_refs,
+            options.join_type(),
+            options.null_eq(),
+            exec_options.as_ref(),
+            Some(output_domain),
+            operation,
         )
     }
 
@@ -1076,11 +1257,21 @@ impl DataFrame {
     /// The DataFrame's schema names are always used as the output column
     /// names so the high-level round-trip path remains truthful.
     pub fn write_csv_with_options(&self, options: DataFrameCsvWriterOptions) -> Result<()> {
-        self.domain.synchronize_for_host_visibility("dataframe::write_csv_with_options")?;
         let names: Vec<&str> = self.column_names();
         let opts = options.to_table_options(&names);
+        let write_domain = if let Some(runtime) = opts.runtime() {
+            ExecutionDomain::compatible_domain(
+                &self.domain,
+                runtime.execution_domain(),
+                "dataframe::write_csv_with_options",
+            )?
+        } else {
+            Arc::clone(&self.domain)
+        };
         let tv = self.build_table_view()?;
-        csv::write_csv(tv.table(), &opts)
+        let exec_options = write_domain.explicit_exec_options_raw();
+        csv::write_csv_with_exec(tv.table(), &opts, exec_options.as_ref())?;
+        write_domain.synchronize_for_host_visibility("dataframe::write_csv_with_options")
     }
 
     /// Read a Parquet file into a `DataFrame`, using column names from the
@@ -1646,8 +1837,16 @@ impl DataFrame {
         forced_output_domain: Option<Arc<ExecutionDomain>>,
         operation: &'static str,
     ) -> Result<DataFrameJoinResult> {
-        let compatible_input_domain = ExecutionDomain::compatible_domain(&self.domain, &right.domain, operation)?;
-        let output_domain = forced_output_domain.unwrap_or(compatible_input_domain);
+        let output_domain = match ExecutionDomain::compatible_domain(&self.domain, &right.domain, operation) {
+            Ok(domain) => forced_output_domain.unwrap_or(domain),
+            Err(err) => {
+                if exec_options.is_some() {
+                    forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain))
+                } else {
+                    return Err(err);
+                }
+            },
+        };
 
         if left_on.len() != right_on.len() {
             return Err(Error::new(
@@ -1761,7 +1960,50 @@ impl DataFrame {
     /// Returns an error if the schemas do not match (different names, count,
     /// order, or types).
     pub fn concat(&self, other: &DataFrame) -> Result<Self> {
-        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &other.domain, "dataframe::concat")?;
+        self.concat_impl(other, None, None, "dataframe::concat")
+    }
+
+    /// Concatenate two DataFrames row-wise into the given target runtime.
+    pub fn concat_with_runtime(&self, other: &DataFrame, runtime: &Runtime) -> Result<Self> {
+        let output_domain = Arc::clone(runtime.execution_domain());
+        self.synchronize_for_forced_output_domain(other, &output_domain, "dataframe::concat_with_runtime")?;
+        self.concat_impl(
+            other,
+            output_domain.explicit_exec_options_raw(),
+            Some(output_domain),
+            "dataframe::concat_with_runtime",
+        )
+    }
+
+    /// Concatenate two DataFrames row-wise using a borrowed per-operation execution override.
+    pub fn concat_with_context(&self, other: &DataFrame, ctx: &ExecutionContext<'_>) -> Result<Self> {
+        let output_domain = ctx.resolve_output_domain(&self.domain)?;
+        self.synchronize_for_forced_output_domain(other, &output_domain, "dataframe::concat_with_context")?;
+        self.concat_impl(
+            other,
+            output_domain.explicit_exec_options_raw(),
+            Some(output_domain),
+            "dataframe::concat_with_context",
+        )
+    }
+
+    fn concat_impl(
+        &self,
+        other: &DataFrame,
+        exec_options: Option<cudf_sys::cudf_exec_options_t>,
+        forced_output_domain: Option<Arc<ExecutionDomain>>,
+        operation: &'static str,
+    ) -> Result<Self> {
+        let output_domain = match ExecutionDomain::compatible_domain(&self.domain, &other.domain, operation) {
+            Ok(domain) => forced_output_domain.unwrap_or(domain),
+            Err(err) => {
+                if exec_options.is_some() {
+                    forced_output_domain.unwrap_or_else(|| Arc::clone(&self.domain))
+                } else {
+                    return Err(err);
+                }
+            },
+        };
 
         // Validate schemas match: same names, same order.
         if self.columns.len() != other.columns.len() {
@@ -1769,7 +2011,7 @@ impl DataFrame {
                 ErrorKind::InvalidOperation,
                 "cannot concatenate DataFrames with different column counts",
             )
-            .with_operation("dataframe::concat")
+            .with_operation(operation)
             .with_context("left_columns", self.columns.len().to_string())
             .with_context("right_columns", other.columns.len().to_string()));
         }
@@ -1780,7 +2022,7 @@ impl DataFrame {
                     ErrorKind::InvalidOperation,
                     format!("schema mismatch: column '{}' vs '{}'", left_name, right_name),
                 )
-                .with_operation("dataframe::concat")
+                .with_operation(operation)
                 .with_context("left_column", left_name.clone())
                 .with_context("right_column", right_name.clone()));
             }
@@ -1795,7 +2037,7 @@ impl DataFrame {
                     ErrorKind::InvalidOperation,
                     "cannot concatenate DataFrames with mismatched column types",
                 )
-                .with_operation("dataframe::concat")
+                .with_operation(operation)
                 .with_context("column_index", i.to_string())
                 .with_context("column_name", name.to_string())
                 .with_context("left_type_id", format!("{:?}", left_type).to_lowercase())
@@ -1805,8 +2047,11 @@ impl DataFrame {
 
         let left_tv = self.build_table_view()?;
         let right_tv = other.build_table_view()?;
-        let result_table = crate::concatenate::concatenate_tables(&[left_tv.table(), right_tv.table()])?
-            .with_execution_domain(output_domain);
+        let result_table = crate::concatenate::concatenate_tables_with_exec(
+            &[left_tv.table(), right_tv.table()],
+            exec_options.as_ref(),
+        )?
+        .with_execution_domain(output_domain);
 
         Self::from_table_with_names(result_table, self.column_names_owned())
     }
@@ -2137,6 +2382,47 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
+    /// Return a new DataFrame with the given column added or replaced,
+    /// copying inputs into the target runtime when needed.
+    ///
+    /// Any source column whose retained domain does not already match
+    /// `runtime` is deep-copied into that runtime before reassembly. This
+    /// makes mixed-domain recovery explicit for metadata-style operations that
+    /// would otherwise only be able to Arc-share incompatible inputs.
+    pub fn with_column_with_runtime(
+        &self,
+        name: &str,
+        col: impl crate::series::IntoSeries,
+        runtime: &Runtime,
+    ) -> Result<Self> {
+        let operation = "dataframe::with_column_with_runtime";
+        let series: Series = col.into_series()?;
+        let col_rows = series.len();
+        let expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
+
+        if let Some(self_rows) = expected_rows {
+            if col_rows != self_rows {
+                return Err(Error::new(
+                    ErrorKind::InvalidOperation,
+                    format!("new column has {} rows but DataFrame has {} rows", col_rows, self_rows),
+                )
+                .with_operation(operation)
+                .with_context("column_name", name.to_string())
+                .with_context("column_rows", col_rows.to_string())
+                .with_context("dataframe_rows", self_rows.to_string()));
+            }
+        }
+
+        let output_domain = Arc::clone(runtime.execution_domain());
+        let mut new_columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
+        let copied = Self::clone_or_copy_series_into_domain(&series, &output_domain, operation, name)?;
+        new_columns.insert(name.to_string(), copied);
+
+        let row_count = expected_rows.unwrap_or(col_rows);
+        let domain = resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
+        Ok(Self { columns: new_columns, row_count, domain })
+    }
+
     /// Consuming variant of [`with_column`](Self::with_column).
     ///
     /// Avoids O(N) `Arc::clone` for N columns; prefer this when the source
@@ -2248,6 +2534,50 @@ impl DataFrame {
 
         let row_count = expected_rows.unwrap_or(self.row_count);
         let domain = derive_frame_domain_from_columns(&new_columns, "dataframe::assign")?;
+        Ok(Self { columns: new_columns, row_count, domain })
+    }
+
+    /// Return a new DataFrame with multiple columns added or replaced,
+    /// copying inputs into the target runtime when needed.
+    ///
+    /// Existing columns are preserved zero-copy when they already belong to
+    /// `runtime`; otherwise they are deep-copied into that runtime before the
+    /// final frame is assembled.
+    pub fn assign_with_runtime<I, S>(&self, pairs: I, runtime: &Runtime) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S, Series)>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::assign_with_runtime";
+        let output_domain = Arc::clone(runtime.execution_domain());
+        let mut new_columns = self.clone_or_copy_columns_into_domain(&output_domain, operation)?;
+        let mut expected_rows = if self.num_columns() > 0 || self.row_count > 0 { Some(self.row_count) } else { None };
+
+        for (name, series) in pairs {
+            let name = name.as_ref();
+            let series_rows = series.len();
+
+            if let Some(self_rows) = expected_rows {
+                if series_rows != self_rows {
+                    return Err(Error::new(
+                        ErrorKind::InvalidOperation,
+                        format!("series '{}' has {} rows but DataFrame has {} rows", name, series_rows, self_rows),
+                    )
+                    .with_operation(operation)
+                    .with_context("column_name", name.to_string())
+                    .with_context("series_rows", series_rows.to_string())
+                    .with_context("dataframe_rows", self_rows.to_string()));
+                }
+            } else {
+                expected_rows = Some(series_rows);
+            }
+
+            let copied = Self::clone_or_copy_series_into_domain(&series, &output_domain, operation, name)?;
+            new_columns.insert(name.to_string(), copied);
+        }
+
+        let row_count = expected_rows.unwrap_or(self.row_count);
+        let domain = resolve_frame_domain_from_authoritative_source(&new_columns, &output_domain, operation)?;
         Ok(Self { columns: new_columns, row_count, domain })
     }
 
