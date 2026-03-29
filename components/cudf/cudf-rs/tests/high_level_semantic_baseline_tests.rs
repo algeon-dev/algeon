@@ -381,7 +381,7 @@ fn rename_owned_transfers_arc() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    let renamed = df.rename_owned("id", "identifier").unwrap();
+    let renamed = df.rename_column_owned("id", "identifier").unwrap();
     let renamed_ptr = device_ptr(&renamed, "identifier");
 
     // Same device pointer — pure schema rewrite.

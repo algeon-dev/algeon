@@ -21,6 +21,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod common;
+use common::sample_df;
 use cudf::{
     Agg, AggSpec, DataFrame, Series, SortOptions, column::Column, memory::DeviceMemoryResource, scalar::Scalar,
     stream::CudaStream, table::Table,
@@ -101,13 +103,6 @@ assert_not_impl_any!(cudf::series_view::SeriesView<'static>: Send, Sync);
 // ===========================================================================
 // Category 3: DataFrame spawn_blocking round-trip
 // ===========================================================================
-
-/// Helper: build a small DataFrame with "id" (i32) and "score" (f64).
-fn sample_df() -> DataFrame {
-    let ids = Series::new::<i32>("id", &[3, 1, 4, 1, 5]).unwrap();
-    let scores = Series::new::<f64>("score", &[30.0, 10.0, 40.0, 15.0, 50.0]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dataframe_sort_survives_spawn_blocking() {

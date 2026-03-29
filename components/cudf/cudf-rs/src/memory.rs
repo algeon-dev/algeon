@@ -48,8 +48,8 @@ struct DeviceMemoryResourceHandle {
 // SAFETY: RMM device_memory_resource implementations are thread-safe — allocate()
 // and deallocate() use internal synchronization. The handle is an opaque pointer
 // to an RMM allocator that supports concurrent access from multiple threads.
-unsafe impl Send for DeviceMemoryResource {}
-unsafe impl Sync for DeviceMemoryResource {}
+unsafe impl Send for DeviceMemoryResourceHandle {}
+unsafe impl Sync for DeviceMemoryResourceHandle {}
 
 impl DeviceMemoryResource {
     /// Create a CUDA (default) memory resource handle.

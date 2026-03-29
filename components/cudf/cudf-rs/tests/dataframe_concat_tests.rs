@@ -88,7 +88,7 @@ fn test_rename_owned_is_schema_only_and_preserves_data() {
     )
     .unwrap();
 
-    let renamed = df.rename_owned("a", "alpha").unwrap();
+    let renamed = df.rename_column_owned("a", "alpha").unwrap();
 
     assert_eq!(renamed.column_names(), vec!["alpha", "b"]);
     assert_eq!(renamed.series_view("alpha").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -124,7 +124,7 @@ fn test_rename_column() {
     )
     .unwrap();
 
-    let renamed = df.rename("old_name", "new_name").unwrap();
+    let renamed = df.rename_column("old_name", "new_name").unwrap();
 
     // New name works.
     assert_eq!(renamed.column_names(), vec!["new_name", "other"]);
@@ -143,7 +143,7 @@ fn test_rename_column() {
 fn test_rename_nonexistent_column_returns_error() {
     let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
 
-    let err = df.rename("nonexistent", "new").err().expect("expected error");
+    let err = df.rename_column("nonexistent", "new").err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -155,7 +155,7 @@ fn test_rename_to_existing_name_returns_error() {
     )
     .unwrap();
 
-    let err = df.rename("a", "b").err().expect("expected error");
+    let err = df.rename_column("a", "b").err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -234,7 +234,7 @@ fn test_rename_preserves_column_order() {
     )
     .unwrap();
 
-    let renamed = df.rename("b", "beta").unwrap();
+    let renamed = df.rename_column("b", "beta").unwrap();
     assert_eq!(renamed.column_names(), vec!["a", "beta", "c"]);
 }
 
@@ -246,7 +246,7 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
     )
     .unwrap();
 
-    let renamed = df.rename("a", "a").unwrap();
+    let renamed = df.rename_column("a", "a").unwrap();
 
     // No schema change.
     assert_eq!(renamed.column_names(), vec!["a", "b"]);
@@ -260,7 +260,7 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
 fn test_rename_owned_nonexistent_column_returns_error() {
     let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
 
-    let err = df.rename_owned("nonexistent", "new").err().expect("expected error");
+    let err = df.rename_column_owned("nonexistent", "new").err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -272,7 +272,7 @@ fn test_rename_owned_to_existing_name_returns_error() {
     )
     .unwrap();
 
-    let err = df.rename_owned("a", "b").err().expect("expected error");
+    let err = df.rename_column_owned("a", "b").err().expect("expected error");
     assert_eq!(err.kind(), ErrorKind::InvalidOperation);
 }
 
@@ -284,7 +284,7 @@ fn test_rename_owned_same_name_noop() {
     )
     .unwrap();
 
-    let renamed = df.rename_owned("a", "a").unwrap();
+    let renamed = df.rename_column_owned("a", "a").unwrap();
 
     assert_eq!(renamed.column_names(), vec!["a", "b"]);
     assert_eq!(renamed.series_view("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
@@ -302,7 +302,7 @@ fn test_rename_owned_preserves_column_order() {
     )
     .unwrap();
 
-    let renamed = df.rename_owned("b", "beta").unwrap();
+    let renamed = df.rename_column_owned("b", "beta").unwrap();
     assert_eq!(renamed.column_names(), vec!["a", "beta", "c"]);
 }
 

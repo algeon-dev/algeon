@@ -12,10 +12,6 @@
 
 #include <memory>
 
-static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
-  return static_cast<cudf::type_id>(id);
-}
-
 extern "C" {
 
 cudf_status_t cudf_device_buffer_create(size_t size,

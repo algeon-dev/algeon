@@ -112,7 +112,7 @@ fn test_select_reorder_shares_columns() {
 #[test]
 fn test_rename_shares_all_column_data() {
     let df = sample_df();
-    let renamed = df.rename("id", "identifier").unwrap();
+    let renamed = df.rename_column("id", "identifier").unwrap();
 
     // The renamed column should share the same GPU memory.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&renamed, "identifier"));
@@ -125,7 +125,7 @@ fn test_rename_shares_all_column_data() {
 #[test]
 fn test_rename_original_unchanged() {
     let df = sample_df();
-    let renamed = df.rename("score", "points").unwrap();
+    let renamed = df.rename_column("score", "points").unwrap();
 
     // Original still has "score", renamed has "points".
     assert_eq!(df.column_names(), &["id", "score", "flag"]);
@@ -143,7 +143,7 @@ fn test_rename_owned_shares_all_column_data() {
     let score_ptr = device_ptr(&df, "score");
     let flag_ptr = device_ptr(&df, "flag");
 
-    let renamed = df.rename_owned("id", "identifier").unwrap();
+    let renamed = df.rename_column_owned("id", "identifier").unwrap();
 
     assert_eq!(id_ptr, device_ptr(&renamed, "identifier"));
     assert_eq!(score_ptr, device_ptr(&renamed, "score"));
@@ -266,7 +266,7 @@ fn test_clone_then_select_shares_columns() {
 #[test]
 fn test_rename_then_select_shares_columns() {
     let df = sample_df();
-    let renamed = df.rename("id", "identifier").unwrap();
+    let renamed = df.rename_column("id", "identifier").unwrap();
     let selected = renamed.select(&["identifier", "flag"]).unwrap();
 
     // The "identifier" column in selected is the same as "id" in original.
@@ -292,9 +292,9 @@ fn test_with_column_then_clone_shares_new_and_old() {
 #[test]
 fn test_chained_renames_share_all_data() {
     let df = sample_df();
-    let r1 = df.rename("id", "a").unwrap();
-    let r2 = r1.rename("score", "b").unwrap();
-    let r3 = r2.rename("flag", "c").unwrap();
+    let r1 = df.rename_column("id", "a").unwrap();
+    let r2 = r1.rename_column("score", "b").unwrap();
+    let r3 = r2.rename_column("flag", "c").unwrap();
 
     // Despite three renames, all columns share the same GPU data.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&r3, "a"));

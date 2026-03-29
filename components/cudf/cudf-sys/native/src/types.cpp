@@ -4,11 +4,6 @@
 #include <cudf/types.hpp>
 #include <cudf/utilities/traits.hpp>
 
-// Convert our C enum to the C++ cudf::type_id.
-static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
-  return static_cast<cudf::type_id>(id);
-}
-
 extern "C" {
 
 cudf_status_t cudf_data_type_create(cudf_type_id_t type_id,

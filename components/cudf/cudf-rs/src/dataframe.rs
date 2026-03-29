@@ -76,7 +76,7 @@ use crate::{
 /// # Consuming variants
 ///
 /// Schema-only operations have `_owned` variants that take `self` by value:
-/// [`rename_owned`](Self::rename_owned), [`select_owned`](Self::select_owned),
+/// [`rename_column_owned`](Self::rename_column_owned), [`select_owned`](Self::select_owned),
 /// [`with_column_owned`](Self::with_column_owned). These avoid the O(N)
 /// `Arc::clone` overhead for N columns by moving ownership directly.
 /// Prefer them when the source DataFrame is no longer needed.
@@ -1622,7 +1622,7 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn nlargest(&self, n: usize, column: &str) -> Result<Self> {
-        self.sort_values(&[column], SortOptions::new().with_descending(vec![true]))?.head(n)
+        self.sort_values([column], SortOptions::new().with_descending(vec![true]))?.head(n)
     }
 
     /// Return the `n` rows with the smallest values in `column`.
@@ -1633,7 +1633,7 @@ impl DataFrame {
     ///
     /// Returns an error if `column` is not in the schema.
     pub fn nsmallest(&self, n: usize, column: &str) -> Result<Self> {
-        self.sort_values(&[column], SortOptions::new())?.head(n)
+        self.sort_values([column], SortOptions::new())?.head(n)
     }
 
     /// Remove duplicate rows based on a subset of columns.
@@ -1826,6 +1826,7 @@ impl DataFrame {
         )
     }
     /// Internal split-join dispatch with configurable null equality.
+    #[allow(clippy::too_many_arguments)]
     fn join_split_on_impl_with_null_eq_and_context(
         &self,
         right: &DataFrame,
@@ -2064,10 +2065,10 @@ impl DataFrame {
     ///
     /// Returns an error if `old` is not in the schema, or if `new` already
     /// exists in the schema.
-    pub fn rename(&self, old: &str, new: &str) -> Result<Self> {
+    pub fn rename_column(&self, old: &str, new: &str) -> Result<Self> {
         if !self.columns.contains_key(old) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
-                .with_operation("dataframe::rename")
+                .with_operation("dataframe::rename_column")
                 .with_context("column_name", old.to_string()));
         }
 
@@ -2076,7 +2077,7 @@ impl DataFrame {
                 ErrorKind::InvalidOperation,
                 format!("cannot rename '{}' to '{}': target name already exists", old, new),
             )
-            .with_operation("dataframe::rename")
+            .with_operation("dataframe::rename_column")
             .with_context("old_name", old.to_string())
             .with_context("new_name", new.to_string()));
         }
@@ -2093,7 +2094,7 @@ impl DataFrame {
         Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
     }
 
-    /// Consuming variant of [`rename`](Self::rename).
+    /// Consuming variant of [`rename_column`](Self::rename_column).
     ///
     /// Avoids O(N) `Arc::clone` for N columns; prefer this when the source
     /// DataFrame is no longer needed. This is a pure schema rewrite with
@@ -2108,10 +2109,10 @@ impl DataFrame {
     ///
     /// Returns an error if `old` is not in the schema, or if `new` already
     /// exists in the schema.
-    pub fn rename_owned(self, old: &str, new: &str) -> Result<Self> {
+    pub fn rename_column_owned(self, old: &str, new: &str) -> Result<Self> {
         if !self.columns.contains_key(old) {
             return Err(Error::new(ErrorKind::InvalidOperation, format!("column '{}' not found in schema", old))
-                .with_operation("dataframe::rename_owned")
+                .with_operation("dataframe::rename_column_owned")
                 .with_context("column_name", old.to_string()));
         }
 
@@ -2120,7 +2121,7 @@ impl DataFrame {
                 ErrorKind::InvalidOperation,
                 format!("cannot rename '{}' to '{}': target name already exists", old, new),
             )
-            .with_operation("dataframe::rename_owned")
+            .with_operation("dataframe::rename_column_owned")
             .with_context("old_name", old.to_string())
             .with_context("new_name", new.to_string()));
         }

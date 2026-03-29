@@ -22,10 +22,6 @@
 #include <limits>
 #include <memory>
 
-static cudf::type_id to_cudf_type_id(cudf_type_id_t id) {
-  return static_cast<cudf::type_id>(id);
-}
-
 static cudf_status_t create_column_from_device_data_impl(
     cudf_type_id_t type_id,
     const void* device_data,
@@ -403,6 +399,12 @@ cudf_status_t cudf_column_view_to_host_ex(cudf_column_view_handle handle,
 
 cudf_status_t cudf_column_view_null_mask_to_host(
     cudf_column_view_handle handle, uint8_t* host_buf, size_t buf_size) {
+  return cudf_column_view_null_mask_to_host_ex(handle, host_buf, buf_size, nullptr);
+}
+
+cudf_status_t cudf_column_view_null_mask_to_host_ex(
+    cudf_column_view_handle handle, uint8_t* host_buf, size_t buf_size,
+    cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(handle, "handle is null");
   CUDF_RUST_NULL_CHECK(host_buf, "host_buf is null");
   CUDF_RUST_TRY {
@@ -421,12 +423,16 @@ cudf_status_t cudf_column_view_null_mask_to_host(
       set_error("Buffer too small for null mask");
       return CUDF_ERROR_INVALID_OPERATION;
     }
-    auto stream = cudf::get_default_stream();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
     CUDF_CUDA_TRY(cudaMemcpyAsync(host_buf, view->null_mask(), mask_bytes,
-                                  cudaMemcpyDeviceToHost, stream.value()));
+                                  cudaMemcpyDeviceToHost, exec.stream.value()));
     // This API promises the caller's host buffer is populated on return.
-    stream.synchronize();
-    cudf_record_synchronized_stream(stream);
+    exec.stream.synchronize();
+    cudf_record_synchronized_stream(exec.stream);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -653,6 +659,13 @@ cudf_status_t cudf_column_view_strings_to_host(
 cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
                                       int32_t size,
                                       cudf_column_handle* out) {
+  return cudf_column_from_scalar_ex(scalar, size, out, nullptr);
+}
+
+cudf_status_t cudf_column_from_scalar_ex(cudf_scalar_handle scalar,
+                                         int32_t size,
+                                         cudf_column_handle* out,
+                                         cudf_exec_options_t const* options) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = nullptr;
   CUDF_RUST_NULL_CHECK(scalar, "scalar is null");
@@ -662,10 +675,13 @@ cudf_status_t cudf_column_from_scalar(cudf_scalar_handle scalar,
   }
   CUDF_RUST_TRY {
     auto const& sc = *static_cast<cudf::scalar const*>(scalar);
-    auto stream = cudf::get_default_stream();
-    auto mr = cudf::get_current_device_resource_ref();
+    cudf_exec_context exec{cudf::get_default_stream(),
+                           cudf::get_current_device_resource_ref(),
+                           nullptr};
+    cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
+    if (exec_status != CUDF_SUCCESS) { return exec_status; }
     auto col = cudf::make_column_from_scalar(
-        sc, static_cast<cudf::size_type>(size), stream, mr);
+        sc, static_cast<cudf::size_type>(size), exec.stream, exec.mr);
     *out = static_cast<cudf_column_handle>(col.release());
     return CUDF_SUCCESS;
   }

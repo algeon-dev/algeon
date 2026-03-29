@@ -1,13 +1,8 @@
 //! Tests for `SortOptions` and the high-level `DataFrame::sort_values`.
 
+mod common;
+use common::sample_df;
 use cudf::{DataFrame, Series, SortOptions, column::Column, error::ErrorKind};
-
-/// Helper: build a 5-row DataFrame with id (i32) and score (f64) columns.
-fn sample_df() -> DataFrame {
-    let ids = Series::new::<i32>("id", &[3, 1, 4, 1, 5]).unwrap();
-    let scores = Series::new::<f64>("score", &[30.0, 10.0, 40.0, 15.0, 50.0]).unwrap();
-    DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap()
-}
 
 // ---------------------------------------------------------------------------
 // SortOptions defaults

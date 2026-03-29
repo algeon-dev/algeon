@@ -31,7 +31,7 @@ cudf_status_t cudf_replace_nulls_scalar_ex(
     auto* scalar = static_cast<cudf::scalar*>(replacement);
     cudf_exec_context exec{cudf::get_default_stream(),
                            cudf::get_current_device_resource_ref(),
-                           rmm::mr::get_current_device_resource()};
+                           nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) {
       return exec_status;
@@ -64,7 +64,7 @@ cudf_status_t cudf_replace_nulls_column_ex(
     auto* view_replacement = static_cast<cudf::column_view*>(replacement);
     cudf_exec_context exec{cudf::get_default_stream(),
                            cudf::get_current_device_resource_ref(),
-                           rmm::mr::get_current_device_resource()};
+                           nullptr};
     cudf_status_t const exec_status = cudf_resolve_exec_options(options, &exec);
     if (exec_status != CUDF_SUCCESS) {
       return exec_status;
