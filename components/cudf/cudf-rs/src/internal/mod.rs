@@ -1,7 +1,7 @@
 //! Internal helpers shared across high-level API modules.
 //!
-//! Not part of the public API. Most submodules are `pub(crate)`.
-//! [`temp_table`] is public because
+//! Not part of the public API. All submodules are `pub(crate)`.
+//! [`temp_table`] remains crate-visible because
 //! [`TempTableView`](temp_table::TempTableView) is returned by
 //! [`DataFrame::temp_table_view`](crate::DataFrame::temp_table_view).
 //!
@@ -13,4 +13,4 @@
 
 pub(crate) mod reassemble;
 pub(crate) mod resolve;
-pub mod temp_table;
+pub(crate) mod temp_table;

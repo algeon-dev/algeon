@@ -9,8 +9,10 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::{
-    column::Column,
-    error::{Error, ErrorKind, Result},
+    core::{
+        column::Column,
+        error::{Error, ErrorKind, Result},
+    },
     internal::temp_table::TempTableView,
 };
 
@@ -102,9 +104,9 @@ mod tests {
     #[test]
     fn resolve_column_names_ok() {
         let mut map = IndexMap::new();
-        map.insert("x".into(), Arc::new(Column::empty(crate::types::TypeId::Int32).unwrap()));
-        map.insert("y".into(), Arc::new(Column::empty(crate::types::TypeId::Int64).unwrap()));
-        map.insert("z".into(), Arc::new(Column::empty(crate::types::TypeId::Float64).unwrap()));
+        map.insert("x".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
+        map.insert("y".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int64).unwrap()));
+        map.insert("z".into(), Arc::new(Column::empty(crate::core::types::TypeId::Float64).unwrap()));
 
         let indices = resolve_column_names(&map, &["z", "x"], "test").unwrap();
         assert_eq!(indices, vec![2, 0]);
@@ -113,7 +115,7 @@ mod tests {
     #[test]
     fn resolve_column_names_missing() {
         let mut map = IndexMap::new();
-        map.insert("a".into(), Arc::new(Column::empty(crate::types::TypeId::Int32).unwrap()));
+        map.insert("a".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
 
         let err = resolve_column_names(&map, &["missing"], "test").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::InvalidOperation);
@@ -123,10 +125,10 @@ mod tests {
     #[test]
     fn payload_indices_excludes_keys() {
         let mut map = IndexMap::new();
-        map.insert("a".into(), Arc::new(Column::empty(crate::types::TypeId::Int32).unwrap()));
-        map.insert("b".into(), Arc::new(Column::empty(crate::types::TypeId::Int32).unwrap()));
-        map.insert("c".into(), Arc::new(Column::empty(crate::types::TypeId::Int32).unwrap()));
-        map.insert("d".into(), Arc::new(Column::empty(crate::types::TypeId::Int32).unwrap()));
+        map.insert("a".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
+        map.insert("b".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
+        map.insert("c".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
+        map.insert("d".into(), Arc::new(Column::empty(crate::core::types::TypeId::Int32).unwrap()));
 
         let result = payload_indices(&map, &[1, 3]);
         assert_eq!(result, vec![0, 2]);

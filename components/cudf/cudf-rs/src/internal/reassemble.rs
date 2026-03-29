@@ -10,9 +10,11 @@ use std::sync::Arc;
 use indexmap::IndexMap;
 
 use crate::{
-    dataframe::DataFrame,
-    error::{Error, ErrorKind, Result},
-    table::Table,
+    core::{
+        error::{Error, ErrorKind, Result},
+        table::Table,
+    },
+    frame::dataframe::{DataFrame, resolve_frame_domain_from_authoritative_source},
 };
 
 /// Create a `DataFrame` from a `Table` and a vector of column names.
@@ -44,7 +46,7 @@ pub(crate) fn dataframe_from_table_and_names(table: Table, names: Vec<String>) -
         map.insert(name, Arc::new(col));
     }
 
-    let domain = crate::dataframe::resolve_frame_domain_from_authoritative_source(
+    let domain = resolve_frame_domain_from_authoritative_source(
         &map,
         &table_domain,
         "internal::reassemble::dataframe_from_table_and_names",

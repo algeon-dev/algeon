@@ -1,0 +1,215 @@
+//! Tests that verify the crate root re-exports the high-level types correctly.
+//!
+//! These tests mirror the crate-level doc example to ensure it compiles and
+//! works as documented. All tests require a GPU.
+
+// ---------------------------------------------------------------------------
+// Crate root re-exports: DataFrame, Series, and supporting types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_crate_root_reexports_series() {
+    // Series should be importable directly from the crate root.
+    let s = cudf::Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
+    assert_eq!(s.name(), Some("ids"));
+    assert_eq!(s.len(), 3);
+}
+
+#[test]
+fn test_crate_root_reexports_dataframe() {
+    // DataFrame should be importable directly from the crate root.
+    let ids = cudf::Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
+    let scores = cudf::Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
+
+    let df = cudf::DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.num_rows(), 3);
+}
+
+#[test]
+fn test_doc_example_high_level_workflow() {
+    // This mirrors the crate-level doc example: construct a DataFrame
+    // from Series, retrieve a Series back, and inspect metadata.
+    use cudf::{DataFrame, Series};
+
+    let ids = Series::new::<i32>("ids", &[1, 2, 3]).unwrap();
+    let scores = Series::new::<f64>("scores", &[10.0, 20.0, 30.0]).unwrap();
+
+    let df = DataFrame::from_columns([("id", ids), ("score", scores)]).unwrap();
+
+    assert_eq!(df.num_columns(), 2);
+    assert_eq!(df.num_rows(), 3);
+
+    // Retrieve a column as a Series.
+    let score_series = df.series("score").unwrap();
+    assert_eq!(score_series.name(), Some("score"));
+    assert_eq!(score_series.len(), 3);
+}
+
+#[test]
+fn test_lowlevel_types_still_reexported() {
+    // Ensure the low-level types remain accessible from the crate root.
+    let col = cudf::Column::from_slice(&[1i32, 2, 3]).unwrap();
+    let view = col.view().unwrap();
+    assert_eq!(view.len().unwrap(), 3);
+
+    let _dt: cudf::DataType = view.data_type().unwrap();
+    let _tid: cudf::TypeId = _dt.id();
+}
+
+// ---------------------------------------------------------------------------
+// Crate root re-exports
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sort_options_reexported() {
+    // SortOptions should be importable directly from the crate root.
+    use cudf::SortOptions;
+
+    let opts = SortOptions::new().with_descending(vec![true]).with_stable(true);
+    assert!(opts.stable);
+    assert_eq!(opts.descending, vec![true]);
+}
+
+#[test]
+fn test_join_types_reexported() {
+    // JoinType and MergeOptions should be importable directly from the crate root.
+    use cudf::{JoinType, MergeOptions};
+
+    let opts = MergeOptions::new().on(&["id"]).how(JoinType::Left).suffixes("_x", "_y");
+    assert_eq!(opts.join_type(), JoinType::Left);
+    assert_eq!(opts.suffix_left(), "_x");
+    assert_eq!(opts.suffix_right(), "_y");
+}
+
+#[test]
+fn test_groupby_types_reexported() {
+    // Agg, AggSpec, GroupByOptions should be importable directly from the crate root.
+    use cudf::{Agg, AggSpec, GroupByOptions};
+
+    let spec = AggSpec::new("price", Agg::Sum).with_alias("total_price");
+    // Verify it constructed without error.
+    let _ = spec;
+
+    let opts = GroupByOptions::default().include_null_keys(true);
+    let _ = opts;
+}
+
+#[test]
+fn test_high_level_workflow_sort_values() {
+    // End-to-end: construct DataFrame, sort_values using crate-root imports.
+    use cudf::{DataFrame, Series, SortOptions};
+
+    let ids = Series::new::<i32>("id", &[3, 1, 2]).unwrap();
+    let df = DataFrame::from_columns([("id", ids)]).unwrap();
+
+    let sorted = df.sort_values(&["id"], SortOptions::new()).unwrap();
+    let data: Vec<i32> = sorted.series_view("id").unwrap().to_vec::<i32>().unwrap();
+    assert_eq!(data, vec![1, 2, 3]);
+}
+
+#[test]
+fn test_high_level_workflow_merge() {
+    // End-to-end: construct two DataFrames, merge using crate-root imports.
+    use cudf::{DataFrame, JoinType, MergeOptions, Series};
+
+    let left_id = Series::new::<i32>("id", &[1, 2, 3]).unwrap();
+    let left_val = Series::new::<i32>("score", &[10, 20, 30]).unwrap();
+    let left = DataFrame::from_columns([("id", left_id), ("score", left_val)]).unwrap();
+
+    let right_id = Series::new::<i32>("id", &[2, 3, 4]).unwrap();
+    let right_val = Series::new::<i32>("rank", &[200, 300, 400]).unwrap();
+    let right = DataFrame::from_columns([("id", right_id), ("rank", right_val)]).unwrap();
+
+    let opts = MergeOptions::new().on(&["id"]).how(JoinType::Inner);
+    let merged = left.merge(&right, opts).unwrap();
+
+    assert_eq!(merged.num_rows(), 2);
+    assert!(merged.column_names().contains(&"score"));
+    assert!(merged.column_names().contains(&"rank"));
+}
+
+#[test]
+fn test_high_level_workflow_groupby() {
+    // End-to-end: construct DataFrame, groupby+agg using crate-root imports.
+    use cudf::{Agg, AggSpec, DataFrame, GroupByOptions, Series};
+
+    let keys = Series::new::<i32>("key", &[1, 2, 1, 2]).unwrap();
+    let vals = Series::new::<i64>("value", &[10, 20, 30, 40]).unwrap();
+    let df = DataFrame::from_columns([("key", keys), ("value", vals)]).unwrap();
+
+    let result =
+        df.groupby(&["key"]).options(GroupByOptions::default()).agg(&[AggSpec::new("value", Agg::Sum)]).unwrap();
+
+    assert_eq!(result.num_columns(), 2);
+    assert_eq!(result.column_names(), vec!["key", "value_sum"]);
+}
+
+#[test]
+fn test_all_high_level_types_in_single_import() {
+    // Verify all high-level types can be imported in one `use` statement.
+    use cudf::{Agg, AggSpec, DataFrame, GroupBy, GroupByOptions, JoinType, MergeOptions, Series, SortOptions};
+
+    // Merely asserting that this compiles is the test. Use each type to
+    // avoid unused-import warnings.
+    let _ = SortOptions::new();
+    let _ = MergeOptions::new().how(JoinType::Inner);
+    let _ = AggSpec::new("x", Agg::Sum);
+    let _ = GroupByOptions::default();
+
+    let s = Series::new::<i32>("a", &[1]).unwrap();
+    let df = DataFrame::from_columns([("a", s)]).unwrap();
+    let _gb: GroupBy<'_> = df.groupby(&["a"]);
+}
+
+#[test]
+fn test_domain_modules_export_documented_surface() {
+    use cudf::{
+        frame::{
+            dataframe::{DataFrame as DomainDataFrame, DataFrameView as DomainDataFrameView},
+            series::{IntoSeries as DomainIntoSeries, Series as DomainSeries, SeriesView as DomainSeriesView},
+        },
+        ops::{
+            Expr as DomainExpr,
+            groupby::{
+                Agg as DomainAgg, AggSpec as DomainAggSpec, GroupBy as DomainGroupBy,
+                GroupByOptions as DomainGroupByOptions,
+            },
+            join::{
+                JoinResult as DomainJoinResult, JoinType as DomainJoinType, MergeOptions as DomainMergeOptions,
+                NullEquality as DomainNullEquality,
+            },
+            sorting::SortOptions as DomainSortOptions,
+        },
+        runtime::{
+            CudaStream as DomainCudaStream, ExecutionContext as DomainExecutionContext, Runtime as DomainRuntime,
+            RuntimeBuilder as DomainRuntimeBuilder,
+        },
+    };
+
+    fn assert_into_series<T: DomainIntoSeries>() {}
+
+    let _: Option<DomainDataFrame> = None;
+    let _: Option<DomainDataFrameView<'static>> = None;
+    let _: Option<DomainSeries> = None;
+    let _: Option<DomainSeriesView<'static>> = None;
+    let _: Option<DomainExpr> = None;
+    let _: Option<DomainJoinResult> = None;
+    let _: Option<DomainExecutionContext<'static>> = None;
+    let _: Option<DomainRuntime> = None;
+    let _: Option<DomainRuntimeBuilder> = None;
+
+    let _ = DomainSortOptions::new();
+    let _ = DomainMergeOptions::new().how(DomainJoinType::Inner);
+    let _ = DomainGroupByOptions::default().include_null_keys(true);
+    let _ = DomainAggSpec::new("value", DomainAgg::Sum);
+    let _ = DomainNullEquality::Equal;
+    let _ = DomainCudaStream::new().unwrap();
+    let _expr = cudf::ops::col("value");
+
+    let series = DomainSeries::new::<i32>("key", &[1, 2, 1]).unwrap();
+    let df = DomainDataFrame::from_columns([("key", series)]).unwrap();
+    let _gb: DomainGroupBy<'_> = df.groupby(&["key"]);
+
+    assert_into_series::<DomainSeries>();
+}
