@@ -3,7 +3,10 @@
 //! **Advanced/Core.** Most users should use [`Series`](crate::Series) /
 //! [`SeriesView`](crate::SeriesView).
 
-use crate::error::{self, Error, ErrorKind, Result};
+use crate::{
+    error::{self, Error, ErrorKind, Result},
+    execution_domain::ExecutionDomain,
+};
 
 fn usize_to_i32_len(len: usize, what: &'static str, operation: &'static str) -> Result<i32> {
     i32::try_from(len).map_err(|_| {
@@ -16,6 +19,7 @@ use std::{
     marker::PhantomData,
     os::raw::{c_char, c_void},
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use crate::types::{CudfType, DataType, TypeId};
@@ -25,6 +29,7 @@ use crate::types::{CudfType, DataType, TypeId};
 /// The underlying device memory is freed when this value is dropped.
 pub struct Column {
     handle: NonNull<c_void>,
+    domain: Arc<ExecutionDomain>,
 }
 
 // SAFETY: Column owns a GPU device buffer via an opaque C++ handle. The handle
@@ -35,6 +40,10 @@ unsafe impl Send for Column {}
 unsafe impl Sync for Column {}
 
 impl Column {
+    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self { handle: NonNull::new(handle).expect("null column handle"), domain }
+    }
+
     /// Create an empty column of the given type.
     pub fn empty(type_id: TypeId) -> Result<Self> {
         let mut handle = ptr::null_mut();
@@ -44,7 +53,7 @@ impl Column {
             unsafe { cudf_sys::cudf_column_create_empty(type_id.to_raw(), &mut handle) },
             "column::empty",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a column from a host slice of fixed-width elements.
@@ -72,7 +81,7 @@ impl Column {
             },
             "column::from_slice",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a nullable column from host data and a validity mask.
@@ -106,7 +115,7 @@ impl Column {
             },
             "column::from_slice_nullable",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Deep-copy this column.
@@ -117,7 +126,7 @@ impl Column {
             unsafe { cudf_sys::cudf_column_copy(self.handle.as_ptr(), &mut handle) },
             "column::copy",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(&self.domain)))
     }
 
     /// Create an immutable view of this column.
@@ -130,7 +139,11 @@ impl Column {
             unsafe { cudf_sys::cudf_column_view(self.handle.as_ptr(), &mut view_handle) },
             "column::view",
         )?;
-        Ok(ColumnView { handle: NonNull::new(view_handle).expect("null handle on success"), _lifetime: PhantomData })
+        Ok(ColumnView {
+            handle: NonNull::new(view_handle).expect("null handle on success"),
+            domain: Arc::clone(&self.domain),
+            _lifetime: PhantomData,
+        })
     }
 
     /// Returns the raw FFI handle. For internal use by `Table::from_columns`.
@@ -146,7 +159,16 @@ impl Column {
     /// The handle must be a valid `cudf_column_handle` and the caller must
     /// transfer ownership.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self { handle: NonNull::new(handle).expect("null column handle") }
+        Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default())
+    }
+
+    /// Construct a `Column` from a raw FFI handle and an explicit retained domain.
+    ///
+    /// # Safety
+    /// The handle must be a valid `cudf_column_handle` and the caller must
+    /// transfer ownership.
+    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self::from_handle_with_domain(handle, domain)
     }
 
     /// Create a column by copying data from an existing device (GPU) pointer.
@@ -189,7 +211,7 @@ impl Column {
             "column::from_device_ptr",
             [("len", len.to_string()), ("type_id", format!("{:?}", type_id).to_lowercase())],
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a STRING type column from a slice of string references.
@@ -226,7 +248,7 @@ impl Column {
             },
             "column::from_strings",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create an all-null column of the given type and length.
@@ -285,7 +307,7 @@ impl Column {
                     "column::nulls",
                     [("type_id", format!("{:?}", type_id).to_lowercase()), ("len", len.to_string())],
                 )?;
-                Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+                Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
             },
         }
     }
@@ -329,7 +351,7 @@ impl Column {
             },
             "column::from_strings_nullable",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a column by repeating a scalar value `size` times.
@@ -343,7 +365,37 @@ impl Column {
             unsafe { cudf_sys::cudf_column_from_scalar(scalar.raw_handle(), size, &mut handle) },
             "column::from_scalar",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, Arc::clone(&scalar.domain)))
+    }
+
+    pub(crate) fn execution_domain(&self) -> &Arc<ExecutionDomain> {
+        &self.domain
+    }
+
+    pub(crate) fn with_execution_domain(mut self, domain: Arc<ExecutionDomain>) -> Self {
+        self.domain = domain;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+        self.domain.debug_kind()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_id(&self) -> u64 {
+        self.domain.debug_id()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_stream_value(&self) -> usize {
+        self.domain.debug_stream_value()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_rebind_execution_domain_explicit(mut self, identity: u64) -> Result<Self> {
+        self.domain = ExecutionDomain::debug_explicit(identity)?;
+        Ok(self)
     }
 }
 
@@ -354,12 +406,15 @@ impl Column {
 impl Column {
     /// Generic binary operation with inferred output type.
     pub fn binary_op(&self, rhs: &Column, op: crate::binary::BinaryOperator) -> Result<Column> {
+        let output_domain =
+            ExecutionDomain::compatible_domain(&self.domain, rhs.execution_domain(), "column::binary_op")?;
         (|| {
             let lv = self.view()?;
             let rv = rhs.view()?;
             let out_type = crate::binary::infer_binary_output_type(lv.data_type()?.id(), rv.data_type()?.id(), op)?;
             crate::binary::binary_operation_vv(&lv, &rv, op, &out_type)
         })()
+        .map(|col| col.with_execution_domain(output_domain))
         .map_err(|e| e.with_operation("column::binary_op").with_context("operator", format!("{:?}", op).to_lowercase()))
     }
 
@@ -370,11 +425,14 @@ impl Column {
         op: crate::binary::BinaryOperator,
         output_type: &DataType,
     ) -> Result<Column> {
+        let output_domain =
+            ExecutionDomain::compatible_domain(&self.domain, rhs.execution_domain(), "column::binary_op_with_type")?;
         (|| {
             let lv = self.view()?;
             let rv = rhs.view()?;
             crate::binary::binary_operation_vv(&lv, &rv, op, output_type)
         })()
+        .map(|col| col.with_execution_domain(output_domain))
         .map_err(|e| {
             e.with_operation("column::binary_op_with_type")
                 .with_context("operator", format!("{:?}", op).to_lowercase())
@@ -479,6 +537,7 @@ impl Column {
             let out_type = crate::binary::infer_binary_output_type(lv.data_type()?.id(), rhs.data_type()?.id(), op)?;
             crate::binary::binary_operation_vs(&lv, rhs, op, &out_type)
         })()
+        .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
         .map_err(|e| {
             e.with_operation("column::binary_op_scalar").with_context("operator", format!("{:?}", op).to_lowercase())
         })
@@ -495,6 +554,7 @@ impl Column {
             let lv = self.view()?;
             crate::binary::binary_operation_vs(&lv, rhs, op, output_type)
         })()
+        .map(|col| col.with_execution_domain(Arc::clone(&self.domain)))
         .map_err(|e| {
             e.with_operation("column::binary_op_scalar_with_type")
                 .with_context("operator", format!("{:?}", op).to_lowercase())
@@ -592,6 +652,7 @@ impl Drop for Column {
 /// preventing use-after-free at compile time.
 pub struct ColumnView<'a> {
     handle: NonNull<c_void>,
+    domain: Arc<ExecutionDomain>,
     _lifetime: PhantomData<&'a ()>,
 }
 
@@ -602,13 +663,26 @@ impl<'a> ColumnView<'a> {
     /// The handle must be a valid `cudf_column_view_handle` and must remain
     /// valid for lifetime `'a`.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self { handle: NonNull::new(handle).expect("null view handle"), _lifetime: PhantomData }
+        Self::from_raw_with_domain(handle, ExecutionDomain::ambient_default())
+    }
+
+    /// Create a `ColumnView` from a raw FFI handle plus a retained execution domain.
+    ///
+    /// # Safety
+    /// The handle must be a valid `cudf_column_view_handle` and must remain
+    /// valid for lifetime `'a`.
+    pub(crate) unsafe fn from_raw_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self { handle: NonNull::new(handle).expect("null view handle"), domain, _lifetime: PhantomData }
     }
 
     /// Returns the raw FFI handle pointer. For internal use by operations
     /// that need to pass column views to C shim functions.
     pub(crate) fn raw_handle(&self) -> *mut c_void {
         self.handle.as_ptr()
+    }
+
+    fn synchronize_host_visibility(&self, operation: &'static str) -> Result<()> {
+        self.domain.synchronize_for_host_visibility(operation)
     }
 
     /// Returns the data type of this column.
@@ -686,7 +760,11 @@ impl<'a> ColumnView<'a> {
             unsafe { cudf_sys::cudf_column_view_child(self.handle.as_ptr(), index, &mut child_handle) },
             "column_view::child",
         )?;
-        Ok(ColumnView { handle: NonNull::new(child_handle).expect("null handle on success"), _lifetime: PhantomData })
+        Ok(ColumnView {
+            handle: NonNull::new(child_handle).expect("null handle on success"),
+            domain: Arc::clone(&self.domain),
+            _lifetime: PhantomData,
+        })
     }
 
     /// Returns the raw device (GPU) data pointer of this column view.
@@ -746,12 +824,26 @@ impl<'a> ColumnView<'a> {
 
         // SAFETY: buf is a valid mutable buffer of buf_size bytes. self.handle is
         // valid. Type was checked above to match T::TYPE_ID.
-        error::check_status_in(
-            unsafe {
-                cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
-            },
-            "column_view::to_vec",
-        )?;
+        if let Some(exec_options) = self.domain.explicit_exec_options_raw() {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_to_host_ex(
+                        self.handle.as_ptr(),
+                        buf.as_mut_ptr() as *mut c_void,
+                        buf_size,
+                        &exec_options,
+                    )
+                },
+                "column_view::to_vec",
+            )?;
+        } else {
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_column_view_to_host(self.handle.as_ptr(), buf.as_mut_ptr() as *mut c_void, buf_size)
+                },
+                "column_view::to_vec",
+            )?;
+        }
 
         Ok(buf)
     }
@@ -770,6 +862,8 @@ impl<'a> ColumnView<'a> {
         // cudf pads to 64-byte boundaries, so allocate enough.
         let alloc_bytes = mask_bytes.div_ceil(64) * 64;
         let mut mask = vec![0u8; alloc_bytes];
+
+        self.synchronize_host_visibility("column_view::validity")?;
 
         // SAFETY: mask buffer is large enough (padded to 64-byte boundaries).
         // self.handle is valid and nullable (checked above).
@@ -809,6 +903,8 @@ impl<'a> ColumnView<'a> {
         let offsets_count = size + 1;
         let offsets_buf_size = offsets_count * std::mem::size_of::<i32>();
         let mut offsets = vec![0i32; offsets_count];
+
+        self.synchronize_host_visibility("column_view::to_strings")?;
 
         // First call to get total_chars_bytes: pass a generous chars buffer initially.
         // We do a two-phase approach: first get offsets + total size, then get chars.
@@ -1049,6 +1145,7 @@ impl ColumnView<'_> {
     ///
     /// Null positions in the input produce null entries in `codes`.
     pub fn factorize(&self) -> Result<(Column, Column)> {
+        let output_domain = Arc::clone(&self.domain);
         let input_type_id = match self.data_type() {
             Ok(dt) => dt.id(),
             Err(e) => return Err(e.with_operation("column_view::factorize")),
@@ -1075,7 +1172,7 @@ impl ColumnView<'_> {
         let uniques = copy_view_to_owned(&keys_view)
             .map_err(|e| e.with_operation("column_view::factorize").with_context("input_type_id", input_type_id_str))?;
 
-        Ok((codes, uniques))
+        Ok((codes.with_execution_domain(Arc::clone(&output_domain)), uniques.with_execution_domain(output_domain)))
     }
 
     /// Return a boolean mask indicating which elements appear in `values`.
@@ -1086,6 +1183,7 @@ impl ColumnView<'_> {
     ///
     /// Both `self` and `values` must have the same data type.
     pub fn isin(&self, values: &ColumnView<'_>) -> Result<Column> {
+        let output_domain = ExecutionDomain::compatible_domain(&self.domain, &values.domain, "column_view::isin")?;
         let input_type_id = match self.data_type() {
             Ok(dt) => dt.id(),
             Err(e) => return Err(e.with_operation("column_view::isin")),
@@ -1097,7 +1195,7 @@ impl ColumnView<'_> {
         })?;
         let values_type_id_str = format!("{:?}", values_type_id.id()).to_lowercase();
 
-        crate::search::contains(values, self).map_err(|e| {
+        crate::search::contains(values, self).map(|col| col.with_execution_domain(output_domain)).map_err(|e| {
             e.with_operation("column_view::isin")
                 .with_context("input_type_id", input_type_id_str)
                 .with_context("values_type_id", values_type_id_str)

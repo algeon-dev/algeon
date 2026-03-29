@@ -10,6 +10,7 @@ use std::sync::Arc;
 use crate::{
     column::{Column, ColumnView},
     error::Result,
+    execution_domain::ExecutionDomain,
     internal::temp_table::TempTableView,
     replace,
     scalar::Scalar,
@@ -481,7 +482,8 @@ impl Series {
     pub fn fillna<T: CudfType>(&self, value: T) -> Result<Series> {
         let cv = self.column.view()?;
         let scalar = Scalar::from_value(value)?;
-        let col = replace::replace_nulls(&cv, &scalar)?;
+        let col =
+            replace::replace_nulls(&cv, &scalar)?.with_execution_domain(Arc::clone(self.column.execution_domain()));
         self.with_inherited_name(col)
     }
 
@@ -493,9 +495,14 @@ impl Series {
     /// # Cost
     /// GPU-allocating: a new column is produced with nulls replaced.
     pub fn fillna_with_series(&self, other: &Series) -> Result<Series> {
+        let output_domain = ExecutionDomain::compatible_domain(
+            self.column.execution_domain(),
+            other.column.execution_domain(),
+            "series::fillna_with_series",
+        )?;
         let cv = self.column.view()?;
         let other_cv = other.column.view()?;
-        let col = replace::replace_nulls_column(&cv, &other_cv)?;
+        let col = replace::replace_nulls_column(&cv, &other_cv)?.with_execution_domain(output_domain);
         self.with_inherited_name(col)
     }
 
@@ -532,7 +539,8 @@ impl Series {
             DuplicateKeepOption::KeepAny,
             NullEquality::Equal,
             NanEquality::AllEqual,
-        )?;
+        )?
+        .with_execution_domain(Arc::clone(self.column.execution_domain()));
         let mut cols = result.into_columns()?;
         self.with_inherited_name(cols.remove(0))
     }
@@ -589,7 +597,8 @@ impl Series {
             crate::sorting::stable_sort(ttv.table(), Some(&orders), null_orders.as_deref())?
         } else {
             crate::sorting::sort(ttv.table(), Some(&orders), null_orders.as_deref())?
-        };
+        }
+        .with_execution_domain(Arc::clone(self.column.execution_domain()));
         let mut cols = sorted.into_columns()?;
         self.with_inherited_name(cols.remove(0))
     }

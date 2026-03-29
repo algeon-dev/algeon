@@ -7,10 +7,12 @@ use std::{
     ffi::CString,
     os::raw::{c_char, c_void},
     ptr::{self, NonNull},
+    sync::Arc,
 };
 
 use crate::{
     error::{self, Error, ErrorKind, Result},
+    execution_domain::ExecutionDomain,
     types::{CudfType, DataType},
 };
 
@@ -19,6 +21,7 @@ use crate::{
 /// Scalars can hold a single value of any cudf type, plus a validity flag.
 pub struct Scalar {
     handle: NonNull<c_void>,
+    pub(crate) domain: Arc<ExecutionDomain>,
 }
 
 // SAFETY: Scalar owns an immutable GPU value via an opaque C++ handle.
@@ -27,6 +30,10 @@ unsafe impl Send for Scalar {}
 unsafe impl Sync for Scalar {}
 
 impl Scalar {
+    fn from_handle_with_domain(handle: *mut c_void, domain: Arc<ExecutionDomain>) -> Self {
+        Self { handle: NonNull::new(handle).expect("null scalar handle"), domain }
+    }
+
     /// Create a valid numeric scalar from a Rust value.
     pub fn from_value<T: CudfType>(value: T) -> Result<Self> {
         let mut handle = ptr::null_mut();
@@ -43,7 +50,7 @@ impl Scalar {
             },
             "scalar::from_value",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a null scalar of the given numeric type.
@@ -65,7 +72,7 @@ impl Scalar {
             },
             "scalar::null_numeric",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a valid string scalar.
@@ -80,7 +87,7 @@ impl Scalar {
             unsafe { cudf_sys::cudf_scalar_create_string(c_str.as_ptr(), 1, &mut handle) },
             "scalar::from_string",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Create a null string scalar.
@@ -92,7 +99,7 @@ impl Scalar {
             unsafe { cudf_sys::cudf_scalar_create_string(empty.as_ptr(), 0, &mut handle) },
             "scalar::null_string",
         )?;
-        Ok(Self { handle: NonNull::new(handle).expect("null handle on success") })
+        Ok(Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default()))
     }
 
     /// Returns the raw FFI handle. For internal use by operations.
@@ -106,7 +113,17 @@ impl Scalar {
     /// The handle must be a valid `cudf_scalar_handle` and the caller must
     /// transfer ownership.
     pub(crate) unsafe fn from_raw(handle: *mut c_void) -> Self {
-        Self { handle: NonNull::new(handle).expect("null scalar handle") }
+        Self::from_handle_with_domain(handle, ExecutionDomain::ambient_default())
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_kind(&self) -> &'static str {
+        self.domain.debug_kind()
+    }
+
+    #[doc(hidden)]
+    pub fn __debug_execution_domain_id(&self) -> u64 {
+        self.domain.debug_id()
     }
 
     /// Returns the data type of this scalar.

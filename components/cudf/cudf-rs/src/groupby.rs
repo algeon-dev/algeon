@@ -4,7 +4,7 @@
 //! create a [`GroupBy`](crate::GroupBy) handle, then call
 //! [`agg()`](crate::GroupBy::agg) with an [`AggSpec`](crate::AggSpec).
 
-use std::{os::raw::c_void, ptr};
+use std::{os::raw::c_void, ptr, sync::Arc};
 
 use crate::{
     column::{Column, ColumnView},
@@ -486,10 +486,16 @@ impl<'a> GroupBy<'a> {
             .collect();
 
         let gb_result = groupby_aggregate(keys_table.table(), &requests, self.options.null_policy)?;
+        let output_domain = Arc::clone(self.df.execution_domain());
 
         // Reorder result columns to match original spec order.
-        let mut grouped_results: Vec<Vec<Option<Column>>> =
-            gb_result.results.into_iter().map(|cols| cols.into_iter().map(Some).collect()).collect();
+        let mut grouped_results: Vec<Vec<Option<Column>>> = gb_result
+            .results
+            .into_iter()
+            .map(|cols| {
+                cols.into_iter().map(|col| Some(col.with_execution_domain(Arc::clone(&output_domain)))).collect()
+            })
+            .collect();
 
         let mut all_result_cols: Vec<Column> = Vec::with_capacity(output_order.len());
         for (request_index, (group_idx, agg_idx)) in output_order.iter().enumerate() {
@@ -520,7 +526,7 @@ impl<'a> GroupBy<'a> {
         }
 
         // Build the result DataFrame.
-        let result_keys_cols = gb_result.keys.into_columns()?;
+        let result_keys_cols = gb_result.keys.with_execution_domain(Arc::clone(&output_domain)).into_columns()?;
 
         let mut final_cols: Vec<Column> = Vec::with_capacity(result_keys_cols.len() + all_result_cols.len());
         final_cols.extend(result_keys_cols);
