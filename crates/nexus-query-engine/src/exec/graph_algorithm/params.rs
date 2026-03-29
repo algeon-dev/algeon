@@ -75,6 +75,26 @@ pub(super) fn pagerank_params(
     })
 }
 
+pub(super) fn personalized_pagerank_params(
+    params: &crate::plan::GraphPageRankParams,
+) -> Result<cugraph::centrality::PersonalizedPageRankParams> {
+    Ok(cugraph::centrality::PersonalizedPageRankParams {
+        alpha: cugraph::params::ClosedUnitF64::new(params.alpha).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank_params",
+            "invalid cuGraph personalized PageRank alpha",
+        ))?,
+        epsilon: cugraph::params::NonNegativeF64::new(params.epsilon).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank_params",
+            "invalid cuGraph personalized PageRank epsilon",
+        ))?,
+        max_iterations: cugraph::params::IterationCount::new(params.max_iterations).map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank_params",
+            "invalid cuGraph personalized PageRank max_iterations",
+        ))?,
+        do_expensive_check: false,
+    })
+}
+
 pub(super) fn bfs_params(params: &crate::plan::GraphBfsParams) -> Result<cugraph::traversal::BfsParams> {
     let depth_limit = match params.depth_limit {
         None | Some(0) => None,

@@ -7,8 +7,8 @@ use serde_json::Value;
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsOutputOptions,
     CugraphBfsPredicateInputs, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable,
-    CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType, CugraphSqlConfig, CugraphTableReference,
-    literal_string_arg, plan_error, result_schema_for_params,
+    CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSqlConfig,
+    CugraphTableReference, literal_string_arg, plan_error, result_schema_for_params,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -62,9 +62,15 @@ pub fn parse_cugraph_algorithm_spec(
     //   Python oracle to keep parity meaningful.
     graph_options = algorithm.effective_default_graph_options(&graph_options);
     let mut params = default_params(algorithm, source_vertex);
+    let has_options_json = args.len() > next;
     if args.len() > next {
         let options_json = literal_string_arg(args, next, "options_json")?;
         parse_options_json(algorithm, &options_json, &mut graph_options, &mut edge_id_col, &mut params)?;
+    }
+    if algorithm == CugraphAlgorithm::PersonalizedPageRank && !has_options_json {
+        return Err(plan_error(
+            "cugraph_personalized_pagerank requires options: personalization_table, personalization_vertex_col, personalization_value_col",
+        ));
     }
     validate_graph_directedness(algorithm, &graph_options)?;
 
@@ -171,31 +177,49 @@ fn parse_options_json(
                     },
                 };
             },
-            "alpha" if algorithm == CugraphAlgorithm::PageRank => {
+            "alpha" if is_pagerank_algorithm(algorithm) => {
                 let alpha = json_f64(value, key)?;
                 if !(0.0..=1.0).contains(&alpha) {
                     return Err(plan_error("PageRank alpha must be in [0, 1]"));
                 }
-                if let CugraphAlgorithmParams::PageRank(params) = params {
+                if let Some(params) = pagerank_params_mut(params) {
                     params.alpha = alpha;
                 }
             },
-            "epsilon" if algorithm == CugraphAlgorithm::PageRank => {
+            "epsilon" if is_pagerank_algorithm(algorithm) => {
                 let epsilon = json_f64(value, key)?;
                 if epsilon <= 0.0 {
                     return Err(plan_error("PageRank epsilon must be positive"));
                 }
-                if let CugraphAlgorithmParams::PageRank(params) = params {
+                if let Some(params) = pagerank_params_mut(params) {
                     params.epsilon = epsilon;
                 }
             },
-            "max_iterations" if algorithm == CugraphAlgorithm::PageRank => {
+            "max_iterations" if is_pagerank_algorithm(algorithm) => {
                 let max_iterations = json_u32(value, key)?;
                 if max_iterations < 1 {
                     return Err(plan_error("PageRank max_iterations must be at least 1"));
                 }
-                if let CugraphAlgorithmParams::PageRank(params) = params {
+                if let Some(params) = pagerank_params_mut(params) {
                     params.max_iterations = max_iterations;
+                }
+            },
+            "personalization_table" if algorithm == CugraphAlgorithm::PersonalizedPageRank => {
+                let table = CugraphTableReference::parse(&json_string(value, key)?)?;
+                if let CugraphAlgorithmParams::PersonalizedPageRank(params) = params {
+                    params.personalization.table_name = table;
+                }
+            },
+            "personalization_vertex_col" if algorithm == CugraphAlgorithm::PersonalizedPageRank => {
+                let column = json_string(value, key)?;
+                if let CugraphAlgorithmParams::PersonalizedPageRank(params) = params {
+                    params.personalization.vertex_col = column;
+                }
+            },
+            "personalization_value_col" if algorithm == CugraphAlgorithm::PersonalizedPageRank => {
+                let column = json_string(value, key)?;
+                if let CugraphAlgorithmParams::PersonalizedPageRank(params) = params {
+                    params.personalization.value_col = column;
                 }
             },
             "depth_limit" if algorithm == CugraphAlgorithm::Bfs => {
@@ -360,34 +384,6 @@ fn parse_options_json(
                 let degree_type = parse_degree_type(json_string(value, key)?.as_str(), key)?;
                 if let CugraphAlgorithmParams::KCore(params) = params {
                     params.degree_type = degree_type;
-                }
-            },
-            // PageRank strict shares the same options as PageRank (alpha, epsilon, max_iterations).
-            "alpha" if algorithm == CugraphAlgorithm::PageRankStrict => {
-                let alpha = json_f64(value, key)?;
-                if !(0.0..=1.0).contains(&alpha) {
-                    return Err(plan_error("PageRank strict alpha must be in [0, 1]"));
-                }
-                if let CugraphAlgorithmParams::PageRankStrict(params) = params {
-                    params.alpha = alpha;
-                }
-            },
-            "epsilon" if algorithm == CugraphAlgorithm::PageRankStrict => {
-                let epsilon = json_f64(value, key)?;
-                if epsilon <= 0.0 {
-                    return Err(plan_error("PageRank strict epsilon must be positive"));
-                }
-                if let CugraphAlgorithmParams::PageRankStrict(params) = params {
-                    params.epsilon = epsilon;
-                }
-            },
-            "max_iterations" if algorithm == CugraphAlgorithm::PageRankStrict => {
-                let max_iterations = json_u32(value, key)?;
-                if max_iterations < 1 {
-                    return Err(plan_error("PageRank strict max_iterations must be at least 1"));
-                }
-                if let CugraphAlgorithmParams::PageRankStrict(params) = params {
-                    params.max_iterations = max_iterations;
                 }
             },
             // Leiden options.
@@ -691,7 +687,45 @@ fn parse_options_json(
     if algorithm == CugraphAlgorithm::Bfs {
         parse_bfs_predicate_options(object, edge_id_col, params)?;
     }
+    if algorithm == CugraphAlgorithm::PersonalizedPageRank {
+        validate_personalized_pagerank_options(object, params)?;
+    }
 
+    Ok(())
+}
+
+fn is_pagerank_algorithm(algorithm: CugraphAlgorithm) -> bool {
+    matches!(algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank)
+}
+
+fn pagerank_params_mut(params: &mut CugraphAlgorithmParams) -> Option<&mut CugraphPageRankParams> {
+    match params {
+        CugraphAlgorithmParams::PageRank(params) => Some(params),
+        CugraphAlgorithmParams::PersonalizedPageRank(params) => Some(&mut params.pagerank),
+        _ => None,
+    }
+}
+
+fn validate_personalized_pagerank_options(
+    object: &serde_json::Map<String, Value>,
+    params: &CugraphAlgorithmParams,
+) -> Result<()> {
+    let missing = ["personalization_table", "personalization_vertex_col", "personalization_value_col"]
+        .into_iter()
+        .filter(|key| !object.contains_key(*key))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(plan_error(format!("cugraph_personalized_pagerank requires options: {}", missing.join(", "))));
+    }
+    let CugraphAlgorithmParams::PersonalizedPageRank(params) = params else {
+        return Err(plan_error("cugraph_personalized_pagerank carried non-personalized PageRank parameters"));
+    };
+    if params.personalization.vertex_col.is_empty() {
+        return Err(plan_error("personalization_vertex_col must not be empty"));
+    }
+    if params.personalization.value_col.is_empty() {
+        return Err(plan_error("personalization_value_col must not be empty"));
+    }
     Ok(())
 }
 

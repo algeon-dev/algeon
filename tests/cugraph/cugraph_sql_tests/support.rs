@@ -246,6 +246,22 @@ pub(super) fn register_vertex_memtable(
     ctx.register_table(table_name, provider).unwrap();
 }
 
+pub(super) fn register_personalization_memtable(
+    ctx: &SessionContext,
+    table_name: &str,
+    vertex_type: DataType,
+    value_type: DataType,
+) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", vertex_type.clone(), false),
+        Field::new("value", value_type.clone(), false),
+    ]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![edge_column(&vertex_type), edge_column(&value_type)]).unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
 pub(super) fn register_directed_bfs_edges(ctx: &SessionContext, table_name: &str) {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -457,6 +473,7 @@ pub(super) fn edge_column(data_type: &DataType) -> ArrayRef {
     match data_type {
         DataType::Int32 => Arc::new(Int32Array::from(vec![0_i32, 1])) as ArrayRef,
         DataType::Int64 => Arc::new(Int64Array::from(vec![0_i64, 1])) as ArrayRef,
+        DataType::Float32 => Arc::new(Float32Array::from(vec![1.0_f32, 2.0])) as ArrayRef,
         DataType::Float64 => Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
         DataType::Utf8 => Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
         other => panic!("test helper does not support {other:?}"),

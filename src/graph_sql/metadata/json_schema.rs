@@ -71,7 +71,7 @@ fn graph_options_schema_json() -> Value {
 
 fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
     match CugraphAlgorithmParams::from_native_defaults(algorithm, None) {
-        CugraphAlgorithmParams::PageRank(params) | CugraphAlgorithmParams::PageRankStrict(params) => {
+        CugraphAlgorithmParams::PageRank(params) => {
             json!({
                 "alpha": {
                     "scope": "algorithm",
@@ -91,6 +91,47 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "type": "UInt32",
                     "default": params.max_iterations,
                     "min": 1
+                }
+            })
+        },
+        CugraphAlgorithmParams::PersonalizedPageRank(params) => {
+            json!({
+                "alpha": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.pagerank.alpha,
+                    "min": 0.0,
+                    "max": 1.0
+                },
+                "epsilon": {
+                    "scope": "algorithm",
+                    "type": "Float64",
+                    "default": params.pagerank.epsilon,
+                    "exclusive_min": 0.0
+                },
+                "max_iterations": {
+                    "scope": "algorithm",
+                    "type": "UInt32",
+                    "default": params.pagerank.max_iterations,
+                    "min": 1
+                },
+                "personalization_table": {
+                    "scope": "side_input",
+                    "type": "Utf8",
+                    "required": true,
+                    "description": "Table containing personalized PageRank vertex weights."
+                },
+                "personalization_vertex_col": {
+                    "scope": "side_input",
+                    "type": "Utf8",
+                    "required": true,
+                    "default": params.personalization.vertex_col
+                },
+                "personalization_value_col": {
+                    "scope": "side_input",
+                    "type": "Utf8",
+                    "required": true,
+                    "default": params.personalization.value_col
                 }
             })
         },
@@ -622,9 +663,17 @@ fn graph_options_value(options: &CugraphGraphOptions) -> Value {
 
 fn algorithm_option_defaults(algorithm: CugraphAlgorithm) -> Value {
     match CugraphAlgorithmParams::from_native_defaults(algorithm, None) {
-        CugraphAlgorithmParams::PageRank(params) | CugraphAlgorithmParams::PageRankStrict(params) => {
+        CugraphAlgorithmParams::PageRank(params) => {
             json!({"alpha": params.alpha, "epsilon": params.epsilon, "max_iterations": params.max_iterations})
         },
+        CugraphAlgorithmParams::PersonalizedPageRank(params) => json!({
+            "alpha": params.pagerank.alpha,
+            "epsilon": params.pagerank.epsilon,
+            "max_iterations": params.pagerank.max_iterations,
+            "personalization_table": null,
+            "personalization_vertex_col": params.personalization.vertex_col,
+            "personalization_value_col": params.personalization.value_col,
+        }),
         CugraphAlgorithmParams::Bfs(params) => json!({
             "depth_limit": params.depth_limit,
             "edge_id_col": null,
@@ -745,9 +794,19 @@ pub(super) fn normalized_options_json(spec: &CugraphAlgorithmSpec) -> String {
 
 fn params_json(params: &CugraphAlgorithmParams) -> Value {
     match params {
-        CugraphAlgorithmParams::PageRank(params) | CugraphAlgorithmParams::PageRankStrict(params) => {
+        CugraphAlgorithmParams::PageRank(params) => {
             json!({"alpha": params.alpha, "epsilon": params.epsilon, "max_iterations": params.max_iterations})
         },
+        CugraphAlgorithmParams::PersonalizedPageRank(params) => json!({
+            "alpha": params.pagerank.alpha,
+            "epsilon": params.pagerank.epsilon,
+            "max_iterations": params.pagerank.max_iterations,
+            "personalization": {
+                "table": params.personalization.table_name.to_string(),
+                "vertex_col": params.personalization.vertex_col,
+                "value_col": params.personalization.value_col,
+            },
+        }),
         CugraphAlgorithmParams::Bfs(params) => json!({
             "source_vertex": source_vertex_json(&params.source_vertex),
             "depth_limit": params.depth_limit,

@@ -54,6 +54,8 @@ pub const GRAPH_ALGORITHM_STRICT_BOUNDED_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithm
 pub enum GraphAlgorithm {
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank>
     PageRank,
+    /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/centrality/#pagerank>
+    PersonalizedPageRank,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#breadth-first-search-bfs>
     Bfs,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#louvain>
@@ -85,9 +87,6 @@ pub enum GraphAlgorithm {
     KCore,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.tree.minimum_spanning_tree.minimum_spanning_tree/>
     MinimumSpanningTree,
-    /// PageRank variant that uses strict convergence/error behavior.
-    /// TODO: link?
-    PageRankStrict,
     /// <https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/community/#leiden>
     Leiden,
     /// Ensemble clustering for graphs.
@@ -107,6 +106,7 @@ impl GraphAlgorithm {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::PageRank => "pagerank",
+            Self::PersonalizedPageRank => "personalized_pagerank",
             Self::Bfs => "bfs",
             Self::Louvain => "louvain",
             Self::EigenvectorCentrality => "eigenvector_centrality",
@@ -122,7 +122,6 @@ impl GraphAlgorithm {
             Self::CoreNumber => "core_number",
             Self::KCore => "k_core",
             Self::MinimumSpanningTree => "minimum_spanning_tree",
-            Self::PageRankStrict => "pagerank_strict",
             Self::Leiden => "leiden",
             Self::Ecg => "ecg",
             Self::SpectralModularityMaximization => "spectral_modularity_maximization",
@@ -325,7 +324,10 @@ impl GraphOperationDefinition {
     pub const fn weight_policy(&self) -> GraphWeightPolicy {
         match self.algorithm {
             GraphAlgorithm::MinimumSpanningTree => GraphWeightPolicy::Required,
-            GraphAlgorithm::Sssp | GraphAlgorithm::ForceAtlas2 => GraphWeightPolicy::Optional,
+            GraphAlgorithm::PageRank
+            | GraphAlgorithm::PersonalizedPageRank
+            | GraphAlgorithm::Sssp
+            | GraphAlgorithm::ForceAtlas2 => GraphWeightPolicy::Optional,
             _ => GraphWeightPolicy::Ignored,
         }
     }
@@ -382,6 +384,9 @@ impl GraphOperationDefinition {
     pub fn default_params(&self) -> GraphAlgorithmParams {
         match self.algorithm {
             GraphAlgorithm::PageRank => GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+            GraphAlgorithm::PersonalizedPageRank => {
+                GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams::default())
+            },
             GraphAlgorithm::Bfs => GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
             GraphAlgorithm::Louvain => GraphAlgorithmParams::Louvain(GraphLouvainParams::default()),
             GraphAlgorithm::EigenvectorCentrality => {
@@ -405,7 +410,6 @@ impl GraphOperationDefinition {
             GraphAlgorithm::CoreNumber => GraphAlgorithmParams::CoreNumber(GraphCoreNumberParams::default()),
             GraphAlgorithm::KCore => GraphAlgorithmParams::KCore(GraphKCoreParams::default()),
             GraphAlgorithm::MinimumSpanningTree => GraphAlgorithmParams::MinimumSpanningTree(GraphMstParams),
-            GraphAlgorithm::PageRankStrict => GraphAlgorithmParams::PageRankStrict(GraphPageRankParams::default()),
             GraphAlgorithm::Leiden => GraphAlgorithmParams::Leiden(GraphLeidenParams::default()),
             GraphAlgorithm::Ecg => GraphAlgorithmParams::Ecg(GraphEcgParams::default()),
             GraphAlgorithm::SpectralModularityMaximization => {
@@ -523,8 +527,8 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
         layout_requirement: GraphLayoutRequirement::Any,
     },
     GraphOperationDefinition {
-        algorithm: GraphAlgorithm::PageRankStrict,
-        name: "pagerank_strict",
+        algorithm: GraphAlgorithm::PersonalizedPageRank,
+        name: "personalized_pagerank",
         layout_requirement: GraphLayoutRequirement::Transposed,
     },
     GraphOperationDefinition {
@@ -762,6 +766,7 @@ impl fmt::Display for GraphKCoreDegreeType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphAlgorithmParams {
     PageRank(GraphPageRankParams),
+    PersonalizedPageRank(GraphPersonalizedPageRankParams),
     Bfs(Box<GraphBfsParams>),
     Louvain(GraphLouvainParams),
     EigenvectorCentrality(GraphEigenvectorCentralityParams),
@@ -777,7 +782,6 @@ pub enum GraphAlgorithmParams {
     CoreNumber(GraphCoreNumberParams),
     KCore(GraphKCoreParams),
     MinimumSpanningTree(GraphMstParams),
-    PageRankStrict(GraphPageRankParams),
     Leiden(GraphLeidenParams),
     Ecg(GraphEcgParams),
     SpectralModularityMaximization(GraphSpectralClusteringParams),
@@ -790,6 +794,7 @@ impl GraphAlgorithmParams {
     pub const fn algorithm(&self) -> GraphAlgorithm {
         match self {
             Self::PageRank(_) => GraphAlgorithm::PageRank,
+            Self::PersonalizedPageRank(_) => GraphAlgorithm::PersonalizedPageRank,
             Self::Bfs(_) => GraphAlgorithm::Bfs,
             Self::Louvain(_) => GraphAlgorithm::Louvain,
             Self::EigenvectorCentrality(_) => GraphAlgorithm::EigenvectorCentrality,
@@ -805,7 +810,6 @@ impl GraphAlgorithmParams {
             Self::CoreNumber(_) => GraphAlgorithm::CoreNumber,
             Self::KCore(_) => GraphAlgorithm::KCore,
             Self::MinimumSpanningTree(_) => GraphAlgorithm::MinimumSpanningTree,
-            Self::PageRankStrict(_) => GraphAlgorithm::PageRankStrict,
             Self::Leiden(_) => GraphAlgorithm::Leiden,
             Self::Ecg(_) => GraphAlgorithm::Ecg,
             Self::SpectralModularityMaximization(_) => GraphAlgorithm::SpectralModularityMaximization,
@@ -831,8 +835,56 @@ pub struct GraphPageRankParams {
 }
 
 impl Default for GraphPageRankParams {
+    // ref: https://docs.rapids.ai/api/cugraph/stable/api_docs/api/cugraph/cugraph.pagerank/
     fn default() -> Self {
         Self { alpha: 0.85, epsilon: 1e-6, max_iterations: 100 }
+    }
+}
+
+/// Personalized PageRank parameters.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphPersonalizedPageRankParams {
+    /// Shared PageRank solver options.
+    pub pagerank: GraphPageRankParams,
+    /// GPU-resident personalization vector side input.
+    pub personalization: GraphPageRankPersonalizationInput,
+}
+
+impl GraphPersonalizedPageRankParams {
+    /// Visits every side-input node id in stable role order.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        std::iter::once(self.personalization.input)
+    }
+}
+
+impl Default for GraphPersonalizedPageRankParams {
+    fn default() -> Self {
+        Self {
+            pagerank: GraphPageRankParams::default(),
+            personalization: GraphPageRankPersonalizationInput::new(
+                NodeId::from_index_for_internal_use(0),
+                "vertex",
+                "value",
+            ),
+        }
+    }
+}
+
+/// Personalized PageRank side-input column binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphPageRankPersonalizationInput {
+    /// Native plan node producing the personalization relation.
+    pub input: NodeId,
+    /// Vertex id column in the personalization relation.
+    pub vertex: String,
+    /// Personalization value column in the personalization relation.
+    pub value: String,
+}
+
+impl GraphPageRankPersonalizationInput {
+    /// Creates a personalization input binding.
+    pub fn new(input: NodeId, vertex: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { input, vertex: vertex.into(), value: value.into() }
     }
 }
 
@@ -1358,7 +1410,10 @@ impl GraphAlgorithmNode {
 /// Stable SQL-facing result schema for graph algorithms.
 pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
     let fields = match algorithm {
-        GraphAlgorithm::PageRank | GraphAlgorithm::EigenvectorCentrality | GraphAlgorithm::KatzCentrality => {
+        GraphAlgorithm::PageRank
+        | GraphAlgorithm::PersonalizedPageRank
+        | GraphAlgorithm::EigenvectorCentrality
+        | GraphAlgorithm::KatzCentrality => {
             // Centrality-style algorithms expose one score per vertex.
             vec![
                 Field::new("vertex", arrow::datatypes::DataType::Int64, false),
@@ -1430,13 +1485,6 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             Field::new("src", arrow::datatypes::DataType::Int64, false),
             Field::new("dst", arrow::datatypes::DataType::Int64, false),
         ],
-        // PageRank strict shares the same centrality schema as PageRank.
-        GraphAlgorithm::PageRankStrict => {
-            vec![
-                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
-                Field::new("value", arrow::datatypes::DataType::Float64, false),
-            ]
-        },
         // Leiden, ECG, spectral modularity maximization, and balanced-cut
         // clustering all return a vertex-partition assignment. Labels are
         // partition identifiers; parity tests use partition-equivalence.

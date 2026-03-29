@@ -366,6 +366,15 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
         super::GraphAlgorithmParams::PageRank(params) => {
             format!("alpha={}:epsilon={}:max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
         },
+        super::GraphAlgorithmParams::PersonalizedPageRank(params) => format!(
+            "alpha={}:epsilon={}:max_iterations={}:personalization_node={}:personalization_vertex_col={}:personalization_value_col={}",
+            params.pagerank.alpha,
+            params.pagerank.epsilon,
+            params.pagerank.max_iterations,
+            params.personalization.input,
+            params.personalization.vertex,
+            params.personalization.value,
+        ),
         super::GraphAlgorithmParams::Bfs(params) => format!(
             "source_vertex={}:source_vertices={}:depth_limit={}",
             params.source_vertex,
@@ -405,9 +414,6 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             format!("k={}:degree_type={}", params.k, params.degree_type.as_str())
         },
         super::GraphAlgorithmParams::MinimumSpanningTree(_) => String::new(),
-        super::GraphAlgorithmParams::PageRankStrict(params) => {
-            format!("alpha={}:epsilon={}:max_iterations={}", params.alpha, params.epsilon, params.max_iterations)
-        },
         super::GraphAlgorithmParams::Leiden(params) => format!(
             "max_level={}:resolution={}:theta={}:seed={}",
             params.max_level, params.resolution, params.theta, params.seed,

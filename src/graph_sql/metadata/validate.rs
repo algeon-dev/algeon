@@ -263,6 +263,17 @@ pub(super) async fn cugraph_validate_call(
     {
         return row;
     }
+    if let Some(row) = validate_personalized_pagerank_source(
+        state,
+        canonical_function_name,
+        &spec,
+        &vertex_domain,
+        output_schema_json.clone(),
+    )
+    .await
+    {
+        return row;
+    }
 
     ValidationRow {
         valid: true,
@@ -367,6 +378,83 @@ async fn validate_bfs_predicate_sources(
         {
             return Some(row);
         }
+    }
+    None
+}
+
+async fn validate_personalized_pagerank_source(
+    state: &dyn Session,
+    function_name: &str,
+    spec: &CugraphAlgorithmSpec,
+    vertex_domain: &CugraphVertexIdDomain,
+    output_schema_json: String,
+) -> Option<ValidationRow> {
+    let CugraphAlgorithmParams::PersonalizedPageRank(params) = &spec.params else {
+        return None;
+    };
+    let input = &params.personalization;
+    let provider = match resolve_table_provider(state, datafusion_table_reference(&input.table_name)).await {
+        Ok(provider) => provider,
+        Err(message) => {
+            return Some(predicate_validation_error(
+                function_name,
+                ERROR_TABLE_NOT_FOUND,
+                message,
+                &output_schema_json,
+            ));
+        },
+    };
+    let schema = provider.schema();
+    let vertex = match schema.field_with_name(&input.vertex_col) {
+        Ok(field) => field,
+        Err(_) => {
+            return Some(predicate_validation_error(
+                function_name,
+                ERROR_COLUMN_NOT_FOUND,
+                format!(
+                    "cuGraph personalized PageRank source '{}' is missing vertex column '{}'",
+                    input.table_name, input.vertex_col
+                ),
+                &output_schema_json,
+            ));
+        },
+    };
+    if !vertex_domain.accepts(vertex.data_type()) {
+        return Some(predicate_validation_error(
+            function_name,
+            ERROR_VERTEX_DTYPE_MISMATCH,
+            format!(
+                "cuGraph personalized PageRank vertex column '{}' must have dtype {}",
+                input.vertex_col,
+                vertex_domain.label()
+            ),
+            &output_schema_json,
+        ));
+    }
+    let value = match schema.field_with_name(&input.value_col) {
+        Ok(field) => field,
+        Err(_) => {
+            return Some(predicate_validation_error(
+                function_name,
+                ERROR_COLUMN_NOT_FOUND,
+                format!(
+                    "cuGraph personalized PageRank source '{}' is missing value column '{}'",
+                    input.table_name, input.value_col
+                ),
+                &output_schema_json,
+            ));
+        },
+    };
+    if !is_supported_weight_dtype(value.data_type()) {
+        return Some(predicate_validation_error(
+            function_name,
+            ERROR_UNSUPPORTED_WEIGHT_DTYPE,
+            format!(
+                "cuGraph personalized PageRank value column '{}' must have dtype Float32 or Float64",
+                input.value_col
+            ),
+            &output_schema_json,
+        ));
     }
     None
 }

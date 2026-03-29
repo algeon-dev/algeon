@@ -103,6 +103,68 @@ async fn cugraph_sql_gpu_pagerank_filter_sort_limit_stays_gpu_resident_until_col
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_personalized_pagerank_executes_with_side_input() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))
+        .with_cugraph_sql(CugraphSqlConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 0, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 2, 0])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 1.0, 1.0, 1.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("ppr_edges", Arc::new(MemTable::try_new(edge_schema, vec![vec![edge_batch]]).unwrap())).unwrap();
+
+    let seed_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let seed_batch = RecordBatch::try_new(
+        Arc::clone(&seed_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("ppr_seeds", Arc::new(MemTable::try_new(seed_schema, vec![vec![seed_batch]]).unwrap())).unwrap();
+
+    let batches = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_personalized_pagerank(\
+               'ppr_edges', 'src', 'dst', 'weight', \
+               '{\"personalization_table\":\"ppr_seeds\",\
+                 \"personalization_vertex_col\":\"vertex\",\
+                 \"personalization_value_col\":\"value\"}'\
+             ) \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+
+    let rows = pagerank_rows(&batches);
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows.iter().map(|row| row.vertex).collect::<Vec<_>>(), vec![0, 1, 2]);
+    assert!(rows.iter().all(|row| row.value.is_finite() && row.value >= 0.0));
+    let sum = rows.iter().map(|row| row.value).sum::<f64>();
+    assert!((sum - 1.0).abs() <= 1.0e-6, "personalized PageRank scores should be normalized, got {sum}");
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_force_atlas2_executes_weighted_layout() {
     let state = SessionStateBuilder::new_with_default_features()
         .with_cudf_native(CudfOptimizerConfig::new(GpuFallbackPolicy::GpuPreferred))

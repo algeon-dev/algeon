@@ -204,6 +204,7 @@ impl QueryPlanBuilder {
 fn graph_algorithm_side_inputs(spec: &GraphAlgorithmSpec) -> Vec<NodeId> {
     match &spec.params {
         GraphAlgorithmParams::Bfs(params) => params.side_input_node_ids().collect(),
+        GraphAlgorithmParams::PersonalizedPageRank(params) => params.side_input_node_ids().collect(),
         _ => Vec::new(),
     }
 }
