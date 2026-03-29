@@ -100,15 +100,15 @@ fn debug_shows_name_and_dtype() {
 }
 
 // ---------------------------------------------------------------------------
-// column_view() explicit accessor
+// as_column_view() explicit accessor
 // ---------------------------------------------------------------------------
 
 #[test]
-fn column_view_accessor() {
+fn as_column_view_accessor() {
     let s = Series::new::<i32>("x", &[5, 6]).unwrap();
     let df = DataFrame::from_columns([("x", s)]).unwrap();
 
     let sv = df.series_view("x").unwrap();
-    let cv = sv.column_view();
+    let cv = sv.as_column_view();
     assert_eq!(cv.len().unwrap(), 2);
 }

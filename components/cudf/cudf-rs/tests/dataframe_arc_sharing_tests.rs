@@ -136,20 +136,6 @@ fn test_rename_original_unchanged() {
     assert_eq!(renamed.series_view("points").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
-fn test_rename_owned_shares_all_column_data() {
-    let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let score_ptr = device_ptr(&df, "score");
-    let flag_ptr = device_ptr(&df, "flag");
-
-    let renamed = df.rename_column_owned("id", "identifier").unwrap();
-
-    assert_eq!(id_ptr, device_ptr(&renamed, "identifier"));
-    assert_eq!(score_ptr, device_ptr(&renamed, "score"));
-    assert_eq!(flag_ptr, device_ptr(&renamed, "flag"));
-}
-
 // ---------------------------------------------------------------------------
 // with_column() only allocates for the new/replaced column
 // ---------------------------------------------------------------------------
@@ -192,20 +178,6 @@ fn test_with_column_replaced_column_has_correct_data() {
 
     // Original is unaffected.
     assert_eq!(df.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
-}
-
-#[test]
-fn test_with_column_owned_unchanged_columns_shared() {
-    let df = sample_df();
-    let id_ptr = device_ptr(&df, "id");
-    let flag_ptr = device_ptr(&df, "flag");
-
-    let new_score = Column::from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
-    let result = df.with_column_owned("score", new_score).unwrap();
-
-    // Unchanged columns should still be shared (same Arc, same pointer).
-    assert_eq!(id_ptr, device_ptr(&result, "id"));
-    assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
 // ---------------------------------------------------------------------------

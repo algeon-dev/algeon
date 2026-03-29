@@ -464,7 +464,7 @@ fn dataframe_fillna_with_series_uses_retained_explicit_domain_stream_and_mr() {
     assert_ne!(last_exec_mr_value(), 0);
     assert_ne!(last_exec_mr_value(), default_mr);
     assert_eq!(filled.__debug_execution_domain_id(), 81);
-    let host: Vec<i32> = filled.series("value").unwrap().column_view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = filled.series("value").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![1, 20, 3]);
 }
 
@@ -482,7 +482,7 @@ fn dataframe_gather_uses_retained_explicit_domain_stream_and_mr() {
     assert_ne!(last_exec_mr_value(), 0);
     assert_ne!(last_exec_mr_value(), default_mr);
     assert_eq!(gathered.__debug_execution_domain_id(), 92);
-    let host: Vec<i32> = gathered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = gathered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![30, 10]);
 }
 
@@ -500,7 +500,7 @@ fn dataframe_filter_uses_retained_explicit_domain_stream_and_mr() {
     assert_ne!(last_exec_mr_value(), 0);
     assert_ne!(last_exec_mr_value(), default_mr);
     assert_eq!(filtered.__debug_execution_domain_id(), 93);
-    let host: Vec<i32> = filtered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = filtered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![10, 30]);
 }
 
@@ -517,7 +517,7 @@ fn dataframe_slice_uses_retained_explicit_domain_stream_and_mr() {
     assert_ne!(last_exec_mr_value(), 0);
     assert_ne!(last_exec_mr_value(), default_mr);
     assert_eq!(sliced.__debug_execution_domain_id(), 94);
-    let host: Vec<i32> = sliced.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = sliced.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![20, 30]);
 }
 
@@ -546,7 +546,7 @@ fn dataframe_groupby_agg_preserves_explicit_domain_identity() {
 #[test]
 fn zero_column_dataframe_try_into_table_and_from_table_preserve_explicit_domain() {
     let df = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 78))]).unwrap();
-    let zero = df.drop(["id"]).unwrap();
+    let zero = df.without_columns(["id"]).unwrap();
 
     assert_eq!(zero.num_columns(), 0);
     assert_eq!(zero.__debug_execution_domain_kind(), "explicit");
@@ -615,7 +615,10 @@ fn dataframe_try_into_table_shared_copy_uses_retained_explicit_domain_stream_and
 
 #[test]
 fn zero_column_dataframe_concat_preserves_explicit_domain() {
-    let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 80))]).unwrap().drop(["id"]).unwrap();
+    let left = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2], 80))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
     let right = DataFrame::from_columns([("id", explicit_i32_series("id", &[3, 4], 80))])
         .unwrap()
         .select(std::iter::empty::<&str>())
@@ -630,8 +633,10 @@ fn zero_column_dataframe_concat_preserves_explicit_domain() {
 
 #[test]
 fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
-    let zero =
-        DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 81))]).unwrap().drop(["id"]).unwrap();
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 81))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
     let ambient = Series::new::<i32>("value", &[10, 20, 30]).unwrap();
 
     let err = zero.with_column("value", ambient).unwrap_err();
@@ -644,8 +649,10 @@ fn zero_column_explicit_dataframe_with_column_rejects_ambient_series() {
 
 #[test]
 fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
-    let zero =
-        DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 82))]).unwrap().drop(["id"]).unwrap();
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 82))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
     let explicit = explicit_i32_series("value", &[10, 20, 30], 82);
 
     let result = zero.with_column("value", explicit).unwrap();
@@ -657,8 +664,10 @@ fn zero_column_explicit_dataframe_with_column_preserves_same_explicit_domain() {
 
 #[test]
 fn zero_column_explicit_dataframe_assign_rejects_mixed_domain_series() {
-    let zero =
-        DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 83))]).unwrap().drop(["id"]).unwrap();
+    let zero = DataFrame::from_columns([("id", explicit_i32_series("id", &[1, 2, 3], 83))])
+        .unwrap()
+        .without_columns(["id"])
+        .unwrap();
     let ambient = Series::new::<i32>("value", &[10, 20, 30]).unwrap();
 
     let err = zero.assign([("value", ambient)]).unwrap_err();

@@ -39,6 +39,26 @@ cudf_status_t cudf_table_copy_ex(cudf_table_handle src,
                                  const cudf_exec_options_t* options,
                                  cudf_table_handle* out);
 
+/// Return payload bytes for this owning table.
+///
+/// This sums payload accounting for each owning column.
+cudf_status_t cudf_table_payload_size(cudf_table_handle handle,
+                                      size_t* out);
+
+/// Return payload bytes for this owning table with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_table_payload_size_ex(cudf_table_handle handle,
+                                         const cudf_exec_options_t* options,
+                                         size_t* out);
+
+/// Return the total device allocation footprint of this owning table.
+///
+/// This forwards to libcudf `table::alloc_size()` and includes padding.
+cudf_status_t cudf_table_device_allocated_size(cudf_table_handle handle,
+                                               size_t* out);
+
 /// Destroy an owning table handle.
 void cudf_table_destroy(cudf_table_handle handle);
 

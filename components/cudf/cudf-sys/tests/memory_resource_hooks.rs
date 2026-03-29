@@ -30,7 +30,7 @@ struct CurrentDeviceResourceRestore {
 
 impl Drop for CurrentDeviceResourceRestore {
     fn drop(&mut self) {
-        cudf_sys::test_set_current_device_resource_raw(self.previous_raw)
+        unsafe { cudf_sys::test_set_current_device_resource_raw(self.previous_raw) }
             .expect("failed to restore previous current device resource");
     }
 }

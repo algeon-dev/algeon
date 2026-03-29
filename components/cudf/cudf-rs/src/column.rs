@@ -203,6 +203,30 @@ impl Column {
         })
     }
 
+    pub(crate) fn payload_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        let exec_options = self.domain.explicit_exec_options_raw();
+        error::check_status_in(
+            match exec_options.as_ref() {
+                Some(options) => unsafe {
+                    cudf_sys::cudf_column_payload_size_ex(self.handle.as_ptr(), options, &mut out)
+                },
+                None => unsafe { cudf_sys::cudf_column_payload_size(self.handle.as_ptr(), &mut out) },
+            },
+            "column::payload_size_bytes",
+        )?;
+        Ok(out)
+    }
+
+    pub(crate) fn device_allocated_size_bytes(&self) -> Result<usize> {
+        let mut out = 0usize;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_column_device_allocated_size(self.handle.as_ptr(), &mut out) },
+            "column::device_allocated_size_bytes",
+        )?;
+        Ok(out)
+    }
+
     /// Returns the raw FFI handle. For internal use by `Table::from_columns`.
     pub(crate) fn into_raw(self) -> *mut c_void {
         let handle = self.handle.as_ptr();

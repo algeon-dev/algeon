@@ -29,7 +29,7 @@ struct CurrentDeviceResourceRestore {
 
 impl Drop for CurrentDeviceResourceRestore {
     fn drop(&mut self) {
-        cudf_sys::test_set_current_device_resource_raw(self.previous_raw)
+        unsafe { cudf_sys::test_set_current_device_resource_raw(self.previous_raw) }
             .expect("failed to restore previous current device resource");
     }
 }
@@ -65,15 +65,15 @@ fn groupby_agg_allocates_no_more_than_low_level_borrowed_primitive() {
 
     let low_level_allocations = allocation_count_delta(|| {
         let key_view = df.series_view("key").unwrap();
-        let key_table = TableView::from_column_views(&[key_view.column_view()]).unwrap();
+        let key_table = TableView::from_column_views(&[key_view.as_column_view()]).unwrap();
 
         let a_view = df.series_view("a").unwrap();
         let b_view = df.series_view("b").unwrap();
         let a_aggs = [Aggregation::Sum, Aggregation::Min];
         let b_aggs = [Aggregation::Sum];
         let requests = [
-            AggregationRequest { values: a_view.column_view(), aggregations: &a_aggs },
-            AggregationRequest { values: b_view.column_view(), aggregations: &b_aggs },
+            AggregationRequest { values: a_view.as_column_view(), aggregations: &a_aggs },
+            AggregationRequest { values: b_view.as_column_view(), aggregations: &b_aggs },
         ];
 
         let result = groupby_aggregate(&key_table, &requests, NullPolicy::Exclude).unwrap();

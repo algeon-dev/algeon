@@ -1,8 +1,8 @@
 //! High-Level API Semantic Baseline Tests (FC-AUDIT)
 //!
 //! These tests lock down the current borrow/share/copy semantics of every
-//! public accessor and conversion on `DataFrame` and `Series` **before** any
-//! renaming work begins. They serve as a regression gate: if a refactor
+//! public accessor and conversion on `DataFrame` and `Series` during naming
+//! refactors. They serve as a regression gate: if a refactor
 //! silently changes a zero-copy path into a deep-copy path (or vice versa),
 //! a test here will fail.
 //!
@@ -17,15 +17,12 @@
 //! | `into_table()`             | Mixed (conditional copy)   | Yes (owned)    | **Awkward**: implies zero-cost move but may deep-copy |
 //! | `clone()`                  | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
 //! | `select()`                 | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
-//! | `select_owned()`           | Zero-copy (Arc move)       | Yes (owned)    | OK — avoids refcount bump |
-//! | `rename()`                 | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
-//! | `rename_owned()`           | Zero-copy (Arc move)       | Yes (owned)    | OK                     |
+//! | `rename_column()`          | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
 //! | `rename_columns()`         | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
 //! | `with_column()`            | Zero-copy for unchanged    | Yes (owned)    | OK                     |
-//! | `with_column_owned()`      | Zero-copy for unchanged    | Yes (owned)    | OK                     |
 //! | `assign()`                 | Zero-copy for unchanged    | Yes (owned)    | OK                     |
 //! | `with_columns(exprs)`      | GPU-allocating per expr    | Yes (owned)    | OK                     |
-//! | `drop()` / `drop_columns()`| Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
+//! | `without_columns()`       | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
 //! | `filter(&Series)`          | GPU-allocating             | Yes (owned)    | OK                     |
 //! | `filter_by_mask()`         | GPU-allocating             | Yes (owned)    | OK (advanced entry point) |
 //! | `filter_isin()`            | GPU-allocating             | Yes (owned)    | OK                     |
@@ -60,7 +57,7 @@
 //! |----------------------------|----------------------------|----------------|------------------------|
 //! | `column()`                 | Zero-copy (ref)            | No (borrows)   | **Misleading**: "column" on a Series returns `&Column`, confusing layer |
 //! | `column_arc()`             | Zero-copy (ref to Arc)     | No (borrows)   | **Awkward**: leaks implementation detail |
-//! | `column_view()`            | Zero-copy (FFI view)       | No (borrows)   | OK but redundant with `view()` |
+//! | `as_column_view()`        | Zero-copy (FFI view)       | No (borrows)   | OK (advanced low-level escape hatch) |
 //! | `view()`                   | Zero-copy (FFI view)       | No (borrows)   | OK — returns `SeriesView` |
 //! | `clone()`                  | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
 //! | `rename()`                 | Zero-copy (Arc-share)      | Yes (owned)    | OK                     |
@@ -89,16 +86,9 @@
 //!
 //! # Flagged names (merely awkward)
 //!
-//! 1. **`*_owned` suffix** on DataFrame methods — The name doesn't hint at
-//!    *why* consuming self matters (memory lifetime). Could be `*_move` or
-//!    the borrow variant could just be removed in favor of always-consuming.
-//! 2. **`Series::column_arc()`** — Leaks implementation detail (`Arc`) into
+//! 1. **`Series::column_arc()`** — Leaks implementation detail (`Arc`) into
 //!    the public high-level API.
-//! 3. **`DataFrame::filter_by_mask()`** — Redundant with `filter()`.
-//! 4. **`Series::column_view()`** — Redundant with `view()` except it returns
-//!    bare `ColumnView` instead of `SeriesView`. The name is confusing alongside
-//!    `Series::column()`.
-//!
+//! 2. **`DataFrame::filter_by_mask()`** — Redundant with `filter()`.
 //! All tests require a GPU.
 
 use std::sync::Arc;
@@ -152,7 +142,7 @@ fn df_column_view_points_to_same_gpu_data_as_series() {
     let view_ptr = sv.device_data_ptr().unwrap();
 
     let series = df.series("id").unwrap();
-    let series_cv = series.column_view().unwrap();
+    let series_cv = series.as_column_view().unwrap();
     let series_ptr = series_cv.device_data_ptr().unwrap();
 
     assert_eq!(view_ptr, series_ptr);
@@ -193,7 +183,7 @@ fn df_series_shares_device_pointer() {
     let s = df.series("id").unwrap();
 
     let sv = df.series_view("id").unwrap();
-    assert_eq!(s.column_view().unwrap().device_data_ptr().unwrap(), sv.device_data_ptr().unwrap(),);
+    assert_eq!(s.as_column_view().unwrap().device_data_ptr().unwrap(), sv.device_data_ptr().unwrap(),);
 }
 
 /// `series()` produces an owned value that can outlive the DataFrame.
@@ -207,7 +197,7 @@ fn df_series_outlives_dataframe() {
     };
     // Series is still usable
     assert_eq!(s.len(), 3);
-    assert_eq!(s.column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
+    assert_eq!(s.as_column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
 /// Two `series()` calls for the same column produce Series with the
@@ -219,8 +209,8 @@ fn df_series_two_calls_share_arc() {
     let s2 = df.series("id").unwrap();
 
     // Same device pointer proves same underlying Column
-    let ptr1 = s1.column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = s2.column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = s1.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = s2.as_column_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
 }
 
@@ -292,7 +282,7 @@ fn df_into_table_shared_columns_deep_copies() {
 
     // Create an external reference to keep the Arc refcount > 1.
     let external_series = df.series("id").unwrap();
-    let external_ptr = external_series.column_view().unwrap().device_data_ptr().unwrap();
+    let external_ptr = external_series.as_column_view().unwrap().device_data_ptr().unwrap();
 
     let original_ptr = device_ptr(&df, "id");
     assert_eq!(original_ptr, external_ptr, "series shares same Arc");
@@ -307,7 +297,7 @@ fn df_into_table_shared_columns_deep_copies() {
     assert_ne!(table_ptr, external_ptr, "into_table() with shared Arc must deep-copy; pointers should differ");
 
     // External series is still valid (Arc keeps it alive).
-    assert_eq!(external_series.column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3],);
+    assert_eq!(external_series.as_column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3],);
 }
 
 /// `into_table()` consumes the DataFrame — data values are preserved.
@@ -323,7 +313,7 @@ fn df_into_table_values_preserved() {
 }
 
 // ===========================================================================
-// 5. *_owned methods — schema-only consuming variants
+// 5. Schema-only DataFrame metadata ops remain zero-copy
 // ===========================================================================
 
 /// `filter_by_mask` produces a new GPU allocation — the result
@@ -360,28 +350,26 @@ fn sort_values_consistent_results() {
     );
 }
 
-/// `select_owned` avoids the Arc refcount bump — it removes columns
-/// from the IndexMap instead of cloning the Arc.
+/// `select` is schema-only and Arc-shares selected columns.
 #[test]
-fn select_owned_transfers_arc() {
+fn select_shares_arc() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    // select_owned consumes df and moves the Arc
-    let selected = df.select_owned(&["id"]).unwrap();
+    let selected = df.select(&["id"]).unwrap();
     let selected_ptr = device_ptr(&selected, "id");
 
-    // Same device pointer — the column was moved, not copied.
+    // Same device pointer — the column was shared, not copied.
     assert_eq!(original_ptr, selected_ptr);
 }
 
-/// `rename_owned` avoids the Arc refcount bump.
+/// `rename_column` is a pure schema rewrite that Arc-shares columns.
 #[test]
-fn rename_owned_transfers_arc() {
+fn rename_column_shares_arc() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
 
-    let renamed = df.rename_column_owned("id", "identifier").unwrap();
+    let renamed = df.rename_column("id", "identifier").unwrap();
     let renamed_ptr = device_ptr(&renamed, "identifier");
 
     // Same device pointer — pure schema rewrite.
@@ -410,7 +398,7 @@ fn series_view_borrows_from_series() {
 fn series_view_same_device_ptr_as_column() {
     let s = Series::new::<i32>("x", &[1, 2]).unwrap();
     let sv = s.view().unwrap();
-    let cv = s.column_view().unwrap();
+    let cv = s.as_column_view().unwrap();
 
     assert_eq!(sv.device_data_ptr().unwrap(), cv.device_data_ptr().unwrap());
 }
@@ -426,7 +414,7 @@ fn series_view_unnamed() {
 }
 
 // ===========================================================================
-// 7. Series::column() vs Series::column_view() — borrow vs share
+// 7. Series::column() vs Series::as_column_view() — borrow vs share
 // ===========================================================================
 
 /// `Series::column()` returns `&Column` — a direct borrow of the inner
@@ -457,14 +445,14 @@ fn series_into_inner_shares_arc() {
     assert!(Arc::ptr_eq(&arc1, &arc2));
 }
 
-/// `Series::column_view()` returns a bare `ColumnView` (no name),
+/// `Series::as_column_view()` returns a bare `ColumnView` (no name),
 /// while `Series::view()` returns a `SeriesView` (with name).
 /// Both point to the same GPU data.
 #[test]
 fn series_column_view_vs_view() {
     let s = Series::new::<i32>("named", &[7, 8, 9]).unwrap();
 
-    let cv = s.column_view().unwrap();
+    let cv = s.as_column_view().unwrap();
     let sv = s.view().unwrap();
 
     // Same device data
@@ -484,8 +472,8 @@ fn series_clone_shares_gpu_data() {
     let s = Series::new::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
 
-    let ptr1 = s.column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = cloned.column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = s.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = cloned.as_column_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
     assert_eq!(cloned.name(), Some("x"));
 }
@@ -497,8 +485,8 @@ fn series_rename_shares_gpu_data() {
     let s = Series::new::<i32>("old", &[1, 2, 3]).unwrap();
     let renamed = s.rename("new");
 
-    let ptr1 = s.column_view().unwrap().device_data_ptr().unwrap();
-    let ptr2 = renamed.column_view().unwrap().device_data_ptr().unwrap();
+    let ptr1 = s.as_column_view().unwrap().device_data_ptr().unwrap();
+    let ptr2 = renamed.as_column_view().unwrap().device_data_ptr().unwrap();
     assert_eq!(ptr1, ptr2);
     assert_eq!(renamed.name(), Some("new"));
     assert_eq!(s.name(), Some("old"));
@@ -573,13 +561,13 @@ fn df_slicing_ops_gpu_allocate() {
 #[test]
 fn series_ops_gpu_allocate() {
     let s = Series::new::<i32>("v", &[1, 2, 3]).unwrap();
-    let original_ptr = s.column_view().unwrap().device_data_ptr().unwrap();
+    let original_ptr = s.as_column_view().unwrap().device_data_ptr().unwrap();
 
     let mask = s.gt_scalar(1i32).unwrap();
-    let mask_ptr = mask.column_view().unwrap().device_data_ptr().unwrap();
+    let mask_ptr = mask.as_column_view().unwrap().device_data_ptr().unwrap();
     assert_ne!(original_ptr, mask_ptr, "gt_scalar must allocate new column");
 
     let added = s.add_scalar(10i32).unwrap();
-    let add_ptr = added.column_view().unwrap().device_data_ptr().unwrap();
+    let add_ptr = added.as_column_view().unwrap().device_data_ptr().unwrap();
     assert_ne!(original_ptr, add_ptr, "add_scalar must allocate new column");
 }

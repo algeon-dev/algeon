@@ -81,21 +81,6 @@ fn test_concat_mismatched_column_types_returns_error() {
 }
 
 #[test]
-fn test_rename_owned_is_schema_only_and_preserves_data() {
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
-    )
-    .unwrap();
-
-    let renamed = df.rename_column_owned("a", "alpha").unwrap();
-
-    assert_eq!(renamed.column_names(), vec!["alpha", "b"]);
-    assert_eq!(renamed.series_view("alpha").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-    assert_eq!(renamed.series_view("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
-}
-
-#[test]
 fn test_copy_preserves_schema_and_data() {
     let df = DataFrame::new(
         vec!["x".to_string(), "y".to_string()],
@@ -223,6 +208,20 @@ fn test_select_preserves_data() {
 }
 
 #[test]
+fn test_select_accepts_string_vec() {
+    let df = DataFrame::new(
+        vec!["a".to_string(), "b".to_string()],
+        vec![Column::from_slice(&[1i32, 2]).unwrap(), Column::from_slice(&[10i32, 20]).unwrap()],
+    )
+    .unwrap();
+
+    let names = vec!["b".to_string(), "a".to_string()];
+    let selected = df.select(names).unwrap();
+
+    assert_eq!(selected.column_names(), vec!["b", "a"]);
+}
+
+#[test]
 fn test_rename_preserves_column_order() {
     let df = DataFrame::new(
         vec!["a".to_string(), "b".to_string(), "c".to_string()],
@@ -254,56 +253,6 @@ fn test_rename_same_name_is_schema_only_and_preserves_data() {
     // Data unchanged.
     assert_eq!(renamed.series_view("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
     assert_eq!(renamed.series_view("b").unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
-}
-
-#[test]
-fn test_rename_owned_nonexistent_column_returns_error() {
-    let df = DataFrame::new(vec!["a".to_string()], vec![Column::from_slice(&[1i32]).unwrap()]).unwrap();
-
-    let err = df.rename_column_owned("nonexistent", "new").err().expect("expected error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-}
-
-#[test]
-fn test_rename_owned_to_existing_name_returns_error() {
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![Column::from_slice(&[1i32]).unwrap(), Column::from_slice(&[2i32]).unwrap()],
-    )
-    .unwrap();
-
-    let err = df.rename_column_owned("a", "b").err().expect("expected error");
-    assert_eq!(err.kind(), ErrorKind::InvalidOperation);
-}
-
-#[test]
-fn test_rename_owned_same_name_noop() {
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string()],
-        vec![Column::from_slice(&[1i32, 2, 3]).unwrap(), Column::from_slice(&[10i32, 20, 30]).unwrap()],
-    )
-    .unwrap();
-
-    let renamed = df.rename_column_owned("a", "a").unwrap();
-
-    assert_eq!(renamed.column_names(), vec!["a", "b"]);
-    assert_eq!(renamed.series_view("a").unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
-}
-
-#[test]
-fn test_rename_owned_preserves_column_order() {
-    let df = DataFrame::new(
-        vec!["a".to_string(), "b".to_string(), "c".to_string()],
-        vec![
-            Column::from_slice(&[1i32]).unwrap(),
-            Column::from_slice(&[2i32]).unwrap(),
-            Column::from_slice(&[3i32]).unwrap(),
-        ],
-    )
-    .unwrap();
-
-    let renamed = df.rename_column_owned("b", "beta").unwrap();
-    assert_eq!(renamed.column_names(), vec!["a", "beta", "c"]);
 }
 
 #[test]

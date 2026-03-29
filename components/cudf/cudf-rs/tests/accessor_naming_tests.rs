@@ -1,7 +1,7 @@
 //! P3-T: Accessor naming consistency tests (TDD)
 //!
 //! Validates the target accessor naming scheme:
-//! - `DataFrame::series_view()` — replaces `column_view()`, returns `SeriesView`
+//! - `DataFrame::series_view()` — replaces `column()`, returns `SeriesView`
 //! - `Series::as_column()` — replaces `column()`, returns `&Column`
 //! - `Series::into_inner()` — replaces `column_arc()`, consumes and returns `Arc<Column>`
 //! - `DataFrameView::series_view()` — returns `Err` on miss (consistent with DataFrame)
@@ -76,7 +76,7 @@ fn test_dataframe_series_hit() {
 fn test_dataframe_series_and_series_view_share_device_data() {
     let df = sample_df();
     let view_ptr = df.series_view("id").unwrap().device_data_ptr().unwrap();
-    let series_ptr = df.series("id").unwrap().column_view().unwrap().device_data_ptr().unwrap();
+    let series_ptr = df.series("id").unwrap().as_column_view().unwrap().device_data_ptr().unwrap();
 
     assert_eq!(view_ptr, series_ptr, "owned and borrowed accessors should share the same GPU buffer");
 }

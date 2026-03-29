@@ -72,6 +72,21 @@ fn test_sort_values_multi_column() {
     assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
+#[test]
+fn test_sort_values_multi_column_with_owned_string_keys() {
+    let ids = Series::new::<i32>("id", &[2, 1, 2, 1]).unwrap();
+    let scores = Series::new::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
+    let tags = Series::new::<i32>("tag", &[200, 100, 400, 300]).unwrap();
+    let df = DataFrame::from_columns([("id", ids), ("score", scores), ("tag", tags)]).unwrap();
+
+    let keys = vec!["id".to_string(), "score".to_string()];
+    let sorted = df.sort_values(keys, SortOptions::new().with_descending(vec![false, true])).unwrap();
+
+    assert_eq!(sorted.series_view("id").unwrap().to_vec::<i32>().unwrap(), vec![1, 1, 2, 2]);
+    assert_eq!(sorted.series_view("score").unwrap().to_vec::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
+    assert_eq!(sorted.series_view("tag").unwrap().to_vec::<i32>().unwrap(), vec![300, 100, 400, 200]);
+}
+
 // ---------------------------------------------------------------------------
 // sort_values — stable sort preserves insertion order for ties
 // ---------------------------------------------------------------------------

@@ -67,6 +67,28 @@ cudf_status_t cudf_column_copy_from_view_ex(cudf_column_view_handle src,
                                             const cudf_exec_options_t* options,
                                             cudf_column_handle* out);
 
+/// Return payload bytes for this owning column.
+///
+/// Payload accounting excludes allocator padding. Compound parent columns
+/// contribute through their children; STRING also accounts for its chars
+/// payload using the resolved execution stream.
+cudf_status_t cudf_column_payload_size(cudf_column_handle handle,
+                                       size_t* out);
+
+/// Return payload bytes for this owning column with explicit execution options.
+///
+/// Passing NULL for `options`, or leaving `options->stream` / `options->mr`
+/// NULL, uses cuDF's default stream and current device memory resource.
+cudf_status_t cudf_column_payload_size_ex(cudf_column_handle handle,
+                                          const cudf_exec_options_t* options,
+                                          size_t* out);
+
+/// Return the total device allocation footprint of this owning column.
+///
+/// This forwards to libcudf `column::alloc_size()` and includes padding.
+cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle,
+                                                size_t* out);
+
 /// Destroy an owning column handle.
 void cudf_column_destroy(cudf_column_handle handle);
 

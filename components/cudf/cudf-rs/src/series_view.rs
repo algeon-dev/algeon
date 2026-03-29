@@ -35,11 +35,11 @@ impl<'a> SeriesView<'a> {
         self.name
     }
 
-    /// Returns a reference to the underlying `ColumnView`.
+    /// Returns a reference to the underlying bare `ColumnView`.
     ///
     /// This is useful when you need an explicit `&ColumnView` reference and
     /// auto-deref is not sufficient (e.g., generic contexts).
-    pub fn column_view(&self) -> &ColumnView<'a> {
+    pub fn as_column_view(&self) -> &ColumnView<'a> {
         &self.view
     }
 }

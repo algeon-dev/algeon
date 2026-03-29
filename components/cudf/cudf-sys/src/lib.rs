@@ -261,7 +261,11 @@ pub fn test_set_current_device_resource(mr: &MemoryResource) -> Result<(), cudf_
 }
 
 /// Restore a previously observed raw device resource pointer for tests.
-pub fn test_set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_status_t> {
+///
+/// # Safety
+/// `raw_mr` must be a valid pointer to an `rmm::device_memory_resource` that
+/// outlives the test scope. Passing a dangling or mistyped pointer is UB.
+pub unsafe fn test_set_current_device_resource_raw(raw_mr: *mut c_void) -> Result<(), cudf_status_t> {
     status_to_result(unsafe { cudf_test_memory_resource_set_current_raw(raw_mr) })
 }
 
@@ -331,6 +335,16 @@ extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_column_handle,
     ) -> cudf_status_t;
+
+    pub fn cudf_column_payload_size(handle: cudf_column_handle, out: *mut usize) -> cudf_status_t;
+
+    pub fn cudf_column_payload_size_ex(
+        handle: cudf_column_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_column_device_allocated_size(handle: cudf_column_handle, out: *mut usize) -> cudf_status_t;
 
     pub fn cudf_column_destroy(handle: cudf_column_handle);
 
@@ -543,6 +557,16 @@ extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
+
+    pub fn cudf_table_payload_size(handle: cudf_table_handle, out: *mut usize) -> cudf_status_t;
+
+    pub fn cudf_table_payload_size_ex(
+        handle: cudf_table_handle,
+        options: *const cudf_exec_options_t,
+        out: *mut usize,
+    ) -> cudf_status_t;
+
+    pub fn cudf_table_device_allocated_size(handle: cudf_table_handle, out: *mut usize) -> cudf_status_t;
 
     pub fn cudf_table_destroy(handle: cudf_table_handle);
 

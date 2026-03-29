@@ -750,7 +750,7 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
     assert_eq!(sorted.__debug_execution_domain_stream_value(), explicit_stream);
 
     obs_reset();
-    let vals: Vec<i32> = sorted.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    let vals: Vec<i32> = sorted.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(vals, vec![1, 2, 3]);
     assert_eq!(obs_last_sync_stream(), explicit_stream);
 }
@@ -858,7 +858,7 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     assert_eq!(gathered.__debug_execution_domain_stream_value(), explicit_stream);
 
     obs_reset();
-    let vals: Vec<i32> = gathered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    let vals: Vec<i32> = gathered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(vals, vec![2, 3]);
     assert_eq!(obs_last_sync_stream(), explicit_stream);
 }
@@ -902,7 +902,7 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     assert_eq!(filtered.__debug_execution_domain_stream_value(), explicit_stream);
 
     obs_reset();
-    let vals: Vec<i32> = filtered.series("id").unwrap().column_view().unwrap().to_vec().unwrap();
+    let vals: Vec<i32> = filtered.series("id").unwrap().as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(vals, vec![3, 2]);
     assert_eq!(obs_last_sync_stream(), explicit_stream);
 }
@@ -960,7 +960,7 @@ fn sort_values_default_produces_correct_results() {
     let sorted = df.sort_values(["id"], cudf::SortOptions::default()).unwrap();
 
     let col = sorted.series("id").unwrap();
-    let host: Vec<i32> = col.column_view().unwrap().to_vec().unwrap();
+    let host: Vec<i32> = col.as_column_view().unwrap().to_vec().unwrap();
     assert_eq!(host, vec![1, 2, 3], "sort_values result should be correct");
 }
 

@@ -1,9 +1,8 @@
 //! Tests for explicit copy-semantic naming on DataFrame.
 //!
 //! These tests verify that the new explicitly-named conversion methods
-//! (`to_table_copy`, `try_into_table`, `as_table_view`) behave identically
-//! to the originals they replace, and that the deprecated originals still
-//! compile.
+//! (`to_table_copy`, `try_into_table`, `temp_table_view`) preserve the intended
+//! deep-copy vs zero-copy behavior of the corresponding conversion paths.
 //!
 //! All tests require a GPU.
 
@@ -91,7 +90,7 @@ fn try_into_table_shared_columns_deep_copies() {
 
     // Hold an external reference to keep the Arc refcount > 1.
     let external_series = df.series("id").unwrap();
-    let external_ptr = external_series.column_view().unwrap().device_data_ptr().unwrap();
+    let external_ptr = external_series.as_column_view().unwrap().device_data_ptr().unwrap();
 
     let original_ptr = device_ptr(&df, "id");
     assert_eq!(original_ptr, external_ptr, "series shares same Arc");
@@ -105,7 +104,7 @@ fn try_into_table_shared_columns_deep_copies() {
     assert_ne!(table_ptr, external_ptr, "try_into_table() with shared Arc must deep-copy; pointers should differ");
 
     // External series is still valid.
-    assert_eq!(external_series.column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3],);
+    assert_eq!(external_series.as_column_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3],);
 }
 
 /// `try_into_table()` preserves data values.
@@ -121,15 +120,15 @@ fn try_into_table_values_preserved() {
 }
 
 // ===========================================================================
-// 4. as_table_view() — truly zero-copy borrowed view
+// 4. temp_table_view() — truly zero-copy borrowed view
 // ===========================================================================
 
-/// `as_table_view()` returns a `TempTableView` whose `table()` points to
+/// `temp_table_view()` returns a `TempTableView` whose `table()` points to
 /// the same GPU data — no copy.
 #[test]
-fn as_table_view_zero_copy() {
+fn temp_table_view_zero_copy() {
     let df = sample_df();
-    let ttv = df.as_table_view().unwrap();
+    let ttv = df.temp_table_view().unwrap();
     let tv = ttv.table();
 
     assert_eq!(tv.num_columns().unwrap(), 2);
@@ -138,14 +137,14 @@ fn as_table_view_zero_copy() {
     // Device pointers must match — no copy.
     let tv_ptr = tv.column(0).unwrap().device_data_ptr().unwrap();
     let df_ptr = device_ptr(&df, "id");
-    assert_eq!(tv_ptr, df_ptr, "as_table_view() must be zero-copy");
+    assert_eq!(tv_ptr, df_ptr, "temp_table_view() must be zero-copy");
 }
 
-/// `as_table_view()` preserves column order.
+/// `temp_table_view()` preserves column order.
 #[test]
-fn as_table_view_preserves_column_order() {
+fn temp_table_view_preserves_column_order() {
     let df = sample_df();
-    let ttv = df.as_table_view().unwrap();
+    let ttv = df.temp_table_view().unwrap();
     let tv = ttv.table();
 
     // Column 0 = "id" (Int32), Column 1 = "score" (Float64)
