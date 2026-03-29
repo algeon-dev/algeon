@@ -1271,7 +1271,7 @@ fn decode_bfs_logical_gpu_output(
         .map_err(cudf_logical_mapping_error)?;
     let distance =
         cudf_series(&raw, "distance")?.copy_into_runtime(context.runtime()).map_err(cudf_logical_mapping_error)?;
-    let predecessor = decode_code_column(&raw, "predecessor", codebook)?
+    let predecessor = decode_bfs_predecessor_code_column(&raw, codebook)?
         .copy_into_runtime(context.runtime())
         .map_err(cudf_logical_mapping_error)?;
     let mut columns = vec![("vertex", vertex), ("distance", distance), ("predecessor", predecessor)];
@@ -1304,6 +1304,20 @@ fn decode_bfs_logical_gpu_output(
 fn decode_code_column(frame: &DataFrame, column: &str, codebook: &Codebook) -> Result<Series> {
     let codes = cudf_series(frame, column)?.astype(cudf::TypeId::Int32).map_err(cudf_logical_mapping_error)?;
     codebook.decode_series(&codes).map_err(cudf_logical_mapping_error)
+}
+
+fn decode_bfs_predecessor_code_column(frame: &DataFrame, codebook: &Codebook) -> Result<Series> {
+    let codes = cudf_series(frame, "predecessor")?.astype(cudf::TypeId::Int32).map_err(cudf_logical_mapping_error)?;
+    let code_frame = DataFrame::from_series([("__predecessor_code", codes)]).map_err(cudf_logical_mapping_error)?;
+    let code_frame = code_frame
+        .with_columns([(
+            "__predecessor_code",
+            cudf::ops::when(cudf::ops::col("__predecessor_code").ge(0i32))
+                .then(cudf::ops::col("__predecessor_code"))
+                .otherwise(cudf::ops::lit_null(cudf::DataType::new(cudf::TypeId::Int32))),
+        )])
+        .map_err(cudf_logical_mapping_error)?;
+    codebook.decode_series(&cudf_series(&code_frame, "__predecessor_code")?).map_err(cudf_logical_mapping_error)
 }
 
 fn apply_gpu_projection_limit(

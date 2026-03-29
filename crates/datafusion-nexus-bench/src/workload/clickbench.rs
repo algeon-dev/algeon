@@ -42,9 +42,9 @@ pub use super::clickbench_queries::{
 
 /// Device-byte budget for bounded native ClickBench execution.
 ///
-/// When unset, the workload uses `nvidia-smi` memory.total minus 500 MiB, with
-/// a 256 MiB fallback if GPU memory cannot be detected. Invalid values panic
-/// during config construction.
+/// When unset, the workload uses CUDA/cudf-rs inventory total memory minus
+/// 500 MiB, with a 256 MiB fallback if GPU memory cannot be detected. Invalid
+/// values panic during config construction.
 pub const CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "CUDF_CLICKBENCH_NATIVE_DEVICE_BUDGET_BYTES";
 /// Planning target, in bytes, for native Parquet source chunks. Default: 64 MiB.
 pub const CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV: &str = "CUDF_CLICKBENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES";

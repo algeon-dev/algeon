@@ -5,6 +5,8 @@ use std::{
     sync::{Arc, Condvar, Mutex, OnceLock},
 };
 
+#[cfg(test)]
+use super::DeviceFacts;
 use super::ExecutionContext;
 use crate::error::{QueryError, QueryErrorCode, Result};
 
@@ -44,12 +46,13 @@ pub(super) fn default_service_stream_pool_size_from_sm_count(sm_count: Option<us
         .unwrap_or(DEFAULT_SERVICE_STREAM_POOL_SIZE)
 }
 
-// TODO: make nvml a dependent of cudf-rs?
+#[cfg(test)]
+pub(super) fn default_service_stream_pool_size_from_device_facts(facts: &DeviceFacts) -> usize {
+    default_service_stream_pool_size_from_sm_count(facts.sm_count.and_then(nonzero_sm_count))
+}
+
 fn detect_device_multiprocessor_count(device: cudf::DeviceId) -> Option<usize> {
-    let nvml = nvml_wrapper::Nvml::init().ok()?;
-    let device_index = u32::try_from(device.ordinal()).ok()?;
-    let attributes = nvml.device_by_index(device_index).ok()?.attributes().ok()?;
-    nonzero_sm_count(attributes.multiprocessor_count)
+    device.multiprocessor_count().ok().and_then(nonzero_sm_count)
 }
 
 pub(super) fn nonzero_sm_count(count: u32) -> Option<usize> {

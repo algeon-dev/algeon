@@ -9,6 +9,8 @@ build = "build.rs"
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys"]
+# Optional NVML utilization facts; memory capacity and SM count use cudf-rs CUDA/RMM inventory.
+nvml = ["dep:nvml-wrapper"]
 
 [lints]
 workspace = true
@@ -20,7 +22,7 @@ cudf = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 futures = { workspace = true }
-nvml-wrapper = "0.12.1"
+nvml-wrapper = { version = "0.12.1", optional = true }
 object_store = { workspace = true }
 parquet = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
