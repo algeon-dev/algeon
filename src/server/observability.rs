@@ -42,10 +42,27 @@ impl QueryObservability {
         Self { captures: DashMap::new(), cap: cap.max(1), ttl }
     }
 
-    pub(super) fn start_query(&self, query_id: impl Into<String>, sql: impl Into<String>) {
+    pub(super) fn start_query_with_correlation_id(
+        &self,
+        query_id: impl Into<String>,
+        sql: impl Into<String>,
+        correlation_id: Option<String>,
+    ) {
         let now = Instant::now();
         let query_id = query_id.into();
-        self.captures.insert(query_id.clone(), CapturedQuery::new(query_id, sql.into(), now));
+        self.captures.insert(query_id.clone(), CapturedQuery::new(query_id, sql.into(), correlation_id, now));
+        self.enforce_bounds(now);
+    }
+
+    pub(super) fn record_correlation_id(&self, query_id: &str, correlation_id: Option<&str>) {
+        let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) else {
+            return;
+        };
+        let now = Instant::now();
+        {
+            let mut query = self.ensure_query(query_id, now);
+            query.correlation_id.get_or_insert_with(|| correlation_id.to_string());
+        }
         self.enforce_bounds(now);
     }
 
@@ -160,7 +177,7 @@ impl QueryObservability {
         let mut query = self
             .captures
             .entry(query_id.to_string())
-            .or_insert_with(|| CapturedQuery::new(query_id.to_string(), String::new(), now));
+            .or_insert_with(|| CapturedQuery::new(query_id.to_string(), String::new(), None, now));
         query.last_touched_at = now;
         query
     }
@@ -227,6 +244,7 @@ impl NativeMetricsCaptureSink for QueryObservability {
 pub(super) struct CapturedQuery {
     pub(super) query_id: String,
     sql: String,
+    correlation_id: Option<String>,
     planning: Option<CapturedPlanning>,
     planning_failure: Option<CapturedPlanningFailure>,
     metrics: CapturedMetrics,
@@ -240,10 +258,11 @@ pub(super) struct CapturedQuery {
 }
 
 impl CapturedQuery {
-    fn new(query_id: String, sql: String, now: Instant) -> Self {
+    fn new(query_id: String, sql: String, correlation_id: Option<String>, now: Instant) -> Self {
         Self {
             query_id,
             sql,
+            correlation_id,
             planning: None,
             planning_failure: None,
             metrics: CapturedMetrics::default(),
@@ -261,6 +280,9 @@ impl CapturedQuery {
         let mut output = String::new();
         let _ = writeln!(output, "# datafusion_nexus_query_stats=1");
         let _ = writeln!(output, "# query_id={}", stable_value(&self.query_id));
+        if let Some(correlation_id) = &self.correlation_id {
+            let _ = writeln!(output, "# correlation_id={}", stable_value(correlation_id));
+        }
         let _ = writeln!(output, "# outcome={}", self.outcome.as_str());
         let _ = writeln!(output, "# sealed={}", self.sealed);
         let _ = writeln!(output, "# elapsed_ms={}", self.elapsed_ms());
@@ -535,7 +557,7 @@ mod tests {
     #[test]
     fn sealed_query_is_retained_until_ttl_or_cap_eviction() {
         let store = QueryObservability::new(8, Duration::from_secs(60));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         store.finish_success("q1");
         store.seal("q1");
 
@@ -545,12 +567,25 @@ mod tests {
     }
 
     #[test]
-    fn ttl_sweep_removes_sealed_queries() {
-        let store = QueryObservability::new(8, Duration::ZERO);
-        store.start_query("q1", "select 1");
+    fn query_stats_payload_includes_correlation_id_comment() {
+        let store = QueryObservability::new(8, Duration::from_secs(60));
+        store.start_query_with_correlation_id("q1", "select 1", Some("client-correlation-001".to_string()));
         store.finish_success("q1");
         store.seal("q1");
-        store.start_query("q2", "select 2");
+
+        let payload = store.get("q1").expect("query capture must be retained").to_query_stats_payload();
+
+        assert!(payload.contains("# query_id=q1\n"), "{payload}");
+        assert!(payload.contains("# correlation_id=client-correlation-001\n"), "{payload}");
+    }
+
+    #[test]
+    fn ttl_sweep_removes_sealed_queries() {
+        let store = QueryObservability::new(8, Duration::ZERO);
+        store.start_query_with_correlation_id("q1", "select 1", None);
+        store.finish_success("q1");
+        store.seal("q1");
+        store.start_query_with_correlation_id("q2", "select 2", None);
 
         assert!(store.get("q1").is_none());
         assert!(store.get("q2").is_some());
@@ -559,10 +594,10 @@ mod tests {
     #[test]
     fn cap_eviction_removes_oldest_query() {
         let store = QueryObservability::new(1, Duration::from_secs(60));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         store.finish_success("q1");
         store.seal("q1");
-        store.start_query("q2", "select 2");
+        store.start_query_with_correlation_id("q2", "select 2", None);
 
         assert!(store.get("q1").is_none());
         assert!(store.get("q2").is_some());
@@ -578,7 +613,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let query_id = format!("q{index}");
                     let sql = format!("select {index}");
-                    store.start_query(query_id.clone(), sql);
+                    store.start_query_with_correlation_id(query_id.clone(), sql, None);
                     store.finish_success(&query_id);
                     store.seal(&query_id);
                 })
@@ -601,7 +636,7 @@ mod tests {
     #[test]
     fn late_failure_does_not_override_success() {
         let store = QueryObservability::new(8, Duration::from_secs(60));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         store.finish_success("q1");
         store.finish_failed(
             "q1",
@@ -624,7 +659,7 @@ mod tests {
     #[test]
     fn late_success_does_not_override_failure_or_terminal_timestamp() {
         let store = QueryObservability::new(8, Duration::from_secs(60));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         store.finish_failed("q1", "stream", captured_error_with_facts([]));
         let failed = store.get("q1").expect("query capture must be retained");
         let failed_completed_at = failed.completed_at;
@@ -639,7 +674,7 @@ mod tests {
     #[test]
     fn runtime_context_failure_after_rewrite_does_not_report_native_runtime_started() {
         let store = QueryObservability::new(8, Duration::from_secs(60));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         let schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
         store.capture_planning(
             "q1",
@@ -663,7 +698,7 @@ mod tests {
     #[test]
     fn runtime_execution_failure_after_rewrite_reports_native_runtime_started() {
         let store = QueryObservability::new(8, Duration::from_secs(60));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         let schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
         store.capture_planning(
             "q1",
@@ -687,7 +722,7 @@ mod tests {
     #[test]
     fn query_stats_payload_includes_metrics_captured_through_native_metrics_bridge() {
         let store = Arc::new(QueryObservability::new(8, Duration::from_secs(60)));
-        store.start_query("q1", "select 1");
+        store.start_query_with_correlation_id("q1", "select 1", None);
         let schema = Arc::new(Schema::new(vec![Field::new("one", DataType::Int64, false)]));
         store.capture_planning(
             "q1",
