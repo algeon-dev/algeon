@@ -92,6 +92,7 @@ impl Scalar {
 
     /// Create a null string scalar.
     pub fn null_string() -> Result<Self> {
+        // SAFETY (unwrap): empty string literal "" contains no interior null bytes.
         let empty = CString::new("").unwrap();
         let mut handle = ptr::null_mut();
         // SAFETY: empty is a valid CString pointer. is_valid=0 marks null.

@@ -42,7 +42,6 @@ fn obs_last_stream() -> usize {
 }
 
 /// Last synchronized stream value (for host-materializing ops).
-#[allow(dead_code)]
 fn obs_last_sync_stream() -> usize {
     let mut out: usize = 0;
     let status = unsafe { cudf_test_exec_last_sync_stream_value(&mut out) };
