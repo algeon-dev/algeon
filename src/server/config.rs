@@ -53,6 +53,19 @@ pub const NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV: &str = "NEXUS_SERVER_STATE
 /// execution settings; the default is `native` when Iceberg is configured and
 /// `cpu_fallback` otherwise.
 pub const NEXUS_SERVER_SESSION_PROFILE_ENV: &str = "NEXUS_SERVER_SESSION_PROFILE";
+/// DataFusion catalog name that hosts the mutable session workspace overlay.
+/// Defaults to `datafusion` when a backing source schema is configured.
+pub const NEXUS_SERVER_WORKSPACE_CATALOG_ENV: &str = "NEXUS_SERVER_WORKSPACE_CATALOG";
+/// DataFusion schema name that hosts the mutable session workspace overlay.
+/// Defaults to `public` when a backing source schema is configured.
+pub const NEXUS_SERVER_WORKSPACE_SCHEMA_ENV: &str = "NEXUS_SERVER_WORKSPACE_SCHEMA";
+/// Source catalog that the mutable workspace overlay can read through.
+pub const NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV: &str = "NEXUS_SERVER_WORKSPACE_BACKING_CATALOG";
+/// Source schema that the mutable workspace overlay can read through.
+pub const NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV: &str = "NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA";
+/// Optional comma-separated source names exposed through the workspace overlay.
+/// When unset, all backing schema table names are visible through the overlay.
+pub const NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV: &str = "NEXUS_SERVER_WORKSPACE_BACKING_ALIASES";
 /// Native bounded-execution device-memory budget in bytes. When one bounded
 /// budget value is set, the source chunk byte and row-group limits must also be set.
 pub const NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES_ENV: &str = "NEXUS_SERVER_NATIVE_DEVICE_BUDGET_BYTES";
@@ -338,6 +351,9 @@ pub struct ServerConfig {
     /// [`NEXUS_SERVER_CONFIG_FILE_ENV`]; defaults to
     /// [`super::auth::AuthMode::Disabled`] when no file is provided.
     pub auth: AuthConfig,
+    /// Optional mutable workspace overlay that can read through to a
+    /// configured source schema while keeping all DDL local to the workspace.
+    pub workspace: Option<WorkspaceOverlayConfig>,
     #[cfg(feature = "iceberg")]
     pub iceberg: Option<IcebergServerConfig>,
     #[cfg(feature = "cugraph")]
@@ -425,6 +441,16 @@ impl std::fmt::Display for ServerSessionProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceOverlayConfig {
+    pub catalog: String,
+    pub schema: String,
+    pub backing_catalog: String,
+    pub backing_schema: String,
+    /// `None` means every table reported by the backing schema is visible.
+    pub backing_aliases: Option<Vec<String>>,
 }
 
 #[cfg(feature = "iceberg")]
@@ -583,6 +609,8 @@ impl ServerConfig {
         #[cfg(not(feature = "cugraph"))]
         reject_cugraph_env_without_feature(&mut values)?;
 
+        let workspace = workspace_overlay_config(&mut values)?;
+
         let explicit_profile = values.optional_session_profile(NEXUS_SERVER_SESSION_PROFILE_ENV)?;
         #[cfg(feature = "iceberg")]
         let default_profile =
@@ -614,6 +642,7 @@ impl ServerConfig {
             native_optimizer_config,
             session_profile,
             auth: overlay.auth,
+            workspace,
             #[cfg(feature = "iceberg")]
             iceberg,
             #[cfg(feature = "cugraph")]
@@ -675,6 +704,73 @@ fn server_gpu_devices(values: &mut EnvValues<'_>) -> Result<Vec<usize>> {
         devices.push(ordinal);
     }
     Ok(devices)
+}
+
+fn workspace_overlay_config(values: &mut EnvValues<'_>) -> Result<Option<WorkspaceOverlayConfig>> {
+    let requested = values.any_present([
+        NEXUS_SERVER_WORKSPACE_CATALOG_ENV,
+        NEXUS_SERVER_WORKSPACE_SCHEMA_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV,
+    ]);
+    if !requested {
+        return Ok(None);
+    }
+
+    let backing_catalog = values.string(NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV);
+    let backing_schema = values.string(NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV);
+    let (backing_catalog, backing_schema) = match (backing_catalog, backing_schema) {
+        (Some(catalog), Some(schema)) => (catalog, schema),
+        (None, None) => {
+            return Err(ServerError::invalid_config(
+                NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+                format!("requires {NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV} when workspace overlay is configured"),
+            ));
+        },
+        (None, Some(_)) => {
+            return Err(ServerError::invalid_config(
+                NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+                format!("is required when {NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV} is set"),
+            ));
+        },
+        (Some(_), None) => {
+            return Err(ServerError::invalid_config(
+                NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV,
+                format!("is required when {NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV} is set"),
+            ));
+        },
+    };
+
+    let catalog = values.string(NEXUS_SERVER_WORKSPACE_CATALOG_ENV).unwrap_or_else(|| "datafusion".to_string());
+    let schema = values.string(NEXUS_SERVER_WORKSPACE_SCHEMA_ENV).unwrap_or_else(|| "public".to_string());
+    if catalog == backing_catalog && schema == backing_schema {
+        return Err(ServerError::invalid_config(
+            NEXUS_SERVER_WORKSPACE_CATALOG_ENV,
+            "workspace catalog/schema must differ from backing catalog/schema",
+        ));
+    }
+
+    let backing_aliases = values
+        .string(NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV)
+        .map(|raw| parse_workspace_aliases(NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, &raw))
+        .transpose()?;
+
+    Ok(Some(WorkspaceOverlayConfig { catalog, schema, backing_catalog, backing_schema, backing_aliases }))
+}
+
+fn parse_workspace_aliases(env_name: &'static str, raw: &str) -> Result<Vec<String>> {
+    let mut aliases = Vec::new();
+    for alias in raw.split(',').map(str::trim).filter(|alias| !alias.is_empty()) {
+        if aliases.iter().any(|existing| existing == alias) {
+            return Err(ServerError::invalid_config(env_name, format!("contains duplicate alias `{alias}`")));
+        }
+        aliases.push(alias.to_string());
+    }
+    if aliases.is_empty() {
+        return Err(ServerError::invalid_config(env_name, "must contain at least one alias"));
+    }
+    Ok(aliases)
 }
 
 fn native_optimizer_config(

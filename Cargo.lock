@@ -3794,6 +3794,7 @@ name = "nexus-query-engine"
 version = "0.2.0"
 dependencies = [
  "arrow",
+ "async-trait",
  "bytes",
  "cudf",
  "cugraph",

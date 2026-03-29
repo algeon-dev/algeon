@@ -197,6 +197,22 @@ fn memory_reservation_failure_is_temporary_resource_exhaustion() {
 }
 
 #[test]
+fn source_storage_error_codes_have_stable_policy() {
+    let cases = [
+        (QueryErrorCode::SourceAccessDenied, "source_access_denied", QueryErrorStatus::Permanent),
+        (QueryErrorCode::SourceUnauthenticated, "source_unauthenticated", QueryErrorStatus::Permanent),
+        (QueryErrorCode::SourceObjectNotFound, "source_object_not_found", QueryErrorStatus::Permanent),
+        (QueryErrorCode::SourceTemporaryFailure, "source_temporary_failure", QueryErrorStatus::Temporary),
+    ];
+
+    for (code, label, status) in cases {
+        assert_eq!(code.as_str(), label);
+        assert_eq!(code.kind(), QueryErrorKind::DependencyFailure);
+        assert_eq!(code.status(), status);
+    }
+}
+
+#[test]
 fn memory_space_id_display_and_request_defaults_are_stable() {
     let device_zero = MemorySpaceId::Device { device_ordinal: 0 };
     let device_one = MemorySpaceId::Device { device_ordinal: 1 };

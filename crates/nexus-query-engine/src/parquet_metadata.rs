@@ -1,7 +1,8 @@
 //! Parquet footer metadata helpers shared by source planning and diagnostics.
 
 use std::{
-    fs,
+    error::Error as StdError,
+    fmt, fs,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -384,15 +385,62 @@ fn parse_metadata_from_footer_bytes(
 
 fn object_store_metadata_error(
     message: &'static str,
-    _error: object_store::Error,
+    error: object_store::Error,
     location: &ObjectStorePath,
 ) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::CudfDependencyFailure,
-        "nexus_query_engine.source_metadata.object_store_footer",
-        message,
-    )
-    .with_fact("path", object_store_path_fact(location))
+    let code = query_error_code_for_object_store_error(&error);
+    let kind = object_store_error_kind(&error);
+    QueryError::new(code, "nexus_query_engine.source_metadata.object_store_footer", message)
+        .with_fact("path", object_store_path_fact(location))
+        .with_fact("object_store_error_kind", kind)
+        .with_source(RedactedObjectStoreError { kind, source: error })
+}
+
+#[derive(Debug)]
+struct RedactedObjectStoreError {
+    kind: &'static str,
+    source: object_store::Error,
+}
+
+impl fmt::Display for RedactedObjectStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "object-store error kind={}", self.kind)
+    }
+}
+
+impl StdError for RedactedObjectStoreError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(&self.source)
+    }
+}
+
+pub(crate) fn query_error_code_for_object_store_error(error: &object_store::Error) -> QueryErrorCode {
+    match error {
+        object_store::Error::PermissionDenied { .. } => QueryErrorCode::SourceAccessDenied,
+        object_store::Error::Unauthenticated { .. } => QueryErrorCode::SourceUnauthenticated,
+        object_store::Error::NotFound { .. } => QueryErrorCode::SourceObjectNotFound,
+        object_store::Error::Generic { .. } => QueryErrorCode::SourceTemporaryFailure,
+        _ => QueryErrorCode::CudfDependencyFailure,
+    }
+}
+
+pub(crate) fn object_store_error_kind(error: &object_store::Error) -> &'static str {
+    match error {
+        object_store::Error::PermissionDenied { .. } => "permission_denied",
+        object_store::Error::Unauthenticated { .. } => "unauthenticated",
+        object_store::Error::NotFound { .. } => "not_found",
+        object_store::Error::Generic { .. } => "generic",
+        object_store::Error::InvalidPath { .. } => "invalid_path",
+        object_store::Error::JoinError { .. } => "join_error",
+        object_store::Error::NotSupported { .. } => "not_supported",
+        object_store::Error::AlreadyExists { .. } => "already_exists",
+        object_store::Error::Precondition { .. } => "precondition",
+        object_store::Error::NotModified { .. } => "not_modified",
+        object_store::Error::NotImplemented { .. } => "not_implemented",
+        object_store::Error::UnknownConfigurationKey { .. } => "unknown_configuration_key",
+        #[allow(unreachable_patterns)]
+        _ => "other",
+    }
 }
 
 fn object_store_path_fact(location: &ObjectStorePath) -> String {
@@ -420,14 +468,19 @@ fn stable_cache_metadata_hash(value: &str) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, sync::Arc};
+    use std::{fmt, fs, sync::Arc};
 
     use arrow::{
         array::Int32Array,
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
-    use object_store::{ObjectStoreExt, memory::InMemory, path::Path as ObjectStorePath};
+    use async_trait::async_trait;
+    use futures::{StreamExt, stream::BoxStream};
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStoreExt,
+        PutMultipartOptions, PutOptions, PutPayload, PutResult, memory::InMemory, path::Path as ObjectStorePath,
+    };
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
     use super::*;
@@ -442,6 +495,107 @@ mod tests {
         writer.write(&batch).unwrap();
         writer.close().unwrap();
         bytes
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    enum FaultKind {
+        PermissionDenied,
+        Unauthenticated,
+        NotFound,
+        Generic,
+    }
+
+    #[derive(Debug)]
+    struct FaultObjectStore {
+        kind: FaultKind,
+    }
+
+    impl FaultObjectStore {
+        const fn new(kind: FaultKind) -> Self {
+            Self { kind }
+        }
+
+        fn error(&self, location: &ObjectStorePath) -> object_store::Error {
+            let path = location.to_string();
+            match self.kind {
+                FaultKind::PermissionDenied => object_store::Error::PermissionDenied {
+                    path,
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "simulated access denied",
+                    )),
+                },
+                FaultKind::Unauthenticated => object_store::Error::Unauthenticated {
+                    path,
+                    source: Box::new(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "simulated unauthenticated",
+                    )),
+                },
+                FaultKind::NotFound => object_store::Error::NotFound {
+                    path,
+                    source: Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "simulated missing object")),
+                },
+                FaultKind::Generic => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "simulated timeout")),
+                },
+            }
+        }
+    }
+
+    impl fmt::Display for FaultObjectStore {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "fault-object-store")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for FaultObjectStore {
+        async fn put_opts(
+            &self,
+            location: &ObjectStorePath,
+            _payload: PutPayload,
+            _opts: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            Err(self.error(location))
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjectStorePath,
+            _opts: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            Err(self.error(location))
+        }
+
+        async fn get_opts(&self, location: &ObjectStorePath, _options: GetOptions) -> object_store::Result<GetResult> {
+            Err(self.error(location))
+        }
+
+        fn delete_stream(
+            &self,
+            _locations: BoxStream<'static, object_store::Result<ObjectStorePath>>,
+        ) -> BoxStream<'static, object_store::Result<ObjectStorePath>> {
+            futures::stream::empty().boxed()
+        }
+
+        fn list(&self, _prefix: Option<&ObjectStorePath>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            futures::stream::empty().boxed()
+        }
+
+        async fn list_with_delimiter(&self, _prefix: Option<&ObjectStorePath>) -> object_store::Result<ListResult> {
+            Ok(ListResult { common_prefixes: Vec::new(), objects: Vec::new() })
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &ObjectStorePath,
+            _to: &ObjectStorePath,
+            _options: CopyOptions,
+        ) -> object_store::Result<()> {
+            Err(self.error(from))
+        }
     }
 
     #[test]
@@ -475,6 +629,33 @@ mod tests {
 
         assert_eq!(file_size, bytes.len() as u64);
         assert_eq!(metadata.num_row_groups(), 4);
+    }
+
+    #[tokio::test]
+    async fn object_store_footer_fetch_preserves_source_storage_error_classification() {
+        let cases = [
+            (FaultKind::PermissionDenied, QueryErrorCode::SourceAccessDenied, "permission_denied"),
+            (FaultKind::Unauthenticated, QueryErrorCode::SourceUnauthenticated, "unauthenticated"),
+            (FaultKind::NotFound, QueryErrorCode::SourceObjectNotFound, "not_found"),
+            (FaultKind::Generic, QueryErrorCode::SourceTemporaryFailure, "generic"),
+        ];
+
+        for (fault, expected_code, expected_kind) in cases {
+            let store: Arc<dyn ObjectStore> = Arc::new(FaultObjectStore::new(fault));
+            let location = ObjectStorePath::from("secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak");
+
+            let error = fetch_object_store_parquet_metadata(store, location).await.unwrap_err();
+
+            assert_eq!(error.code(), expected_code);
+            assert_eq!(error.operation(), "nexus_query_engine.source_metadata.object_store_footer");
+            assert_eq!(error.fact_value("object_store_error_kind"), Some(expected_kind));
+            assert!(error.source_error().is_some());
+            let diagnostic = error.fact_value("path").expect("redacted path fact");
+            assert!(diagnostic.starts_with("object_store_path:fnv64:"));
+            for sensitive in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
+                assert!(!error.to_string().contains(sensitive), "diagnostic leaked {sensitive}: {error}");
+            }
+        }
     }
 
     #[test]

@@ -57,6 +57,14 @@ pub enum QueryErrorCode {
     CudfPersistentFailure,
     /// cuDF reported a permanent dependency failure.
     CudfDependencyFailure,
+    /// Source object storage denied access to the requested object or metadata.
+    SourceAccessDenied,
+    /// Source object storage lacked valid authentication credentials.
+    SourceUnauthenticated,
+    /// Source object storage could not find the requested object.
+    SourceObjectNotFound,
+    /// Source object storage failed with a retryable transport or service error.
+    SourceTemporaryFailure,
     /// cuDF reported an invariant or execution-context violation.
     CudfInvariantViolation,
     /// The native admission controller could not reserve requested memory.
@@ -87,6 +95,10 @@ impl QueryErrorCode {
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
+            Self::SourceAccessDenied => "source_access_denied",
+            Self::SourceUnauthenticated => "source_unauthenticated",
+            Self::SourceObjectNotFound => "source_object_not_found",
+            Self::SourceTemporaryFailure => "source_temporary_failure",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
@@ -207,7 +219,11 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::ServiceOverloaded => QueryErrorKind::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
-        | QueryErrorCode::CudfDependencyFailure => QueryErrorKind::DependencyFailure,
+        | QueryErrorCode::CudfDependencyFailure
+        | QueryErrorCode::SourceAccessDenied
+        | QueryErrorCode::SourceUnauthenticated
+        | QueryErrorCode::SourceObjectNotFound
+        | QueryErrorCode::SourceTemporaryFailure => QueryErrorKind::DependencyFailure,
         QueryErrorCode::CudfInvariantViolation => QueryErrorKind::InvariantViolation,
         QueryErrorCode::Internal => QueryErrorKind::Internal,
     }
@@ -224,6 +240,7 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         QueryErrorCode::Cancelled => QueryErrorStatus::Permanent,
         QueryErrorCode::CudfResourceExhausted
         | QueryErrorCode::CudfTemporaryFailure
+        | QueryErrorCode::SourceTemporaryFailure
         | QueryErrorCode::MemoryReservationFailed
         | QueryErrorCode::ServiceOverloaded => QueryErrorStatus::Temporary,
         QueryErrorCode::CudfPersistentFailure => QueryErrorStatus::Persistent,
@@ -235,6 +252,9 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::CudfInvalidInput
         | QueryErrorCode::CudfUnsupported
         | QueryErrorCode::CudfDependencyFailure
+        | QueryErrorCode::SourceAccessDenied
+        | QueryErrorCode::SourceUnauthenticated
+        | QueryErrorCode::SourceObjectNotFound
         | QueryErrorCode::CudfInvariantViolation
         | QueryErrorCode::Internal => QueryErrorStatus::Permanent,
     }

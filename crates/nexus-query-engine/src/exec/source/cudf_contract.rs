@@ -1368,6 +1368,35 @@ mod tests {
             .with_column_file_indices(vec![1, 2], vec![1], vec![2])
     }
 
+    const UNREACHABLE_FOOTER_PROFILE_ID: &str = "unreachable-footer";
+
+    fn context_with_unreachable_footer_store() -> ExecutionContext {
+        ExecutionContext::builder()
+            .with_source_storage_profiles([crate::runtime::SourceStorageProfile::s3(
+                UNREACHABLE_FOOTER_PROFILE_ID,
+                crate::runtime::S3SourceStorageProfile::default_chain()
+                    .with_region("us-east-1")
+                    .with_endpoint("http://127.0.0.1:9")
+                    .with_path_style_access(true)
+                    .with_unsigned_requests(),
+            )])
+            .build()
+            .expect("execution context builds")
+    }
+
+    fn remote_direct_with_unreachable_footer_store(uri: &str) -> crate::source::ResolvedParquetSource {
+        crate::source::ResolvedParquetSource::remote_direct(uri, crate::source::CredentialMode::SharedProcessEnv)
+            .with_remote_read_mode(crate::source::RemoteParquetReadMode::RequireDirect)
+            .with_storage_profile_id(UNREACHABLE_FOOTER_PROFILE_ID)
+    }
+
+    fn assert_required_footer_fetch_temporary_failure(error: &QueryError) {
+        assert_eq!(error.code(), QueryErrorCode::SourceTemporaryFailure);
+        assert_eq!(error.operation(), "nexus_query_engine.source_metadata.object_store_footer");
+        assert_eq!(error.fact_value("object_store_error_kind"), Some("generic"));
+        assert!(error.fact_value("path").is_some_and(|value| value.starts_with("object_store_path:fnv64:")));
+    }
+
     #[test]
     fn remote_parquet_profile_carries_only_non_secret_storage_hints() {
         let storage = crate::runtime::SourceStorageProfile::s3(
@@ -1603,18 +1632,14 @@ mod tests {
     }
 
     #[test]
-    fn remote_direct_chunk_batch_rejects_preattached_decimal_reader_type_without_footer_verification() {
-        let context = ExecutionContext::builder().build().expect("execution context builds");
+    fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unverified_decimal_type() {
+        let context = context_with_unreachable_footer_store();
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
             "discount",
             arrow::datatypes::DataType::Decimal128(15, 2),
             true,
         )]));
-        let resolved = crate::source::ResolvedParquetSource::remote_direct(
-            "s3://bucket/lineitem.parquet",
-            crate::source::CredentialMode::SharedProcessEnv,
-        )
-        .with_remote_read_mode(crate::source::RemoteParquetReadMode::RequireDirect);
+        let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
         let file = LocalParquetFile::from_resolved_parquet_source(resolved)
             .expect("valid remote direct source")
             .with_stable_id("lineitem")
@@ -1681,11 +1706,7 @@ mod tests {
         let error = cudf_local_parquet_source_chunk_batch(&context, &source, &[chunk])
             .expect_err("chunk batches must verify preattached remote decimal reader metadata against the footer");
 
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
-        assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
-        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-        assert_eq!(error.fact_value("missing_reader_decimal_columns"), Some("discount"));
+        assert_required_footer_fetch_temporary_failure(&error);
         assert!(!error.to_string().contains("s3://bucket"));
     }
 
@@ -1890,18 +1911,14 @@ mod tests {
     }
 
     #[test]
-    fn remote_direct_contract_rejects_decimal_reader_predicate_without_footer_type_metadata() {
-        let context = ExecutionContext::builder().build().expect("execution context builds");
+    fn remote_direct_contract_propagates_required_footer_fetch_failure_without_footer_type_metadata() {
+        let context = context_with_unreachable_footer_store();
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
             "discount",
             arrow::datatypes::DataType::Decimal128(15, 2),
             true,
         )]));
-        let resolved = crate::source::ResolvedParquetSource::remote_direct(
-            "s3://bucket/lineitem.parquet",
-            crate::source::CredentialMode::SharedProcessEnv,
-        )
-        .with_remote_read_mode(crate::source::RemoteParquetReadMode::RequireDirect);
+        let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
         let file = LocalParquetFile::from_resolved_parquet_source(resolved)
             .expect("valid remote direct source")
             .with_stable_id("lineitem")
@@ -1921,27 +1938,19 @@ mod tests {
         let error = cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
             .expect_err("remote decimal reader predicates need proven footer dtype metadata");
 
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
-        assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
-        assert_eq!(error.fact_value("remote_read_mode"), Some("require_direct"));
-        assert_eq!(error.fact_value("missing_reader_decimal_columns"), Some("discount"));
+        assert_required_footer_fetch_temporary_failure(&error);
         assert!(!error.to_string().contains("s3://bucket"));
     }
 
     #[test]
-    fn remote_direct_contract_rejects_preattached_decimal_reader_type_without_footer_verification() {
-        let context = ExecutionContext::builder().build().expect("execution context builds");
+    fn remote_direct_contract_propagates_required_footer_fetch_failure_for_unverified_decimal_type() {
+        let context = context_with_unreachable_footer_store();
         let schema = Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
             "discount",
             arrow::datatypes::DataType::Decimal128(15, 2),
             true,
         )]));
-        let resolved = crate::source::ResolvedParquetSource::remote_direct(
-            "s3://bucket/lineitem.parquet",
-            crate::source::CredentialMode::SharedProcessEnv,
-        )
-        .with_remote_read_mode(crate::source::RemoteParquetReadMode::RequireDirect);
+        let resolved = remote_direct_with_unreachable_footer_store("s3://bucket/lineitem.parquet");
         let file = LocalParquetFile::from_resolved_parquet_source(resolved)
             .expect("valid remote direct source")
             .with_stable_id("lineitem")
@@ -1966,9 +1975,7 @@ mod tests {
         let error = cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
             .expect_err("direct remote decimal reader predicates must verify preattached types against the footer");
 
-        assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("reader_decimal_type_metadata_unavailable"));
-        assert_eq!(error.fact_value("read_strategy"), Some("remote_direct"));
+        assert_required_footer_fetch_temporary_failure(&error);
         assert!(!error.to_string().contains("s3://bucket"));
     }
 

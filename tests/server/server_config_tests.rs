@@ -27,7 +27,9 @@ use datafusion_nexus::{
         NEXUS_SERVER_NATIVE_MEMORY_POLICY_ENV, NEXUS_SERVER_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
         NEXUS_SERVER_NATIVE_PIPELINE_EXECUTION_MODE_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
         NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV, NEXUS_SERVER_STATEMENT_TICKET_TTL_SECS_ENV,
-        ServerConfig, ServerNativeConfigScope,
+        NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV,
+        NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, NEXUS_SERVER_WORKSPACE_CATALOG_ENV,
+        NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, ServerConfig, ServerNativeConfigScope,
     },
 };
 #[cfg(feature = "iceberg")]
@@ -252,6 +254,63 @@ fn server_config_accepts_statement_ticket_ttl() {
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(config.statement_ticket_ttl.as_secs(), 30);
+}
+
+#[test]
+fn server_config_accepts_workspace_overlay_defaults_and_aliases() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string()),
+        (NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, "nexus_graph".to_string()),
+        (NEXUS_SERVER_WORKSPACE_BACKING_ALIASES_ENV, "edges_by_src,edges_by_dst,profiles_by_user_id".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let workspace = config.workspace.expect("workspace overlay config");
+
+    assert_eq!(workspace.catalog, "datafusion");
+    assert_eq!(workspace.schema, "public");
+    assert_eq!(workspace.backing_catalog, "glue");
+    assert_eq!(workspace.backing_schema, "nexus_graph");
+    assert_eq!(
+        workspace.backing_aliases.unwrap(),
+        vec!["edges_by_src".to_string(), "edges_by_dst".to_string(), "profiles_by_user_id".to_string()]
+    );
+}
+
+#[test]
+fn server_config_accepts_explicit_workspace_identity() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_WORKSPACE_CATALOG_ENV, "workspace".to_string()),
+        (NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, "session".to_string()),
+        (NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string()),
+        (NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, "nexus_graph".to_string()),
+    ]);
+    let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
+    let workspace = config.workspace.expect("workspace overlay config");
+
+    assert_eq!(workspace.catalog, "workspace");
+    assert_eq!(workspace.schema, "session");
+    assert_eq!(workspace.backing_aliases, None);
+}
+
+#[test]
+fn server_config_rejects_incomplete_workspace_backing() {
+    let env = BTreeMap::from([(NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string())]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains(NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV), "{error}");
+}
+
+#[test]
+fn server_config_rejects_workspace_equal_to_backing() {
+    let env = BTreeMap::from([
+        (NEXUS_SERVER_WORKSPACE_CATALOG_ENV, "glue".to_string()),
+        (NEXUS_SERVER_WORKSPACE_SCHEMA_ENV, "nexus_graph".to_string()),
+        (NEXUS_SERVER_WORKSPACE_BACKING_CATALOG_ENV, "glue".to_string()),
+        (NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA_ENV, "nexus_graph".to_string()),
+    ]);
+    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
+
+    assert!(error.to_string().contains("must differ from backing"), "{error}");
 }
 
 #[test]
@@ -926,6 +985,121 @@ async fn server_cugraph_udtfs_and_views_survive_session_state_rebuild() {
     let rebuilt = SessionContext::new_with_state(rebuilt_state);
     let batches = rebuilt.sql("SELECT src, dst FROM target_edges").await.unwrap().collect().await.unwrap();
     assert_eq!(batches[0].num_rows(), 1, "session-local view must survive the state rebuild");
+}
+
+#[tokio::test]
+async fn create_view_fails_when_default_schema_is_read_only_source_catalog() {
+    use datafusion::prelude::{SessionConfig, SessionContext};
+
+    let ctx =
+        SessionContext::new_with_config(SessionConfig::new().with_default_catalog_and_schema("glue", "nexus_graph"));
+    ctx.register_catalog("glue", Arc::new(ReadOnlyCatalog::new("nexus_graph", [("edges_by_src", edge_table())])));
+
+    let error = ctx.sql("CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src").await.unwrap_err();
+
+    assert!(error.to_string().contains("schema provider does not support registering tables"), "{error}");
+}
+
+#[tokio::test]
+async fn workspace_default_create_view_can_read_qualified_source_catalog() {
+    use datafusion::prelude::{SessionConfig, SessionContext};
+
+    let ctx =
+        SessionContext::new_with_config(SessionConfig::new().with_default_catalog_and_schema("datafusion", "public"));
+    ctx.register_catalog("glue", Arc::new(ReadOnlyCatalog::new("nexus_graph", [("edges_by_src", edge_table())])));
+
+    ctx.sql("CREATE VIEW target_edges AS SELECT src, dst FROM glue.nexus_graph.edges_by_src")
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batches = ctx.sql("SELECT COUNT(*) FROM target_edges").await.unwrap().collect().await.unwrap();
+
+    assert_eq!(batches[0].num_rows(), 1);
+    assert_eq!(batch_i64_value(&batches[0], 0), 2);
+}
+
+#[derive(Debug)]
+struct ReadOnlyCatalog {
+    schema_name: String,
+    schema: Arc<ReadOnlySchema>,
+}
+
+impl ReadOnlyCatalog {
+    fn new(
+        schema_name: impl Into<String>,
+        tables: impl IntoIterator<Item = (&'static str, Arc<dyn datafusion::datasource::TableProvider>)>,
+    ) -> Self {
+        Self { schema_name: schema_name.into(), schema: Arc::new(ReadOnlySchema::new(tables)) }
+    }
+}
+
+impl datafusion::catalog::CatalogProvider for ReadOnlyCatalog {
+    fn schema_names(&self) -> Vec<String> {
+        vec![self.schema_name.clone()]
+    }
+
+    fn schema(&self, name: &str) -> Option<Arc<dyn datafusion::catalog::SchemaProvider>> {
+        (name == self.schema_name).then(|| Arc::clone(&self.schema) as Arc<dyn datafusion::catalog::SchemaProvider>)
+    }
+}
+
+#[derive(Debug)]
+struct ReadOnlySchema {
+    tables: BTreeMap<String, Arc<dyn datafusion::datasource::TableProvider>>,
+}
+
+impl ReadOnlySchema {
+    fn new(tables: impl IntoIterator<Item = (&'static str, Arc<dyn datafusion::datasource::TableProvider>)>) -> Self {
+        Self { tables: tables.into_iter().map(|(name, table)| (name.to_string(), table)).collect() }
+    }
+}
+
+#[async_trait::async_trait]
+impl datafusion::catalog::SchemaProvider for ReadOnlySchema {
+    fn table_names(&self) -> Vec<String> {
+        self.tables.keys().cloned().collect()
+    }
+
+    async fn table(
+        &self,
+        name: &str,
+    ) -> datafusion::common::Result<Option<Arc<dyn datafusion::datasource::TableProvider>>> {
+        Ok(self.tables.get(name).cloned())
+    }
+
+    async fn table_type(&self, name: &str) -> datafusion::common::Result<Option<datafusion::datasource::TableType>> {
+        Ok(self.tables.get(name).map(|table| table.table_type()))
+    }
+
+    fn table_exist(&self, name: &str) -> bool {
+        self.tables.contains_key(name)
+    }
+}
+
+fn edge_table() -> Arc<dyn datafusion::datasource::TableProvider> {
+    use arrow::{
+        array::Int64Array,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
+    use datafusion::datasource::MemTable;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![0, 1])), Arc::new(Int64Array::from(vec![1, 2]))],
+    )
+    .unwrap();
+    Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())
+}
+
+fn batch_i64_value(batch: &arrow::record_batch::RecordBatch, column: usize) -> i64 {
+    batch.column(column).as_any().downcast_ref::<arrow::array::Int64Array>().unwrap().value(0)
 }
 
 #[test]

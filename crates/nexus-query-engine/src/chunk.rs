@@ -695,7 +695,7 @@ fn read_parquet_metadata(
     let needs_object_store_decimal_contract =
         object_store_decimal_reader_predicate_requires_footer_contract(source, file);
     let footer_load = if source_file_needs_footer_metadata(source, file) {
-        metadata_cache.footer_metadata(file, metadata_load_context)?
+        metadata_cache.footer_metadata(source, file, metadata_load_context)?
     } else {
         FooterMetadataLoad { metadata: None, load_time: Duration::ZERO, load_count: 0 }
     };
@@ -743,6 +743,13 @@ fn source_file_needs_footer_metadata(source: &LocalParquetSource, file: &LocalPa
                 .reader_predicate
                 .as_ref()
                 .is_some_and(|predicate| source.reader_predicate_requires_source_contract(predicate)))
+}
+
+fn source_file_requires_footer_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {
+    source.scan_limit.is_some()
+        || source.is_zero_column_count_source()
+        || file.has_position_delete_files()
+        || object_store_decimal_reader_predicate_requires_footer_contract(source, file)
 }
 
 pub(crate) fn footer_verified_object_store_reader_decimal_types(

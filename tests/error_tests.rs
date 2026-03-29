@@ -23,6 +23,22 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::ObjectNotFound.kind(), ErrorKind::NotFound);
     assert_eq!(ErrorCode::ObjectNotFound.status(), ErrorStatus::Permanent);
 
+    assert_eq!(ErrorCode::SourceAccessDenied.as_str(), "source_access_denied");
+    assert_eq!(ErrorCode::SourceAccessDenied.kind(), ErrorKind::PermissionDenied);
+    assert_eq!(ErrorCode::SourceAccessDenied.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::SourceUnauthenticated.as_str(), "source_unauthenticated");
+    assert_eq!(ErrorCode::SourceUnauthenticated.kind(), ErrorKind::Unauthenticated);
+    assert_eq!(ErrorCode::SourceUnauthenticated.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::SourceObjectNotFound.as_str(), "source_object_not_found");
+    assert_eq!(ErrorCode::SourceObjectNotFound.kind(), ErrorKind::NotFound);
+    assert_eq!(ErrorCode::SourceObjectNotFound.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::SourceTemporaryFailure.as_str(), "source_temporary_failure");
+    assert_eq!(ErrorCode::SourceTemporaryFailure.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(ErrorCode::SourceTemporaryFailure.status(), ErrorStatus::Temporary);
+
     assert_eq!(ErrorCode::FieldNotFound.as_str(), "field_not_found");
     assert_eq!(ErrorCode::FieldNotFound.kind(), ErrorKind::InvalidInput);
     assert_eq!(ErrorCode::FieldNotFound.status(), ErrorStatus::Permanent);
@@ -46,6 +62,51 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::ServiceOverloaded.as_str(), "service_overloaded");
     assert_eq!(ErrorCode::ServiceOverloaded.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::ServiceOverloaded.status(), ErrorStatus::Temporary);
+}
+
+#[test]
+fn native_source_storage_errors_preserve_adapter_status_mapping() {
+    for (native_code, adapter_code, adapter_kind, adapter_status) in [
+        (
+            nexus_query_engine::QueryErrorCode::SourceAccessDenied,
+            ErrorCode::SourceAccessDenied,
+            ErrorKind::PermissionDenied,
+            ErrorStatus::Permanent,
+        ),
+        (
+            nexus_query_engine::QueryErrorCode::SourceUnauthenticated,
+            ErrorCode::SourceUnauthenticated,
+            ErrorKind::Unauthenticated,
+            ErrorStatus::Permanent,
+        ),
+        (
+            nexus_query_engine::QueryErrorCode::SourceObjectNotFound,
+            ErrorCode::SourceObjectNotFound,
+            ErrorKind::NotFound,
+            ErrorStatus::Permanent,
+        ),
+        (
+            nexus_query_engine::QueryErrorCode::SourceTemporaryFailure,
+            ErrorCode::SourceTemporaryFailure,
+            ErrorKind::DependencyFailure,
+            ErrorStatus::Temporary,
+        ),
+    ] {
+        let native_error = nexus_query_engine::QueryError::new(
+            native_code,
+            "nexus_query_engine.source_metadata.object_store_footer",
+            "source object storage failure",
+        )
+        .with_fact("object_store_error_kind", native_code.as_str());
+
+        let adapter_error =
+            Error::from_native("datafusion_nexus.native.execute", "native cudf query execution failed", native_error);
+
+        assert_eq!(adapter_error.code(), adapter_code);
+        assert_eq!(adapter_error.kind(), adapter_kind);
+        assert_eq!(adapter_error.status(), adapter_status);
+        assert_eq!(adapter_error.fact_value("native_code"), Some(native_code.as_str()));
+    }
 }
 
 #[test]
