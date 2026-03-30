@@ -506,7 +506,7 @@ fn source_vertex_series(
     };
     let series =
         predicate_series(side_inputs, Some(input), "source_vertices", vertex_type)?.expect("input was Some above");
-    if series.len() == 0 {
+    if series.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.graph_algorithm.bfs_source",

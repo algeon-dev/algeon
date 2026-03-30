@@ -286,6 +286,43 @@ impl<T> CompiledPipelineState<T> {
         Ok(())
     }
 
+    pub fn take_sink_output_resource(&mut self, pipeline: &CompiledPipeline) -> Result<ReleasedCompiledResource<T>> {
+        let sink_task = pipeline.sink().input();
+        let matching = self
+            .resources
+            .iter()
+            .filter_map(|(id, slot)| match slot.definition.lifetime() {
+                ResidentLifetime::SinkOutput { producer } if producer == sink_task => Some(*id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [resource] = matching.as_slice() else {
+            return Err(invalid("compiled GPU sink expected exactly one sink-output resident resource")
+                .with_fact("sink_boundary_task_id", sink_task)
+                .with_fact("sink_boundary_kind", pipeline.sink().kind().as_str())
+                .with_fact("sink_output_resource_count", matching.len()));
+        };
+        if !self.completed_tasks.contains(&sink_task) {
+            return Err(invalid("compiled GPU sink output producer did not complete")
+                .with_fact("sink_boundary_task_id", sink_task)
+                .with_fact("resident_resource_id", *resource));
+        }
+
+        let slot = self.resource_slot_mut(*resource)?;
+        if slot.released {
+            return Err(invalid("compiled GPU sink output resource was already released")
+                .with_fact("sink_boundary_task_id", sink_task)
+                .with_fact("resident_resource_id", *resource));
+        }
+        let payload = slot.payload.take().ok_or_else(|| {
+            invalid("compiled GPU sink output resource has no resident payload")
+                .with_fact("sink_boundary_task_id", sink_task)
+                .with_fact("resident_resource_id", *resource)
+        })?;
+        slot.released = true;
+        Ok(ReleasedCompiledResource { id: *resource, payload })
+    }
+
     fn install_task_outputs(
         &mut self,
         task: &PipelineTask,

@@ -14,7 +14,7 @@ use crate::{
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
         PipelineTaskKind, ReservationGateId, ReservationGateOwner, ResidentLifetime, ResidentResource,
-        ResidentResourceId,
+        ResidentResourceId, SinkBoundaryKind,
     },
     runtime::ReservationKind,
 };
@@ -32,6 +32,7 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::Result<()
     validate_task_graph_is_acyclic(pipeline)?;
     validate_task_resource_references(pipeline, &resource_ids)?;
     validate_resource_flow(pipeline)?;
+    validate_sink_output_lifetimes(pipeline)?;
     validate_barrier_dominance(pipeline)?;
     validate_gate_references(pipeline, &gate_ids)?;
     validate_gate_owner_references(pipeline)?;
@@ -425,6 +426,50 @@ fn validate_resource_flow(pipeline: &CompiledPipeline) -> crate::Result<()> {
     Ok(())
 }
 
+fn validate_sink_output_lifetimes(pipeline: &CompiledPipeline) -> crate::Result<()> {
+    let sink_outputs = pipeline
+        .resources()
+        .iter()
+        .filter(|resource| matches!(resource.lifetime(), ResidentLifetime::SinkOutput { .. }))
+        .collect::<Vec<_>>();
+    match pipeline.sink().kind() {
+        SinkBoundaryKind::HostArrowMaterialization => {
+            if let Some(resource) = sink_outputs.first() {
+                return Err(invalid("pipeline host sink cannot retain sink-output resident resources")
+                    .with_fact("resident_resource_id", resource.id())
+                    .with_fact("sink_boundary_kind", pipeline.sink().kind().as_str())
+                    .with_fact("sink_output_resource_count", sink_outputs.len()));
+            }
+        },
+        SinkBoundaryKind::GpuResidentOutput => {
+            let [resource] = sink_outputs.as_slice() else {
+                return Err(invalid("pipeline GPU sink must retain exactly one sink-output resident resource")
+                    .with_fact("sink_boundary_task_id", pipeline.sink().input())
+                    .with_fact("sink_boundary_kind", pipeline.sink().kind().as_str())
+                    .with_fact("sink_output_resource_count", sink_outputs.len()));
+            };
+            if resource.producer() != pipeline.sink().input() {
+                return Err(invalid(
+                    "pipeline GPU sink-output resource producer must match the sink boundary input task",
+                )
+                .with_fact("resident_resource_id", resource.id())
+                .with_fact("producer_task", resource.producer())
+                .with_fact("sink_boundary_task_id", pipeline.sink().input()));
+            }
+            let producer = task_by_id(pipeline, resource.producer())?;
+            if !producer.output_resources().contains(&resource.id()) {
+                return Err(invalid(
+                    "pipeline GPU sink-output resource is not produced by the sink boundary input task",
+                )
+                .with_fact("resident_resource_id", resource.id())
+                .with_fact("producer_task", resource.producer())
+                .with_fact("sink_boundary_task_id", pipeline.sink().input()));
+            }
+        },
+    }
+    Ok(())
+}
+
 fn validate_shared_resident_resource_edges(
     pipeline: &CompiledPipeline,
     resource: &ResidentResource,
@@ -743,10 +788,8 @@ fn validate_gate_scope(
     let valid = match (scope, owner) {
         (ReservationRequirementScope::Node, ReservationGateOwner::Task(_)) => true,
         (ReservationRequirementScope::Edge, ReservationGateOwner::Edge(_)) => true,
-        (ReservationRequirementScope::Edge, ReservationGateOwner::SinkBoundary)
-            if kind == ReservationKind::Materialization =>
-        {
-            true
+        (ReservationRequirementScope::Edge, ReservationGateOwner::SinkBoundary) => {
+            sink_boundary_edge_gate_kind_is_allowed(kind)
         },
         (ReservationRequirementScope::Subgraph, ReservationGateOwner::Barrier(_)) => true,
         _ => false,
@@ -759,6 +802,16 @@ fn validate_gate_scope(
             .with_fact("reservation_kind", kind.as_str()));
     }
     Ok(())
+}
+
+fn sink_boundary_edge_gate_kind_is_allowed(kind: ReservationKind) -> bool {
+    matches!(
+        kind,
+        ReservationKind::SourceRead
+            | ReservationKind::GatherMap
+            | ReservationKind::JoinOutput
+            | ReservationKind::Materialization
+    )
 }
 
 fn validate_unresolved_preflight_label(

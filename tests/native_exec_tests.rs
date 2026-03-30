@@ -503,12 +503,16 @@ fn native_optimizer_rule_composes_distinct_aggregate_over_anti_join_fragment() {
 
     let optimized_tree = displayable(optimized.as_ref()).indent(false).to_string();
     assert!(
-        !optimized_tree.contains("NativeCudfGpuProducerExec"),
-        "anti-join fragments must not be producerized until the bounded join GPU-resident sink is admitted:\n{optimized_tree}",
+        optimized_tree.contains("NativeCudfComposedExec"),
+        "COUNT(DISTINCT) over anti-join should compose a host-arrow native parent over a GPU-resident child:\n{optimized_tree}",
     );
     assert!(
-        optimized_tree.contains("NativeCudfExec"),
-        "the anti-join fragment should still use the safe host-arrow native boundary:\n{optimized_tree}",
+        optimized_tree.contains("NativeCudfGpuProducerExec"),
+        "anti-join child fragments should use the compiled bounded GPU-resident sink now that it is admitted:\n{optimized_tree}",
+    );
+    assert!(
+        optimized_tree.contains("output_boundary=device_to_host"),
+        "the composed root should still materialize the final DataFusion-facing result to host Arrow:\n{optimized_tree}",
     );
     let report = rule.last_report().expect("native optimizer should record a planning report");
     assert!(

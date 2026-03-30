@@ -16,7 +16,7 @@ use super::{
     admission::{
         CapabilityFirstCandidateStatus, CapabilityFirstPipelineAdmission, capability_first_bounded_pipeline_admission,
     },
-    compiled::execute_compiled_pipeline_to_host,
+    compiled::execute_compiled_pipeline,
 };
 use crate::{
     capability::{
@@ -243,7 +243,7 @@ pub(in crate::exec) fn try_execute_strict_bounded_pipeline(
         return Ok(None);
     };
     debug_assert_eq!(admission.native_mode(), NativePipelineExecutionMode::StrictBounded);
-    execute_compiled_pipeline_to_host(context, plan, admission.pipeline(), gpu_inputs, metrics).map(Some)
+    execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics).map(Some)
 }
 
 fn compiled_bounded_pipeline_required_error(

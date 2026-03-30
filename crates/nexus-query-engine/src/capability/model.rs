@@ -761,7 +761,7 @@ pub enum CapabilityRejectionCategory {
     MissingEdgeContract,
     /// A subgraph invariant or envelope proof is missing.
     MissingSubgraphInvariant,
-    /// The final sink boundary is outside strict bounded host materialization.
+    /// The final sink boundary is outside the compiled bounded runtime envelope.
     UnsupportedSinkBoundary,
     /// The compiled pipeline graph is outside the strict runtime envelope.
     UnsupportedCompiledPipelineEnvelope,

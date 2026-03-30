@@ -1837,8 +1837,8 @@ fn execute_cugraph_query_to_gpu_with_options(
 
 fn graph_algorithm_execution_context(context: &ExecutionContext) -> Result<ExecutionContext> {
     // Graph algorithms remain outside strict bounded admission, but bounded
-    // service contexts now keep their memory policy so the graph memory tier
-    // can price/admit the fragment before entering cuGraph.
+    // service contexts keep their memory policy so graph workspace-heavy
+    // algorithms can price/admit their extra workspace before entering cuGraph.
     Ok(context.clone())
 }
 
