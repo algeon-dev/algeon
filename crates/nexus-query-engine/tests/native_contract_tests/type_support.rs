@@ -189,7 +189,7 @@ fn list_string_null_predicates_are_rejected_in_native_post_join_residuals() {
 
 fn native_validation_error_for_plan(build_root: impl FnOnce(&mut QueryPlanBuilder) -> NodeId) -> QueryError {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(runtime);
+    let context = ExecutionContext::from_shared_runtime(runtime).unwrap();
     let mut builder = QueryPlanBuilder::new();
     let root = build_root(&mut builder);
     let plan = builder.finish_with_host_sink(root);

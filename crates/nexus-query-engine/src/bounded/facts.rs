@@ -5,6 +5,7 @@ use crate::{
         CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractStatus,
         ReservationRequirement,
     },
+    error::QueryError,
     plan::QueryPlan,
     runtime::{BoundedJoinReservationContract, ExecutionBoundaryPolicy},
 };
@@ -31,6 +32,15 @@ pub(crate) fn bounded_join_modeled_facts(
     insert_capability_reservation_facts(&mut facts, &analysis);
     insert_join_strategy_facts(&mut facts, plan);
     facts
+}
+
+pub(crate) fn insert_bounded_join_rejection_projection_error_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    error: &QueryError,
+) {
+    facts.insert("bounded_join_rejection_projection_error_code", error.code().to_string());
+    facts.insert("bounded_join_rejection_projection_error_operation", error.operation().to_string());
+    facts.insert("bounded_join_rejection_projection_error_message", error.message().to_string());
 }
 
 fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: &QueryPlan) {

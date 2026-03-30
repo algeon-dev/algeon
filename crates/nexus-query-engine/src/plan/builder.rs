@@ -5,6 +5,7 @@
 //! and facts) are interned as a small CSE step.
 
 use super::*;
+use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Builder for native query plans.
 ///
@@ -129,7 +130,18 @@ impl QueryPlanBuilder {
     }
 
     /// Adds a graph algorithm node over an edge-list input.
-    pub fn add_graph_algorithm(&mut self, input: NodeId, mut spec: GraphAlgorithmSpec) -> NodeId {
+    ///
+    /// This source-compatible wrapper is for callers that have already
+    /// validated graph edge columns. Production lowerers should use
+    /// [`Self::try_add_graph_algorithm`] so schema misses become query errors.
+    pub fn add_graph_algorithm(&mut self, input: NodeId, spec: GraphAlgorithmSpec) -> NodeId {
+        self.try_add_graph_algorithm(input, spec).expect("graph algorithm edge columns must exist")
+    }
+
+    /// Adds a graph algorithm node over an edge-list input, returning a
+    /// structured error when implicit edge normalization cannot derive its
+    /// schema.
+    pub fn try_add_graph_algorithm(&mut self, input: NodeId, mut spec: GraphAlgorithmSpec) -> Result<NodeId> {
         self.assert_input_exists(input);
         let side_inputs = graph_algorithm_side_inputs(&spec);
         for side_input in &side_inputs {
@@ -138,7 +150,7 @@ impl QueryPlanBuilder {
         let input = if spec.graph_options.policy == GraphConstructionPolicy::PythonCugraph {
             let normalize_spec = EdgeNormalizeSpec::python_cugraph(spec.edge_columns.clone(), &spec.graph_options);
             spec.graph_options.policy = GraphConstructionPolicy::RawLibcugraph;
-            let output_schema = edge_normalize_output_schema(self.node(input).output_schema(), &normalize_spec);
+            let output_schema = edge_normalize_output_schema(self.node(input).output_schema(), &normalize_spec)?;
             self.add_edge_normalize(input, normalize_spec, output_schema)
         } else {
             input
@@ -147,10 +159,10 @@ impl QueryPlanBuilder {
         inputs.push(input);
         inputs.extend(side_inputs);
         let output_schema = Arc::clone(&spec.output_schema);
-        self.push(
+        Ok(self.push(
             PlanNode::GraphAlgorithm(GraphAlgorithmNode { input, inputs, spec }),
             PlanFacts::device(output_schema, SchemaBehavior::GraphAlgorithm),
-        )
+        ))
     }
 
     /// Finishes the plan with a host Arrow materialization sink.
@@ -209,27 +221,30 @@ fn graph_algorithm_side_inputs(spec: &GraphAlgorithmSpec) -> Vec<NodeId> {
     }
 }
 
-fn edge_normalize_output_schema(input_schema: &SchemaRef, spec: &EdgeNormalizeSpec) -> SchemaRef {
+fn edge_normalize_output_schema(input_schema: &SchemaRef, spec: &EdgeNormalizeSpec) -> Result<SchemaRef> {
     let mut fields = Vec::with_capacity(
         2 + usize::from(spec.edge_columns.weight.is_some()) + usize::from(spec.edge_columns.edge_id.is_some()),
     );
-    fields.push(
-        input_schema
-            .field_with_name(&spec.edge_columns.source)
-            .expect("edge normalize source column must exist")
-            .clone(),
-    );
-    fields.push(
-        input_schema
-            .field_with_name(&spec.edge_columns.destination)
-            .expect("edge normalize destination column must exist")
-            .clone(),
-    );
+    fields.push(edge_normalize_field(input_schema, &spec.edge_columns.source, "source")?);
+    fields.push(edge_normalize_field(input_schema, &spec.edge_columns.destination, "destination")?);
     if let Some(weight) = &spec.edge_columns.weight {
-        fields.push(input_schema.field_with_name(weight).expect("edge normalize weight column must exist").clone());
+        fields.push(edge_normalize_field(input_schema, weight, "weight")?);
     }
     if let Some(edge_id) = &spec.edge_columns.edge_id {
-        fields.push(input_schema.field_with_name(edge_id).expect("edge normalize edge-id column must exist").clone());
+        fields.push(edge_normalize_field(input_schema, edge_id, "edge_id")?);
     }
-    Arc::new(Schema::new(fields))
+    Ok(Arc::new(Schema::new(fields)))
+}
+
+fn edge_normalize_field(input_schema: &SchemaRef, column: &str, role: &'static str) -> Result<Field> {
+    input_schema.field_with_name(column).cloned().map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.plan.graph_algorithm.edge_normalize_schema",
+            "edge-normalize column is not present in the input schema",
+        )
+        .with_fact("column", column)
+        .with_fact("role", role)
+        .with_source(error)
+    })
 }

@@ -623,8 +623,8 @@ impl QueryService {
                 config.source_fetch.lakehouse_cache_fill_max_concurrent_ops,
             )?,
             gds_concurrency: GdsConcurrencyGate::new(config.source_fetch.gds_max_concurrent_ops)?,
-            source_fetch_runtime: default_source_fetch_runtime(),
-            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime(),
+            source_fetch_runtime: default_source_fetch_runtime()?,
+            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime()?,
             source_object_stores: Arc::new(SourceObjectStoreRegistry::with_profiles(
                 config.source_storage_profiles.clone(),
             )?),

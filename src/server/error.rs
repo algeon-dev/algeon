@@ -4,7 +4,7 @@ use datafusion::common::{DataFusionError, SchemaError};
 use tonic::{Status, metadata::MetadataValue};
 
 use super::{datafusion_error::find_adapter_error, observability::CapturedError};
-use crate::{Error, ErrorCode, ErrorKind};
+use crate::{Error, ErrorCode, ErrorKind, ErrorStatus, Facts};
 
 /// Flight SQL response metadata key containing the stable adapter error code.
 pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
@@ -24,44 +24,197 @@ pub type Result<T> = std::result::Result<T, ServerError>;
 
 #[derive(Debug)]
 pub struct ServerError {
-    message: String,
-    source: Option<Box<dyn StdError + Send + Sync>>,
+    inner: Error,
 }
 
 impl ServerError {
     pub fn invalid_config(field: &'static str, reason: impl Into<String>) -> Self {
-        Self { message: format!("invalid server configuration: {field} {}", reason.into()), source: None }
+        Self::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.server.config",
+            format!("invalid server configuration: {field} {}", reason.into()),
+        )
+        .with_fact("config_field", field)
+    }
+
+    pub fn invalid_config_with_source(
+        field: &'static str,
+        reason: impl Into<String>,
+        source: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        Self::invalid_config(field, reason).with_source(source)
     }
 
     pub fn configuration(message: impl Into<String>) -> Self {
-        Self { message: format!("invalid server configuration: {}", message.into()), source: None }
+        Self::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.server.config",
+            format!("invalid server configuration: {}", message.into()),
+        )
     }
 
     pub fn configuration_with_source(
         message: impl Into<String>,
         source: impl StdError + Send + Sync + 'static,
     ) -> Self {
-        Self { message: format!("invalid server configuration: {}", message.into()), source: Some(Box::new(source)) }
+        Self::new(
+            ErrorCode::InvalidRequest,
+            "datafusion_nexus.server.config",
+            format!("invalid server configuration: {}", message.into()),
+        )
+        .with_source(source)
     }
 
     pub fn startup(message: impl Into<String>) -> Self {
-        Self { message: message.into(), source: None }
+        Self::new(ErrorCode::Internal, "datafusion_nexus.server.startup", message)
     }
 
     pub fn session(message: impl Into<String>, source: impl StdError + Send + Sync + 'static) -> Self {
-        Self { message: message.into(), source: Some(Box::new(source)) }
+        let message = message.into();
+        let source: Box<dyn StdError + Send + Sync> = Box::new(source);
+        let source = match source.downcast::<Error>() {
+            Ok(adapter_error) => return Self { inner: adapter_error_with_message(message, *adapter_error) },
+            Err(source) => source,
+        };
+        let source = match source.downcast::<nexus_query_engine::QueryError>() {
+            Ok(native_error) => {
+                return Self { inner: Error::from_native("datafusion_nexus.server.session", message, *native_error) };
+            },
+            Err(source) => source,
+        };
+        let source = match source.downcast::<DataFusionError>() {
+            Ok(datafusion_error) => {
+                return Self { inner: server_error_from_datafusion_error(message, *datafusion_error) };
+            },
+            Err(source) => source,
+        };
+        Self {
+            inner: Error::new(ErrorCode::CudfDependencyFailure, "datafusion_nexus.server.session", message)
+                .with_source(ServerSource(source)),
+        }
     }
 
     pub fn transport(source: tonic::transport::Error) -> Self {
-        Self { message: "Flight SQL transport failed".to_string(), source: Some(Box::new(source)) }
+        Self::new(ErrorCode::CudfDependencyFailure, "datafusion_nexus.server.transport", "Flight SQL transport failed")
+            .with_source(source)
+    }
+
+    fn new(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Self {
+        Self { inner: Error::new(code, operation, message) }
+    }
+
+    #[must_use]
+    fn with_fact(mut self, key: &'static str, value: impl ToString) -> Self {
+        self.inner = self.inner.with_fact(key, value);
+        self
+    }
+
+    #[must_use]
+    fn with_source<E>(mut self, source: E) -> Self
+    where E: StdError + Send + Sync + 'static {
+        self.inner = self.inner.with_source(source);
+        self
+    }
+
+    pub fn code(&self) -> ErrorCode {
+        self.inner.code()
+    }
+
+    pub fn kind(&self) -> ErrorKind {
+        self.inner.kind()
+    }
+
+    pub fn status(&self) -> ErrorStatus {
+        self.inner.status()
+    }
+
+    pub fn operation(&self) -> &'static str {
+        self.inner.operation()
+    }
+
+    pub fn message(&self) -> &str {
+        self.inner.message()
+    }
+
+    pub fn facts(&self) -> &Facts {
+        self.inner.facts()
+    }
+
+    pub fn fact_value(&self, key: &str) -> Option<&str> {
+        self.inner.fact_value(key)
+    }
+
+    pub fn as_adapter_error(&self) -> &Error {
+        &self.inner
+    }
+}
+
+fn adapter_error_with_message(message: String, source: Error) -> Error {
+    let mut error = Error::new(source.code(), source.operation(), message);
+    for (key, value) in source.facts().iter() {
+        error = error.with_fact(key, value);
+    }
+    error.with_source(source)
+}
+
+fn server_error_from_datafusion_error(message: String, source: DataFusionError) -> Error {
+    if let Some((code, operation, facts)) = find_adapter_error(&source).map(|adapter_source| {
+        (
+            adapter_source.code(),
+            adapter_source.operation(),
+            adapter_source.facts().iter().map(|(key, value)| (key, value.to_string())).collect::<Vec<_>>(),
+        )
+    }) {
+        let mut error = Error::new(code, operation, message);
+        for (key, value) in facts {
+            error = error.with_fact(key, value);
+        }
+        return error.with_source(source);
+    }
+    let code = classify_datafusion_error(&source);
+    let datafusion_error = datafusion_error_variant(&source);
+    Error::new(code, "datafusion_nexus.server.session", message)
+        .with_fact("datafusion_error", datafusion_error)
+        .with_source(source)
+}
+
+#[derive(Debug)]
+struct ServerSource(Box<dyn StdError + Send + Sync>);
+
+impl fmt::Display for ServerSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl StdError for ServerSource {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(self.0.as_ref())
     }
 }
 
 impl fmt::Display for ServerError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)?;
-        if let Some(source) = &self.source {
-            write!(f, ": {source}")?;
+        write!(
+            f,
+            "code={} kind={} status={} operation={} message={}",
+            self.code(),
+            self.kind(),
+            self.status(),
+            self.operation(),
+            quote(self.message()),
+        )?;
+        if self.facts().iter().next().is_none() {
+            f.write_str(" facts={}")?;
+        } else {
+            f.write_str(" facts={")?;
+            for (index, (key, value)) in self.facts().iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{key}={}", quote(value))?;
+            }
+            f.write_str("}")?;
         }
         Ok(())
     }
@@ -69,7 +222,15 @@ impl fmt::Display for ServerError {
 
 impl StdError for ServerError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        self.source.as_deref().map(|source| source as &(dyn StdError + 'static))
+        self.inner.source_error()
+    }
+}
+
+fn quote(value: &str) -> String {
+    if value.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':' | '/' | '(' | ')')) {
+        value.to_string()
+    } else {
+        format!("{value:?}")
     }
 }
 
@@ -95,7 +256,7 @@ pub(super) fn datafusion_error_to_captured_error(error: &DataFusionError, operat
     CapturedError::from_adapter_error(&adapter_error)
 }
 
-fn adapter_error_to_status(error: &Error) -> Status {
+pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     let message = client_status_message(error);
     tracing::warn!(
         error_code = error.code().as_str(),
@@ -554,6 +715,27 @@ mod tests {
         assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
         assert_eq!(status.message(), "service overloaded; retry later");
         assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn server_error_session_preserves_native_query_error_classification() {
+        let native = nexus_query_engine::QueryError::new(
+            nexus_query_engine::QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.query_service.admit",
+            "native query service queue is full",
+        )
+        .with_fact("tenant_id", "default");
+
+        let error = ServerError::session("query service admission failed", native);
+
+        assert_eq!(error.code(), ErrorCode::ServiceOverloaded);
+        assert_eq!(error.fact_value("native_code"), Some("service_overloaded"));
+        assert_eq!(error.fact_value("native_operation"), Some("nexus_query_engine.query_service.admit"));
+        assert_eq!(error.fact_value("tenant_id"), Some("default"));
+
+        let status = adapter_error_to_status(error.as_adapter_error());
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_error_metadata(&status, "service_overloaded", "resource_exhausted", "temporary");
     }
 
     #[test]

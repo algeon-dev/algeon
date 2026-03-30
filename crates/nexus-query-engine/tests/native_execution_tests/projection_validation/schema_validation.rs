@@ -23,7 +23,7 @@ fn native_query_rejects_duplicate_projection_output_names_generically_before_run
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => {
@@ -107,7 +107,7 @@ fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_
     let limit = builder.add_limit(source, LimitSpec::fetch(2), mismatched_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("GPU result handle should reject sink schema name/order mismatches"),
         Err(error) => error,
@@ -137,7 +137,7 @@ fn native_projection_schema_coercion_rejects_unsupported_output_type_mismatch() 
         projection_outputs(vec![Expr::column("key").alias("bad_key")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "int_input".to_string(),

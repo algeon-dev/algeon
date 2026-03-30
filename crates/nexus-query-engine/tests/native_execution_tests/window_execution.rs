@@ -42,7 +42,7 @@ fn native_cumulative_aggregate_window_restores_input_order_and_carries_null_rows
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
@@ -107,7 +107,7 @@ fn native_lag_window_shifts_within_partition_and_restores_input_order() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
@@ -180,7 +180,7 @@ fn native_lag_window_groups_null_partition_keys_together() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
@@ -252,7 +252,7 @@ fn native_lead_window_with_explicit_default_fills_partition_edges() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),
@@ -322,7 +322,7 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(window);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "window_input".to_string(),

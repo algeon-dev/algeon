@@ -1021,7 +1021,7 @@ fn prepare_bfs_logical_gpu_inputs(
     }
 
     let mut execution_spec = spec.clone();
-    execution_spec.output_schema = bfs_numeric_execution_schema(params);
+    execution_spec.output_schema = bfs_numeric_execution_schema(params)?;
     Ok(PreparedCugraphInputs {
         execution_spec,
         edge_schema: mapped_edge_schema,
@@ -1238,14 +1238,14 @@ fn remap_bfs_logical_schema(schema: &SchemaRef, columns: &[&str]) -> Result<Sche
     Ok(Arc::new(Schema::new(fields)))
 }
 
-fn bfs_numeric_execution_schema(params: &super::CugraphBfsParams) -> SchemaRef {
+fn bfs_numeric_execution_schema(params: &super::CugraphBfsParams) -> Result<SchemaRef> {
     let native_schema = bfs_native_result_schema(params.output.return_target_info);
     let fields: Vec<_> = match params.output.mode {
         CugraphBfsOutputMode::Raw => native_schema.fields().iter().map(|field| field.as_ref().clone()).collect(),
         CugraphBfsOutputMode::Normalized => Arc::new(Schema::new(vec![
-            normalized_bfs_base_field(&native_schema, "vertex", false),
-            normalized_bfs_base_field(&native_schema, "distance", true),
-            normalized_bfs_base_field(&native_schema, "predecessor", true),
+            normalized_bfs_base_field(&native_schema, "vertex", false)?,
+            normalized_bfs_base_field(&native_schema, "distance", true)?,
+            normalized_bfs_base_field(&native_schema, "predecessor", true)?,
             arrow::datatypes::Field::new("reachable", DataType::Boolean, false),
         ]))
         .fields()
@@ -1255,7 +1255,7 @@ fn bfs_numeric_execution_schema(params: &super::CugraphBfsParams) -> SchemaRef {
         .collect(),
         CugraphBfsOutputMode::Path => native_schema.fields().iter().map(|field| field.as_ref().clone()).collect(),
     };
-    Arc::new(Schema::new(fields))
+    Ok(Arc::new(Schema::new(fields)))
 }
 
 fn bfs_native_result_schema(return_target_info: bool) -> SchemaRef {
@@ -1264,9 +1264,23 @@ fn bfs_native_result_schema(return_target_info: bool) -> SchemaRef {
     GraphAlgorithm::Bfs.definition().result_schema_for_params(&GraphAlgorithmParams::Bfs(Box::new(native_params)))
 }
 
-fn normalized_bfs_base_field(schema: &SchemaRef, name: &str, nullable: bool) -> arrow::datatypes::Field {
-    let field = schema.field_with_name(name).expect("native BFS descriptor must expose raw BFS base fields");
-    arrow::datatypes::Field::new(field.name(), field.data_type().clone(), nullable)
+fn normalized_bfs_base_field(
+    schema: &SchemaRef,
+    name: &'static str,
+    nullable: bool,
+) -> Result<arrow::datatypes::Field> {
+    let field = schema.field_with_name(name).map_err(|error| {
+        DataFusionError::from(
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.bfs_result_schema",
+                "native BFS descriptor is missing a raw BFS base field",
+            )
+            .with_fact("column", name)
+            .with_source(error),
+        )
+    })?;
+    Ok(arrow::datatypes::Field::new(field.name(), field.data_type().clone(), nullable))
 }
 
 fn decode_bfs_logical_gpu_output(
@@ -1867,7 +1881,13 @@ fn cugraph_query_plan(
     let predicate_nodes = bind_predicate_gpu_inputs(context, &mut builder, &mut inputs, predicate_frames)?;
     let graph_spec = native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes);
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
-    let mut root = builder.add_graph_algorithm(input, graph_spec);
+    let mut root = builder.try_add_graph_algorithm(input, graph_spec).map_err(|error| {
+        DataFusionError::from(Error::from_native(
+            "datafusion_nexus.cugraph_sql.plan",
+            "failed to build native cuGraph query plan",
+            error,
+        ))
+    })?;
     if let Some(outputs) = bfs_normalized_output_projection(spec, &edge_schema)? {
         root = builder.add_projection(root, outputs);
         root_schema = Arc::clone(&spec.output_schema);

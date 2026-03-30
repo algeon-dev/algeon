@@ -443,7 +443,7 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
     assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
     assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
 
-    let execution_context = ExecutionContext::from_runtime(cudf::Runtime::new().unwrap());
+    let execution_context = ExecutionContext::from_runtime(cudf::Runtime::new().unwrap()).unwrap();
     let result = execute_query_plan(&execution_context, &result.plans[0]).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("COUNT(*) plan should materialize a host Arrow batch");

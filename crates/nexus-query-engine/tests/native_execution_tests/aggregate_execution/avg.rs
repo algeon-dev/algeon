@@ -182,7 +182,7 @@ fn native_query_executes_grouped_avg_with_float32_output_schema() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&aggregated_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -329,7 +329,7 @@ fn native_query_rejects_grouped_avg_with_unsupported_output_schema_before_source
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("grouped avg with unsupported output schema should be rejected before source read"),
@@ -357,7 +357,7 @@ fn native_query_rejects_global_avg_reserved_state_alias_collision_before_source_
         builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&input_schema))));
     let aggregate = builder.add_aggregate(source, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("global avg reserved state alias collision should be rejected before source read"),
@@ -430,7 +430,7 @@ fn assert_grouped_decimal_avg_keeps_output_scale(context: &ExecutionContext) {
 #[test]
 fn unbounded_native_query_executes_grouped_decimal_avg_at_output_scale() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     assert_grouped_decimal_avg_keeps_output_scale(&context);
 }
 
@@ -525,7 +525,7 @@ fn assert_grouped_mixed_integer_and_decimal_avg(context: &ExecutionContext) {
 #[test]
 fn unbounded_native_query_executes_grouped_mixed_integer_and_decimal_avg() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     assert_grouped_mixed_integer_and_decimal_avg(&context);
 }
 
@@ -695,7 +695,7 @@ fn assert_grouped_high_cardinality_mixed_avg(context: &ExecutionContext, groups:
 #[test]
 fn unbounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     assert_grouped_high_cardinality_mixed_avg(&context, 1500);
 }
 
@@ -719,7 +719,7 @@ fn bounded_native_query_executes_grouped_high_cardinality_mixed_avg() {
 #[test]
 fn unbounded_native_query_executes_grouped_many_group_decimal_avg() {
     let runtime = Arc::new(cudf::Runtime::new().unwrap());
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     assert_grouped_many_group_decimal_avg(&context);
 }
 

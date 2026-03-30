@@ -437,30 +437,46 @@ impl fmt::Debug for SourceObjectStoreRegistry {
     }
 }
 
-pub(super) fn default_source_fetch_runtime() -> Arc<tokio::runtime::Runtime> {
+pub(super) fn default_source_fetch_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
     static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
-    Arc::clone(RUNTIME.get_or_init(|| {
-        Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .thread_name("cudf-source-fetch")
-                .enable_all()
-                .build()
-                .expect("source fetch runtime should initialize"),
-        )
-    }))
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(Arc::clone(runtime));
+    }
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread().thread_name("cudf-source-fetch").enable_all().build().map_err(
+            |error| {
+                QueryError::new(
+                    QueryErrorCode::CudfDependencyFailure,
+                    "nexus_query_engine.runtime.source_fetch_runtime",
+                    "failed to initialize source-fetch runtime",
+                )
+                .with_source(error)
+            },
+        )?,
+    );
+    Ok(Arc::clone(RUNTIME.get_or_init(|| runtime)))
 }
 
-pub(super) fn default_lakehouse_cache_fill_runtime() -> Arc<tokio::runtime::Runtime> {
+pub(super) fn default_lakehouse_cache_fill_runtime() -> Result<Arc<tokio::runtime::Runtime>> {
     static RUNTIME: OnceLock<Arc<tokio::runtime::Runtime>> = OnceLock::new();
-    Arc::clone(RUNTIME.get_or_init(|| {
-        Arc::new(
-            tokio::runtime::Builder::new_multi_thread()
-                .thread_name("cudf-lakehouse-cache-fill")
-                .enable_all()
-                .build()
-                .expect("lakehouse cache fill runtime should initialize"),
-        )
-    }))
+    if let Some(runtime) = RUNTIME.get() {
+        return Ok(Arc::clone(runtime));
+    }
+    let runtime = Arc::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .thread_name("cudf-lakehouse-cache-fill")
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::CudfDependencyFailure,
+                    "nexus_query_engine.runtime.lakehouse_cache_fill_runtime",
+                    "failed to initialize lakehouse cache fill runtime",
+                )
+                .with_source(error)
+            })?,
+    );
+    Ok(Arc::clone(RUNTIME.get_or_init(|| runtime)))
 }
 
 #[cfg(test)]
@@ -593,7 +609,7 @@ mod tests {
         let _host_buffer_store = registry.s3_store(key.clone()).expect("host-buffer store builds");
         let provider = registry.s3_credential_provider(key).expect("credential provider resolves");
         let credential =
-            default_source_fetch_runtime().block_on(provider.get_credential()).expect("credential resolves");
+            default_source_fetch_runtime().unwrap().block_on(provider.get_credential()).expect("credential resolves");
 
         assert_eq!(credential.key_id, "access-key-value");
         assert_eq!(credential.secret_key, "secret-key-value");

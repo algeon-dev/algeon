@@ -8,6 +8,7 @@ use datafusion::{
 
 use super::CudfOptimizerConfig;
 use crate::{
+    Error, ErrorCode,
     native_exec::{NativeCudfComposedExec, NativeCudfExec},
     native_report::{NativeJoinDiagnosticSummary, physical_join_diagnostics},
     physical_plan::physical_plan_shape,
@@ -125,7 +126,14 @@ impl CudfNativePhysicalOptimizerRule {
 
     /// Most recent planning report produced by this retained rule, if it has run.
     pub fn last_report(&self) -> Option<PlanningReport> {
-        self.state.last_report.lock().expect("native planning report mutex poisoned").clone()
+        match self.state.last_report.lock() {
+            Ok(report) => report.clone(),
+            Err(poisoned) => {
+                #[cfg(feature = "server")]
+                tracing::warn!("native planning report mutex was poisoned; returning the last captured report");
+                poisoned.into_inner().clone()
+            },
+        }
     }
 
     /// Source diagnostics captured during the most recent native planning attempt.
@@ -223,7 +231,13 @@ impl PhysicalOptimizerRule for CudfNativePhysicalOptimizerRule {
             )?,
         };
         let optimized = apply_native_fallback_policy(Arc::clone(&plan), optimized, &effective_config)?;
-        *self.state.last_report.lock().expect("native planning report mutex poisoned") = Some(optimized.report.clone());
+        *self.state.last_report.lock().map_err(|_| {
+            datafusion::common::DataFusionError::from(Error::new(
+                ErrorCode::Internal,
+                "datafusion_nexus.native_optimizer.report",
+                "native planning report mutex was poisoned",
+            ))
+        })? = Some(optimized.report.clone());
         *self.state.last_native_optimizer.lock().expect("native optimizer diagnostics mutex poisoned") =
             optimized.native_optimizer.clone();
         *self.state.last_source_diagnostics.lock().expect("native source diagnostics mutex poisoned") =

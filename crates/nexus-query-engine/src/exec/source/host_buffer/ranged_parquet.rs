@@ -44,7 +44,7 @@ use crate::{
     chunk::SourceChunk,
     error::{QueryError, QueryErrorCode, Result},
     exec::source::metrics::format_row_groups,
-    parquet_metadata::parquet_footer_prefetch_bytes,
+    parquet_metadata::{object_store_query_error, parquet_footer_prefetch_bytes},
     runtime::{ExecutionContext, S3ObjectStoreKey},
     source::{LocalParquetFile, LocalParquetSource},
     util::comma_separated_usize,
@@ -1004,8 +1004,8 @@ fn rewrite_column_chunk_metadata(
     })
 }
 
-fn ranged_fetch_error(message: &'static str, _error: object_store::Error, location: &ObjectStorePath) -> QueryError {
-    QueryError::new(QueryErrorCode::CudfDependencyFailure, "nexus_query_engine.source_fetch.ranged_parquet", message)
+fn ranged_fetch_error(message: &'static str, error: object_store::Error, location: &ObjectStorePath) -> QueryError {
+    object_store_query_error("nexus_query_engine.source_fetch.ranged_parquet", message, error)
         .with_fact("path", ranged_path_fact(location))
 }
 
@@ -1152,6 +1152,25 @@ mod tests {
         for sensitive in ["secret-bucket", "private/file", "X-Amz-Signature", "do-not-leak"] {
             assert!(!diagnostic.contains(sensitive), "diagnostic leaked {sensitive}: {diagnostic}");
         }
+    }
+
+    #[test]
+    fn ranged_fetch_error_preserves_object_store_authn_classification() {
+        let location = ObjectStorePath::from("secret-bucket/private/file.parquet");
+        let error = object_store::Error::Generic {
+            store: "fault",
+            source: Box::new(std::io::Error::other(
+                "ServiceError: status code: 403 Forbidden; InvalidAccessKeyId: access key is invalid",
+            )),
+        };
+
+        let error = ranged_fetch_error("failed to GET Parquet footer range", error, &location);
+
+        assert_eq!(error.code(), QueryErrorCode::SourceUnauthenticated);
+        assert_eq!(error.operation(), "nexus_query_engine.source_fetch.ranged_parquet");
+        assert_eq!(error.fact_value("object_store_error_kind"), Some("generic"));
+        assert_eq!(error.fact_value("object_store_error_detail"), Some("invalid_access_key"));
+        assert!(error.source_error().is_some());
     }
 
     #[tokio::test]

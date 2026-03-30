@@ -41,13 +41,14 @@ pub(crate) fn parse_complete_parquet_metadata(
     operation: &'static str,
     path: impl std::fmt::Display,
 ) -> Result<Arc<ParquetMetaData>> {
-    let file_size = u64::try_from(bytes.len()).map_err(|_error| {
+    let file_size = u64::try_from(bytes.len()).map_err(|error| {
         QueryError::new(
             QueryErrorCode::CudfDependencyFailure,
             operation,
             "Parquet payload length exceeds native metadata range",
         )
         .with_fact("path", path.to_string())
+        .with_source(error)
     })?;
     if bytes.len() < FOOTER_SIZE {
         return Err(QueryError::new(
@@ -385,26 +386,43 @@ fn parse_metadata_from_footer_bytes(
 
 fn object_store_metadata_error(
     message: &'static str,
-    error: object_store::Error,
+    source: object_store::Error,
     location: &ObjectStorePath,
 ) -> QueryError {
-    let code = query_error_code_for_object_store_error(&error);
-    let kind = object_store_error_kind(&error);
-    QueryError::new(code, "nexus_query_engine.source_metadata.object_store_footer", message)
+    object_store_query_error("nexus_query_engine.source_metadata.object_store_footer", message, source)
         .with_fact("path", object_store_path_fact(location))
-        .with_fact("object_store_error_kind", kind)
-        .with_source(RedactedObjectStoreError { kind, source: error })
+}
+
+pub(crate) fn object_store_query_error(
+    operation: &'static str,
+    message: &'static str,
+    source: object_store::Error,
+) -> QueryError {
+    let code = query_error_code_for_object_store_error(&source);
+    let kind = object_store_error_kind(&source);
+    let detail = object_store_error_detail(&source);
+    let error = QueryError::new(code, operation, message).with_fact("object_store_error_kind", kind);
+    let error = match detail {
+        Some(detail) => error.with_fact("object_store_error_detail", detail),
+        None => error,
+    };
+    error.with_source(RedactedObjectStoreError { kind, detail, source })
 }
 
 #[derive(Debug)]
 struct RedactedObjectStoreError {
     kind: &'static str,
+    detail: Option<&'static str>,
     source: object_store::Error,
 }
 
 impl fmt::Display for RedactedObjectStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "object-store error kind={}", self.kind)
+        write!(f, "object-store error kind={}", self.kind)?;
+        if let Some(detail) = self.detail {
+            write!(f, " detail={detail}")?;
+        }
+        Ok(())
     }
 }
 
@@ -419,7 +437,13 @@ pub(crate) fn query_error_code_for_object_store_error(error: &object_store::Erro
         object_store::Error::PermissionDenied { .. } => QueryErrorCode::SourceAccessDenied,
         object_store::Error::Unauthenticated { .. } => QueryErrorCode::SourceUnauthenticated,
         object_store::Error::NotFound { .. } => QueryErrorCode::SourceObjectNotFound,
-        object_store::Error::Generic { .. } => QueryErrorCode::SourceTemporaryFailure,
+        object_store::Error::Generic { .. } => match object_store_error_detail(error) {
+            Some("http_401" | "missing_credentials" | "expired_token" | "invalid_access_key") => {
+                QueryErrorCode::SourceUnauthenticated
+            },
+            Some("http_403" | "access_denied" | "signature_mismatch") => QueryErrorCode::SourceAccessDenied,
+            _ => QueryErrorCode::SourceTemporaryFailure,
+        },
         _ => QueryErrorCode::CudfDependencyFailure,
     }
 }
@@ -441,6 +465,74 @@ pub(crate) fn object_store_error_kind(error: &object_store::Error) -> &'static s
         #[allow(unreachable_patterns)]
         _ => "other",
     }
+}
+
+fn object_store_error_detail(error: &object_store::Error) -> Option<&'static str> {
+    match error {
+        object_store::Error::PermissionDenied { .. } => Some("access_denied"),
+        object_store::Error::Unauthenticated { .. } => Some("unauthenticated"),
+        object_store::Error::NotFound { .. } => Some("not_found"),
+        object_store::Error::Generic { source, .. } => classify_generic_object_store_source(source.as_ref()),
+        _ => None,
+    }
+}
+
+fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Option<&'static str> {
+    let text = error_chain_text(source);
+    let lower = text.to_ascii_lowercase();
+    if contains_any(&lower, &["invalidaccesskeyid", "invalid access key", "invalid_access_key"]) {
+        return Some("invalid_access_key");
+    }
+    if contains_any(&lower, &["expiredtoken", "expired token", "token expired"]) {
+        return Some("expired_token");
+    }
+    if contains_any(&lower, &["signaturedoesnotmatch", "signature mismatch", "signature did not match"]) {
+        return Some("signature_mismatch");
+    }
+    if contains_any(&lower, &["accessdenied", "access denied", "permission denied"]) {
+        return Some("access_denied");
+    }
+    if contains_any(
+        &lower,
+        &[
+            "no credentials",
+            "missing credentials",
+            "credentials not loaded",
+            "credential was not loaded",
+            "could not load credentials",
+            "unable to load credentials",
+        ],
+    ) {
+        return Some("missing_credentials");
+    }
+    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
+        return Some("http_401");
+    }
+    if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
+        return Some("http_403");
+    }
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return Some("timeout");
+    }
+    if lower.contains("error sending request") || lower.contains("transport error") {
+        return Some("transport");
+    }
+    None
+}
+
+fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
+    let mut text = source.to_string();
+    let mut current = source.source();
+    while let Some(source) = current {
+        text.push_str(": ");
+        text.push_str(&source.to_string());
+        current = source.source();
+    }
+    text
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
 fn object_store_path_fact(location: &ObjectStorePath) -> String {
@@ -503,6 +595,13 @@ mod tests {
         Unauthenticated,
         NotFound,
         Generic,
+        GenericHttp403,
+        GenericHttp401,
+        GenericMissingCredentials,
+        GenericInvalidAccessKey,
+        GenericExpiredToken,
+        GenericExpiredTokenHttp403,
+        GenericSignatureMismatch,
     }
 
     #[derive(Debug)]
@@ -540,7 +639,62 @@ mod tests {
                     store: "fault",
                     source: Box::new(std::io::Error::new(std::io::ErrorKind::TimedOut, "simulated timeout")),
                 },
+                FaultKind::GenericHttp403 => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::other(
+                        "Server returned non-2xx status code: 403 Forbidden: AccessDenied",
+                    )),
+                },
+                FaultKind::GenericHttp401 => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::other("Server returned non-2xx status code: 401 Unauthorized")),
+                },
+                FaultKind::GenericMissingCredentials => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::other("could not load credentials from AWS provider chain")),
+                },
+                FaultKind::GenericInvalidAccessKey => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::other("InvalidAccessKeyId: access key is not valid")),
+                },
+                FaultKind::GenericExpiredToken => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(NestedSourceError {
+                        message: "catalog request failed",
+                        source: std::io::Error::other("ExpiredToken: security token expired"),
+                    }),
+                },
+                FaultKind::GenericExpiredTokenHttp403 => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::other(
+                        "Server returned non-2xx status code: 403 Forbidden; ExpiredToken: security token expired",
+                    )),
+                },
+                FaultKind::GenericSignatureMismatch => object_store::Error::Generic {
+                    store: "fault",
+                    source: Box::new(std::io::Error::other(
+                        "SignatureDoesNotMatch: the request signature did not match",
+                    )),
+                },
             }
+        }
+    }
+
+    #[derive(Debug)]
+    struct NestedSourceError {
+        message: &'static str,
+        source: std::io::Error,
+    }
+
+    impl fmt::Display for NestedSourceError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.message)
+        }
+    }
+
+    impl StdError for NestedSourceError {
+        fn source(&self) -> Option<&(dyn StdError + 'static)> {
+            Some(&self.source)
         }
     }
 
@@ -634,13 +788,50 @@ mod tests {
     #[tokio::test]
     async fn object_store_footer_fetch_preserves_source_storage_error_classification() {
         let cases = [
-            (FaultKind::PermissionDenied, QueryErrorCode::SourceAccessDenied, "permission_denied"),
-            (FaultKind::Unauthenticated, QueryErrorCode::SourceUnauthenticated, "unauthenticated"),
-            (FaultKind::NotFound, QueryErrorCode::SourceObjectNotFound, "not_found"),
-            (FaultKind::Generic, QueryErrorCode::SourceTemporaryFailure, "generic"),
+            (
+                FaultKind::PermissionDenied,
+                QueryErrorCode::SourceAccessDenied,
+                "permission_denied",
+                Some("access_denied"),
+            ),
+            (
+                FaultKind::Unauthenticated,
+                QueryErrorCode::SourceUnauthenticated,
+                "unauthenticated",
+                Some("unauthenticated"),
+            ),
+            (FaultKind::NotFound, QueryErrorCode::SourceObjectNotFound, "not_found", Some("not_found")),
+            (FaultKind::Generic, QueryErrorCode::SourceTemporaryFailure, "generic", Some("timeout")),
+            (FaultKind::GenericHttp403, QueryErrorCode::SourceAccessDenied, "generic", Some("access_denied")),
+            (FaultKind::GenericHttp401, QueryErrorCode::SourceUnauthenticated, "generic", Some("http_401")),
+            (
+                FaultKind::GenericMissingCredentials,
+                QueryErrorCode::SourceUnauthenticated,
+                "generic",
+                Some("missing_credentials"),
+            ),
+            (
+                FaultKind::GenericInvalidAccessKey,
+                QueryErrorCode::SourceUnauthenticated,
+                "generic",
+                Some("invalid_access_key"),
+            ),
+            (FaultKind::GenericExpiredToken, QueryErrorCode::SourceUnauthenticated, "generic", Some("expired_token")),
+            (
+                FaultKind::GenericExpiredTokenHttp403,
+                QueryErrorCode::SourceUnauthenticated,
+                "generic",
+                Some("expired_token"),
+            ),
+            (
+                FaultKind::GenericSignatureMismatch,
+                QueryErrorCode::SourceAccessDenied,
+                "generic",
+                Some("signature_mismatch"),
+            ),
         ];
 
-        for (fault, expected_code, expected_kind) in cases {
+        for (fault, expected_code, expected_kind, expected_detail) in cases {
             let store: Arc<dyn ObjectStore> = Arc::new(FaultObjectStore::new(fault));
             let location = ObjectStorePath::from("secret-bucket/private/file.parquet?X-Amz-Signature=do-not-leak");
 
@@ -649,6 +840,7 @@ mod tests {
             assert_eq!(error.code(), expected_code);
             assert_eq!(error.operation(), "nexus_query_engine.source_metadata.object_store_footer");
             assert_eq!(error.fact_value("object_store_error_kind"), Some(expected_kind));
+            assert_eq!(error.fact_value("object_store_error_detail"), expected_detail);
             assert!(error.source_error().is_some());
             let diagnostic = error.fact_value("path").expect("redacted path fact");
             assert!(diagnostic.starts_with("object_store_path:fnv64:"));

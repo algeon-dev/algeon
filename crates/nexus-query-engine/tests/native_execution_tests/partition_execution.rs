@@ -10,7 +10,7 @@ fn native_query_executes_filter_projection_and_group_by_on_partition_columns() {
     write_input_parquet(&runtime, &second_path);
     let plan = partition_column_query_plan(&first_path, &second_path, file_schema);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
 
     let QueryOutput::HostArrow(batch) = result.output() else {

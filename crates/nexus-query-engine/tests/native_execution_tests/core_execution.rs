@@ -46,7 +46,7 @@ fn native_query_executes_direct_parquet_pipeline_to_host_sink() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 1);
@@ -151,7 +151,7 @@ fn native_local_parquet_source_applies_iceberg_position_deletes_before_output_an
     let mut builder = QueryPlanBuilder::new();
     let source_node = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -246,7 +246,7 @@ fn native_scan_limited_position_delete_source_reads_until_visible_row() {
     let mut builder = QueryPlanBuilder::new();
     let source_node = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node);
-    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()));
+    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -294,7 +294,7 @@ fn native_position_delete_reader_predicate_prunes_delete_row_groups_for_scan_lim
     let mut builder = QueryPlanBuilder::new();
     let source_node = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source_node);
-    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap()));
+    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
@@ -365,7 +365,7 @@ fn native_local_parquet_source_carries_timestamp_timezone_to_host_output() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -430,7 +430,7 @@ fn native_local_parquet_source_carries_list_utf8_through_scalar_filter_to_host_o
     let filter = builder.add_filter(source, filter, Arc::clone(&source_schema));
     let projection = builder.add_projection(filter, projection);
     let plan = builder.finish_with_host_sink_schema(projection, Arc::clone(&output_schema));
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -477,7 +477,7 @@ fn native_local_parquet_source_carries_large_list_large_utf8_to_host_output() {
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -515,7 +515,7 @@ fn native_query_executes_union_over_gpu_resident_inputs() {
     let right = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("right", Arc::clone(&schema))));
     let union = builder.add_union(vec![left, right], Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(union);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "left".to_string(),
@@ -623,7 +623,7 @@ fn native_query_executes_literal_batch_source_with_offset_only_limit() {
     let limit = builder.add_limit(source, LimitSpec::offset(1), Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.input_batches, 1);
@@ -671,7 +671,7 @@ fn native_local_parquet_reader_predicate_coerces_integer_literal_to_float_column
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -723,7 +723,7 @@ fn native_local_parquet_reader_predicate_uses_sql_null_logical_or() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -840,7 +840,7 @@ fn execute_gpu_resident_filter_ids(
     let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("input", Arc::clone(&schema))));
     let filter = builder.add_filter(source, predicate, Arc::clone(&schema));
     let plan = builder.finish_with_host_sink(filter);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "input".to_string(),
@@ -883,7 +883,7 @@ fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
     let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -922,7 +922,7 @@ fn native_local_parquet_source_materializes_missing_nullable_columns() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let plan = builder.finish_with_host_sink(source);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1578,7 +1578,7 @@ fn native_query_executes_group_only_aggregate_as_distinct_keys() {
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1679,7 +1679,7 @@ fn native_query_executes_group_only_aggregate_when_output_key_name_already_exist
     let sort = builder.add_sort(aggregate, sort, Arc::clone(&output_schema));
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1738,7 +1738,7 @@ fn native_query_executes_multi_file_direct_parquet_source() {
     let limit = builder.add_limit(sort, LimitSpec::fetch(2), aggregated_schema);
     let plan = builder.finish_with_host_sink(limit);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 2);

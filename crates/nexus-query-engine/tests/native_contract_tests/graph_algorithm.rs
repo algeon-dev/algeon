@@ -9,7 +9,7 @@ use nexus_query_engine::{
     GraphConstructionOptions, GraphConstructionPolicy, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
     GraphLayoutRequirement, GraphMemoryClass, GraphMemoryModel, GraphMemoryModelInput, GraphOutputSchemaKind,
     GraphPageRankParams, GraphPredicateInput, GraphReservationOutcome, GraphReservationReport,
-    GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryPlan, QueryPlanBuilder, SourceNode,
+    GraphSourceVertexRequirement, GraphWeightPolicy, PlanNode, QueryErrorCode, QueryPlan, QueryPlanBuilder, SourceNode,
     StrictBoundedContractReport, StrictBoundedExecutionMode,
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     graph_memory_class, stable_graph_result_schema,
@@ -61,6 +61,32 @@ fn graph_algorithm_builder_records_ir_contracts_and_display_summary() {
     assert!(display.contains("renumber=true"));
     assert!(display.contains("construction_policy=raw_libcugraph"));
     assert!(display.contains("output_schema_fields=2"));
+}
+
+#[test]
+fn graph_algorithm_builder_rejects_missing_edge_normalize_columns() {
+    let mut builder = QueryPlanBuilder::new();
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+        "edges",
+        Arc::new(Schema::new(vec![
+            Field::new("src", DataType::Int64, false),
+            Field::new("dst", DataType::Int64, false),
+        ])),
+    )));
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", Some("missing_weight")),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+
+    let error = builder.try_add_graph_algorithm(input, spec).expect_err("missing weight column should not panic");
+
+    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(error.operation(), "nexus_query_engine.plan.graph_algorithm.edge_normalize_schema");
+    assert_eq!(error.fact_value("column"), Some("missing_weight"));
+    assert_eq!(error.fact_value("role"), Some("weight"));
+    assert!(error.source_error().is_some());
 }
 
 #[test]

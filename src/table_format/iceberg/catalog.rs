@@ -9,6 +9,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    error::Error as StdError,
     fmt,
     sync::{Arc, RwLock as StdRwLock},
     time::Duration,
@@ -44,9 +45,189 @@ use crate::{
 const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 
 fn catalog_backend_error(message: &'static str, catalog_type: &'static str, source: iceberg::Error) -> Error {
-    Error::new(ErrorCode::CudfDependencyFailure, CATALOG_BACKEND_OP, message)
+    let aws_facts = AwsCatalogErrorFacts::from_iceberg_error(&source);
+    let mut error = Error::new(catalog_backend_error_code(&source, aws_facts.as_ref()), CATALOG_BACKEND_OP, message)
         .with_fact("catalog_type", catalog_type)
-        .with_source(source)
+        .with_fact("iceberg_error_kind", source.kind().into_static())
+        .with_fact("iceberg_retryable", source.retryable());
+    if let Some(aws_facts) = aws_facts {
+        error = aws_facts.apply(error);
+    }
+    error.with_source(source)
+}
+
+fn catalog_backend_error_code(source: &iceberg::Error, aws_facts: Option<&AwsCatalogErrorFacts>) -> ErrorCode {
+    if let Some(aws_facts) = aws_facts {
+        if matches!(
+            aws_facts.error_code,
+            Some("ExpiredTokenException" | "InvalidAccessKeyId" | "UnrecognizedClientException")
+        ) || matches!(aws_facts.detail, Some("http_401" | "missing_credentials"))
+        {
+            return ErrorCode::SourceUnauthenticated;
+        }
+        if matches!(aws_facts.error_code, Some("AccessDeniedException" | "SignatureDoesNotMatch"))
+            || matches!(aws_facts.detail, Some("http_403" | "access_denied"))
+        {
+            return ErrorCode::SourceAccessDenied;
+        }
+        if matches!(aws_facts.error_code, Some("EntityNotFoundException")) {
+            return ErrorCode::SourceObjectNotFound;
+        }
+    }
+    match source.kind() {
+        iceberg::ErrorKind::TableNotFound | iceberg::ErrorKind::NamespaceNotFound => ErrorCode::ObjectNotFound,
+        _ if source.retryable() => ErrorCode::SourceTemporaryFailure,
+        _ => ErrorCode::CudfDependencyFailure,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AwsCatalogErrorFacts {
+    error_code: Option<&'static str>,
+    request_id: Option<String>,
+    http_status: Option<&'static str>,
+    retryable: Option<&'static str>,
+    detail: Option<&'static str>,
+}
+
+impl AwsCatalogErrorFacts {
+    fn from_iceberg_error(source: &iceberg::Error) -> Option<Self> {
+        let text = error_chain_text(source);
+        if !text.contains("aws sdk error") && !text.contains("ErrorMetadata") && !text.contains("aws_request_id") {
+            return None;
+        }
+        let error_code = aws_error_code_fact(&text);
+        let detail = aws_error_detail_fact(&text, error_code);
+        Some(Self {
+            error_code,
+            request_id: aws_request_id_fact(&text),
+            http_status: aws_http_status_fact(&text),
+            retryable: aws_retryable_fact(&text),
+            detail,
+        })
+    }
+
+    fn apply(self, mut error: Error) -> Error {
+        if let Some(error_code) = self.error_code {
+            error = error.with_fact("aws_error_code", error_code);
+        }
+        if let Some(request_id) = self.request_id {
+            error = error.with_fact("aws_request_id", request_id);
+        }
+        if let Some(http_status) = self.http_status {
+            error = error.with_fact("aws_http_status", http_status);
+        }
+        if let Some(retryable) = self.retryable {
+            error = error.with_fact("aws_retryable", retryable);
+        }
+        if let Some(detail) = self.detail {
+            error = error.with_fact("aws_error_detail", detail);
+        }
+        error
+    }
+}
+
+fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
+    let mut text = source.to_string();
+    let mut current = source.source();
+    while let Some(source) = current {
+        text.push_str(": ");
+        text.push_str(&source.to_string());
+        current = source.source();
+    }
+    text
+}
+
+fn aws_error_code_fact(text: &str) -> Option<&'static str> {
+    if contains_any(text, &["ExpiredTokenException", "ExpiredToken"]) {
+        Some("ExpiredTokenException")
+    } else if text.contains("InvalidAccessKeyId") {
+        Some("InvalidAccessKeyId")
+    } else if text.contains("UnrecognizedClientException") {
+        Some("UnrecognizedClientException")
+    } else if text.contains("AccessDeniedException") || text.contains("AccessDenied") {
+        Some("AccessDeniedException")
+    } else if text.contains("SignatureDoesNotMatch") {
+        Some("SignatureDoesNotMatch")
+    } else if text.contains("EntityNotFoundException") {
+        Some("EntityNotFoundException")
+    } else {
+        None
+    }
+}
+
+fn aws_error_detail_fact(text: &str, error_code: Option<&'static str>) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    match error_code {
+        Some("ExpiredTokenException") => return Some("expired_token"),
+        Some("InvalidAccessKeyId") => return Some("invalid_access_key"),
+        Some("UnrecognizedClientException") => return Some("invalid_client"),
+        Some("AccessDeniedException") => return Some("access_denied"),
+        Some("SignatureDoesNotMatch") => return Some("signature_mismatch"),
+        Some("EntityNotFoundException") => return Some("not_found"),
+        _ => {},
+    }
+    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
+        Some("http_401")
+    } else if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
+        Some("http_403")
+    } else if contains_any(&lower, &["no credentials", "missing credentials", "could not load credentials"]) {
+        Some("missing_credentials")
+    } else {
+        None
+    }
+}
+
+fn aws_request_id_fact(text: &str) -> Option<String> {
+    extract_quoted_marker(text, "aws_request_id\": \"")
+        .or_else(|| extract_quoted_marker(text, "aws_request_id: \""))
+        .or_else(|| extract_value_after(text, "request id: "))
+}
+
+fn aws_http_status_fact(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if contains_any(&lower, &["status code: 401", "http 401", "401 unauthorized"]) {
+        Some("401")
+    } else if contains_any(&lower, &["status code: 403", "http 403", "403 forbidden"]) {
+        Some("403")
+    } else if contains_any(&lower, &["status code: 404", "http 404", "404 not found"]) {
+        Some("404")
+    } else {
+        None
+    }
+}
+
+fn aws_retryable_fact(text: &str) -> Option<&'static str> {
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("retryable: true") {
+        Some("true")
+    } else if lower.contains("retryable: false") {
+        Some("false")
+    } else {
+        None
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn extract_quoted_marker(text: &str, marker: &str) -> Option<String> {
+    let start = text.find(marker)? + marker.len();
+    let value = &text[start..];
+    let end = value.find('"')?;
+    let value = &value[..end];
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn extract_value_after(text: &str, marker: &str) -> Option<String> {
+    let start = text.to_ascii_lowercase().find(marker)? + marker.len();
+    let value = text[start..]
+        .split(|ch: char| ch == ',' || ch == ')' || ch == '}' || ch.is_whitespace())
+        .next()
+        .unwrap_or("")
+        .trim_matches('"');
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 async fn catalog_backend_list_namespaces(
@@ -1372,6 +1553,18 @@ mod rest_tests {
         iceberg::Error::new(iceberg::ErrorKind::Unexpected, "upstream catalog failure")
     }
 
+    fn glue_expired_token_error() -> iceberg::Error {
+        iceberg::Error::new(iceberg::ErrorKind::Unexpected, "Operation failed for hitting aws sdk error")
+            .with_retryable(true)
+            .with_source(std::io::Error::other(
+                "aws sdk error: ServiceError(ServiceError { source: Unhandled(Unhandled { \
+                 source: ErrorMetadata { code: Some(\"ExpiredTokenException\"), \
+                 message: Some(\"The security token included in the request is expired\"), \
+                 extras: Some({\"aws_request_id\": \"req-expired-123\"}) }, retryable: true }), \
+                 status code: 401 Unauthorized })",
+            ))
+    }
+
     fn no_env(_name: &str) -> Option<String> {
         None
     }
@@ -1385,7 +1578,8 @@ mod rest_tests {
         assert_eq!(error.operation(), CATALOG_BACKEND_OP);
         assert_eq!(error.message(), "failed to connect to AWS Glue Iceberg catalog");
         assert_eq!(error.fact_value("catalog_type"), Some("glue"));
-        assert_eq!(error.facts().iter().count(), 1);
+        assert_eq!(error.fact_value("iceberg_error_kind"), Some("Unexpected"));
+        assert_eq!(error.fact_value("iceberg_retryable"), Some("false"));
         assert!(error.source_error().is_some());
     }
 
@@ -1398,8 +1592,24 @@ mod rest_tests {
         assert_eq!(error.operation(), CATALOG_BACKEND_OP);
         assert_eq!(error.message(), "failed to connect to Iceberg REST catalog");
         assert_eq!(error.fact_value("catalog_type"), Some("rest"));
-        assert_eq!(error.facts().iter().count(), 1);
+        assert_eq!(error.fact_value("iceberg_error_kind"), Some("Unexpected"));
+        assert_eq!(error.fact_value("iceberg_retryable"), Some("false"));
         assert!(error.source_error().is_some());
+    }
+
+    #[test]
+    fn catalog_backend_error_extracts_safe_aws_metadata_facts() {
+        let error =
+            catalog_backend_error("failed to connect to AWS Glue Iceberg catalog", "glue", glue_expired_token_error());
+
+        assert_eq!(error.code(), ErrorCode::SourceUnauthenticated);
+        assert_eq!(error.fact_value("catalog_type"), Some("glue"));
+        assert_eq!(error.fact_value("iceberg_retryable"), Some("true"));
+        assert_eq!(error.fact_value("aws_error_code"), Some("ExpiredTokenException"));
+        assert_eq!(error.fact_value("aws_request_id"), Some("req-expired-123"));
+        assert_eq!(error.fact_value("aws_http_status"), Some("401"));
+        assert_eq!(error.fact_value("aws_retryable"), Some("true"));
+        assert_eq!(error.fact_value("aws_error_detail"), Some("expired_token"));
     }
 
     #[test]

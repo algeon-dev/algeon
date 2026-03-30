@@ -50,7 +50,7 @@ fn native_query_executes_conditional_non_equi_inner_join() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
@@ -123,7 +123,7 @@ fn native_query_executes_left_join_with_equi_key_and_residual_predicate() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert!(metrics.mixed_join_size_data_bytes > 0);
@@ -202,7 +202,7 @@ fn native_query_executes_full_join_with_equi_key_and_residual_predicate() {
     );
     let plan = builder.finish_with_host_sink(sort);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let join_metrics = result
         .metrics()

@@ -1,6 +1,6 @@
 //! Object-store footer pruning for native plans produced from table formats.
 
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{error::Error as StdError, future::Future, pin::Pin, sync::Arc};
 
 use arrow::datatypes::DataType;
 use datafusion::{
@@ -696,7 +696,9 @@ async fn prune_request(
     let mut per_file_row_group_key_ranges = Vec::with_capacity(target_source.files.len());
     for file in &target_source.files {
         let object = object_store_file(&file.location)?;
-        let store = runtime_env.object_store(&object.store_url).map_err(|error| error.to_string())?;
+        let store = runtime_env
+            .object_store(&object.store_url)
+            .map_err(|error| foreign_error_diagnostic("runtime_object_store_lookup", &error))?;
         let metadata = parquet_metadata(store, object.path, file.file_size_bytes).await?;
         let selected_row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), metadata.num_row_groups());
         per_file_row_group_key_ranges.push(row_group_key_ranges(
@@ -739,10 +741,14 @@ async fn derive_dimension_key_filter(
     let mut total_rows = 0usize;
     for file in &source.files {
         let object = object_store_file(&file.location)?;
-        let store = runtime_env.object_store(&object.store_url).map_err(|error| error.to_string())?;
-        let object_meta = store.head(&object.path).await.map_err(|error| error.to_string())?;
+        let store = runtime_env
+            .object_store(&object.store_url)
+            .map_err(|error| foreign_error_diagnostic("runtime_object_store_lookup", &error))?;
+        let object_meta = store.head(&object.path).await.map_err(object_store_pruning_error)?;
         let reader = ParquetObjectReader::new(store, object.path).with_file_size(object_meta.size);
-        let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| error.to_string())?;
+        let builder = ParquetRecordBatchStreamBuilder::new(reader)
+            .await
+            .map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream_builder", &error))?;
         let row_group_count = builder.metadata().num_row_groups();
         let row_groups = selected_or_all_row_groups(file.row_groups.as_deref(), row_group_count);
         let projection = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
@@ -750,8 +756,10 @@ async fn derive_dimension_key_filter(
             .with_projection(projection)
             .with_row_groups(row_groups)
             .build()
-            .map_err(|error| error.to_string())?;
-        while let Some(batch) = stream.try_next().await.map_err(|error| error.to_string())? {
+            .map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream_build", &error))?;
+        while let Some(batch) =
+            stream.try_next().await.map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream", &error))?
+        {
             total_rows = total_rows.saturating_add(batch.num_rows());
             if policy.dimension_row_guard_exceeded(total_rows) {
                 return Err(format!(
@@ -773,9 +781,11 @@ async fn parquet_metadata(
     path: ObjectStorePath,
     file_size_bytes: Option<u64>,
 ) -> std::result::Result<Arc<ParquetMetaData>, String> {
-    let object_meta = store.head(&path).await.map_err(|error| error.to_string())?;
+    let object_meta = store.head(&path).await.map_err(object_store_pruning_error)?;
     let reader = ParquetObjectReader::new(store, path).with_file_size(file_size_bytes.unwrap_or(object_meta.size));
-    let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| error.to_string())?;
+    let builder = ParquetRecordBatchStreamBuilder::new(reader)
+        .await
+        .map_err(|error| foreign_error_diagnostic("parquet_record_batch_stream_builder", &error))?;
     Ok(Arc::clone(builder.metadata()))
 }
 
@@ -819,6 +829,88 @@ fn object_store_file(location: &ParquetSourceLocation) -> std::result::Result<Ob
     let store_url = ObjectStoreUrl::parse(format!("{scheme}://{authority}")).map_err(|error| error.to_string())?;
     let path = ObjectStorePath::parse(path).map_err(|error| error.to_string())?;
     Ok(ObjectStoreFile { store_url, path })
+}
+
+fn object_store_pruning_error(error: datafusion::object_store::Error) -> String {
+    let kind = object_store_error_kind(&error);
+    match object_store_error_detail(&error) {
+        Some(detail) => format!("object_store_error_kind={kind} object_store_error_detail={detail}"),
+        None => format!("object_store_error_kind={kind}"),
+    }
+}
+
+fn object_store_error_kind(error: &datafusion::object_store::Error) -> &'static str {
+    match error {
+        datafusion::object_store::Error::PermissionDenied { .. } => "permission_denied",
+        datafusion::object_store::Error::Unauthenticated { .. } => "unauthenticated",
+        datafusion::object_store::Error::NotFound { .. } => "not_found",
+        datafusion::object_store::Error::Generic { .. } => "generic",
+        datafusion::object_store::Error::InvalidPath { .. } => "invalid_path",
+        datafusion::object_store::Error::NotSupported { .. } => "not_supported",
+        #[allow(unreachable_patterns)]
+        _ => "other",
+    }
+}
+
+fn object_store_error_detail(error: &datafusion::object_store::Error) -> Option<&'static str> {
+    match error {
+        datafusion::object_store::Error::PermissionDenied { .. } => Some("access_denied"),
+        datafusion::object_store::Error::Unauthenticated { .. } => Some("unauthenticated"),
+        datafusion::object_store::Error::NotFound { .. } => Some("not_found"),
+        datafusion::object_store::Error::Generic { source, .. } => {
+            classify_generic_object_store_source(source.as_ref())
+        },
+        _ => None,
+    }
+}
+
+fn classify_generic_object_store_source(source: &(dyn StdError + 'static)) -> Option<&'static str> {
+    let text = error_chain_text(source);
+    let lower = text.to_ascii_lowercase();
+    if contains_any(&lower, &["invalidaccesskeyid", "invalid access key", "invalid_access_key"]) {
+        return Some("invalid_access_key");
+    }
+    if contains_any(&lower, &["expiredtoken", "expired token", "token expired"]) {
+        return Some("expired_token");
+    }
+    if contains_any(&lower, &["signaturedoesnotmatch", "signature mismatch", "signature did not match"]) {
+        return Some("signature_mismatch");
+    }
+    if contains_any(&lower, &["accessdenied", "access denied", "permission denied"]) {
+        return Some("access_denied");
+    }
+    if contains_any(&lower, &["no credentials", "missing credentials", "could not load credentials"]) {
+        return Some("missing_credentials");
+    }
+    if contains_any(&lower, &["401 unauthorized", "status code: 401", "http 401"]) {
+        return Some("http_401");
+    }
+    if contains_any(&lower, &["403 forbidden", "status code: 403", "http 403"]) {
+        return Some("http_403");
+    }
+    if lower.contains("timeout") || lower.contains("timed out") {
+        return Some("timeout");
+    }
+    None
+}
+
+fn foreign_error_diagnostic(kind: &'static str, error: &(dyn StdError + 'static)) -> String {
+    format!("{kind}={}", stable_log_field(&error.to_string()))
+}
+
+fn error_chain_text(source: &(dyn StdError + 'static)) -> String {
+    let mut text = source.to_string();
+    let mut current = source.source();
+    while let Some(source) = current {
+        text.push_str(": ");
+        text.push_str(&source.to_string());
+        current = source.source();
+    }
+    text
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
 fn stable_log_field(value: &str) -> String {

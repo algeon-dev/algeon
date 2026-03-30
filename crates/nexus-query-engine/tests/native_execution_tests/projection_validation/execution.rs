@@ -41,7 +41,7 @@ fn native_boolean_and_or_use_sql_three_valued_logic() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "bool_input".to_string(),
@@ -166,7 +166,7 @@ fn native_query_executes_filter_projection_over_tpch_like_types() {
     let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.parquet_files, 1);
@@ -216,7 +216,7 @@ fn native_projection_coerces_decimal_output_to_declared_scale() {
         projection_outputs(vec![Expr::column("amount").alias("mkt_share")], Arc::clone(&output_schema)),
     );
     let plan = builder.finish_gpu_resident(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "decimal_input".to_string(),
@@ -341,7 +341,7 @@ fn native_projection_decimal_division_uses_declared_binary_output_type() {
     let projection =
         builder.add_projection(source, projection_outputs(vec![projection_expr], Arc::clone(&output_schema)));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let mut gpu_inputs = GpuResidentInputMap::new();
     gpu_inputs.insert(
         "decimal_input".to_string(),

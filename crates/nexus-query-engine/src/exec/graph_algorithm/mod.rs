@@ -135,7 +135,7 @@ pub(super) fn execute_graph_algorithm_sanitized(
     let boundary_before = metrics.boundary.clone();
     let runtime_spec = graph_spec_with_runtime_betweenness_seeds(input.frame(), &node.spec)?;
     let spec = runtime_spec.as_ref().unwrap_or(&node.spec);
-    let executor = graph_algorithm_executor(spec.algorithm);
+    let executor = graph_algorithm_executor(spec.algorithm)?;
     let adaptive_retry_inputs = graph_adaptive_retry_seed_batches(spec).map(|batches| {
         (
             GraphAlgorithmExecutionInputs {
@@ -979,13 +979,18 @@ const GRAPH_ALGORITHM_EXECUTORS: &[(crate::plan::GraphAlgorithm, GraphAlgorithmE
 ];
 
 #[cfg(feature = "cugraph")]
-fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> GraphAlgorithmExecutor {
+fn graph_algorithm_executor(algorithm: crate::plan::GraphAlgorithm) -> Result<GraphAlgorithmExecutor> {
     GRAPH_ALGORITHM_EXECUTORS
         .iter()
         .find(|(registered, _)| *registered == algorithm)
         .map(|(_, executor)| *executor)
-        .unwrap_or_else(|| {
-            panic!("graph algorithm executor table is missing variant {}", algorithm.as_str());
+        .ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.graph_algorithm.executor_lookup",
+                "graph algorithm executor table is missing a registered variant",
+            )
+            .with_fact("algorithm", algorithm.as_str())
         })
 }
 

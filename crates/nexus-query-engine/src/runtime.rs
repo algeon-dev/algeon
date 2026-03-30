@@ -450,7 +450,7 @@ impl ExecutionContext {
     /// The resulting context records [`MemoryResourcePolicy::ExternalRuntime`]
     /// because the runtime, including its allocator and stream, has already been
     /// constructed by the caller.
-    pub fn from_runtime(runtime: cudf::Runtime) -> Self {
+    pub fn from_runtime(runtime: cudf::Runtime) -> Result<Self> {
         Self::from_shared_runtime(Arc::new(runtime))
     }
 
@@ -458,12 +458,12 @@ impl ExecutionContext {
     ///
     /// Use this when multiple plans or adapter layers must share the same CUDA
     /// stream, device placement, allocator policy, or boundary observer state.
-    pub fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Self {
+    pub fn from_shared_runtime(runtime: Arc<cudf::Runtime>) -> Result<Self> {
         let service_stream_pool =
             ServiceStreamPool::new(runtime.device(), default_service_stream_pool_size_for_device(runtime.device()))
                 .expect("default service stream pool size is non-zero");
         let source_fetch_config = SourceFetchConfig::default();
-        Self::from_parts(ExecutionContextParts {
+        Ok(Self::from_parts(ExecutionContextParts {
             runtime,
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: MemoryControlPolicy::Unbounded,
@@ -482,8 +482,8 @@ impl ExecutionContext {
             .expect("default lakehouse cache fill concurrency is non-zero"),
             lakehouse_cache_fill_events: LakehouseCacheFillEventSink::default(),
             gds_concurrency: GdsConcurrencyGate::default(),
-            source_fetch_runtime: default_source_fetch_runtime(),
-            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime(),
+            source_fetch_runtime: default_source_fetch_runtime()?,
+            lakehouse_cache_fill_runtime: default_lakehouse_cache_fill_runtime()?,
             source_object_stores: Arc::new(SourceObjectStoreRegistry::new()),
             deployment_io_capability: DeploymentIoCapability::cached_current_host(),
             cancellation: ExecutionCancellation::new(),
@@ -496,7 +496,7 @@ impl ExecutionContext {
             local_parquet_source_cache: None,
             stream_lease_guard: None,
             query_service_admitted: false,
-        })
+        }))
     }
 
     fn from_parts(parts: ExecutionContextParts) -> Self {
@@ -1339,8 +1339,8 @@ impl ExecutionContextBuilder {
         let lakehouse_cache_fill_concurrency =
             SourceFetchConcurrencyGate::new(source_fetch_config.lakehouse_cache_fill_max_concurrent_ops)?;
         let gds_concurrency = GdsConcurrencyGate::new(source_fetch_config.gds_max_concurrent_ops)?;
-        let source_fetch_runtime = default_source_fetch_runtime();
-        let lakehouse_cache_fill_runtime = default_lakehouse_cache_fill_runtime();
+        let source_fetch_runtime = default_source_fetch_runtime()?;
+        let lakehouse_cache_fill_runtime = default_lakehouse_cache_fill_runtime()?;
         let source_object_stores = Arc::new(SourceObjectStoreRegistry::with_profiles(self.source_storage_profiles)?);
         if let Some(runtime) = self.runtime {
             let service_stream_pool_size = self
@@ -1479,7 +1479,7 @@ mod tests {
 
     #[test]
     fn object_store_fetch_returns_bytes_from_full_get() {
-        let runtime = default_source_fetch_runtime();
+        let runtime = default_source_fetch_runtime().unwrap();
         let store = Arc::new(::object_store::memory::InMemory::new());
         let location = ::object_store::path::Path::from("part-0.parquet");
         runtime.block_on(store.put(&location, b"abcdef".as_ref().into())).unwrap();

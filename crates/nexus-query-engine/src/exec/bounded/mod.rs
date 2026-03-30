@@ -149,6 +149,7 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
             bounded_join_unsupported_message(contract),
             "bounded_join_plan_shape_unsupported",
         );
+        let mut projection_error_source = None;
         let facts = match strict::strict_bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
             plan,
             context.statistical_aggregate_execution_mode(),
@@ -157,10 +158,19 @@ fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Res
                 crate::bounded::bounded_join_unsupported_shape_facts(plan, context.boundary_policy(), Some(&projection))
             },
             Ok(None) => contract.unsupported_shape_facts(context.boundary_policy()),
-            Err(_) => crate::bounded::bounded_join_unsupported_shape_facts(plan, context.boundary_policy(), None),
+            Err(projection_error) => {
+                let mut facts =
+                    crate::bounded::bounded_join_unsupported_shape_facts(plan, context.boundary_policy(), None);
+                crate::bounded::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
+                projection_error_source = Some(projection_error);
+                facts
+            },
         };
         for (key, value) in facts {
             error = error.with_fact(key, value);
+        }
+        if let Some(projection_error) = projection_error_source {
+            error = error.with_source(projection_error);
         }
         return Err(error);
     }

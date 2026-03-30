@@ -85,7 +85,7 @@ fn native_query_executes_scalar_expression_families() {
     let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -176,7 +176,7 @@ fn native_query_executes_bitwise_scalar_expressions() {
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -221,7 +221,7 @@ fn native_query_executes_float64_to_int64_cast_with_datafusion_truncation_semant
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -264,7 +264,7 @@ fn native_query_rejects_invalid_float64_to_int64_cast_inputs() {
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("invalid Float64 -> Int64 casts must fail"),
         Err(error) => error,
@@ -331,7 +331,7 @@ fn native_query_executes_regexp_replace_projection_with_backrefs() {
     let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
     let plan = builder.finish_with_host_sink(projection);
 
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -365,7 +365,7 @@ fn native_query_rejects_scalar_type_mismatch_before_cudf_execution() {
         projection_outputs(vec![Expr::like(Expr::column("orderkey"), "1%").alias("bad_like")], output_schema),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject LIKE over an integral input before cuDF execution"),
@@ -404,7 +404,7 @@ fn native_query_rejects_implicit_decimal_float_arithmetic_before_cudf_execution(
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject implicit Decimal128/Float64 arithmetic"),
@@ -441,7 +441,7 @@ fn native_query_rejects_untyped_decimal_division_before_cudf_execution() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let filter = builder.add_filter(source, untyped_divide, Arc::clone(&input_schema));
     let plan = builder.finish_with_host_sink(filter);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject decimal division without a declared output type"),
@@ -491,7 +491,7 @@ fn native_query_executes_round_scalar_expression() {
         ),
     );
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -531,7 +531,7 @@ fn native_query_executes_round_decimal_cast_to_integral_expression() {
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(source, projection_outputs(vec![rounded_segment], output_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -582,7 +582,7 @@ fn native_query_rejects_date64_temporal_scalars_before_source_read() {
         let source = builder.add_source(SourceNode::LocalParquet(source));
         let projection = builder.add_projection(source, projection_outputs(projection, output_schema));
         let plan = builder.finish_with_host_sink(projection);
-        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
         let error = match execute_query_plan(&context, &plan) {
             Ok(_) => panic!("{name} should reject Date64 before source read"),
@@ -640,7 +640,7 @@ fn native_query_rejects_out_of_envelope_substring_before_source_read() {
         let source = builder.add_source(SourceNode::LocalParquet(source));
         let projection = builder.add_projection(source, projection_outputs(vec![expr], output_schema));
         let plan = builder.finish_with_host_sink(projection);
-        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+        let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
         let error = match execute_query_plan(&context, &plan) {
             Ok(_) => panic!("{name} should reject before source read"),
@@ -678,7 +678,7 @@ fn native_query_rejects_unread_source_column_in_nested_scalar_before_cudf_execut
     let source = builder.add_source(SourceNode::LocalParquet(source));
     let projection = builder.add_projection(source, projection_outputs(vec![label], output_schema));
     let plan = builder.finish_with_host_sink(projection);
-    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime));
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
 
     let error = match execute_query_plan(&context, &plan) {
         Ok(_) => panic!("native plan validation should reject unread nested scalar columns before cuDF execution"),
