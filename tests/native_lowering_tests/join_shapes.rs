@@ -144,6 +144,52 @@ fn expression_hash_join_keys_materialize_as_synthetic_projection_columns() {
 }
 
 #[test]
+fn hash_join_fetch_lowers_to_native_limit_above_join() {
+    let dir = unique_temp_dir("datafusion-nexus-native-lowering-hash-join-fetch");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_left_parquet_file(&left_path);
+    write_join_right_parquet_file(&right_path);
+    let left = parquet_scan(&left_path);
+    let right = parquet_scan(&right_path);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    let join = HashJoinExec::try_new(
+        left,
+        right,
+        vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+        None,
+        &JoinType::Inner,
+        None,
+        PartitionMode::CollectLeft,
+        NullEquality::NullEqualsNothing,
+        false,
+    )
+    .unwrap();
+    let plan = join.with_fetch(Some(1)).expect("HashJoinExec should accept fetch");
+
+    let result = lower_physical_plan_to_native(plan);
+
+    assert_eq!(result.rewritten_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.rejected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Rewritten { candidate } = &result.report.outcomes()[0] else {
+        panic!("hash join with fetch should lower to native");
+    };
+    assert_eq!(candidate.shape, "HashJoinExec(fetch)(LocalParquetScan,LocalParquetScan)");
+    assert_eq!(candidate.operator_count, 3);
+    let native_plan = &result.plans[0];
+    let PlanNode::Limit(limit) = &native_plan.root_node().kind else {
+        panic!("native root should preserve HashJoinExec.fetch as a limit:\n{native_plan}");
+    };
+    assert_eq!(limit.spec.skip, 0);
+    assert_eq!(limit.spec.fetch, Some(1));
+    let join_node = native_plan.node(limit.input).expect("limit input should exist");
+    assert!(matches!(join_node.kind, PlanNode::Join(_)), "limit input should be the native join");
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn predicate_free_left_nested_loop_join_with_scalar_right_lowers_to_native_cross_join() {
     let dir = unique_temp_dir("datafusion-nexus-native-lowering-left-nlj-scalar-right");
     let left_path = dir.join("left.parquet");
