@@ -14,9 +14,10 @@
 //! # Lifetime
 //!
 //! Entries are inserted after an admitted ticket is consumed, before any
-//! execution branch can return, and removed by `QueryExecutionGuard::drop`.
-//! Before a ticket is issued, shutdown still reaches the native flag through
-//! the planning `shutdown_token` arm.
+//! execution branch can return. `QueryExecutionGuard::drop` removes the entry
+//! and, if the stream was dropped before a terminal result, cancels both the
+//! native flag and Flight token. Before a ticket is issued, shutdown still
+//! reaches the native flag through the planning `shutdown_token` arm.
 
 use dashmap::DashMap;
 use nexus_query_engine::ExecutionCancellation;
