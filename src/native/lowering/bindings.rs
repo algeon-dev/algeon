@@ -65,7 +65,7 @@ pub(super) struct FieldBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RequiredFields {
     All,
-    Only(BTreeSet<usize>),
+    Only { indices: BTreeSet<usize>, predicate_indices: BTreeSet<usize> },
 }
 
 impl RequiredFields {
@@ -74,7 +74,12 @@ impl RequiredFields {
     }
 
     pub(super) fn only(required: BTreeSet<usize>) -> Self {
-        Self::Only(required)
+        Self::Only { indices: required, predicate_indices: BTreeSet::new() }
+    }
+
+    pub(super) fn only_with_predicates(mut required: BTreeSet<usize>, predicate_indices: BTreeSet<usize>) -> Self {
+        required.extend(predicate_indices.iter().copied());
+        Self::Only { indices: required, predicate_indices }
     }
 
     pub(super) fn is_all(&self) -> bool {
@@ -84,18 +89,30 @@ impl RequiredFields {
     pub(super) fn contains(&self, index: usize) -> bool {
         match self {
             Self::All => true,
-            Self::Only(required) => required.contains(&index),
+            Self::Only { indices, .. } => indices.contains(&index),
         }
     }
 
     pub(super) fn requested_indices(&self, field_count: usize) -> Result<Vec<usize>, FallbackReason> {
         match self {
             Self::All => Ok((0..field_count).collect()),
-            Self::Only(required) => {
-                if required.iter().any(|index| *index >= field_count) {
+            Self::Only { indices, .. } => {
+                if indices.iter().any(|index| *index >= field_count) {
                     return Err(FallbackReason::UnsupportedExpression);
                 }
-                Ok(required.iter().copied().collect())
+                Ok(indices.iter().copied().collect())
+            },
+        }
+    }
+
+    pub(super) fn predicate_indices(&self, field_count: usize) -> Result<Vec<usize>, FallbackReason> {
+        match self {
+            Self::All => Ok(Vec::new()),
+            Self::Only { predicate_indices, .. } => {
+                if predicate_indices.iter().any(|index| *index >= field_count) {
+                    return Err(FallbackReason::UnsupportedExpression);
+                }
+                Ok(predicate_indices.iter().copied().collect())
             },
         }
     }

@@ -198,6 +198,7 @@ fn table_format_native_source_for_group(
 
     let mut reader_pushdown_covers_filter = false;
     if !group.has_field_id_aliases()
+        && !group.has_read_coercions()
         && !native_source.files.iter().any(NativeLocalParquetFile::has_position_delete_files)
         && let Some(predicate) = table_format_reader_pushdown_predicate(
             filter,
@@ -379,6 +380,12 @@ mod tests {
     };
 
     use arrow::{array::Int64Array, record_batch::RecordBatch};
+    use datafusion::{
+        common::ScalarValue,
+        logical_expr::Operator,
+        physical_expr::expressions::{binary, col, lit},
+        physical_plan::filter::FilterExec,
+    };
     use nexus_query_engine::{
         CredentialMode, PlanNode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef,
         validate_local_parquet_source,
@@ -399,6 +406,7 @@ mod tests {
             projected_output_column_source_refs: vec![NativeSourceColumnRef::File(0)],
             pure_filter_columns: Vec::new(),
             pure_filter_column_source_refs: Vec::new(),
+            predicate_columns: Vec::new(),
             partition_columns: Vec::new(),
             partition_column_values: Vec::new(),
             partition_column_indices: Vec::new(),
@@ -417,9 +425,14 @@ mod tests {
         let scan_plan = single_projected_file_scan_plan(&path, Arc::clone(&scan_schema), 2);
         let file_schema = table_format_file_schema(&scan_plan);
 
-        let requirements =
-            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
-                .unwrap();
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
         let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
         let result = table_format_source_read_groups(&scan_plan, &requirements, output_schema);
 
@@ -436,9 +449,14 @@ mod tests {
         let scan_plan = single_projected_file_scan_plan(&path, Arc::clone(&scan_schema), 2);
         let file_schema = table_format_file_schema(&scan_plan);
 
-        let requirements =
-            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
-                .unwrap();
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
 
         assert_eq!(requirements.read_columns, vec!["status"]);
         assert_eq!(requirements.read_column_file_indices, vec![0]);
@@ -453,9 +471,14 @@ mod tests {
         let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
         let scan_plan = single_projected_file_scan_plan_with_nullability(&path, Arc::clone(&scan_schema), 2, true);
         let file_schema = table_format_file_schema(&scan_plan);
-        let requirements =
-            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
-                .unwrap();
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
         let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
 
         let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
@@ -722,6 +745,372 @@ mod tests {
         assert_eq!(groups[0].requirements.projected_output_column_source_refs, vec![NativeSourceColumnRef::File(0)]);
         assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
         assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "old_status");
+    }
+
+    #[test]
+    fn table_format_attached_remote_footer_same_name_signed_integer_widening_admits() {
+        let footer_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int16, true)]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int32, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int32,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+            &RequiredFields::all(),
+        )
+        .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+        let (native_source, _) = table_format_native_source_for_group(
+            &scan_plan,
+            &groups[0],
+            None,
+            &file_schema,
+            Arc::clone(&scan_schema),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].requirements.read_columns, vec!["status"]);
+        assert_eq!(groups[0].requirements.projected_output_column_source_refs, vec![NativeSourceColumnRef::File(0)]);
+        assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
+        assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "status");
+        assert_eq!(groups[0].field_id_bindings[0][0].data_type, DataType::Int16);
+        assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
+        assert!(groups[0].has_read_coercions());
+        validate_local_parquet_source(&native_source).unwrap();
+    }
+
+    #[test]
+    fn table_format_attached_remote_footer_same_name_unsafe_type_mismatch_rejects_instead_of_missing_null() {
+        let footer_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Utf8, true)]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int32, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int32,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
+            .expect_err("same-name Parquet columns with unsafe schema mismatch must not materialize as missing nulls");
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+
+    #[test]
+    fn table_format_attached_remote_footer_absent_nullable_field_id_materializes_missing_null_column() {
+        let footer_field = Field::new("other", DataType::Int64, true)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())]));
+        let footer_schema = Arc::new(Schema::new(vec![footer_field]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int64,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all())
+                .unwrap();
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].requirements.read_columns.is_empty());
+        assert_eq!(groups[0].requirements.missing_columns.len(), 1);
+        assert_eq!(groups[0].requirements.missing_columns[0].name, "status");
+        assert_eq!(
+            groups[0].requirements.projected_output_column_source_refs,
+            vec![NativeSourceColumnRef::MissingNull(0)]
+        );
+    }
+
+    #[test]
+    fn table_format_filter_only_same_name_signed_integer_widening_admits() {
+        let footer_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int16, true)]));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int32, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&output_schema))
+            .with_data_file(data_file)
+            .with_pure_filter_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int32,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::PureFilter,
+            ));
+        let scan_exec: Arc<dyn ExecutionPlan> =
+            Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        let scan_schema = scan_exec.schema();
+        let predicate =
+            binary(col("status", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &scan_schema)
+                .unwrap();
+        let filter = FilterExec::try_new(predicate, scan_exec).unwrap();
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            output_schema,
+            Some(&filter),
+            &RequiredFields::only(BTreeSet::new()),
+        )
+        .unwrap();
+
+        assert_eq!(requirements.pure_filter_columns, vec!["status"]);
+        assert_eq!(requirements.pure_filter_column_source_refs, vec![NativeSourceColumnRef::File(0)]);
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
+        let (native_source, _) = table_format_native_source_for_group(
+            &scan_plan,
+            &groups[0],
+            Some(&filter),
+            &file_schema,
+            filter.schema(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].requirements.read_columns, vec!["status"]);
+        assert_eq!(groups[0].requirements.predicate_columns, vec!["status"]);
+        assert_eq!(groups[0].source_schema.field_with_name("status").unwrap().data_type(), &DataType::Int32);
+        assert!(groups[0].has_read_coercions());
+        assert!(native_source.reader_predicate.is_none());
+        validate_local_parquet_source(&native_source).unwrap();
+    }
+
+    #[test]
+    fn table_format_filter_only_same_name_unsafe_type_mismatch_rejects_instead_of_missing_null() {
+        let footer_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Utf8, true)]));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int32, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&output_schema))
+            .with_data_file(data_file)
+            .with_pure_filter_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int32,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::PureFilter,
+            ));
+        let scan_exec: Arc<dyn ExecutionPlan> =
+            Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        let scan_schema = scan_exec.schema();
+        let predicate =
+            binary(col("status", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int32(Some(0))), &scan_schema)
+                .unwrap();
+        let filter = FilterExec::try_new(predicate, scan_exec).unwrap();
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            output_schema,
+            Some(&filter),
+            &RequiredFields::only(BTreeSet::new()),
+        )
+        .unwrap();
+
+        assert_eq!(requirements.pure_filter_columns, vec!["status"]);
+        assert_eq!(requirements.pure_filter_column_source_refs, vec![NativeSourceColumnRef::File(0)]);
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
+            .expect_err("filter-only same-name unsafe mismatch must not become a missing-null predicate column");
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+
+    #[test]
+    fn table_format_filter_only_absent_nullable_field_id_rejects_instead_of_missing_null() {
+        let footer_field = Field::new("other", DataType::Int64, true)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())]));
+        let footer_schema = Arc::new(Schema::new(vec![footer_field]));
+        let output_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&output_schema))
+            .with_data_file(data_file)
+            .with_pure_filter_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int64,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::PureFilter,
+            ));
+        let scan_exec: Arc<dyn ExecutionPlan> =
+            Arc::new(CudfTableFormatScanExec::new(scan_plan.clone(), Arc::clone(&output_schema)));
+        let scan_schema = scan_exec.schema();
+        let predicate =
+            binary(col("status", &scan_schema).unwrap(), Operator::Gt, lit(ScalarValue::Int64(Some(0))), &scan_schema)
+                .unwrap();
+        let filter = FilterExec::try_new(predicate, scan_exec).unwrap();
+        let file_schema = table_format_file_schema(&scan_plan);
+        let requirements = table_format_column_requirements(
+            &scan_plan,
+            &file_schema,
+            output_schema,
+            Some(&filter),
+            &RequiredFields::only(BTreeSet::new()),
+        )
+        .unwrap();
+
+        assert_eq!(requirements.predicate_columns, vec!["status"]);
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
+            .expect_err("predicate fields absent from Iceberg Parquet footers must not become all-null filters");
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
+    }
+
+    #[test]
+    fn table_format_parent_predicate_absent_nullable_field_id_rejects_instead_of_missing_null() {
+        let footer_field = Field::new("other", DataType::Int64, true)
+            .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())]));
+        let footer_schema = Arc::new(Schema::new(vec![footer_field]));
+        let scan_schema = Arc::new(Schema::new(vec![Field::new("status", DataType::Int64, true)]));
+        let data_file = TableFormatDataFile::new(
+            "file-0",
+            "s3://bucket/table/part.parquet",
+            TableFormatDataFileFormat::Parquet,
+            TableFormatReadCapability::object_store("s3"),
+        )
+        .with_resolved_parquet_source(ResolvedParquetSource::remote_direct(
+            "s3://bucket/table/part.parquet",
+            CredentialMode::SharedProcessEnv,
+        ))
+        .with_footer_schema(footer_schema);
+        let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+            .with_native_source_schema(Arc::clone(&scan_schema))
+            .with_data_file(data_file)
+            .with_projected_column(TableFormatColumnMapping::new(
+                Some(2),
+                "status",
+                Some("status"),
+                DataType::Int64,
+                true,
+                TableFormatColumnSource::DirectTopLevelFileColumn,
+                crate::table_format::TableFormatColumnRole::Projected,
+            ));
+        let file_schema = table_format_file_schema(&scan_plan);
+        let required = RequiredFields::only_with_predicates(BTreeSet::from([0]), BTreeSet::from([0]));
+        let requirements =
+            table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &required).unwrap();
+
+        assert_eq!(requirements.predicate_columns, vec!["status"]);
+        let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
+
+        let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema)
+            .expect_err("parent predicate fields absent from Iceberg Parquet footers must not become all-null filters");
+
+        assert_eq!(error, FallbackReason::IcebergFieldIdMappingUnsupported);
     }
 
     #[test]

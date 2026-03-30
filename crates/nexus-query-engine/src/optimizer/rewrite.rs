@@ -365,6 +365,7 @@ mod tests {
                 include_edge_ids: Some(GraphPredicateInput::new(node_id(5), "edge_id")),
                 include_edges: Some(GraphEdgePredicateInput::new(node_id(6), "src", "dst", Some("edge_id"))),
             },
+            endpoint_policy: crate::plan::GraphBfsEndpointPolicy::Strict,
             return_target_info: true,
         };
         let spec = GraphAlgorithmSpec::with_stable_schema(

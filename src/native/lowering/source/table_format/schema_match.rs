@@ -74,7 +74,37 @@ pub(super) fn table_format_footer_data_type_matches_mapping(footer_type: &DataTy
         {
             true
         },
-        _ => table_format_arrow_data_types_match_except_list_child_names(footer_type, logical_type),
+        _ => {
+            table_format_arrow_data_types_match_except_list_child_names(footer_type, logical_type)
+                || table_format_signed_integer_widening(footer_type, logical_type)
+        },
+    }
+}
+
+pub(super) fn table_format_footer_data_type_needs_logical_source_contract(
+    footer_type: &DataType,
+    logical_type: &DataType,
+) -> bool {
+    table_format_signed_integer_widening(footer_type, logical_type)
+}
+
+fn table_format_signed_integer_widening(footer_type: &DataType, logical_type: &DataType) -> bool {
+    let Some(footer_width) = signed_integer_width(footer_type) else {
+        return false;
+    };
+    let Some(logical_width) = signed_integer_width(logical_type) else {
+        return false;
+    };
+    footer_width < logical_width
+}
+
+fn signed_integer_width(data_type: &DataType) -> Option<u8> {
+    match data_type {
+        DataType::Int8 => Some(8),
+        DataType::Int16 => Some(16),
+        DataType::Int32 => Some(32),
+        DataType::Int64 => Some(64),
+        _ => None,
     }
 }
 

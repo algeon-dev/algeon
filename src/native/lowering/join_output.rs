@@ -152,6 +152,7 @@ fn first_binding_for_side<'a>(
 pub(super) struct JoinOutputRequest {
     pub(super) datafusion_side: DataFusionJoinSide,
     pub(super) input_index: usize,
+    pub(super) predicate_required: bool,
 }
 
 pub(super) fn hash_join_output_requests(
@@ -208,6 +209,10 @@ fn join_output_requests(
     // output-side rules. Convert each requested DataFusion output field into a
     // native side/column reference after canonicalization.
     let (schema, bindings) = executable_schema_and_bindings(output_schema, required_output_fields)?;
+    let predicate_output_indices = required_output_fields
+        .predicate_indices(output_schema.fields().len())?
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
     let mut outputs = Vec::new();
     let mut mark_column_name: Option<String> = None;
     let mut mark_binding_index: Option<usize> = None;
@@ -230,7 +235,11 @@ fn join_output_requests(
         }
         let input_schema = if datafusion_side == DataFusionJoinSide::Left { left_schema } else { right_schema };
         input_schema.fields().get(input_index).ok_or(FallbackReason::UnsupportedExpression)?;
-        outputs.push(JoinOutputRequest { datafusion_side, input_index });
+        outputs.push(JoinOutputRequest {
+            datafusion_side,
+            input_index,
+            predicate_required: predicate_output_indices.contains(&output_index),
+        });
     }
     Ok(JoinOutputRequests { outputs, schema, bindings, mark_column_name, mark_binding_index })
 }

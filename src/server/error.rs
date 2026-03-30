@@ -310,7 +310,8 @@ fn client_status_message(error: &Error) -> String {
         },
         _ => error.message().to_string(),
     };
-    append_unsupported_column_context(error, message)
+    let message = append_unsupported_column_context(error, message);
+    append_graph_predicate_context(error, message)
 }
 
 fn append_unsupported_column_context(error: &Error, message: String) -> String {
@@ -325,6 +326,27 @@ fn append_unsupported_column_context(error: &Error, message: String) -> String {
     format!(
         "{message}; unsupported_column={column}; unsupported_column_type={column_type}; unsupported_column_role={role}"
     )
+}
+
+fn append_graph_predicate_context(error: &Error, message: String) -> String {
+    let Some(role) = error.fact_value("predicate_role") else {
+        return message;
+    };
+    let graph_context = error.operation().contains("cugraph")
+        || error.fact_value("native_operation").is_some_and(|operation| operation.contains("graph_algorithm"));
+    if !graph_context {
+        return message;
+    }
+    let mut context = Vec::new();
+    if let Some(reason) = error.fact_value("reason")
+        && !message.contains("reason=")
+    {
+        context.push(format!("reason={reason}"));
+    }
+    if !message.contains("predicate_role=") {
+        context.push(format!("predicate_role={role}"));
+    }
+    if context.is_empty() { message } else { format!("{message}; {}", context.join("; ")) }
 }
 
 fn diagnostic_status_message(error: &Error) -> String {
@@ -772,6 +794,41 @@ mod tests {
         );
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, "projected");
         assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn adapter_graph_predicate_reason_facts_are_client_visible() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.execute",
+                "native cuGraph SQL query execution failed",
+            )
+            .with_fact("reason", "partial_source_vertices_absent")
+            .with_fact("predicate_role", "source_vertices")
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_error_metadata(&status, "invalid_execution_plan", "planning", "permanent");
+        assert!(status.message().contains("reason=partial_source_vertices_absent"));
+        assert!(status.message().contains("predicate_role=source_vertices"));
+        assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn adapter_non_graph_reason_fact_stays_generic_for_internal_errors() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(ErrorCode::Internal, "datafusion_nexus.native.execution", "native execution failed")
+                .with_fact("reason", "internal_scheduler_state")
+                .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::Internal);
+        assert_eq!(status.message(), "internal server error while processing the request");
+        assert!(!status.message().contains("reason="));
     }
 
     fn assert_error_metadata(status: &Status, code: &str, kind: &str, error_status: &str) {

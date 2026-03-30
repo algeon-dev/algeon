@@ -930,6 +930,8 @@ pub struct GraphBfsParams {
     pub depth_limit: Option<i64>,
     /// Optional relation-backed predicate inputs consumed by predicate BFS.
     pub predicates: GraphBfsPredicateInputs,
+    /// SQL-facing policy for absent source/target endpoints after edge filters.
+    pub endpoint_policy: GraphBfsEndpointPolicy,
     /// Whether the BFS output should include per-row target metadata columns.
     ///
     /// When true, `target_vertices` must be present. The executor appends
@@ -947,6 +949,7 @@ impl GraphBfsParams {
             source_vertices: None,
             depth_limit,
             predicates: GraphBfsPredicateInputs::default(),
+            endpoint_policy: GraphBfsEndpointPolicy::Strict,
             return_target_info: false,
         }
     }
@@ -959,6 +962,27 @@ impl GraphBfsParams {
     /// Visits every side-input node id in stable role order.
     pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.source_vertices.iter().map(|input| input.input).chain(self.predicates.node_ids())
+    }
+}
+
+/// BFS behavior when requested source/target endpoints are absent from the
+/// materialized graph domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphBfsEndpointPolicy {
+    /// Preserve the native/cuGraph contract: absent endpoints are invalid input.
+    Strict,
+    /// Return an empty result when all path endpoints are absent. Partial
+    /// multi-source misses remain errors so callers do not lose diagnostics.
+    EmptyOnMissingPathEndpoint,
+}
+
+impl GraphBfsEndpointPolicy {
+    /// Stable label used in diagnostics and graph runtime metadata.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Strict => "strict",
+            Self::EmptyOnMissingPathEndpoint => "empty_on_missing_path_endpoint",
+        }
     }
 }
 

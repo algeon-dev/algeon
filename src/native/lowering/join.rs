@@ -193,6 +193,8 @@ fn prepare_join_keys(
     join: &NormalizedNativeHashJoin<'_>,
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
+    left_predicate_required: &mut BTreeSet<usize>,
+    right_predicate_required: &mut BTreeSet<usize>,
 ) -> Result<PreparedJoinKeys, FallbackReason> {
     let left_schema = join.join.left().schema();
     let right_schema = join.join.right().schema();
@@ -208,6 +210,7 @@ fn prepare_join_keys(
             left_required,
             &mut left_materializations,
         )?;
+        left_predicate_required.extend(left_required.iter().copied());
         let right = prepare_join_key_expr(
             right,
             &right_schema,
@@ -216,6 +219,7 @@ fn prepare_join_keys(
             right_required,
             &mut right_materializations,
         )?;
+        right_predicate_required.extend(right_required.iter().copied());
         keys.push((left, right));
     }
     Ok(PreparedJoinKeys { keys, left_materializations, right_materializations })
@@ -313,14 +317,22 @@ fn extend_required_fields_from_join_outputs(
     output_requests: &JoinOutputRequests,
     left_required: &mut BTreeSet<usize>,
     right_required: &mut BTreeSet<usize>,
+    left_predicate_required: &mut BTreeSet<usize>,
+    right_predicate_required: &mut BTreeSet<usize>,
 ) {
     for output in &output_requests.outputs {
         match output.datafusion_side {
             DataFusionJoinSide::Left => {
                 left_required.insert(output.input_index);
+                if output.predicate_required {
+                    left_predicate_required.insert(output.input_index);
+                }
             },
             DataFusionJoinSide::Right => {
                 right_required.insert(output.input_index);
+                if output.predicate_required {
+                    right_predicate_required.insert(output.input_index);
+                }
             },
             DataFusionJoinSide::None => {},
         }
@@ -357,11 +369,38 @@ pub(super) fn lower_hash_join_input(
         .transpose()?;
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
-    let prepared_keys = prepare_join_keys(join, &mut left_required, &mut right_required)?;
-    extend_required_fields_from_join_outputs(&output_requests, &mut left_required, &mut right_required);
+    let mut left_predicate_required = BTreeSet::<usize>::new();
+    let mut right_predicate_required = BTreeSet::<usize>::new();
+    let prepared_keys = prepare_join_keys(
+        join,
+        &mut left_required,
+        &mut right_required,
+        &mut left_predicate_required,
+        &mut right_predicate_required,
+    )?;
+    extend_required_fields_from_join_outputs(
+        &output_requests,
+        &mut left_required,
+        &mut right_required,
+        &mut left_predicate_required,
+        &mut right_predicate_required,
+    );
     extend_required_fields_from_residual(residual.as_ref(), &mut left_required, &mut right_required);
-    let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
-    let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
+    extend_required_fields_from_residual(
+        residual.as_ref(),
+        &mut left_predicate_required,
+        &mut right_predicate_required,
+    );
+    let left = lower_native_input(
+        &join.left,
+        builder,
+        &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+    )?;
+    let right = lower_native_input(
+        &join.right,
+        builder,
+        &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+    )?;
     let residual = if join.join.filter().is_some() {
         join.join
             .filter()
@@ -424,10 +463,31 @@ pub(super) fn lower_nested_loop_join_input(
     let output_requests = nested_loop_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
-    extend_required_fields_from_join_outputs(&output_requests, &mut left_required, &mut right_required);
     extend_required_fields_from_residual(residual.as_ref(), &mut left_required, &mut right_required);
-    let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
-    let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
+    let mut left_predicate_required = BTreeSet::<usize>::new();
+    let mut right_predicate_required = BTreeSet::<usize>::new();
+    extend_required_fields_from_join_outputs(
+        &output_requests,
+        &mut left_required,
+        &mut right_required,
+        &mut left_predicate_required,
+        &mut right_predicate_required,
+    );
+    extend_required_fields_from_residual(
+        residual.as_ref(),
+        &mut left_predicate_required,
+        &mut right_predicate_required,
+    );
+    let left = lower_native_input(
+        &join.left,
+        builder,
+        &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+    )?;
+    let right = lower_native_input(
+        &join.right,
+        builder,
+        &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+    )?;
     let residual = match join.join.filter() {
         Some(filter) => Some(lower_join_filter(
             filter,
@@ -465,9 +525,25 @@ pub(super) fn lower_cross_join_input(
     let output_requests = cross_join_output_requests(join, required_output_fields)?;
     let mut left_required = BTreeSet::<usize>::new();
     let mut right_required = BTreeSet::<usize>::new();
-    extend_required_fields_from_join_outputs(&output_requests, &mut left_required, &mut right_required);
-    let left = lower_native_input(&join.left, builder, &RequiredFields::only(left_required))?;
-    let right = lower_native_input(&join.right, builder, &RequiredFields::only(right_required))?;
+    let mut left_predicate_required = BTreeSet::<usize>::new();
+    let mut right_predicate_required = BTreeSet::<usize>::new();
+    extend_required_fields_from_join_outputs(
+        &output_requests,
+        &mut left_required,
+        &mut right_required,
+        &mut left_predicate_required,
+        &mut right_predicate_required,
+    );
+    let left = lower_native_input(
+        &join.left,
+        builder,
+        &RequiredFields::only_with_predicates(left_required, left_predicate_required),
+    )?;
+    let right = lower_native_input(
+        &join.right,
+        builder,
+        &RequiredFields::only_with_predicates(right_required, right_predicate_required),
+    )?;
     let output_columns = output_requests.lower(&left, &right, canonical)?;
     let spec = NativeJoinSpec::new(NativeJoinType::Cross, Vec::new())
         .with_output_projection(output_columns.projection)

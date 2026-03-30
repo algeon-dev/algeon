@@ -1077,6 +1077,7 @@ fn bfs_include_edge_ids_filters_edges() {
             include_edge_ids: Some(GraphPredicateInput::new(allowed, "edge_id")),
             ..Default::default()
         },
+        endpoint_policy: GraphBfsEndpointPolicy::Strict,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -1166,6 +1167,7 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
             include_edges: Some(GraphEdgePredicateInput::new(allowed, "allowed_src", "allowed_dst", None::<&str>)),
             ..Default::default()
         },
+        endpoint_policy: GraphBfsEndpointPolicy::Strict,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -1350,6 +1352,91 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
         Err(error) => error.to_string(),
     };
     assert!(error.contains("source-vertices side input must contain at least one row"), "{error}");
+}
+
+#[test]
+fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
+    let runtime = Arc::new(cudf::Runtime::new().unwrap());
+    let context = ExecutionContext::from_shared_runtime(Arc::clone(&runtime)).unwrap();
+
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(vec![0, 1, 2])), Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+    let source_schema = Arc::new(Schema::new(vec![Field::new("source_vertex", DataType::Int32, false)]));
+    let source_batch =
+        RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![0]))]).unwrap();
+    let target_schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int32, false)]));
+    let target_batch =
+        RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int32Array::from(vec![3]))]).unwrap();
+    let allowed_schema = Arc::new(Schema::new(vec![
+        Field::new("allowed_src", DataType::Int32, false),
+        Field::new("allowed_dst", DataType::Int32, false),
+    ]));
+    let allowed_batch = RecordBatch::try_new(
+        Arc::clone(&allowed_schema),
+        vec![Arc::new(Int32Array::from(vec![1, 2])), Arc::new(Int32Array::from(vec![2, 3]))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", Arc::clone(&edge_schema))));
+    let sources =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("sources", Arc::clone(&source_schema))));
+    let targets =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("targets", Arc::clone(&target_schema))));
+    let allowed =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("allowed", Arc::clone(&allowed_schema))));
+    let mut params = GraphBfsParams::new(0, None);
+    params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
+    params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
+    params.predicates.include_edges =
+        Some(GraphEdgePredicateInput::new(allowed, "allowed_src", "allowed_dst", None::<&str>));
+    params.endpoint_policy = GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Bfs,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Bfs(Box::new(params)),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    for (name, schema, batch) in [
+        ("edges", Arc::clone(&edge_schema), edge_batch),
+        ("sources", Arc::clone(&source_schema), source_batch),
+        ("targets", Arc::clone(&target_schema), target_batch),
+        ("allowed", Arc::clone(&allowed_schema), allowed_batch),
+    ] {
+        gpu_inputs.insert(
+            name.to_string(),
+            GpuResultHandle::new(
+                &context,
+                GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &batch).unwrap()),
+                schema,
+            )
+            .unwrap(),
+        );
+    }
+
+    let result = execute_query_plan_with_gpu_inputs(&context, &plan, &gpu_inputs).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize BFS output");
+    };
+    assert_eq!(batch.num_rows(), 0);
+    let metadata = &result.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata;
+    assert!(metadata.contains("endpoint_policy=empty_on_missing_path_endpoint"), "{metadata}");
+    assert!(metadata.contains("empty_result_reason=source_vertices_absent"), "{metadata}");
+    assert!(metadata.contains("source_rows=1"), "{metadata}");
+    assert!(metadata.contains("valid_source_rows=0"), "{metadata}");
+    assert!(metadata.contains("target_rows=1"), "{metadata}");
+    assert!(metadata.contains("valid_target_rows=1"), "{metadata}");
 }
 
 #[test]

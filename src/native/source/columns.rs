@@ -63,6 +63,8 @@ pub(in crate::native) struct NativeParquetColumnRequirements {
     pub(in crate::native) pure_filter_columns: Vec<String>,
     /// File or partition source references for `pure_filter_columns`.
     pub(in crate::native) pure_filter_column_source_refs: Vec<NativeSourceColumnRef>,
+    /// Source columns required by source-adjacent predicates.
+    pub(in crate::native) predicate_columns: Vec<String>,
     /// Required partition columns represented as synthetic native source columns.
     pub(in crate::native) partition_columns: Vec<NativePartitionColumn>,
     /// Optional literal values for synthetic partition-style columns.
@@ -115,6 +117,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
             projected_output_column_source_refs: Vec::new(),
             pure_filter_columns: Vec::new(),
             pure_filter_column_source_refs: Vec::new(),
+            predicate_columns: Vec::new(),
             partition_columns: Vec::new(),
             partition_column_values: Vec::new(),
             partition_column_indices: Vec::new(),
@@ -210,6 +213,7 @@ pub(in crate::native) fn required_parquet_column_requirements(
         projected_output_column_source_refs,
         pure_filter_columns,
         pure_filter_column_source_refs,
+        predicate_columns: filter_columns.into_iter().collect(),
         partition_columns,
         partition_column_values: vec![None; partition_column_indices.len()],
         partition_column_indices,
@@ -296,6 +300,7 @@ pub(in crate::native) fn required_parquet_column_requirements_for_scan_columns(
         projected_output_column_source_refs,
         pure_filter_columns,
         pure_filter_column_source_refs,
+        predicate_columns: filter_columns.into_iter().collect(),
         partition_columns,
         partition_column_values: vec![None; partition_column_indices.len()],
         partition_column_indices,

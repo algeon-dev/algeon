@@ -35,12 +35,13 @@ use futures::{TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
     BinaryOp, CaseWhen, ExecutionContext, Expr as NativeExpr, GpuDataFrame, GpuResidentInputMap, GpuResidentSource,
     GpuResultHandle, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
-    GraphBetweennessSeeds, GraphBfsParams, GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs,
-    GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams,
-    GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings,
-    GraphEdgePredicateInput as NativeGraphEdgePredicateInput, GraphEigenvectorCentralityParams, GraphForceAtlas2Params,
-    GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams,
-    GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
+    GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
+    GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
+    GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
+    GraphEdgeColumnBindings, GraphEdgePredicateInput as NativeGraphEdgePredicateInput,
+    GraphEigenvectorCentralityParams, GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams,
+    GraphKCoreDegreeType, GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams,
+    GraphMstParams, GraphOutDegreesAllParams, GraphPageRankParams,
     GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
     GraphPredicateInput as NativeGraphPredicateInput, GraphSccParams, GraphSpectralClusteringParams, GraphSsspParams,
     GraphTriangleCountAllParams, GraphWccParams, LimitSpec, LiteralValue, ProjectionOutput, QueryMetrics, QueryOutput,
@@ -204,7 +205,7 @@ impl CugraphAlgoExec {
             let path = reconstruct_bfs_path_batch(&self.spec, &batch, path_target)?;
             let path = project_and_limit_host_batch(path, self.projection.as_ref(), self.limit)?;
             let schema = projected_schema(&self.spec.output_schema, self.projection.as_ref())?;
-            let frame = record_batches_to_gpu(native_context, &[path])?;
+            let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), &[path])?;
             let handle = GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
                 DataFusionError::from(Error::from_native(
                     "datafusion_nexus.cugraph_sql.path_output",
@@ -898,8 +899,9 @@ async fn execute_edge_source_to_gpu(
         return Ok(handle.into_gpu_frame());
     }
 
+    let schema = plan.schema();
     let batches = collect(plan, task_context).await?;
-    record_batches_to_gpu(context, &batches)
+    record_batches_to_gpu(context, schema, &batches)
 }
 
 struct CugraphGpuFrame {
@@ -1698,14 +1700,26 @@ fn cudf_series(frame: &DataFrame, column: &str) -> Result<Series> {
     frame.series(column).map_err(cudf_logical_mapping_error)
 }
 
-fn record_batches_to_gpu(context: &ExecutionContext, batches: &[RecordBatch]) -> Result<GpuDataFrame> {
+fn record_batches_to_gpu(
+    context: &ExecutionContext,
+    schema: SchemaRef,
+    batches: &[RecordBatch],
+) -> Result<GpuDataFrame> {
     let Some(first_batch) = batches.first() else {
-        return Err(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.cugraph_sql.edge_source_host_import",
-            "cuGraph edge source produced no RecordBatches",
-        )
-        .into());
+        let arrays =
+            schema.fields().iter().map(|field| arrow::array::new_empty_array(field.data_type())).collect::<Vec<_>>();
+        let batch = RecordBatch::try_new(schema, arrays).map_err(DataFusionError::from)?;
+        return cudf::DataFrame::from_record_batch(context.runtime(), &batch).map(GpuDataFrame::new).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.cugraph_sql.edge_source_host_import",
+                "failed to import empty host Arrow edge-source batch into cudf",
+                nexus_query_engine::QueryError::from_cudf(
+                    "datafusion_nexus.cugraph_sql.edge_source_host_import",
+                    "failed to import empty host Arrow edge-source batch into cudf",
+                    error,
+                ),
+            ))
+        });
     };
     let mut frames = batches
         .iter()
@@ -2231,6 +2245,9 @@ fn native_bfs_params(
         }),
     };
     native.return_target_info = params.output.return_target_info;
+    if params.output.mode == CugraphBfsOutputMode::Path {
+        native.endpoint_policy = GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
+    }
     native
 }
 
