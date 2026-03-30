@@ -1492,6 +1492,7 @@ impl CompiledJoinIndices {
         overrides: &ExecutionOverrides<'_>,
         projection: &[JoinOutputColumn],
         join_type: JoinType,
+        preserved_side: JoinSide,
     ) -> Result<DataFrame> {
         match self {
             Self::Pair { left: left_indices, right: right_indices } => materialize_join_output_projection(
@@ -1502,6 +1503,7 @@ impl CompiledJoinIndices {
                 overrides,
                 projection,
                 join_type,
+                preserved_side,
             ),
             Self::LeftOnly(indices) => {
                 materialize_left_only_join_output_projection(left, indices, overrides, projection, join_type)
@@ -1607,6 +1609,7 @@ fn materialize_compiled_indices_output(
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
         Err(error) => {

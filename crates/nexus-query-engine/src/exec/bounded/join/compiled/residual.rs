@@ -99,6 +99,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         &overrides,
         &residual_candidate.projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
     ) {
         Ok(candidate) => candidate,
         Err(error) => {
@@ -202,7 +203,9 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     reservations.release(candidate_reservation, metrics);
     txn.set_output_reservation(filtered_reservation);
 
-    let output = match filtered.select(residual_candidate.final_output_names.iter().map(String::as_str)) {
+    let mut final_output_names = residual_candidate.final_output_names;
+    final_output_names.extend(datafusion_order_columns(&filtered));
+    let output = match filtered.select(final_output_names.iter().map(String::as_str)) {
         Ok(output) => output,
         Err(error) => {
             drop(filtered);

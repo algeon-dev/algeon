@@ -51,6 +51,12 @@ pub struct JoinSpec {
     /// This is a physical execution choice. It does not redefine which input is
     /// semantic left or right; those remain [`JoinNode::inputs`].
     pub build_side: JoinSide,
+    /// Input side whose order DataFusion preserves for exact statistical replay.
+    ///
+    /// DataFusion's `HashJoinExec` can preserve a different side from the native
+    /// hash-build side. This side is only used for hidden order columns that
+    /// make order-sensitive floating statistical aggregates bit-exact.
+    pub datafusion_order_preserved_side: JoinSide,
     /// Durable cache identifier for reusable hash-join build state.
     ///
     /// When present, the executor may store and reuse the build artifact under
@@ -70,7 +76,8 @@ impl JoinSpec {
     /// Creates a join spec with default physical choices.
     ///
     /// Defaults are: no residual predicate, empty output projection,
-    /// `NullsDoNotMatch`, right-side build, and no reusable build artifact id.
+    /// `NullsDoNotMatch`, right-side build, right-side DataFusion order
+    /// preservation, and no reusable build artifact id.
     /// The empty output projection is an incomplete builder default; frontends
     /// must set an explicit projection before the join can execute.
     pub fn new(join_type: JoinType, keys: Vec<JoinKey>) -> Self {
@@ -81,6 +88,7 @@ impl JoinSpec {
             output_projection: Vec::new(),
             null_equality: JoinNullEquality::NullsDoNotMatch,
             build_side: JoinSide::Right,
+            datafusion_order_preserved_side: JoinSide::Right,
             build_artifact_id: None,
             mark_column_name: None,
         }
@@ -107,6 +115,12 @@ impl JoinSpec {
     /// Sets the physical build side without changing semantic left/right inputs.
     pub fn with_build_side(mut self, build_side: JoinSide) -> Self {
         self.build_side = build_side;
+        self
+    }
+
+    /// Sets the side whose order should drive DataFusion-exact hidden ordering.
+    pub fn with_datafusion_order_preserved_side(mut self, side: JoinSide) -> Self {
+        self.datafusion_order_preserved_side = side;
         self
     }
 

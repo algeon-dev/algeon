@@ -314,6 +314,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
         &overrides,
         &node.spec.output_projection,
         node.spec.join_type,
+        node.spec.datafusion_order_preserved_side,
     ) {
         Ok(output) => output,
         Err(error) => {
