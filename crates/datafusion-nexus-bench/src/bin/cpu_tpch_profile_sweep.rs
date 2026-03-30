@@ -11,11 +11,12 @@ use datafusion::{
     common::{Result as DataFusionResult, utils::memory::get_record_batch_memory_size},
     execution::context::TaskContext,
     physical_plan::{ExecutionPlan, collect},
-    prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus_bench::{
     CUDF_TPCH_GENERATION_COMMAND_ENV, CUDF_TPCH_PARQUET_DIR_ENV, CUDF_TPCH_SCALE_FACTOR_ENV, TPCH_QUERIES, TPCH_TABLES,
-    TpchDatasetMetadata, TpchQuery, prepare_tpch_report_dataset,
+    TpchDatasetMetadata, TpchQuery, TpchWorkloadError, discover_tpch_table_layout, prepare_tpch_report_dataset,
+    register_tpch_table_layout,
 };
 
 const TSV_SCHEMA_VERSION: u32 = 1;
@@ -155,13 +156,14 @@ async fn collect_cpu_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult
 
 async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> DataFusionResult<()> {
     for table in TPCH_TABLES {
-        let path = root.join(format!("{table}.parquet"));
-        let path = path.to_str().ok_or_else(|| {
-            datafusion::common::DataFusionError::Plan(format!("TPC-H table path is not UTF-8: {}", path.display()))
-        })?;
-        ctx.register_parquet(*table, path, ParquetReadOptions::default()).await?;
+        let layout = discover_tpch_table_layout(root, table).map_err(workload_error)?;
+        register_tpch_table_layout(ctx, table, &layout).await.map_err(workload_error)?;
     }
     Ok(())
+}
+
+fn workload_error(error: TpchWorkloadError) -> datafusion::common::DataFusionError {
+    datafusion::common::DataFusionError::External(Box::new(error))
 }
 
 fn print_metadata(metadata: &TpchDatasetMetadata, config: &CpuTpchConfig) {
@@ -326,5 +328,19 @@ mod tests {
         assert_eq!(TSV_COLUMNS.first(), Some(&"query_id"));
         assert_eq!(TSV_COLUMNS.last(), Some(&"failure"));
         assert_eq!(row.to_tsv("q01").split('\t').count(), TSV_COLUMNS.len());
+    }
+
+    #[tokio::test]
+    async fn register_tpch_tables_supports_sibling_split_layout() {
+        let dir = unique_temp_dir("cpu-tpch-profile-sibling-split-test");
+        datafusion_nexus_bench::write_tiny_tpch_parquet_dataset(&dir).unwrap();
+        fs::rename(dir.join("lineitem.parquet"), dir.join("lineitem_0000.parquet")).unwrap();
+
+        let ctx = SessionContext::new();
+        register_tpch_tables(&ctx, &dir).await.unwrap();
+        let batches = ctx.sql("SELECT COUNT(*) AS c FROM lineitem").await.unwrap().collect().await.unwrap();
+
+        assert_eq!(batches[0].num_rows(), 1);
+        fs::remove_dir_all(dir).ok();
     }
 }

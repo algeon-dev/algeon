@@ -9,9 +9,121 @@ fn default_config_selects_all_tpch_queries() {
     assert_eq!(config.dataset_mode.as_str(), "sf1_external");
     assert_eq!(NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf10).as_str(), "sf10_external");
     assert_eq!(config.native_memory_policy.as_str(), "bounded");
+    let NativeTpchMemoryPolicy::Bounded { profile_name, profile_source, source_chunk_planning_mode, .. } =
+        config.native_memory_policy
+    else {
+        panic!("default native TPC-H config must use bounded memory");
+    };
+    assert_eq!(profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
+    assert_eq!(profile_source, "default");
+    assert_eq!(source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
     assert_eq!(config.native_pipeline_execution_mode, NativePipelineExecutionMode::StrictBounded);
     assert_eq!(config.native_source_cache_policy.as_str(), "disabled");
     config.validate().unwrap();
+}
+
+#[test]
+fn native_profile_defaults_to_conservative() {
+    let profile = tpch_native_profile_settings_from([]).unwrap();
+
+    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
+    assert_eq!(profile.profile_source, "default");
+    assert_eq!(profile.device_budget_bytes, DEFAULT_NATIVE_DEVICE_BUDGET_BYTES);
+    assert_eq!(profile.max_source_chunk_bytes, DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
+    assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+}
+
+#[test]
+fn native_profile_resolves_sf100_gpu_throughput() {
+    let profile =
+        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+
+    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
+    assert_eq!(profile.profile_source, "env_profile");
+    assert_eq!(profile.device_budget_bytes, TPCH_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
+    assert_eq!(profile.max_source_chunk_bytes, TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
+    assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput);
+}
+
+#[test]
+fn native_profile_source_chunk_planning_reaches_execution_config() {
+    let profile =
+        tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput")]).unwrap();
+    let config = NativeTpchBenchmarkConfig {
+        native_memory_policy: NativeTpchMemoryPolicy::bounded_from_profile_settings(profile),
+        ..NativeTpchBenchmarkConfig::default()
+    };
+    let resources = NativeTpchRuntimeResources { runtime: None, source_cache: None };
+
+    let execution = config.native_execution_config_with_resources(&resources);
+
+    assert_eq!(
+        execution.source_chunk_planning_mode(),
+        nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput
+    );
+}
+
+#[test]
+fn native_profile_exact_overrides_resolve_to_named_profile() {
+    let profile = tpch_native_profile_settings_from([
+        (CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "102005473280"),
+        (CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "34359738368"),
+        (CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1024"),
+        (CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "4"),
+        (CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV, "1"),
+        (CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "local_parquet_throughput"),
+    ])
+    .unwrap();
+
+    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
+    assert_eq!(profile.profile_source, "resolved_values");
+}
+
+#[test]
+fn native_profile_overrides_become_custom() {
+    let profile = tpch_native_profile_settings_from([
+        (CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
+        (CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "123456"),
+        (CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "conservative"),
+    ])
+    .unwrap();
+
+    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CUSTOM);
+    assert_eq!(profile.profile_source, "custom_overrides");
+    assert_eq!(profile.max_source_chunk_bytes, 123_456);
+    assert_eq!(profile.source_chunk_planning_mode, nexus_query_engine::SourceChunkPlanningMode::Conservative);
+}
+
+#[test]
+fn native_profile_rejects_zero_values() {
+    for name in [
+        CUDF_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV,
+        CUDF_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
+        CUDF_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
+        CUDF_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+        CUDF_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV,
+    ] {
+        let error = tpch_native_profile_settings_from([(name, "0")])
+            .expect_err("zero TPC-H native profile values must be rejected");
+        assert!(error.to_string().contains("must be greater than zero"));
+    }
+}
+
+#[test]
+fn native_profile_rejects_invalid_profile_and_source_mode() {
+    let error = tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_PROFILE_ENV, "fast")])
+        .expect_err("unknown TPC-H native profiles must be rejected");
+    assert!(error.to_string().contains("expected conservative or sf100_gpu_throughput"));
+
+    let error = tpch_native_profile_settings_from([(CUDF_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV, "wide")])
+        .expect_err("unknown source chunk planning modes must be rejected");
+    assert!(error.to_string().contains("expected conservative or local_parquet_throughput"));
 }
 
 #[test]

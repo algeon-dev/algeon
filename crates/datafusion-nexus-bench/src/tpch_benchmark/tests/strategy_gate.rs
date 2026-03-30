@@ -208,13 +208,7 @@ fn sf100_full_reservation_health_gate_reports_applied_without_work_avoidance() {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q09".to_string(), "q18".to_string()],
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
-        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes: 94_489_280_512,
-            max_source_chunk_bytes: 34_359_738_368,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-        },
+        native_memory_policy: sf100_bounded_memory_policy(),
         ..NativeTpchBenchmarkConfig::default()
     };
     let rows = vec![
@@ -296,13 +290,7 @@ fn sf100_matrix_report(q07_join_strategy_rows: Vec<NativeJoinStrategyMetricRow>)
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q03".to_string(), "q04".to_string(), "q07".to_string()],
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
-        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes: 94_489_280_512,
-            max_source_chunk_bytes: 34_359_738_368,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-        },
+        native_memory_policy: sf100_bounded_memory_policy(),
         ..NativeTpchBenchmarkConfig::default()
     };
     NativeTpchBenchmarkReport {
@@ -335,13 +323,7 @@ fn sf100_q09_q18_q19_report(
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q09".to_string(), "q18".to_string(), "q19".to_string()],
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
-        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes: 94_489_280_512,
-            max_source_chunk_bytes: 34_359_738_368,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-        },
+        native_memory_policy: sf100_bounded_memory_policy(),
         ..NativeTpchBenchmarkConfig::default()
     };
     let q09 = skip_cpu_accepted_row(
@@ -378,13 +360,7 @@ fn sf100_selected_reservation_report(rows: Vec<(&str, usize, usize)>) -> NativeT
     let config = NativeTpchBenchmarkConfig {
         query_ids: rows.iter().map(|(query_id, _, _)| (*query_id).to_string()).collect(),
         dataset_mode: NativeTpchDatasetMode::External(NativeTpchScaleFactor::Sf100),
-        native_memory_policy: NativeTpchMemoryPolicy::Bounded {
-            device_budget_bytes: 94_489_280_512,
-            max_source_chunk_bytes: 34_359_738_368,
-            max_row_groups_per_chunk: 1024,
-            max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
-            min_retry_chunk_row_groups: DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
-        },
+        native_memory_policy: sf100_bounded_memory_policy(),
         ..NativeTpchBenchmarkConfig::default()
     };
     let rows = rows
@@ -401,6 +377,17 @@ fn sf100_selected_reservation_report(rows: Vec<(&str, usize, usize)>) -> NativeT
         })
         .collect();
     NativeTpchBenchmarkReport { metadata: benchmark_sf100_metadata(), config, rows }
+}
+
+fn sf100_bounded_memory_policy() -> NativeTpchMemoryPolicy {
+    NativeTpchMemoryPolicy::bounded_custom(
+        94_489_280_512,
+        34_359_738_368,
+        1024,
+        DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
+        DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS,
+        nexus_query_engine::SourceChunkPlanningMode::LocalParquetThroughput,
+    )
 }
 
 fn cpu_enabled_mismatched_row(query_id: &str, metrics: NativeDataFusionExecutionMetrics) -> NativeTpchBenchmarkRow {

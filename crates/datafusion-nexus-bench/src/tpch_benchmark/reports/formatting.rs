@@ -8,19 +8,27 @@ pub(super) fn write_native_memory_policy_metadata(
 ) {
     match memory_policy {
         NativeTpchMemoryPolicy::Unbounded => {
+            push_line(output, format_args!("# tpch_benchmark_native_profile_name=none"));
+            push_line(output, format_args!("# tpch_benchmark_native_profile_source=none"));
             push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes=none"));
             push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes=none"));
             push_line(output, format_args!("# tpch_benchmark_native_max_row_groups_per_chunk=none"));
             push_line(output, format_args!("# tpch_benchmark_native_max_retry_attempts=none"));
             push_line(output, format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups=none"));
+            push_line(output, format_args!("# tpch_benchmark_native_source_chunk_planning_mode=none"));
         },
         NativeTpchMemoryPolicy::Bounded {
+            profile_name,
+            profile_source,
             device_budget_bytes,
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
             max_retry_attempts,
             min_retry_chunk_row_groups,
+            source_chunk_planning_mode,
         } => {
+            push_line(output, format_args!("# tpch_benchmark_native_profile_name={profile_name}"));
+            push_line(output, format_args!("# tpch_benchmark_native_profile_source={profile_source}"));
             push_line(output, format_args!("# tpch_benchmark_native_device_budget_bytes={device_budget_bytes}"));
             push_line(output, format_args!("# tpch_benchmark_native_max_source_chunk_bytes={max_source_chunk_bytes}"));
             push_line(
@@ -31,6 +39,13 @@ pub(super) fn write_native_memory_policy_metadata(
             push_line(
                 output,
                 format_args!("# tpch_benchmark_native_min_retry_chunk_row_groups={min_retry_chunk_row_groups}"),
+            );
+            push_line(
+                output,
+                format_args!(
+                    "# tpch_benchmark_native_source_chunk_planning_mode={}",
+                    source_chunk_planning_mode.as_str()
+                ),
             );
         },
     }
